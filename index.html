@@ -6,153 +6,242 @@
   <title>איקס אפס</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
     body {
       font-family: 'Segoe UI', sans-serif;
-      background: #1a1a2e;
-      color: #eee;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      gap: 24px;
+      background: #1a1a2e; color: #eee;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 100vh; gap: 24px; padding: 20px;
     }
-
-    h1 {
-      font-size: 2.5rem;
-      color: #e94560;
-      letter-spacing: 2px;
+    h1 { font-size: 2.5rem; color: #e94560; letter-spacing: 2px; }
+    h2 { color: #a8dadc; font-size: 1.4rem; margin-bottom: 8px; }
+    .screen { display: none; flex-direction: column; align-items: center; gap: 16px; width: 100%; max-width: 380px; }
+    .screen.active { display: flex; }
+    input, select {
+      width: 100%; padding: 12px 16px; border-radius: 8px;
+      border: 2px solid #0f3460; background: #16213e; color: #eee; font-size: 1rem;
     }
-
-    #status {
-      font-size: 1.3rem;
-      color: #a8dadc;
-      min-height: 2rem;
-    }
-
-    #board {
-      display: grid;
-      grid-template-columns: repeat(3, 110px);
-      grid-template-rows: repeat(3, 110px);
-      gap: 8px;
-    }
-
-    .cell {
-      background: #16213e;
-      border: 2px solid #0f3460;
-      border-radius: 12px;
-      font-size: 3rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
-      user-select: none;
-    }
-
-    .cell:hover:not(.taken) {
-      background: #0f3460;
-      transform: scale(1.05);
-    }
-
-    .cell.x { color: #e94560; }
-    .cell.o { color: #a8dadc; }
-
-    .cell.win {
-      background: #0f3460;
-      border-color: #e94560;
-      animation: pulse 0.5s ease;
-    }
-
-    @keyframes pulse {
-      0%   { transform: scale(1); }
-      50%  { transform: scale(1.1); }
-      100% { transform: scale(1); }
-    }
-
-    #scores {
-      display: flex;
-      gap: 40px;
-      font-size: 1.1rem;
-      color: #a8dadc;
-    }
-
-    #scores span { color: #e94560; font-weight: bold; }
-
-    #reset {
-      padding: 12px 36px;
-      font-size: 1rem;
-      background: #e94560;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-
-    #reset:hover { background: #c73652; }
+    input:focus, select:focus { outline: none; border-color: #e94560; }
+    .btn { width: 100%; padding: 12px; font-size: 1rem; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s; }
+    .btn-primary { background: #e94560; color: white; }
+    .btn-primary:hover { background: #c73652; }
+    .btn-secondary { background: #0f3460; color: #a8dadc; }
+    .btn-secondary:hover { background: #162340; }
+    .tabs { display: flex; gap: 8px; width: 100%; }
+    .tab { flex: 1; padding: 10px; text-align: center; border-radius: 8px; cursor: pointer; background: #16213e; color: #a8dadc; border: 2px solid transparent; }
+    .tab.active { border-color: #e94560; color: #e94560; }
+    .msg { font-size: 0.9rem; color: #e94560; min-height: 1.2rem; text-align: center; }
+    .msg.ok { color: #a8dadc; }
+    #board { display: grid; grid-template-columns: repeat(3, 110px); grid-template-rows: repeat(3, 110px); gap: 8px; }
+    .cell { background: #16213e; border: 2px solid #0f3460; border-radius: 12px; font-size: 3rem; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.2s, transform 0.1s; user-select: none; }
+    .cell:hover:not(.taken) { background: #0f3460; transform: scale(1.05); }
+    .cell.x { color: #e94560; } .cell.o { color: #a8dadc; }
+    .cell.win { background: #0f3460; border-color: #e94560; animation: pulse 0.5s ease; }
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+    #status { font-size: 1.3rem; color: #a8dadc; min-height: 2rem; text-align: center; }
+    #scores { display: flex; gap: 40px; font-size: 1.1rem; color: #a8dadc; text-align: center; }
+    #scores span { color: #e94560; font-weight: bold; display: block; }
+    .game-buttons { display: flex; gap: 12px; }
+    .game-buttons .btn { width: auto; padding: 12px 24px; }
+    .user-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: #16213e; border-radius: 8px; margin-bottom: 8px; width: 100%; }
+    .user-item .name { font-weight: bold; color: #a8dadc; }
+    .user-item .sub { font-size: 0.85rem; color: #666; }
+    .user-item .wins { color: #e94560; font-weight: bold; }
+    .loader { width: 36px; height: 36px; border: 4px solid #0f3460; border-top-color: #e94560; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
   <h1>איקס אפס ✕ ○</h1>
 
-  <div id="scores">
-    <div>✕ ניצח: <span id="score-x">0</span></div>
-    <div>תיקו: <span id="score-tie">0</span></div>
-    <div>○ ניצח: <span id="score-o">0</span></div>
+  <div id="screen-loading" class="screen active">
+    <div class="loader"></div>
   </div>
 
-  <div id="status">תור השחקן: ✕</div>
-
-  <div id="board">
-    <div class="cell" data-i="0"></div>
-    <div class="cell" data-i="1"></div>
-    <div class="cell" data-i="2"></div>
-    <div class="cell" data-i="3"></div>
-    <div class="cell" data-i="4"></div>
-    <div class="cell" data-i="5"></div>
-    <div class="cell" data-i="6"></div>
-    <div class="cell" data-i="7"></div>
-    <div class="cell" data-i="8"></div>
+  <div id="screen-auth" class="screen">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('login')">כניסה</div>
+      <div class="tab" onclick="switchTab('register')">הרשמה</div>
+    </div>
+    <div id="tab-register" style="display:none; width:100%; flex-direction:column; gap:12px;">
+      <h2>הרשמה</h2>
+      <input id="reg-name" type="text" placeholder="שם מלא" />
+      <input id="reg-email" type="email" placeholder="אימייל" />
+      <input id="reg-pass" type="password" placeholder="סיסמה (6+ תווים)" />
+      <button class="btn btn-primary" onclick="register()">הרשמה</button>
+    </div>
+    <div id="tab-login" style="width:100%; display:flex; flex-direction:column; gap:12px;">
+      <h2>כניסה</h2>
+      <input id="login-email" type="email" placeholder="אימייל" />
+      <input id="login-pass" type="password" placeholder="סיסמה" />
+      <button class="btn btn-primary" onclick="login()">כניסה</button>
+    </div>
+    <p class="msg" id="auth-msg"></p>
   </div>
 
-  <button id="reset">משחק חדש</button>
+  <div id="screen-lobby" class="screen">
+    <h2 id="lobby-title"></h2>
+    <p style="color:#666; font-size:0.9rem;">בחר יריב:</p>
+    <select id="opponent-select"></select>
+    <button class="btn btn-primary" onclick="startGame()">התחל משחק!</button>
+    <button class="btn btn-secondary" onclick="toggleLeaderboard()">🏆 טבלת ניצחונות</button>
+    <button class="btn btn-secondary" onclick="logout()">התנתק</button>
+    <div id="leaderboard" style="display:none; width:100%;"></div>
+  </div>
+
+  <div id="screen-game" class="screen">
+    <div id="scores">
+      <div><span id="p1-name">שחקן 1</span><span id="score-x">0</span></div>
+      <div>תיקו<span id="score-tie">0</span></div>
+      <div><span id="p2-name">שחקן 2</span><span id="score-o">0</span></div>
+    </div>
+    <div id="status"></div>
+    <div id="board">
+      <div class="cell" data-i="0"></div><div class="cell" data-i="1"></div><div class="cell" data-i="2"></div>
+      <div class="cell" data-i="3"></div><div class="cell" data-i="4"></div><div class="cell" data-i="5"></div>
+      <div class="cell" data-i="6"></div><div class="cell" data-i="7"></div><div class="cell" data-i="8"></div>
+    </div>
+    <div class="game-buttons">
+      <button class="btn btn-primary" onclick="resetGame()">משחק חדש</button>
+      <button class="btn btn-secondary" onclick="goLobby()">חזרה</button>
+    </div>
+  </div>
 
   <script>
-    const cells = document.querySelectorAll('.cell');
-    const status = document.getElementById('status');
-    const scoreX = document.getElementById('score-x');
-    const scoreO = document.getElementById('score-o');
-    const scoreTie = document.getElementById('score-tie');
-
-    const WINS = [
-      [0,1,2],[3,4,5],[6,7,8],
-      [0,3,6],[1,4,7],[2,5,8],
-      [0,4,8],[2,4,6]
-    ];
-
+    const API = window.location.hostname === 'localhost'
+      ? 'http://localhost:3000/api'
+      : '/api';
+    let token = localStorage.getItem('ttt_token');
+    let currentUser = JSON.parse(localStorage.getItem('ttt_user') || 'null');
+    let opponent = null;
     let board, current, gameOver;
+    let scoreX = 0, scoreO = 0, scoreTie = 0;
 
-    function init() {
-      board = Array(9).fill('');
-      current = 'X';
-      gameOver = false;
-      cells.forEach(c => {
-        c.textContent = '';
-        c.className = 'cell';
+    const WINS = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+
+    async function api(path, options = {}) {
+      const res = await fetch(API + path, {
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        ...options,
+        body: options.body ? JSON.stringify(options.body) : undefined,
       });
-      status.textContent = `תור השחקן: ✕`;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'שגיאה');
+      return data;
     }
 
-    function checkWin(player) {
-      return WINS.find(combo => combo.every(i => board[i] === player)) || null;
+    function showScreen(id) {
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
     }
 
-    function handleClick(e) {
+    function switchTab(tab) {
+      document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', (i === 0) === (tab === 'login')));
+      document.getElementById('tab-login').style.display    = tab === 'login'    ? 'flex' : 'none';
+      document.getElementById('tab-register').style.display = tab === 'register' ? 'flex' : 'none';
+    }
+
+    function setMsg(msg, ok = false) {
+      const el = document.getElementById('auth-msg');
+      el.textContent = msg;
+      el.className = 'msg' + (ok ? ' ok' : '');
+    }
+
+    async function register() {
+      const name     = document.getElementById('reg-name').value.trim();
+      const email    = document.getElementById('reg-email').value.trim();
+      const password = document.getElementById('reg-pass').value;
+      if (!name || !email || !password) return setMsg('מלא את כל השדות');
+      try {
+        const data = await api('/register', { method: 'POST', body: { name, email, password } });
+        token = data.token;
+        currentUser = data.user;
+        localStorage.setItem('ttt_token', token);
+        localStorage.setItem('ttt_user', JSON.stringify(currentUser));
+        openLobby();
+      } catch (e) { setMsg(e.message); }
+    }
+
+    async function login() {
+      const email    = document.getElementById('login-email').value.trim();
+      const password = document.getElementById('login-pass').value;
+      try {
+        const data = await api('/login', { method: 'POST', body: { email, password } });
+        token = data.token;
+        currentUser = data.user;
+        localStorage.setItem('ttt_token', token);
+        localStorage.setItem('ttt_user', JSON.stringify(currentUser));
+        openLobby();
+      } catch (e) { setMsg(e.message); }
+    }
+
+    function logout() {
+      token = null; currentUser = null;
+      localStorage.removeItem('ttt_token');
+      localStorage.removeItem('ttt_user');
+      showScreen('screen-auth');
+    }
+
+    async function openLobby() {
+      document.getElementById('lobby-title').textContent = `שלום, ${currentUser.name}!`;
+      try {
+        const users = await api('/users');
+        const others = users.filter(u => u.id !== currentUser.id);
+        const sel = document.getElementById('opponent-select');
+        sel.innerHTML = others.length
+          ? others.map(u => `<option value="${u.id}" data-name="${u.name}" data-wins="${u.wins}" data-games="${u.games_played}">${u.name} (🏆 ${u.wins})</option>`).join('')
+          : '<option disabled>אין שחקנים אחרים עדיין</option>';
+        window._others = others;
+      } catch (e) { console.error(e); }
+      document.getElementById('leaderboard').style.display = 'none';
+      showScreen('screen-lobby');
+    }
+
+    function goLobby() { openLobby(); }
+
+    async function toggleLeaderboard() {
+      const lb = document.getElementById('leaderboard');
+      if (lb.style.display !== 'none') { lb.style.display = 'none'; return; }
+      try {
+        const users = await api('/leaderboard');
+        lb.innerHTML = '<h2 style="margin:12px 0 8px">🏆 טבלת ניצחונות</h2>' +
+          users.map(u => `<div class="user-item">
+            <div><div class="name">${u.name}</div><div class="sub">${u.email}</div></div>
+            <div class="wins">🏆 ${u.wins} / ${u.games_played}</div>
+          </div>`).join('');
+        lb.style.display = 'block';
+      } catch (e) { console.error(e); }
+    }
+
+    function startGame() {
+      const sel = document.getElementById('opponent-select');
+      const uid = sel.value;
+      opponent = window._others.find(u => u.id === uid);
+      if (!opponent) return;
+      scoreX = scoreO = scoreTie = 0;
+      document.getElementById('p1-name').textContent = currentUser.name;
+      document.getElementById('p2-name').textContent = opponent.name;
+      document.getElementById('score-x').textContent = '0';
+      document.getElementById('score-o').textContent = '0';
+      document.getElementById('score-tie').textContent = '0';
+      showScreen('screen-game');
+      initGame();
+    }
+
+    function initGame() {
+      board = Array(9).fill('');
+      current = 'X'; gameOver = false;
+      document.querySelectorAll('.cell').forEach(c => { c.textContent = ''; c.className = 'cell'; });
+      document.getElementById('status').textContent = `תור: ${currentUser.name} (✕)`;
+    }
+
+    function resetGame() { initGame(); }
+
+    function checkWin(p) { return WINS.find(c => c.every(i => board[i] === p)) || null; }
+
+    async function handleClick(e) {
       const i = +e.target.dataset.i;
       if (gameOver || board[i]) return;
-
       board[i] = current;
       const cell = e.target;
       cell.textContent = current === 'X' ? '✕' : '○';
@@ -161,25 +250,49 @@
       const winCombo = checkWin(current);
       if (winCombo) {
         gameOver = true;
-        winCombo.forEach(j => cells[j].classList.add('win'));
-        const symbol = current === 'X' ? '✕' : '○';
-        status.textContent = `🎉 ${symbol} ניצח!`;
-        if (current === 'X') scoreX.textContent = +scoreX.textContent + 1;
-        else scoreO.textContent = +scoreO.textContent + 1;
+        winCombo.forEach(j => document.querySelectorAll('.cell')[j].classList.add('win'));
+        const winner = current === 'X' ? currentUser : opponent;
+        const loser  = current === 'X' ? opponent : currentUser;
+        document.getElementById('status').textContent = `🎉 ${winner.name} ניצח!`;
+        if (current === 'X') { scoreX++; document.getElementById('score-x').textContent = scoreX; }
+        else                  { scoreO++; document.getElementById('score-o').textContent = scoreO; }
+        await saveGame(winner.id, 'win');
       } else if (board.every(Boolean)) {
-        gameOver = true;
-        status.textContent = '🤝 תיקו!';
-        scoreTie.textContent = +scoreTie.textContent + 1;
+        gameOver = true; scoreTie++;
+        document.getElementById('score-tie').textContent = scoreTie;
+        document.getElementById('status').textContent = '🤝 תיקו!';
+        await saveGame(null, 'tie');
       } else {
         current = current === 'X' ? 'O' : 'X';
-        status.textContent = `תור השחקן: ${current === 'X' ? '✕' : '○'}`;
+        const nextName = current === 'X' ? currentUser.name : opponent.name;
+        document.getElementById('status').textContent = `תור: ${nextName} (${current === 'X' ? '✕' : '○'})`;
       }
     }
 
-    cells.forEach(c => c.addEventListener('click', handleClick));
-    document.getElementById('reset').addEventListener('click', init);
+    async function saveGame(winnerId, result) {
+      try {
+        await api('/games', {
+          method: 'POST',
+          body: {
+            player1_id: currentUser.id,
+            player2_id: opponent.id,
+            winner_id: winnerId,
+            result,
+            board,
+          }
+        });
+      } catch (e) { console.error('שמירת משחק נכשלה', e); }
+    }
 
-    init();
+    document.querySelectorAll('.cell').forEach(c => c.addEventListener('click', handleClick));
+
+    // Auto-login if token exists
+    if (token && currentUser) {
+      openLobby().then(() => {}).catch(() => { logout(); });
+    } else {
+      switchTab('login');
+      showScreen('screen-auth');
+    }
   </script>
 </body>
 </html>
