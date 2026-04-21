@@ -58,9 +58,31 @@
     .modal-box p { color: #a8dadc; font-size: 1rem; }
     .modal-btns { display: flex; gap: 10px; justify-content: center; }
     .modal-btns .btn { width: auto; padding: 10px 22px; }
+
+    /* User bar */
+    #user-bar {
+      display: none; position: fixed; top: 0; left: 0; right: 0;
+      background: #0f3460; padding: 8px 16px;
+      align-items: center; justify-content: space-between;
+      font-size: 0.9rem; z-index: 50;
+    }
+    #user-bar.show { display: flex; }
+    #user-bar .user-name { color: #a8dadc; }
+    #user-bar .user-name strong { color: #e94560; }
+    #user-bar .btn-logout {
+      background: transparent; border: 1px solid #e94560;
+      color: #e94560; padding: 4px 12px; border-radius: 6px;
+      cursor: pointer; font-size: 0.85rem; transition: background 0.2s;
+    }
+    #user-bar .btn-logout:hover { background: #e94560; color: white; }
   </style>
 </head>
 <body>
+  <div id="user-bar">
+    <span class="user-name">🟢 מחובר: <strong id="bar-username"></strong></span>
+    <button class="btn-logout" onclick="logout()">התנתק</button>
+  </div>
+
   <h1>איקס אפס ✕ ○</h1>
 
   <!-- Loading -->
@@ -188,6 +210,15 @@
       document.getElementById('tab-register').style.display = tab === 'register' ? 'flex' : 'none';
     }
 
+    function showUserBar(name) {
+      document.getElementById('bar-username').textContent = name;
+      document.getElementById('user-bar').classList.add('show');
+    }
+
+    function hideUserBar() {
+      document.getElementById('user-bar').classList.remove('show');
+    }
+
     function setMsg(msg, ok = false) {
       const el = document.getElementById('auth-msg');
       el.textContent = msg;
@@ -274,6 +305,7 @@
         token = data.token; currentUser = data.user;
         localStorage.setItem('ttt_token', token);
         localStorage.setItem('ttt_user', JSON.stringify(currentUser));
+        showUserBar(currentUser.name);
         connectSocket();
         openLobby();
       } catch (e) { setMsg(e.message); }
@@ -287,12 +319,14 @@
         token = data.token; currentUser = data.user;
         localStorage.setItem('ttt_token', token);
         localStorage.setItem('ttt_user', JSON.stringify(currentUser));
+        showUserBar(currentUser.name);
         connectSocket();
         openLobby();
       } catch (e) { setMsg(e.message); }
     }
 
     function logout() {
+      hideUserBar();
       disconnectSocket();
       token = null; currentUser = null;
       localStorage.removeItem('ttt_token');
@@ -485,6 +519,7 @@
 
     // ── Init ──────────────────────────────────────────────────────
     if (token && currentUser) {
+      showUserBar(currentUser.name);
       connectSocket();
       openLobby().catch(() => logout());
     } else {
