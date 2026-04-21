@@ -1,16 +1,22 @@
 require('dotenv').config();
 const express = require('express');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { getPool, sql } = require('./db');
 
 const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*' } });
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(require('path').join(__dirname, '..')));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const onlineUsers = new Map(); // userId → socketId
 
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -22,6 +28,38 @@ function auth(req, res, next) {
     res.status(401).json({ error: 'טוקן לא תקין' });
   }
 }
+
+// ── Socket.io ────────────────────────────────────────────────────
+io.use((socket, next) => {
+  try {
+    socket.user = jwt.verify(socket.handshake.auth.token, JWT_SECRET);
+    next();
+  } catch {
+    next(new Error('unauthorized'));
+  }
+});
+
+io.on('connection', (socket) => {
+  onlineUsers.set(socket.user.id, socket.id);
+  io.emit('users:online', [...onlineUsers.keys()]);
+
+  function relay(toUserId, event, data) {
+    const sid = onlineUsers.get(toUserId);
+    if (sid) io.to(sid).emit(event, data);
+  }
+
+  socket.on('game:invite',  ({ toUserId }) => relay(toUserId, 'game:invite',   { from: socket.user }));
+  socket.on('game:accept',  ({ toUserId }) => relay(toUserId, 'game:accepted', { by: socket.user }));
+  socket.on('game:decline', ({ toUserId }) => relay(toUserId, 'game:declined', {}));
+  socket.on('game:cancel',  ({ toUserId }) => relay(toUserId, 'game:cancel',   {}));
+  socket.on('game:move',    ({ toUserId, index }) => relay(toUserId, 'game:move', { index }));
+  socket.on('game:rematch', ({ toUserId }) => relay(toUserId, 'game:rematch',  {}));
+
+  socket.on('disconnect', () => {
+    onlineUsers.delete(socket.user.id);
+    io.emit('users:online', [...onlineUsers.keys()]);
+  });
+});
 
 // ── Register ─────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
@@ -70,7 +108,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ── Get all users (for opponent selection) ───────────────────────
+// ── Users ────────────────────────────────────────────────────────
 app.get('/api/users', auth, async (req, res) => {
   try {
     const pool = await getPool();
@@ -130,4 +168,4 @@ app.get('/api/leaderboard', auth, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+httpServer.listen(PORT, () => console.log(`Server running on port ${PORT}`));
