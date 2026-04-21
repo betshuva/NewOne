@@ -54,6 +54,7 @@ io.on('connection', (socket) => {
   socket.on('game:cancel',  ({ toUserId }) => relay(toUserId, 'game:cancel',   {}));
   socket.on('game:move',    ({ toUserId, index }) => relay(toUserId, 'game:move', { index }));
   socket.on('game:rematch', ({ toUserId }) => relay(toUserId, 'game:rematch',  {}));
+  socket.on('chat:message', ({ toUserId, text }) => relay(toUserId, 'chat:message', { from: socket.user.name, text }));
 
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.user.id);
