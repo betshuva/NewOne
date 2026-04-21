@@ -155,6 +155,34 @@ app.post('/api/games', auth, async (req, res) => {
   }
 });
 
+// ── Admin: all users ─────────────────────────────────────────────
+app.get('/api/admin/users', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .query('SELECT id, name, email, wins, games_played, created_at FROM users ORDER BY created_at DESC');
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Admin: all games ─────────────────────────────────────────────
+app.get('/api/admin/games', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request().query(`
+      SELECT g.id, g.result, g.board, g.played_at,
+             p1.name AS player1, p2.name AS player2,
+             w.name AS winner
+      FROM games g
+      JOIN users p1 ON g.player1_id = p1.id
+      JOIN users p2 ON g.player2_id = p2.id
+      LEFT JOIN users w ON g.winner_id = w.id
+      ORDER BY g.played_at DESC
+    `);
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Leaderboard ──────────────────────────────────────────────────
 app.get('/api/leaderboard', auth, async (req, res) => {
   try {
