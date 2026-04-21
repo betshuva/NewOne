@@ -62,19 +62,20 @@
     /* User bar */
     #user-bar {
       display: none; position: fixed; top: 0; left: 0; right: 0;
-      background: #0f3460; padding: 8px 16px;
+      background: #e94560; padding: 8px 16px;
       align-items: center; justify-content: space-between;
       font-size: 0.9rem; z-index: 50;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
     }
     #user-bar.show { display: flex; }
-    #user-bar .user-name { color: #a8dadc; }
-    #user-bar .user-name strong { color: #e94560; }
+    #user-bar .user-name { color: white; font-weight: bold; }
     #user-bar .btn-logout {
-      background: transparent; border: 1px solid #e94560;
+      background: white; border: none;
       color: #e94560; padding: 4px 12px; border-radius: 6px;
-      cursor: pointer; font-size: 0.85rem; transition: background 0.2s;
+      cursor: pointer; font-size: 0.85rem; font-weight: bold;
+      transition: opacity 0.2s;
     }
-    #user-bar .btn-logout:hover { background: #e94560; color: white; }
+    #user-bar .btn-logout:hover { opacity: 0.8; }
   </style>
 </head>
 <body>
