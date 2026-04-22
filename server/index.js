@@ -14,6 +14,7 @@ const io = new Server(httpServer, { cors: { origin: '*' } });
 app.use(cors());
 app.use(express.json());
 app.use(express.static(require('path').join(__dirname, '..')));
+app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const onlineUsers = new Map(); // userId → socketId
