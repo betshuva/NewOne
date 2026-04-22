@@ -7,6 +7,12 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 const kServer = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi = '$kServer/api';
 
+const kBg       = Color(0xFF1a1a2e);
+const kCard     = Color(0xFF16213e);
+const kBorder   = Color(0xFF0f3460);
+const kRed      = Color(0xFFe94560);
+const kBlue     = Color(0xFFa8dadc);
+
 void main() => runApp(const XOApp());
 
 class XOApp extends StatelessWidget {
@@ -17,7 +23,43 @@ class XOApp extends StatelessWidget {
       title: 'איקס אפס',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        scaffoldBackgroundColor: kBg,
+        colorScheme: const ColorScheme.dark(
+          primary: kRed,
+          secondary: kBlue,
+          surface: kCard,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: kCard,
+          labelStyle: const TextStyle(color: kBlue),
+          hintStyle: TextStyle(color: Colors.grey.shade600),
+          enabledBorder: OutlineInputBorder(
+            borderSide: const BorderSide(color: kBorder, width: 2),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderSide: const BorderSide(color: kRed, width: 2),
+            borderRadius: BorderRadius.circular(8),
+          ),
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: kRed,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+        ),
+        tabBarTheme: const TabBarThemeData(
+          labelColor: kRed,
+          unselectedLabelColor: kBlue,
+          indicatorColor: kRed,
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: kRed,
+          foregroundColor: Colors.white,
+        ),
         useMaterial3: true,
       ),
       home: const AuthGate(),
@@ -140,18 +182,23 @@ class _AuthScreenState extends State<AuthScreen>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text('✕  ○', style: TextStyle(fontSize: 72)),
-              const SizedBox(height: 8),
-              const Text('איקס אפס',
-                  style:
-                      TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+              const Text('איקס אפס ✕ ○',
+                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: kRed, letterSpacing: 2)),
               const SizedBox(height: 32),
-              TabBar(
-                controller: _tabs,
-                tabs: const [
-                  Tab(text: 'התחברות'),
-                  Tab(text: 'הרשמה'),
-                ],
+              Container(
+                decoration: BoxDecoration(
+                  color: kCard,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: kBorder, width: 2),
+                ),
+                child: TabBar(
+                  controller: _tabs,
+                  tabs: const [Tab(text: 'כניסה'), Tab(text: 'הרשמה')],
+                  indicator: BoxDecoration(
+                    color: kBorder,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                ),
               ),
               const SizedBox(height: 24),
               SizedBox(
@@ -363,7 +410,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('שלום, ${_me?['name'] ?? ''}'),
-        backgroundColor: Colors.deepPurple,
+        backgroundColor: kRed,
         foregroundColor: Colors.white,
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _loadUsers),
@@ -594,7 +641,7 @@ class _GameScreenState extends State<GameScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('${widget.me['name']}  vs  ${widget.opponent['name']}'),
-        backgroundColor: Colors.deepPurple,
+        backgroundColor: kRed,
         foregroundColor: Colors.white,
       ),
       body: Column(
@@ -603,7 +650,7 @@ class _GameScreenState extends State<GameScreen> {
           Container(
             padding:
                 const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-            color: Colors.deepPurple.shade50,
+            color: kCard,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -620,7 +667,7 @@ class _GameScreenState extends State<GameScreen> {
                       style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
-                          color: _gameOver ? Colors.deepPurple : Colors.black),
+                          color: _gameOver ? kRed : kBlue),
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -650,12 +697,9 @@ class _GameScreenState extends State<GameScreen> {
                     onTap: () => _tap(i),
                     child: Container(
                       decoration: BoxDecoration(
-                        color: cell == null
-                            ? Colors.deepPurple.shade50
-                            : Colors.white,
+                        color: kCard,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                            color: Colors.deepPurple.shade200, width: 2),
+                        border: Border.all(color: kBorder, width: 2),
                       ),
                       child: Center(
                         child: Text(
@@ -715,8 +759,8 @@ class _GameScreenState extends State<GameScreen> {
                         horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
                       color: isMe
-                          ? Colors.deepPurple.shade100
-                          : Colors.grey.shade200,
+                          ? kBorder
+                          : kCard,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(msg['text']!),
@@ -746,7 +790,7 @@ class _GameScreenState extends State<GameScreen> {
                 ),
                 const SizedBox(width: 8),
                 IconButton(
-                  icon: const Icon(Icons.send, color: Colors.deepPurple),
+                  icon: const Icon(Icons.send, color: kRed),
                   onPressed: _sendChat,
                 ),
               ],
