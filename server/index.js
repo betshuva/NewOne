@@ -15,6 +15,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(require('path').join(__dirname, '..')));
 app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
+app.get('/app', (req, res) => res.redirect('/app/'));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const onlineUsers = new Map(); // userId → socketId
