@@ -17,8 +17,9 @@ const kReadGreen  = Color(0xFF25D366);
 const kOutgoing   = Color(0xFFD8F5E4);
 const kChatBg     = Color(0xFFECF3E8);
 
-const kServer = 'https://xo-app-betshuva.azurewebsites.net';
-const kApi    = '$kServer/api';
+const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
+const kApi     = '$kServer/api';
+const kVersion = '1.0.1';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -118,7 +119,7 @@ class _SplashScreenState extends State<SplashScreen>
     Future.delayed(const Duration(seconds: 2), _navigate);
   }
 
-  static const _currentVersion = '1.0.1';
+  static const _currentVersion = kVersion;
 
   Future<void> _navigate() async {
     final prefs = await SharedPreferences.getInstance();
@@ -2113,7 +2114,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: Icon(Icons.info_outline, color: kSubtext),
                   title: Text('גרסה'),
-                  trailing: Text('1.0.0', style: TextStyle(color: kSubtext)),
+                  trailing: Text(kVersion, style: TextStyle(color: kSubtext)),
                 ),
                 Divider(height: 1, indent: 16),
                 ListTile(
