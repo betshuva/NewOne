@@ -422,7 +422,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
           IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
-      body: _users.isEmpty
+      body: Center(
+        child: SizedBox(
+          width: 500,
+          child: _users.isEmpty
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
               onRefresh: _loadUsers,
@@ -462,6 +465,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 },
               ),
             ),
+        ),
+      ),
     );
   }
 }
@@ -649,7 +654,10 @@ class _GameScreenState extends State<GameScreen> {
         backgroundColor: kRed,
         foregroundColor: Colors.white,
       ),
-      body: Column(
+      body: Center(
+        child: SizedBox(
+          width: 500,
+          child: Column(
         children: [
           // Score bar
           Container(
@@ -802,6 +810,8 @@ class _GameScreenState extends State<GameScreen> {
             ),
           ),
         ],
+          ),
+        ),
       ),
     );
   }
