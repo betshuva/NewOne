@@ -17,3 +17,10 @@ CREATE TABLE games (
   board       NVARCHAR(50),
   played_at   DATETIME         DEFAULT GETDATE()
 );
+
+CREATE TABLE password_reset_tokens (
+  token      NVARCHAR(64)     PRIMARY KEY,
+  user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+  expires_at DATETIME         NOT NULL,
+  used       BIT              DEFAULT 0
+);

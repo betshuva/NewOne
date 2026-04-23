@@ -196,7 +196,7 @@ class _SplashScreenState extends State<SplashScreen>
   }
 }
 
-// ── Phone Auth Screen ─────────────────────────────────────────────
+// ── Phone Auth Screen (OTP via SMS) ──────────────────────────────
 class PhoneAuthScreen extends StatefulWidget {
   const PhoneAuthScreen({super.key});
   @override
@@ -204,73 +204,12 @@ class PhoneAuthScreen extends StatefulWidget {
 }
 
 class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
-  final _phoneCtrl  = TextEditingController();
-  final _nameCtrl   = TextEditingController();
-  final _otpCtrl    = TextEditingController();
-  bool   _otpSent   = false;
-  bool   _loading   = false;
+  final _phoneCtrl = TextEditingController();
+  final _nameCtrl  = TextEditingController();
+  final _otpCtrl   = TextEditingController();
+  bool    _otpSent  = false;
+  bool    _loading  = false;
   String? _error;
-
-  Future<void> _sendOtp() async {
-    if (_phoneCtrl.text.replaceAll(RegExp(r'\D'), '').length < 9) {
-      setState(() => _error = 'נא להזין מספר טלפון תקין');
-      return;
-    }
-    if (_nameCtrl.text.trim().isEmpty) {
-      setState(() => _error = 'נא להזין שם מלא');
-      return;
-    }
-    setState(() { _loading = true; _error = null; });
-    await Future.delayed(const Duration(seconds: 1));
-    setState(() { _otpSent = true; _loading = false; });
-  }
-
-  Future<void> _verifyOtp() async {
-    if (_otpCtrl.text.length < 4) {
-      setState(() => _error = 'נא להזין קוד אימות (4 ספרות לפחות)');
-      return;
-    }
-    setState(() { _loading = true; _error = null; });
-    try {
-      final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
-      final email = '$phone@betshuva.app';
-      final pass  = 'otp_${_otpCtrl.text}';
-
-      String? token;
-      final regRes = await http.post(
-        Uri.parse('$kApi/register'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'name': _nameCtrl.text.trim(), 'email': email, 'password': pass}),
-      );
-      final regData = jsonDecode(regRes.body);
-      token = regData['token'] as String?;
-
-      if (token == null) {
-        final logRes = await http.post(
-          Uri.parse('$kApi/login'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'email': email, 'password': pass}),
-        );
-        final logData = jsonDecode(logRes.body);
-        token = logData['token'] as String?;
-      }
-
-      if (token == null) throw Exception('auth failed');
-
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('token', token);
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => MainShell(token: token!)),
-      );
-    } catch (_) {
-      setState(() {
-        _error   = 'שגיאת אימות. בדוק את הקוד ונסה שנית';
-        _loading = false;
-      });
-    }
-  }
 
   @override
   void dispose() {
@@ -278,6 +217,55 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     _nameCtrl.dispose();
     _otpCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _sendOtp() async {
+    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+    if (phone.length < 9) { setState(() => _error = 'נא להזין מספר טלפון תקין'); return; }
+    if (_nameCtrl.text.trim().isEmpty) { setState(() => _error = 'נא להזין שם מלא'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/send-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'phone': phone, 'name': _nameCtrl.text.trim()}),
+      );
+      final data = jsonDecode(res.body);
+      if (res.statusCode != 200) {
+        setState(() { _error = data['error'] ?? 'שגיאה בשליחה'; _loading = false; }); return;
+      }
+      setState(() { _otpSent = true; _loading = false; });
+    } catch (_) {
+      setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
+    }
+  }
+
+  Future<void> _verifyOtp() async {
+    final code = _otpCtrl.text.trim();
+    if (code.length < 6) { setState(() => _error = 'נא להזין קוד בן 6 ספרות'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+      final res = await http.post(
+        Uri.parse('$kApi/verify-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'phone': phone, 'code': code, 'name': _nameCtrl.text.trim()}),
+      );
+      final data = jsonDecode(res.body);
+      if (res.statusCode != 200) {
+        setState(() { _error = data['error'] ?? 'קוד שגוי'; _loading = false; }); return;
+      }
+      final token = data['token'] as String;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('token', token);
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => MainShell(token: token)),
+      );
+    } catch (_) {
+      setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
+    }
   }
 
   @override
@@ -292,30 +280,16 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
             children: [
               const SizedBox(height: 40),
               Container(
-                width: 88,
-                height: 88,
-                decoration: BoxDecoration(
-                  color: kPrimary,
-                  borderRadius: BorderRadius.circular(22),
-                ),
-                child: const Icon(
-                  Icons.chat_bubble_outline_rounded,
-                  size: 48,
-                  color: Colors.white,
-                ),
+                width: 88, height: 88,
+                decoration: BoxDecoration(color: kPrimary, borderRadius: BorderRadius.circular(22)),
+                child: const Icon(Icons.chat_bubble_outline_rounded, size: 48, color: Colors.white),
               ),
               const SizedBox(height: 20),
-              const Text(
-                'בתשובה',
-                style: TextStyle(
-                  fontSize: 34,
-                  fontWeight: FontWeight.bold,
-                  color: kPrimary,
-                ),
-              ),
+              const Text('בתשובה',
+                  style: TextStyle(fontSize: 34, fontWeight: FontWeight.bold, color: kPrimary)),
               const SizedBox(height: 8),
               Text(
-                _otpSent ? 'הזן את הקוד שנשלח לטלפון שלך' : 'הרשמה באמצעות מספר טלפון',
+                _otpSent ? 'הזן את הקוד שנשלח ב-SMS' : 'הרשמה / כניסה עם טלפון',
                 style: const TextStyle(fontSize: 15, color: kSubtext),
                 textAlign: TextAlign.center,
               ),
@@ -325,9 +299,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                   controller: _nameCtrl,
                   textDirection: TextDirection.rtl,
                   decoration: const InputDecoration(
-                    labelText: 'שם מלא',
-                    prefixIcon: Icon(Icons.person_outline),
-                  ),
+                    labelText: 'שם מלא', prefixIcon: Icon(Icons.person_outline)),
                 ),
                 const SizedBox(height: 14),
                 TextField(
@@ -347,58 +319,363 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                   maxLength: 6,
                   textAlign: TextAlign.center,
                   textDirection: TextDirection.ltr,
-                  style: const TextStyle(
-                    fontSize: 30,
-                    letterSpacing: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  decoration: const InputDecoration(
-                    labelText: 'קוד אימות',
-                    counterText: '',
-                  ),
+                  style: const TextStyle(fontSize: 32, letterSpacing: 12, fontWeight: FontWeight.bold),
+                  decoration: const InputDecoration(labelText: 'קוד אימות', counterText: ''),
                 ),
               ],
-              const SizedBox(height: 8),
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Text(_error!,
-                      style: const TextStyle(color: Colors.red, fontSize: 13)),
+              if (_error != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
+                  child: Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
                 ),
-              const SizedBox(height: 12),
+              ],
+              const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: _loading ? null : (_otpSent ? _verifyOtp : _sendOtp),
                   child: _loading
-                      ? const SizedBox(
-                          height: 22,
-                          width: 22,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
+                      ? const SizedBox(height: 22, width: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                       : Text(
                           _otpSent ? 'אמת קוד' : 'שלח קוד SMS',
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                         ),
                 ),
               ),
               if (_otpSent) ...[
                 const SizedBox(height: 14),
                 TextButton(
-                  onPressed: () => setState(() { _otpSent = false; _error = null; }),
-                  child: const Text('שנה מספר טלפון',
-                      style: TextStyle(color: kPrimaryMid)),
+                  onPressed: () => setState(() { _otpSent = false; _error = null; _otpCtrl.clear(); }),
+                  child: const Text('שנה מספר טלפון', style: TextStyle(color: kSubtext)),
+                ),
+              ] else ...[
+                const SizedBox(height: 14),
+                TextButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AuthScreen()),
+                  ),
+                  child: const Text('כניסה עם אימייל', style: TextStyle(color: kSubtext, fontSize: 13)),
                 ),
               ],
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── Auth Screen (Login / Register) ───────────────────────────────
+class AuthScreen extends StatefulWidget {
+  const AuthScreen({super.key});
+  @override
+  State<AuthScreen> createState() => _AuthScreenState();
+}
+
+class _AuthScreenState extends State<AuthScreen> {
+  bool    _isLogin = true;
+  bool    _loading = false;
+  String? _error;
+  String? _success;
+
+  final _nameCtrl  = TextEditingController();
+  final _emailCtrl = TextEditingController();
+  final _passCtrl  = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _emailCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final email    = _emailCtrl.text.trim();
+    final password = _passCtrl.text;
+    final name     = _nameCtrl.text.trim();
+    if (!_isLogin && name.isEmpty) { setState(() => _error = 'נא להזין שם מלא'); return; }
+    if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
+    if (password.length < 6) { setState(() => _error = 'הסיסמה חייבת להיות לפחות 6 תווים'); return; }
+    setState(() { _loading = true; _error = null; _success = null; });
+    try {
+      final endpoint = _isLogin ? '/login' : '/register';
+      final body     = _isLogin
+          ? {'email': email, 'password': password}
+          : {'name': name, 'email': email, 'password': password};
+      final res  = await http.post(
+        Uri.parse('$kApi$endpoint'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      );
+      final data = jsonDecode(res.body);
+      if (res.statusCode != 200) {
+        setState(() { _error = data['error'] ?? 'שגיאה לא ידועה'; _loading = false; });
+        return;
+      }
+      final token = data['token'] as String;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('token', token);
+      if (!_isLogin) {
+        setState(() { _success = 'נרשמת בהצלחה! נשלח אליך מייל אישור.'; _loading = false; });
+        await Future.delayed(const Duration(milliseconds: 800));
+      }
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => MainShell(token: token)),
+      );
+    } catch (_) {
+      setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const SizedBox(height: 40),
+              Container(
+                width: 88, height: 88,
+                decoration: BoxDecoration(color: kPrimary, borderRadius: BorderRadius.circular(22)),
+                child: const Icon(Icons.chat_bubble_outline_rounded, size: 48, color: Colors.white),
+              ),
+              const SizedBox(height: 20),
+              const Text('בתשובה',
+                  style: TextStyle(fontSize: 34, fontWeight: FontWeight.bold, color: kPrimary)),
+              const SizedBox(height: 8),
+              Text(_isLogin ? 'כניסה לחשבון' : 'יצירת חשבון חדש',
+                  style: const TextStyle(fontSize: 15, color: kSubtext)),
+              const SizedBox(height: 32),
+              // Toggle
+              Container(
+                decoration: BoxDecoration(color: kBorder, borderRadius: BorderRadius.circular(10)),
+                child: Row(children: [
+                  _TabBtn(label: 'כניסה',  active: _isLogin,
+                      onTap: () => setState(() { _isLogin = true;  _error = null; })),
+                  _TabBtn(label: 'הרשמה', active: !_isLogin,
+                      onTap: () => setState(() { _isLogin = false; _error = null; })),
+                ]),
+              ),
+              const SizedBox(height: 24),
+              if (!_isLogin) ...[
+                TextField(
+                  controller: _nameCtrl,
+                  textDirection: TextDirection.rtl,
+                  decoration: const InputDecoration(
+                    labelText: 'שם מלא', prefixIcon: Icon(Icons.person_outline)),
+                ),
+                const SizedBox(height: 14),
+              ],
+              TextField(
+                controller: _emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                textDirection: TextDirection.ltr,
+                decoration: const InputDecoration(
+                  labelText: 'כתובת אימייל', prefixIcon: Icon(Icons.email_outlined)),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _passCtrl,
+                obscureText: true,
+                textDirection: TextDirection.ltr,
+                decoration: const InputDecoration(
+                  labelText: 'סיסמה', prefixIcon: Icon(Icons.lock_outline)),
+              ),
+              if (_isLogin) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ForgotPasswordScreen()),
+                    ),
+                    child: const Text('שכחתי סיסמה',
+                        style: TextStyle(color: kSubtext, fontSize: 13)),
+                  ),
+                ),
+              ] else
+                const SizedBox(height: 12),
+              if (_error != null)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
+                  child: Text(_error!,
+                      style: const TextStyle(color: Colors.red, fontSize: 13)),
+                ),
+              if (_success != null)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50, borderRadius: BorderRadius.circular(8)),
+                  child: Text(_success!,
+                      style: TextStyle(color: Colors.green.shade700, fontSize: 13)),
+                ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _loading ? null : _submit,
+                  child: _loading
+                      ? const SizedBox(height: 22, width: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : Text(_isLogin ? 'כניסה' : 'הרשמה',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TabBtn extends StatelessWidget {
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+  const _TabBtn({required this.label, required this.active, required this.onTap});
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: active ? kPrimary : Colors.transparent,
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Text(label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: active ? Colors.white : kSubtext,
+            fontWeight: active ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+// ── Forgot Password Screen ────────────────────────────────────────
+class ForgotPasswordScreen extends StatefulWidget {
+  const ForgotPasswordScreen({super.key});
+  @override
+  State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
+}
+
+class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
+  final _emailCtrl = TextEditingController();
+  bool    _loading = false;
+  bool    _sent    = false;
+  String? _error;
+
+  @override
+  void dispose() { _emailCtrl.dispose(); super.dispose(); }
+
+  Future<void> _send() async {
+    final email = _emailCtrl.text.trim();
+    if (email.isEmpty || !email.contains('@')) {
+      setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return;
+    }
+    setState(() { _loading = true; _error = null; });
+    try {
+      await http.post(
+        Uri.parse('$kApi/forgot-password'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email}),
+      );
+      setState(() { _sent = true; _loading = false; });
+    } catch (_) {
+      setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(
+        title: const Text('שכחתי סיסמה'),
+        leading: BackButton(color: Colors.white, onPressed: () => Navigator.pop(context)),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(28),
+        child: _sent
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.mark_email_read_outlined, size: 72, color: kAccent),
+                  const SizedBox(height: 20),
+                  const Text('נשלח מייל לאיפוס הסיסמה',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: kPrimary),
+                      textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  Text(
+                    'בדוק את תיבת הדואר שלך ב-${_emailCtrl.text.trim()} ולחץ על הקישור לאיפוס.',
+                    style: const TextStyle(color: kSubtext, fontSize: 14),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('חזור לכניסה'),
+                    ),
+                  ),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 20),
+                  const Text(
+                    'הזן את כתובת האימייל שלך ונשלח לך קישור לאיפוס הסיסמה.',
+                    style: TextStyle(color: kSubtext, fontSize: 15),
+                  ),
+                  const SizedBox(height: 24),
+                  TextField(
+                    controller: _emailCtrl,
+                    keyboardType: TextInputType.emailAddress,
+                    textDirection: TextDirection.ltr,
+                    decoration: const InputDecoration(
+                      labelText: 'כתובת אימייל', prefixIcon: Icon(Icons.email_outlined)),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+                  ],
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _loading ? null : _send,
+                      child: _loading
+                          ? const SizedBox(height: 22, width: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('שלח קישור לאיפוס',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
       ),
     );
   }
