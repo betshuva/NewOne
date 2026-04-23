@@ -42,6 +42,23 @@ function welcomeEmail(name) {
   </div>`;
 }
 
+function emailVerificationEmail(name, verifyUrl) {
+  return `<div dir="rtl" style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
+    <div style="background:#1B4332;padding:24px;border-radius:12px 12px 0 0;text-align:center">
+      <h1 style="color:white;margin:0;font-size:24px">בתשובה</h1>
+    </div>
+    <div style="background:#fff;padding:28px;border-radius:0 0 12px 12px;border:1px solid #e0e0e0">
+      <h2 style="color:#1B4332;margin-top:0">אימות כתובת האימייל</h2>
+      <p style="color:#444;line-height:1.6">שלום ${name}, לחץ על הכפתור הבא לאימות האימייל שלך:</p>
+      <div style="text-align:center;margin:28px 0">
+        <a href="${verifyUrl}" style="background:#1B4332;color:white;padding:14px 32px;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold">אמת אימייל</a>
+      </div>
+      <p style="color:#888;font-size:12px">הקישור תקף ל-24 שעות. אם לא נרשמת, התעלם מהודעה זו.</p>
+      <p style="color:#6C757D;font-size:13px;margin-top:24px;border-top:1px solid #eee;padding-top:16px">בתשובה — מסרים לקהילה החרדית</p>
+    </div>
+  </div>`;
+}
+
 function resetPasswordEmail(resetUrl) {
   return `<div dir="rtl" style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
     <div style="background:#1B4332;padding:24px;border-radius:12px 12px 0 0;text-align:center">
@@ -71,6 +88,23 @@ function resetPasswordEmail(resetUrl) {
         expires_at DATETIME         NOT NULL,
         used       BIT              DEFAULT 0
       )`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='email_verification_tokens' AND xtype='U')
+      CREATE TABLE email_verification_tokens (
+        token      NVARCHAR(64)     PRIMARY KEY,
+        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+        expires_at DATETIME         NOT NULL,
+        used       BIT              DEFAULT 0
+      )`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='email_verified')
+        ALTER TABLE users ADD email_verified BIT NOT NULL DEFAULT 0`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='phone')
+        ALTER TABLE users ADD phone NVARCHAR(20)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='phone_verified')
+        ALTER TABLE users ADD phone_verified BIT NOT NULL DEFAULT 0`);
   } catch (e) { console.error('Migration:', e.message); }
 })();
 
@@ -134,27 +168,58 @@ io.on('connection', (socket) => {
 
 // ── Register ─────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
-  const { name, email, password } = req.body;
-  if (!name || !email || !password) return res.status(400).json({ error: 'חסרים שדות' });
+  const { name, email, password, phone } = req.body;
+  if (!name || !email || !password || !phone) return res.status(400).json({ error: 'חסרים שדות' });
+  const cleanPhone = phone.replace(/\D/g, '');
+  if (cleanPhone.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
   try {
     const pool = await getPool();
-    const exists = await pool.request()
+    const emailExists = await pool.request()
       .input('email', sql.NVarChar, email)
       .query('SELECT id FROM users WHERE email = @email');
-    if (exists.recordset.length) return res.status(400).json({ error: 'האימייל כבר רשום' });
+    if (emailExists.recordset.length) return res.status(400).json({ error: 'האימייל כבר רשום' });
+    const phoneExists = await pool.request()
+      .input('phone', sql.NVarChar, cleanPhone)
+      .query('SELECT id FROM users WHERE phone = @phone');
+    if (phoneExists.recordset.length) return res.status(400).json({ error: 'מספר הטלפון כבר רשום' });
 
     const hash = await bcrypt.hash(password, 10);
     const result = await pool.request()
-      .input('name', sql.NVarChar, name)
+      .input('name',  sql.NVarChar, name)
       .input('email', sql.NVarChar, email)
-      .input('hash', sql.NVarChar, hash)
-      .query(`INSERT INTO users (name, email, password_hash)
-              OUTPUT INSERTED.id, INSERTED.name, INSERTED.email, INSERTED.wins, INSERTED.games_played
-              VALUES (@name, @email, @hash)`);
+      .input('phone', sql.NVarChar, cleanPhone)
+      .input('hash',  sql.NVarChar, hash)
+      .query(`INSERT INTO users (name, email, phone, password_hash)
+              OUTPUT INSERTED.id, INSERTED.name, INSERTED.email
+              VALUES (@name, @email, @phone, @hash)`);
     const user = result.recordset[0];
-    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
-    res.json({ token, user });
-    sendEmail({ to: user.email, subject: 'ברוכים הבאים לבתשובה!', html: welcomeEmail(user.name) }).catch(() => {});
+
+    // Email verification token
+    const emailToken = crypto.randomBytes(32).toString('hex');
+    const expires24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.request()
+      .input('token',   sql.NVarChar,        emailToken)
+      .input('userId',  sql.UniqueIdentifier, user.id)
+      .input('expires', sql.DateTime,         expires24h)
+      .query('INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES (@token, @userId, @expires)');
+
+    const base = process.env.APP_URL || 'https://xo-app-betshuva.azurewebsites.net';
+    sendEmail({
+      to: user.email,
+      subject: 'אמת את כתובת האימייל שלך – בתשובה',
+      html: emailVerificationEmail(user.name, `${base}/verify-email?token=${emailToken}`),
+    }).catch(() => {});
+
+    // SMS OTP
+    const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
+    otpStore.set(cleanPhone, { code: smsCode, expires: Date.now() + 10 * 60 * 1000 });
+    sendEmail({
+      to: `${cleanPhone}@019sms.co.il`,
+      subject: `קוד אימות הטלפון שלך לבתשובה: ${smsCode}`,
+      html: '',
+    }).catch(() => {});
+
+    res.json({ pending: true, phone: cleanPhone });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -171,6 +236,10 @@ app.post('/api/login', async (req, res) => {
     const user = result.recordset[0];
     if (!user || !(await bcrypt.compare(password, user.password_hash)))
       return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
+    if (!user.email_verified)
+      return res.status(403).json({ error: 'יש לאמת את כתובת האימייל תחילה — בדוק את תיבת הדואר שלך', code: 'EMAIL_UNVERIFIED' });
+    if (!user.phone_verified)
+      return res.status(403).json({ error: 'יש לאמת את מספר הטלפון תחילה', code: 'PHONE_UNVERIFIED' });
 
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     const { password_hash, ...safeUser } = user;
@@ -322,6 +391,54 @@ app.post('/api/verify-otp', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Verify Phone (after registration) ───────────────────────────
+app.post('/api/verify-phone', async (req, res) => {
+  const { phone, code } = req.body;
+  const cleanPhone = (phone || '').replace(/\D/g, '');
+  const entry = otpStore.get(cleanPhone);
+  if (!entry || entry.code !== code || Date.now() > entry.expires)
+    return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
+  otpStore.delete(cleanPhone);
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('phone', sql.NVarChar, cleanPhone)
+      .query('UPDATE users SET phone_verified = 1 WHERE phone = @phone');
+    const result = await pool.request()
+      .input('phone', sql.NVarChar, cleanPhone)
+      .query('SELECT id, name, email, email_verified FROM users WHERE phone = @phone');
+    const user = result.recordset[0];
+    if (!user) return res.status(400).json({ error: 'משתמש לא נמצא' });
+    if (user.email_verified) {
+      const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+      return res.json({ ok: true, token });
+    }
+    res.json({ ok: true, waitingEmail: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Verify Email (HTML page) ─────────────────────────────────────
+app.get('/verify-email', async (req, res) => {
+  const token = (req.query.token || '').replace(/[^a-f0-9]/g, '');
+  const ok = (msg) => res.send(`<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>אימות אימייל – בתשובה</title><style>body{font-family:Arial,sans-serif;background:#F0F4F0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:400px;text-align:center}h2{color:#1B4332}</style></head><body><div class="card">${msg}</div></body></html>`);
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('token', sql.NVarChar, token)
+      .query('SELECT user_id FROM email_verification_tokens WHERE token = @token AND used = 0 AND expires_at > GETDATE()');
+    if (!result.recordset.length)
+      return ok('<h2>❌ הקישור לא תקין או פג תוקף</h2><p>נסה להירשם מחדש.</p>');
+    const { user_id } = result.recordset[0];
+    await pool.request()
+      .input('id', sql.UniqueIdentifier, user_id)
+      .query('UPDATE users SET email_verified = 1 WHERE id = @id');
+    await pool.request()
+      .input('token', sql.NVarChar, token)
+      .query('UPDATE email_verification_tokens SET used = 1 WHERE token = @token');
+    ok('<h2>✅ האימייל אומת בהצלחה!</h2><p>כעת תוכל להתחבר לאפליקציה.</p>');
+  } catch (e) { ok('<h2>❌ שגיאה</h2><p>' + e.message + '</p>'); }
 });
 
 // ── App Version ──────────────────────────────────────────────────

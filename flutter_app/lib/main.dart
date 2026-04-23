@@ -429,17 +429,18 @@ class _AuthScreenState extends State<AuthScreen> {
   bool    _isLogin = true;
   bool    _loading = false;
   String? _error;
-  String? _success;
 
   final _nameCtrl  = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passCtrl  = TextEditingController();
+  final _phoneCtrl = TextEditingController();
 
   @override
   void dispose() {
     _nameCtrl.dispose();
     _emailCtrl.dispose();
     _passCtrl.dispose();
+    _phoneCtrl.dispose();
     super.dispose();
   }
 
@@ -447,37 +448,51 @@ class _AuthScreenState extends State<AuthScreen> {
     final email    = _emailCtrl.text.trim();
     final password = _passCtrl.text;
     final name     = _nameCtrl.text.trim();
-    if (!_isLogin && name.isEmpty) { setState(() => _error = 'נא להזין שם מלא'); return; }
-    if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
-    if (password.length < 6) { setState(() => _error = 'הסיסמה חייבת להיות לפחות 6 תווים'); return; }
-    setState(() { _loading = true; _error = null; _success = null; });
+    final phone    = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+
+    if (_isLogin) {
+      if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
+      if (password.length < 6) { setState(() => _error = 'הסיסמה חייבת להיות לפחות 6 תווים'); return; }
+    } else {
+      if (name.isEmpty) { setState(() => _error = 'נא להזין שם מלא'); return; }
+      if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
+      if (password.length < 6) { setState(() => _error = 'הסיסמה חייבת להיות לפחות 6 תווים'); return; }
+      if (phone.length < 9) { setState(() => _error = 'נא להזין מספר טלפון תקין'); return; }
+    }
+
+    setState(() { _loading = true; _error = null; });
     try {
-      final endpoint = _isLogin ? '/login' : '/register';
-      final body     = _isLogin
-          ? {'email': email, 'password': password}
-          : {'name': name, 'email': email, 'password': password};
-      final res  = await http.post(
-        Uri.parse('$kApi$endpoint'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 30));
-      final data = jsonDecode(res.body);
-      if (res.statusCode != 200) {
-        setState(() { _error = data['error'] ?? 'שגיאה לא ידועה'; _loading = false; });
-        return;
+      if (_isLogin) {
+        final res  = await http.post(
+          Uri.parse('$kApi/login'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'email': email, 'password': password}),
+        ).timeout(const Duration(seconds: 30));
+        final data = jsonDecode(res.body);
+        if (res.statusCode != 200) {
+          setState(() { _error = data['error'] ?? 'שגיאה'; _loading = false; }); return;
+        }
+        final token = data['token'] as String;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('token', token);
+        if (!mounted) return;
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => MainShell(token: token)));
+      } else {
+        final res = await http.post(
+          Uri.parse('$kApi/register'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'name': name, 'email': email, 'password': password, 'phone': phone}),
+        ).timeout(const Duration(seconds: 30));
+        final data = jsonDecode(res.body);
+        if (res.statusCode != 200) {
+          setState(() { _error = data['error'] ?? 'שגיאה'; _loading = false; }); return;
+        }
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => VerifyScreen(phone: phone, email: email)),
+        );
       }
-      final token = data['token'] as String;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('token', token);
-      if (!_isLogin) {
-        setState(() { _success = 'נרשמת בהצלחה! נשלח אליך מייל אישור.'; _loading = false; });
-        await Future.delayed(const Duration(milliseconds: 800));
-      }
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => MainShell(token: token)),
-      );
     } catch (_) {
       setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
     }
@@ -541,6 +556,17 @@ class _AuthScreenState extends State<AuthScreen> {
                 decoration: const InputDecoration(
                   labelText: 'סיסמה', prefixIcon: Icon(Icons.lock_outline)),
               ),
+              if (!_isLogin) ...[
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  textDirection: TextDirection.ltr,
+                  decoration: const InputDecoration(
+                    labelText: 'מספר טלפון', hintText: '05X-XXX-XXXX',
+                    prefixIcon: Icon(Icons.phone_android)),
+                ),
+              ],
               if (_isLogin) ...[
                 Align(
                   alignment: Alignment.centerLeft,
@@ -563,15 +589,6 @@ class _AuthScreenState extends State<AuthScreen> {
                     color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
                   child: Text(_error!,
                       style: const TextStyle(color: Colors.red, fontSize: 13)),
-                ),
-              if (_success != null)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade50, borderRadius: BorderRadius.circular(8)),
-                  child: Text(_success!,
-                      style: TextStyle(color: Colors.green.shade700, fontSize: 13)),
                 ),
               const SizedBox(height: 16),
               SizedBox(
@@ -618,6 +635,166 @@ class _TabBtn extends StatelessWidget {
       ),
     ),
   );
+}
+
+// ── Verify Screen (SMS + Email after registration) ────────────────
+class VerifyScreen extends StatefulWidget {
+  final String phone;
+  final String email;
+  const VerifyScreen({super.key, required this.phone, required this.email});
+  @override
+  State<VerifyScreen> createState() => _VerifyScreenState();
+}
+
+class _VerifyScreenState extends State<VerifyScreen> {
+  final _codeCtrl = TextEditingController();
+  bool    _loading      = false;
+  bool    _phoneDone    = false;
+  bool    _waitingEmail = false;
+  String? _error;
+
+  @override
+  void dispose() { _codeCtrl.dispose(); super.dispose(); }
+
+  Future<void> _verifyPhone() async {
+    final code = _codeCtrl.text.trim();
+    if (code.length < 6) { setState(() => _error = 'נא להזין קוד בן 6 ספרות'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/verify-phone'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'phone': widget.phone, 'code': code}),
+      ).timeout(const Duration(seconds: 30));
+      final data = jsonDecode(res.body);
+      if (res.statusCode != 200) {
+        setState(() { _error = data['error'] ?? 'קוד שגוי'; _loading = false; }); return;
+      }
+      if (data['token'] != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('token', data['token'] as String);
+        if (!mounted) return;
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => MainShell(token: data['token'] as String)));
+      } else {
+        setState(() { _phoneDone = true; _waitingEmail = true; _loading = false; });
+      }
+    } catch (_) {
+      setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(title: const Text('אימות חשבון')),
+      body: Padding(
+        padding: const EdgeInsets.all(28),
+        child: _waitingEmail
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.mark_email_read_outlined, size: 80, color: kAccent),
+                  const SizedBox(height: 24),
+                  const Text('הטלפון אומת ✅',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: kPrimary),
+                      textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  Text(
+                    'נשלח קישור אימות ל-${widget.email}\nלחץ על הקישור במייל להשלמת ההרשמה.',
+                    style: const TextStyle(color: kSubtext, fontSize: 14, height: 1.6),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pushReplacement(
+                          context, MaterialPageRoute(builder: (_) => const AuthScreen())),
+                      child: const Text('חזור לכניסה'),
+                    ),
+                  ),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: kAccent.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: kAccent.withOpacity(0.3)),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.info_outline, color: kPrimary, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'שלחנו קוד SMS ל-${widget.phone} וקישור אימות ל-${widget.email}',
+                          style: const TextStyle(fontSize: 13, color: kPrimary, height: 1.4),
+                        ),
+                      ),
+                    ]),
+                  ),
+                  const SizedBox(height: 28),
+                  const Text('שלב 1: אימות טלפון',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: kPrimary)),
+                  const SizedBox(height: 4),
+                  const Text('הזן את קוד ה-SMS שקיבלת',
+                      style: TextStyle(color: kSubtext, fontSize: 13)),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _codeCtrl,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    textAlign: TextAlign.center,
+                    textDirection: TextDirection.ltr,
+                    style: const TextStyle(fontSize: 32, letterSpacing: 12, fontWeight: FontWeight.bold),
+                    decoration: const InputDecoration(labelText: 'קוד אימות', counterText: ''),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                          color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
+                      child: Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _loading ? null : _verifyPhone,
+                      child: _loading
+                          ? const SizedBox(height: 22, width: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('אמת טלפון',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  const Divider(),
+                  const SizedBox(height: 16),
+                  Row(children: [
+                    const Icon(Icons.email_outlined, color: kSubtext, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'שלב 2: לחץ על הקישור שנשלח ל-${widget.email} לאימות האימייל',
+                        style: const TextStyle(color: kSubtext, fontSize: 13, height: 1.4),
+                      ),
+                    ),
+                  ]),
+                ],
+              ),
+      ),
+    );
+  }
 }
 
 // ── Forgot Password Screen ────────────────────────────────────────
