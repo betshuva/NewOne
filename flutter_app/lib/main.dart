@@ -118,6 +118,8 @@ class _SplashScreenState extends State<SplashScreen>
     Future.delayed(const Duration(seconds: 2), _navigate);
   }
 
+  static const _currentVersion = '1.0.1';
+
   Future<void> _navigate() async {
     final prefs = await SharedPreferences.getInstance();
     final token  = prefs.getString('token');
@@ -130,6 +132,49 @@ class _SplashScreenState extends State<SplashScreen>
             : const PhoneAuthScreen(),
       ),
     );
+    _checkUpdate();
+  }
+
+  Future<void> _checkUpdate() async {
+    try {
+      final res = await http.get(Uri.parse('$kApi/version'));
+      if (res.statusCode != 200 || !mounted) return;
+      final data       = jsonDecode(res.body);
+      final latest     = data['version'] as String;
+      final apkUrl     = data['apkUrl']  as String;
+      if (latest == _currentVersion) return;
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.system_update, color: kPrimary),
+            SizedBox(width: 10),
+            Text('עדכון זמין'),
+          ]),
+          content: Text(
+            'גירסה $latest זמינה!\nגירסתך הנוכחית: $_currentVersion',
+            textDirection: TextDirection.rtl,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('אחר כך', style: TextStyle(color: kSubtext)),
+            ),
+            ElevatedButton.icon(
+              onPressed: () async {
+                Navigator.pop(context);
+                final uri = Uri.parse(apkUrl);
+                await http.get(uri); // trigger download via browser
+              },
+              icon: const Icon(Icons.download),
+              label: const Text('הורד עכשיו'),
+            ),
+          ],
+        ),
+      );
+    } catch (_) {}
   }
 
   @override

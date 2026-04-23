@@ -324,6 +324,11 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
+// ── App Version ──────────────────────────────────────────────────
+app.get('/api/version', (req, res) => {
+  res.json({ version: '1.0.1', apkUrl: 'https://betshuva.com/app-release.apk' });
+});
+
 // ── Forgot Password ──────────────────────────────────────────────
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
