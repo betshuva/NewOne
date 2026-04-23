@@ -116,6 +116,7 @@ class _SplashScreenState extends State<SplashScreen>
     );
     _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
     _ctrl.forward();
+    http.get(Uri.parse('$kApi/version')).ignore(); // wake up server
     Future.delayed(const Duration(seconds: 2), _navigate);
   }
 
@@ -275,7 +276,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         Uri.parse('$kApi/send-otp'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'phone': phone, 'name': _nameCtrl.text.trim()}),
-      );
+      ).timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
         setState(() { _error = data['error'] ?? 'שגיאה בשליחה'; _loading = false; }); return;
@@ -296,7 +297,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         Uri.parse('$kApi/verify-otp'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'phone': phone, 'code': code, 'name': _nameCtrl.text.trim()}),
-      );
+      ).timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
         setState(() { _error = data['error'] ?? 'קוד שגוי'; _loading = false; }); return;
@@ -459,7 +460,7 @@ class _AuthScreenState extends State<AuthScreen> {
         Uri.parse('$kApi$endpoint'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(body),
-      );
+      ).timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
         setState(() { _error = data['error'] ?? 'שגיאה לא ידועה'; _loading = false; });
