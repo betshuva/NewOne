@@ -6,16 +6,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 // ── Color Palette ─────────────────────────────────────────────────
-const kPrimary    = Color(0xFF1B4332);
-const kPrimaryMid = Color(0xFF2D6A4F);
-const kAccent     = Color(0xFF52B788);
-const kBg         = Color(0xFFF0F4F0);
+const kPrimary    = Color(0xFF0038B8); // Israeli flag blue
+const kPrimaryMid = Color(0xFF0055D4);
+const kAccent     = Color(0xFF4B9CD3); // תכלת
+const kBg         = Color(0xFFFFFFFF); // white
 const kCard       = Color(0xFFFFFFFF);
-const kBorder     = Color(0xFFD8E4D8);
+const kBorder     = Color(0xFFCCDFF5);
 const kSubtext    = Color(0xFF6C757D);
 const kReadGreen  = Color(0xFF25D366);
-const kOutgoing   = Color(0xFFD8F5E4);
-const kChatBg     = Color(0xFFECF3E8);
+const kOutgoing   = Color(0xFFDCEEFB); // light blue outgoing
+const kChatBg     = Color(0xFFF0F7FD); // very light blue chat bg
 
 const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi     = '$kServer/api';
@@ -218,7 +218,9 @@ class _SplashScreenState extends State<SplashScreen>
                   letterSpacing: 3,
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
+              const Text('🇮🇱', style: TextStyle(fontSize: 28)),
+              const SizedBox(height: 6),
               Text(
                 'מסרים לקהילה החרדית',
                 style: TextStyle(
@@ -517,7 +519,9 @@ class _AuthScreenState extends State<AuthScreen> {
               const SizedBox(height: 20),
               const Text('בתשובה',
                   style: TextStyle(fontSize: 34, fontWeight: FontWeight.bold, color: kPrimary)),
-              const SizedBox(height: 8),
+              const SizedBox(height: 4),
+              const Text('🇮🇱', style: TextStyle(fontSize: 22)),
+              const SizedBox(height: 6),
               Text(_isLogin ? 'כניסה לחשבון' : 'יצירת חשבון חדש',
                   style: const TextStyle(fontSize: 15, color: kSubtext)),
               const SizedBox(height: 32),
