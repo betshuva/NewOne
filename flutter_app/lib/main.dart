@@ -7,11 +7,11 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 const kServer = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi = '$kServer/api';
 
-const kBg       = Color(0xFF1a1a2e);
-const kCard     = Color(0xFF16213e);
-const kBorder   = Color(0xFF0f3460);
-const kRed      = Color(0xFFe94560);
-const kBlue     = Color(0xFFa8dadc);
+const kBg       = Color(0xFFf5f7fa);
+const kCard     = Color(0xFFffffff);
+const kBorder   = Color(0xFFd0d7e2);
+const kRed      = Color(0xFF5b8dee);
+const kBlue     = Color(0xFF43b89c);
 
 void main() => runApp(const XOApp());
 
@@ -24,7 +24,7 @@ class XOApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         scaffoldBackgroundColor: kBg,
-        colorScheme: const ColorScheme.dark(
+        colorScheme: const ColorScheme.light(
           primary: kRed,
           secondary: kBlue,
           surface: kCard,
@@ -680,7 +680,7 @@ class _GameScreenState extends State<GameScreen> {
                       style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
-                          color: _gameOver ? kRed : kBlue),
+                          color: _gameOver ? kRed : Colors.black87),
                       textAlign: TextAlign.center,
                     ),
                   ],
