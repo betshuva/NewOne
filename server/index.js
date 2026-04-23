@@ -17,6 +17,7 @@ const mailer = nodemailer.createTransport({
     user: process.env.EMAIL_FROM,
     pass: process.env.EMAIL_APP_PASSWORD,
   },
+  tls: { rejectUnauthorized: false },
 });
 
 async function sendEmail({ to, subject, html }) {
@@ -353,7 +354,8 @@ app.post('/api/send-otp', async (req, res) => {
     });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: 'שגיאה בשליחת SMS' });
+    console.error('SMS error:', e.message);
+    res.status(500).json({ error: 'שגיאה בשליחת SMS: ' + e.message });
   }
 });
 
