@@ -11,8 +11,8 @@ const { getPool, sql } = require('./db');
 
 const mailer = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 587,
-  secure: false,
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.EMAIL_FROM,
     pass: process.env.EMAIL_APP_PASSWORD,
