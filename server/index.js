@@ -7,7 +7,79 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
+const multer     = require('multer');
+const { BlobServiceClient } = require('@azure/storage-blob');
 const { getPool, sql } = require('./db');
+
+// ── FCM via HTTP Legacy API (no service account key needed) ───────
+async function sendPush(userId, title, body, data = {}) {
+  const serverKey = process.env.FCM_SERVER_KEY;
+  if (!serverKey) return;
+  try {
+    const pool   = await getPool();
+    const result = await pool.request()
+      .input('userId', sql.UniqueIdentifier, userId)
+      .query('SELECT token FROM fcm_tokens WHERE user_id = @userId');
+    for (const { token } of result.recordset) {
+      const res = await fetch('https://fcm.googleapis.com/fcm/send', {
+        method:  'POST',
+        headers: {
+          'Authorization': `key=${serverKey}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({
+          to:           token,
+          notification: { title, body, sound: 'default' },
+          data:         Object.fromEntries(Object.entries(data).map(([k,v]) => [k, String(v)])),
+          priority:     'high',
+          android:      { priority: 'high' },
+          apns:         { payload: { aps: { badge: 1, sound: 'default' } } },
+        }),
+      });
+      const json = await res.json();
+      if (json.failure && json.results?.[0]?.error === 'NotRegistered') {
+        pool.request().input('token', sql.NVarChar, token)
+          .query('DELETE FROM fcm_tokens WHERE token=@token').catch(() => {});
+      }
+    }
+  } catch (e) { console.error('sendPush:', e.message); }
+}
+
+// ── File upload setup ─────────────────────────────────────────────
+const ALLOWED_TYPES = {
+  'image/jpeg':  { ext: 'jpg',  maxMB: 10, dbType: 'image' },
+  'image/png':   { ext: 'png',  maxMB: 10, dbType: 'image' },
+  'image/webp':  { ext: 'webp', maxMB: 10, dbType: 'image' },
+  'image/gif':   { ext: 'gif',  maxMB: 10, dbType: 'image' },
+  'application/pdf': { ext: 'pdf',  maxMB: 25, dbType: 'document' },
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+                 { ext: 'docx', maxMB: 25, dbType: 'document' },
+  'audio/mpeg':  { ext: 'mp3',  maxMB: 25, dbType: 'audio' },
+  'audio/aac':   { ext: 'aac',  maxMB: 25, dbType: 'audio' },
+};
+const BLOCKED_TYPES = ['video/', 'application/x-mpegURL'];
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+function getBlobClient() {
+  const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING || '';
+  if (!connStr || connStr.includes('YOUR_ACCOUNT')) return null;
+  const container = process.env.AZURE_BLOB_CONTAINER || 'betshuva-files';
+  return BlobServiceClient.fromConnectionString(connStr).getContainerClient(container);
+}
+
+async function uploadToBlob(buffer, blobName, contentType) {
+  const container = getBlobClient();
+  if (!container) throw new Error('Azure Blob Storage לא מוגדר');
+  const blockBlob = container.getBlockBlobClient(blobName);
+  await blockBlob.uploadData(buffer, {
+    blobHTTPHeaders: { blobContentType: contentType },
+  });
+  return blockBlob.url;
+}
 
 const mailer = nodemailer.createTransport({
   host: 'smtp.gmail.com',
@@ -77,10 +149,12 @@ function resetPasswordEmail(resetUrl) {
   </div>`;
 }
 
-// Auto-migrate: create reset tokens table
+// Auto-migrate: create all messenger tables
 (async () => {
   try {
     const pool = await getPool();
+
+    // ── Auth tokens ────────────────────────────────────────────────
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='password_reset_tokens' AND xtype='U')
       CREATE TABLE password_reset_tokens (
@@ -89,6 +163,7 @@ function resetPasswordEmail(resetUrl) {
         expires_at DATETIME         NOT NULL,
         used       BIT              DEFAULT 0
       )`);
+
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='email_verification_tokens' AND xtype='U')
       CREATE TABLE email_verification_tokens (
@@ -97,6 +172,8 @@ function resetPasswordEmail(resetUrl) {
         expires_at DATETIME         NOT NULL,
         used       BIT              DEFAULT 0
       )`);
+
+    // ── Users – new columns ────────────────────────────────────────
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='email_verified')
         ALTER TABLE users ADD email_verified BIT NOT NULL DEFAULT 0`);
@@ -106,8 +183,141 @@ function resetPasswordEmail(resetUrl) {
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='phone_verified')
         ALTER TABLE users ADD phone_verified BIT NOT NULL DEFAULT 0`);
-  } catch (e) { console.error('Migration:', e.message); }
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='city')
+        ALTER TABLE users ADD city NVARCHAR(100)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='community')
+        ALTER TABLE users ADD community NVARCHAR(100)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='profile_pic_url')
+        ALTER TABLE users ADD profile_pic_url NVARCHAR(500)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='privacy_pic')
+        ALTER TABLE users ADD privacy_pic NVARCHAR(20) NOT NULL DEFAULT 'all'`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='filter_level')
+        ALTER TABLE users ADD filter_level NVARCHAR(20) NOT NULL DEFAULT 'standard'`);
+
+    // ── Groups ─────────────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='groups' AND xtype='U')
+      CREATE TABLE groups (
+        id              UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
+        name            NVARCHAR(100) NOT NULL,
+        description     NVARCHAR(500),
+        creator_id      UNIQUEIDENTIFIER REFERENCES users(id),
+        is_broadcast    BIT          NOT NULL DEFAULT 0,
+        send_permission NVARCHAR(20) NOT NULL DEFAULT 'all',
+        filter_level    NVARCHAR(20) NOT NULL DEFAULT 'standard',
+        created_at      DATETIME     DEFAULT GETDATE()
+      )`);
+
+    // ── Messages ───────────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='messages' AND xtype='U')
+      CREATE TABLE messages (
+        id                   UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
+        sender_id            UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+        recipient_id         UNIQUEIDENTIFIER REFERENCES users(id),
+        group_id             UNIQUEIDENTIFIER REFERENCES groups(id),
+        type                 NVARCHAR(20)  NOT NULL DEFAULT 'text',
+        body                 NVARCHAR(MAX),
+        file_url             NVARCHAR(500),
+        file_name            NVARCHAR(255),
+        file_size            INT,
+        reply_to_id          UNIQUEIDENTIFIER REFERENCES messages(id),
+        deleted_for_sender   BIT NOT NULL DEFAULT 0,
+        deleted_for_everyone BIT NOT NULL DEFAULT 0,
+        created_at           DATETIME DEFAULT GETDATE()
+      )`);
+
+    // ── Message Status ─────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='message_status' AND xtype='U')
+      CREATE TABLE message_status (
+        message_id UNIQUEIDENTIFIER NOT NULL REFERENCES messages(id),
+        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+        status     NVARCHAR(20)     NOT NULL DEFAULT 'delivered',
+        updated_at DATETIME         DEFAULT GETDATE(),
+        PRIMARY KEY (message_id, user_id)
+      )`);
+
+    // ── Group Members ──────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='group_members' AND xtype='U')
+      CREATE TABLE group_members (
+        group_id  UNIQUEIDENTIFIER NOT NULL REFERENCES groups(id),
+        user_id   UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+        role      NVARCHAR(20)     NOT NULL DEFAULT 'member',
+        joined_at DATETIME         DEFAULT GETDATE(),
+        PRIMARY KEY (group_id, user_id)
+      )`);
+
+    // ── Blocked Users ──────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='blocked_users' AND xtype='U')
+      CREATE TABLE blocked_users (
+        blocker_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+        blocked_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+        created_at DATETIME         DEFAULT GETDATE(),
+        PRIMARY KEY (blocker_id, blocked_id)
+      )`);
+
+    // ── Audit Log ──────────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='audit_log' AND xtype='U')
+      CREATE TABLE audit_log (
+        id         UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
+        user_id    UNIQUEIDENTIFIER REFERENCES users(id),
+        file_name  NVARCHAR(255),
+        file_type  NVARCHAR(50),
+        file_size  INT,
+        reason     NVARCHAR(500),
+        appealed   BIT NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT GETDATE()
+      )`);
+
+    // ── FCM Tokens ─────────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='fcm_tokens' AND xtype='U')
+      CREATE TABLE fcm_tokens (
+        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
+        token      NVARCHAR(500)    NOT NULL,
+        device_id  NVARCHAR(255)    NOT NULL DEFAULT 'default',
+        updated_at DATETIME         DEFAULT GETDATE(),
+        PRIMARY KEY (user_id, device_id)
+      )`);
+
+    // ── Activity Log ───────────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='activity_log' AND xtype='U')
+      CREATE TABLE activity_log (
+        id         UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
+        user_id    UNIQUEIDENTIFIER REFERENCES users(id),
+        action     NVARCHAR(50)     NOT NULL,
+        details    NVARCHAR(MAX),
+        ip         NVARCHAR(50),
+        created_at DATETIME         DEFAULT GETDATE()
+      )`);
+
+    console.log('Migration: all tables ready');
+  } catch (e) { console.error('Migration error:', e.message); }
 })();
+
+// ── Activity logger ───────────────────────────────────────────────
+async function logActivity(userId, action, details = {}, ip = null) {
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('userId',  sql.UniqueIdentifier, userId || null)
+      .input('action',  sql.NVarChar,         action)
+      .input('details', sql.NVarChar,         JSON.stringify(details))
+      .input('ip',      sql.NVarChar,         ip || null)
+      .query(`INSERT INTO activity_log (user_id, action, details, ip)
+              VALUES (@userId, @action, @details, @ip)`);
+  } catch (_) {}
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -144,27 +354,133 @@ io.use((socket, next) => {
   }
 });
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   onlineUsers.set(socket.user.id, socket.id);
   io.emit('users:online', [...onlineUsers.keys()]);
+
+  // Join all group rooms this user belongs to
+  try {
+    const pool = await getPool();
+    const grps = await pool.request()
+      .input('userId', sql.UniqueIdentifier, socket.user.id)
+      .query('SELECT group_id FROM group_members WHERE user_id = @userId');
+    for (const { group_id } of grps.recordset) socket.join(`group:${group_id}`);
+  } catch (_) {}
 
   function relay(toUserId, event, data) {
     const sid = onlineUsers.get(toUserId);
     if (sid) io.to(sid).emit(event, data);
   }
 
-  socket.on('game:invite',  ({ toUserId }) => relay(toUserId, 'game:invite',   { from: socket.user }));
-  socket.on('game:accept',  ({ toUserId }) => relay(toUserId, 'game:accepted', { by: socket.user }));
-  socket.on('game:decline', ({ toUserId }) => relay(toUserId, 'game:declined', {}));
-  socket.on('game:cancel',  ({ toUserId }) => relay(toUserId, 'game:cancel',   {}));
-  socket.on('game:move',    ({ toUserId, index }) => relay(toUserId, 'game:move', { index }));
-  socket.on('game:rematch', ({ toUserId }) => relay(toUserId, 'game:rematch',  {}));
-  socket.on('chat:message', ({ toUserId, text }) => relay(toUserId, 'chat:message', { from: socket.user.name, text }));
+  socket.on('chat:message', async ({ toUserId, text, replyToId, fileUrl, fileName, fileType }) => {
+    if (!toUserId || (!text && !fileUrl)) return;
+    try {
+      const pool = await getPool();
+      // Check if blocked
+      const blocked = await pool.request()
+        .input('blocker', sql.UniqueIdentifier, toUserId)
+        .input('blocked', sql.UniqueIdentifier, socket.user.id)
+        .query('SELECT 1 FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked');
+      if (blocked.recordset.length) return;
+      const saved = await pool.request()
+        .input('senderId',    sql.UniqueIdentifier, socket.user.id)
+        .input('recipientId', sql.UniqueIdentifier, toUserId)
+        .input('body',        sql.NVarChar,         text     || null)
+        .input('type',        sql.NVarChar,         fileType || 'text')
+        .input('fileUrl',     sql.NVarChar,         fileUrl  || null)
+        .input('fileName',    sql.NVarChar,         fileName || null)
+        .input('replyToId',   sql.UniqueIdentifier, replyToId || null)
+        .query(`INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
+                OUTPUT INSERTED.id, INSERTED.created_at
+                VALUES (@senderId, @recipientId, @body, @type, @fileUrl, @fileName, @replyToId)`);
+      const row = saved.recordset[0];
+      relay(toUserId, 'chat:message', {
+        id: row.id, fromUserId: socket.user.id, fromName: socket.user.name,
+        text, replyToId: replyToId || null, createdAt: row.created_at,
+        fileUrl, fileName, fileType,
+      });
+      logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_message',
+        { toUserId, messageId: row.id, type: fileType || 'text' });
+      // Push only if recipient is offline
+      if (!onlineUsers.has(toUserId)) {
+        const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
+        sendPush(toUserId, socket.user.name, pushBody, { type: 'chat', fromUserId: socket.user.id });
+      }
+    } catch (e) {
+      console.error('chat:message save:', e.message);
+      relay(toUserId, 'chat:message', { fromUserId: socket.user.id, fromName: socket.user.name, text });
+    }
+  });
+
+  socket.on('chat:typing', ({ toUserId }) =>
+    relay(toUserId, 'chat:typing', { fromUserId: socket.user.id }));
+
+  // ── Group messaging ──────────────────────────────────────────────
+  socket.on('group:message', async ({ groupId, text, replyToId }) => {
+    if (!text || !groupId) return;
+    try {
+      const pool = await getPool();
+      const mem = await pool.request()
+        .input('groupId', sql.UniqueIdentifier, groupId)
+        .input('userId',  sql.UniqueIdentifier, socket.user.id)
+        .query(`SELECT gm.role, g.send_permission FROM group_members gm
+                JOIN groups g ON g.id = gm.group_id
+                WHERE gm.group_id = @groupId AND gm.user_id = @userId`);
+      const member = mem.recordset[0];
+      if (!member) return;
+      if (member.send_permission === 'admin' && member.role !== 'admin') return;
+
+      const saved = await pool.request()
+        .input('senderId',  sql.UniqueIdentifier, socket.user.id)
+        .input('groupId',   sql.UniqueIdentifier, groupId)
+        .input('body',      sql.NVarChar,         text)
+        .input('replyToId', sql.UniqueIdentifier, replyToId || null)
+        .query(`INSERT INTO messages (sender_id, group_id, body, reply_to_id)
+                OUTPUT INSERTED.id, INSERTED.created_at
+                VALUES (@senderId, @groupId, @body, @replyToId)`);
+      const row = saved.recordset[0];
+      io.to(`group:${groupId}`).emit('group:message', {
+        id:         row.id,
+        groupId,
+        fromUserId: socket.user.id,
+        fromName:   socket.user.name,
+        text,
+        replyToId:  replyToId || null,
+        createdAt:  row.created_at,
+      });
+      logActivity(socket.user.id, 'send_group_message', { groupId, messageId: row.id });
+      // Push to offline members
+      const grpName = await pool.request()
+        .input('id', sql.UniqueIdentifier, groupId)
+        .query('SELECT name FROM groups WHERE id = @id');
+      const groupName = grpName.recordset[0]?.name || 'קבוצה';
+      const allMembers = await pool.request()
+        .input('groupId', sql.UniqueIdentifier, groupId)
+        .query('SELECT user_id FROM group_members WHERE group_id = @groupId');
+      for (const { user_id } of allMembers.recordset) {
+        if (user_id !== socket.user.id && !onlineUsers.has(user_id)) {
+          sendPush(user_id, `${groupName} • ${socket.user.name}`,
+            text || '', { type: 'group', groupId });
+        }
+      }
+    } catch (e) { console.error('group:message:', e.message); }
+  });
+
+  socket.on('group:typing', ({ groupId }) =>
+    socket.to(`group:${groupId}`).emit('group:typing', {
+      fromUserId: socket.user.id,
+      fromName:   socket.user.name,
+    }));
+
+  socket.on('group:join', ({ groupId }) => socket.join(`group:${groupId}`));
 
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.user.id);
     io.emit('users:online', [...onlineUsers.keys()]);
+    logActivity(socket.user.id, 'disconnect', {});
   });
+
+  logActivity(socket.user.id, 'connect', {});
 });
 
 // ── Register ─────────────────────────────────────────────────────
@@ -220,6 +536,7 @@ app.post('/api/register', async (req, res) => {
       html: '',
     }).catch(() => {});
 
+    logActivity(user.id, 'register', { email, phone: cleanPhone }, req.ip);
     res.json({ pending: true, phone: cleanPhone });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -244,22 +561,428 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     const { password_hash, ...safeUser } = user;
+    logActivity(user.id, 'login', { email: user.email }, req.ip);
     res.json({ token, user: safeUser });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// ── Users ────────────────────────────────────────────────────────
+// ── Users ─────────────────────────────────────────────────────────
 app.get('/api/users', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.request()
-      .query('SELECT id, name, email, wins, games_played FROM users ORDER BY wins DESC');
+      .input('myId', sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT id, name, profile_pic_url, city, community
+              FROM users
+              WHERE id != @myId
+              AND id NOT IN (
+                SELECT blocked_id FROM blocked_users WHERE blocker_id = @myId
+              )
+              ORDER BY name`);
     res.json(result.recordset);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Messages: load history ─────────────────────────────────────────
+app.get('/api/messages/:userId', auth, async (req, res) => {
+  const otherId = req.params.userId;
+  const myId    = req.user.id;
+  const before  = req.query.before; // ISO date for pagination
+  try {
+    const pool = await getPool();
+    const req2 = pool.request()
+      .input('myId',    sql.UniqueIdentifier, myId)
+      .input('otherId', sql.UniqueIdentifier, otherId);
+    if (before) req2.input('before', sql.DateTime, new Date(before));
+
+    const result = await req2.query(`
+      SELECT TOP 50
+        m.id, m.sender_id, m.recipient_id, m.type,
+        m.body, m.file_url, m.file_name, m.file_size,
+        m.reply_to_id, m.created_at,
+        r.body        AS reply_body,
+        ru.name       AS reply_sender_name,
+        CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read
+      FROM messages m
+      LEFT JOIN messages r  ON m.reply_to_id = r.id
+      LEFT JOIN users ru    ON r.sender_id = ru.id
+      LEFT JOIN message_status ms ON ms.message_id = m.id AND ms.user_id = @myId
+      WHERE m.deleted_for_everyone = 0
+        AND (
+          (m.sender_id = @myId    AND m.recipient_id = @otherId AND m.deleted_for_sender = 0)
+          OR
+          (m.sender_id = @otherId AND m.recipient_id = @myId)
+        )
+        ${before ? 'AND m.created_at < @before' : ''}
+      ORDER BY m.created_at DESC
+    `);
+    res.json(result.recordset.reverse());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Messages: mark as read ─────────────────────────────────────────
+app.put('/api/messages/read', auth, async (req, res) => {
+  const { senderId } = req.body;
+  if (!senderId) return res.status(400).json({ error: 'חסר senderId' });
+  try {
+    const pool = await getPool();
+    const msgs = await pool.request()
+      .input('recipientId', sql.UniqueIdentifier, req.user.id)
+      .input('senderId',    sql.UniqueIdentifier, senderId)
+      .query(`SELECT id FROM messages
+              WHERE recipient_id = @recipientId AND sender_id = @senderId
+              AND deleted_for_everyone = 0`);
+
+    for (const { id } of msgs.recordset) {
+      await pool.request()
+        .input('msgId',  sql.UniqueIdentifier, id)
+        .input('userId', sql.UniqueIdentifier, req.user.id)
+        .query(`IF NOT EXISTS (SELECT 1 FROM message_status WHERE message_id=@msgId AND user_id=@userId)
+                  INSERT INTO message_status (message_id, user_id, status) VALUES (@msgId, @userId, 'read')
+                ELSE
+                  UPDATE message_status SET status='read', updated_at=GETDATE()
+                  WHERE message_id=@msgId AND user_id=@userId`);
+    }
+
+    const sid = onlineUsers.get(senderId);
+    if (sid) io.to(sid).emit('messages:read', { by: req.user.id });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Messages: delete ──────────────────────────────────────────────
+app.delete('/api/messages/:id', auth, async (req, res) => {
+  const { forEveryone } = req.body;
+  try {
+    const pool = await getPool();
+    const found = await pool.request()
+      .input('id', sql.UniqueIdentifier, req.params.id)
+      .query('SELECT sender_id, recipient_id FROM messages WHERE id = @id');
+    const msg = found.recordset[0];
+    if (!msg) return res.status(404).json({ error: 'הודעה לא נמצאה' });
+
+    if (forEveryone && msg.sender_id === req.user.id) {
+      await pool.request()
+        .input('id', sql.UniqueIdentifier, req.params.id)
+        .query('UPDATE messages SET deleted_for_everyone=1, body=NULL WHERE id=@id');
+      const sid = onlineUsers.get(msg.recipient_id);
+      if (sid) io.to(sid).emit('message:deleted', { id: req.params.id });
+    } else {
+      await pool.request()
+        .input('id',     sql.UniqueIdentifier, req.params.id)
+        .input('userId', sql.UniqueIdentifier, req.user.id)
+        .query('UPDATE messages SET deleted_for_sender=1 WHERE id=@id AND sender_id=@userId');
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Block: block user ─────────────────────────────────────────────
+app.post('/api/block/:userId', auth, async (req, res) => {
+  if (req.params.userId === req.user.id) return res.status(400).json({ error: 'לא ניתן לחסום את עצמך' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('blocker', sql.UniqueIdentifier, req.user.id)
+      .input('blocked', sql.UniqueIdentifier, req.params.userId)
+      .query(`IF NOT EXISTS (SELECT 1 FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked)
+              INSERT INTO blocked_users (blocker_id, blocked_id) VALUES (@blocker, @blocked)`);
+    logActivity(req.user.id, 'block_user', { blockedUserId: req.params.userId }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Block: unblock user ───────────────────────────────────────────
+app.delete('/api/block/:userId', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('blocker', sql.UniqueIdentifier, req.user.id)
+      .input('blocked', sql.UniqueIdentifier, req.params.userId)
+      .query('DELETE FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked');
+    logActivity(req.user.id, 'unblock_user', { unblockedUserId: req.params.userId }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Block: list blocked users ─────────────────────────────────────
+app.get('/api/blocked', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('blocker', sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT u.id, u.name, u.profile_pic_url
+              FROM blocked_users b
+              JOIN users u ON u.id = b.blocked_id
+              WHERE b.blocker_id = @blocker
+              ORDER BY u.name`);
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Profile: get ──────────────────────────────────────────────────
+app.get('/api/profile', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('id', sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT id, name, email, phone, city, community,
+                     profile_pic_url, privacy_pic, filter_level
+              FROM users WHERE id = @id`);
+    if (!result.recordset.length) return res.status(404).json({ error: 'לא נמצא' });
+    res.json(result.recordset[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Profile: update ───────────────────────────────────────────────
+app.put('/api/profile', auth, async (req, res) => {
+  const { name, city, community, privacy_pic, filter_level, profile_pic_url } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'נדרש שם' });
+  const validPrivacy = ['all', 'contacts', 'nobody'];
+  const validFilter  = ['standard', 'strict'];
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('id',          sql.UniqueIdentifier, req.user.id)
+      .input('name',        sql.NVarChar,         name.trim())
+      .input('city',        sql.NVarChar,         city        || null)
+      .input('community',   sql.NVarChar,         community   || null)
+      .input('privacyPic',  sql.NVarChar,         validPrivacy.includes(privacy_pic)  ? privacy_pic  : 'all')
+      .input('filterLevel', sql.NVarChar,         validFilter.includes(filter_level)  ? filter_level : 'standard')
+      .input('picUrl',      sql.NVarChar,         profile_pic_url || null)
+      .query(`UPDATE users
+              SET name=@name, city=@city, community=@community,
+                  privacy_pic=@privacyPic, filter_level=@filterLevel,
+                  profile_pic_url=@picUrl
+              WHERE id=@id`);
+    logActivity(req.user.id, 'update_profile', { name: name.trim(), city, community }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── FCM Token: register / refresh ────────────────────────────────
+app.post('/api/fcm-token', auth, async (req, res) => {
+  const { token, deviceId } = req.body;
+  if (!token) return res.status(400).json({ error: 'נדרש token' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('userId',   sql.UniqueIdentifier, req.user.id)
+      .input('token',    sql.NVarChar,         token)
+      .input('deviceId', sql.NVarChar,         deviceId || 'default')
+      .query(`IF EXISTS (SELECT 1 FROM fcm_tokens WHERE user_id=@userId AND device_id=@deviceId)
+                UPDATE fcm_tokens SET token=@token, updated_at=GETDATE()
+                WHERE user_id=@userId AND device_id=@deviceId
+              ELSE
+                INSERT INTO fcm_tokens (user_id, token, device_id) VALUES (@userId, @token, @deviceId)`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── File Upload ───────────────────────────────────────────────────
+app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
+
+  // Block video types
+  if (BLOCKED_TYPES.some(t => file.mimetype.startsWith(t)))
+    return res.status(400).json({ error: 'שליחת סרטוני וידאו אינה מותרת' });
+
+  const allowed = ALLOWED_TYPES[file.mimetype];
+  if (!allowed) return res.status(400).json({ error: 'סוג קובץ לא נתמך' });
+
+  // Size check
+  const maxBytes = allowed.maxMB * 1024 * 1024;
+  if (file.size > maxBytes)
+    return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
+
+  try {
+    const blobName = `${req.user.id}/${Date.now()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
+    const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
+    logActivity(req.user.id, 'upload_file',
+      { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
+    res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType });
+  } catch (e) {
+    console.error('upload:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Groups: list mine ─────────────────────────────────────────────
+app.get('/api/groups', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('userId', sql.UniqueIdentifier, req.user.id)
+      .query(`
+        SELECT g.id, g.name, g.description, g.is_broadcast, g.send_permission, g.filter_level,
+               gm.role,
+               (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
+        FROM groups g
+        JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = @userId
+        ORDER BY g.created_at DESC
+      `);
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: create ────────────────────────────────────────────────
+app.post('/api/groups', auth, async (req, res) => {
+  const { name, description } = req.body;
+  if (!name) return res.status(400).json({ error: 'נדרש שם קבוצה' });
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('name',    sql.NVarChar,        name)
+      .input('desc',    sql.NVarChar,        description || '')
+      .input('creator', sql.UniqueIdentifier, req.user.id)
+      .query(`INSERT INTO groups (name, description, creator_id)
+              OUTPUT INSERTED.id, INSERTED.name, INSERTED.description
+              VALUES (@name, @desc, @creator)`);
+    const group = result.recordset[0];
+    await pool.request()
+      .input('groupId', sql.UniqueIdentifier, group.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query(`INSERT INTO group_members (group_id, user_id, role) VALUES (@groupId, @userId, 'admin')`);
+    logActivity(req.user.id, 'create_group', { groupId: group.id, name }, req.ip);
+    res.json({ ...group, role: 'admin', member_count: 1, is_broadcast: false, send_permission: 'all' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: details + members ─────────────────────────────────────
+app.get('/api/groups/:id', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const mem = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query('SELECT role FROM group_members WHERE group_id=@groupId AND user_id=@userId');
+    if (!mem.recordset.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
+
+    const [grp, members] = await Promise.all([
+      pool.request().input('id', sql.UniqueIdentifier, req.params.id)
+        .query('SELECT * FROM groups WHERE id=@id'),
+      pool.request().input('groupId', sql.UniqueIdentifier, req.params.id)
+        .query(`SELECT u.id, u.name, u.profile_pic_url, gm.role, gm.joined_at
+                FROM group_members gm JOIN users u ON u.id=gm.user_id
+                WHERE gm.group_id=@groupId ORDER BY gm.role DESC, u.name`),
+    ]);
+    res.json({ ...grp.recordset[0], members: members.recordset, myRole: mem.recordset[0].role });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: messages ──────────────────────────────────────────────
+app.get('/api/groups/:id/messages', auth, async (req, res) => {
+  const before = req.query.before;
+  try {
+    const pool = await getPool();
+    const check = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query('SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId');
+    if (!check.recordset.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
+
+    const req2 = pool.request().input('groupId', sql.UniqueIdentifier, req.params.id);
+    if (before) req2.input('before', sql.DateTime, new Date(before));
+    const result = await req2.query(`
+      SELECT TOP 50
+        m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name, m.reply_to_id, m.created_at,
+        u.name AS sender_name,
+        r.body AS reply_body
+      FROM messages m
+      JOIN users u ON m.sender_id = u.id
+      LEFT JOIN messages r ON m.reply_to_id = r.id
+      WHERE m.group_id = @groupId AND m.deleted_for_everyone = 0
+      ${before ? 'AND m.created_at < @before' : ''}
+      ORDER BY m.created_at DESC
+    `);
+    res.json(result.recordset.reverse());
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: add member (admin) ────────────────────────────────────
+app.post('/api/groups/:id/members', auth, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'נדרש userId' });
+  try {
+    const pool = await getPool();
+    const isAdmin = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('myId',    sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`);
+    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+    await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, userId)
+      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
+              INSERT INTO group_members (group_id, user_id) VALUES (@groupId, @userId)`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: remove member (admin) ────────────────────────────────
+app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const isAdmin = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('myId',    sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`);
+    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+    await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.params.userId)
+      .query('DELETE FROM group_members WHERE group_id=@groupId AND user_id=@userId');
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: leave ─────────────────────────────────────────────────
+app.delete('/api/groups/:id/leave', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query('DELETE FROM group_members WHERE group_id=@groupId AND user_id=@userId');
+    logActivity(req.user.id, 'leave_group', { groupId: req.params.id }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: update settings (admin) ──────────────────────────────
+app.put('/api/groups/:id', auth, async (req, res) => {
+  const { name, description, send_permission, filter_level, is_broadcast } = req.body;
+  if (!name) return res.status(400).json({ error: 'נדרש שם' });
+  try {
+    const pool = await getPool();
+    const isAdmin = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId AND role='admin'`);
+    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+    await pool.request()
+      .input('id',        sql.UniqueIdentifier, req.params.id)
+      .input('name',      sql.NVarChar,         name)
+      .input('desc',      sql.NVarChar,         description || '')
+      .input('perm',      sql.NVarChar,         send_permission || 'all')
+      .input('filter',    sql.NVarChar,         filter_level || 'standard')
+      .input('broadcast', sql.Bit,              is_broadcast ? 1 : 0)
+      .query(`UPDATE groups SET name=@name, description=@desc,
+              send_permission=@perm, filter_level=@filter, is_broadcast=@broadcast
+              WHERE id=@id`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Save game ────────────────────────────────────────────────────
@@ -295,6 +1018,34 @@ app.post('/api/games', auth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Admin: activity log ───────────────────────────────────────────
+app.get('/api/admin/activity', auth, async (req, res) => {
+  const limit  = Math.min(parseInt(req.query.limit  || 100), 500);
+  const offset = parseInt(req.query.offset || 0);
+  const userId = req.query.userId || null;
+  const action = req.query.action || null;
+  try {
+    const pool = await getPool();
+    const req2 = pool.request()
+      .input('limit',  sql.Int, limit)
+      .input('offset', sql.Int, offset);
+    if (userId) req2.input('userId', sql.UniqueIdentifier, userId);
+    if (action) req2.input('action', sql.NVarChar, action);
+    const result = await req2.query(`
+      SELECT a.id, a.action, a.details, a.ip, a.created_at,
+             u.name AS user_name, u.email AS user_email
+      FROM activity_log a
+      LEFT JOIN users u ON u.id = a.user_id
+      WHERE 1=1
+        ${userId ? 'AND a.user_id = @userId' : ''}
+        ${action ? 'AND a.action  = @action'  : ''}
+      ORDER BY a.created_at DESC
+      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+    `);
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Admin: all users ─────────────────────────────────────────────

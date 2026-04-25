@@ -1,9 +1,50 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+// ── Local notifications setup ─────────────────────────────────────
+final _localNotif = FlutterLocalNotificationsPlugin();
+
+@pragma('vm:entry-point')
+Future<void> _firebaseBackgroundHandler(RemoteMessage msg) async {
+  await Firebase.initializeApp();
+}
+
+Future<void> _initLocalNotifications() async {
+  const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const ios     = DarwinInitializationSettings();
+  await _localNotif.initialize(
+    const InitializationSettings(android: android, iOS: ios),
+  );
+}
+
+void _showLocalNotification(RemoteMessage msg) {
+  final n = msg.notification;
+  if (n == null) return;
+  _localNotif.show(
+    msg.hashCode,
+    n.title,
+    n.body,
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'betshuva_messages', 'הודעות',
+        importance: Importance.high,
+        priority: Priority.high,
+        sound: RawResourceAndroidNotificationSound('default'),
+      ),
+      iOS: DarwinNotificationDetails(sound: 'default'),
+    ),
+  );
+}
 
 // ── Color Palette ─────────────────────────────────────────────────
 const kPrimary    = Color(0xFF0038B8); // Israeli flag blue
@@ -21,12 +62,18 @@ const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi     = '$kServer/api';
 const kVersion = '1.0.1';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
+  try {
+    await Firebase.initializeApp();
+    FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
+    await _initLocalNotifications();
+    FirebaseMessaging.onMessage.listen(_showLocalNotification);
+  } catch (_) {}
   runApp(const BetshuvApp());
 }
 
@@ -653,7 +700,7 @@ class VerifyScreen extends StatefulWidget {
 class _VerifyScreenState extends State<VerifyScreen> {
   final _codeCtrl = TextEditingController();
   bool    _loading      = false;
-  bool    _phoneDone    = false;
+
   bool    _waitingEmail = false;
   String? _error;
 
@@ -681,7 +728,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
         Navigator.pushReplacement(context,
             MaterialPageRoute(builder: (_) => MainShell(token: data['token'] as String)));
       } else {
-        setState(() { _phoneDone = true; _waitingEmail = true; _loading = false; });
+        setState(() { _waitingEmail = true; _loading = false; });
       }
     } catch (_) {
       setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
@@ -929,6 +976,35 @@ class _MainShellState extends State<MainShell> {
     _decodeMe();
     _connectSocket();
     _loadUsers();
+    _registerFcmToken();
+  }
+
+  Future<void> _registerFcmToken() async {
+    try {
+      final messaging = FirebaseMessaging.instance;
+      await messaging.requestPermission(alert: true, badge: true, sound: true);
+      final token = await messaging.getToken();
+      if (token == null) return;
+      await http.post(
+        Uri.parse('$kApi/fcm-token'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'token': token, 'deviceId': Platform.operatingSystem}),
+      );
+      // Refresh token when it changes
+      messaging.onTokenRefresh.listen((newToken) {
+        http.post(
+          Uri.parse('$kApi/fcm-token'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({'token': newToken, 'deviceId': Platform.operatingSystem}),
+        );
+      });
+    } catch (_) {}
   }
 
   void _decodeMe() {
@@ -947,12 +1023,8 @@ class _MainShellState extends State<MainShell> {
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
       if (res.statusCode == 200) {
-        final data  = jsonDecode(res.body) as List;
-        final myId  = _me?['id'];
-        setState(() => _users = data
-            .cast<Map<String, dynamic>>()
-            .where((u) => u['id'] != myId)
-            .toList());
+        final data = jsonDecode(res.body) as List;
+        setState(() => _users = data.cast<Map<String, dynamic>>());
       }
     } catch (_) {}
   }
@@ -993,8 +1065,8 @@ class _MainShellState extends State<MainShell> {
         me: _me,
         socket: _socket,
       ),
-      GroupsScreen(token: widget.token, me: _me),
-      SettingsScreen(me: _me, onLogout: _logout),
+      GroupsScreen(token: widget.token, me: _me, socket: _socket),
+      SettingsScreen(me: _me, token: widget.token, onLogout: _logout),
     ];
 
     return Scaffold(
@@ -1146,52 +1218,130 @@ class _ChatScreenState extends State<ChatScreen> {
   final _msgCtrl    = TextEditingController();
   final _scrollCtrl = ScrollController();
   Map<String, dynamic>? _replyTo;
+  bool _loading = true;
+  bool _isTyping = false;
 
   @override
   void initState() {
     super.initState();
-    _messages.addAll([
-      {
-        'id': '1',
-        'text': 'שלום! מה שלומך?',
-        'from': widget.recipient['id'],
-        'time': '10:30',
-        'status': 'read',
-      },
-      {
-        'id': '2',
-        'text': 'ברוך השם, הכל טוב. ואתה?',
-        'from': widget.me?['id'],
-        'time': '10:31',
-        'status': 'read',
-      },
-      {
-        'id': '3',
-        'text': 'ב"ה הכל בסדר. האם תוכל לבוא לשיעור היום בשעה 8?',
-        'from': widget.recipient['id'],
-        'time': '10:33',
-        'status': 'read',
-      },
-    ]);
-    widget.socket?.on('chat:message', (data) {
-      if (data['fromUserId'] == widget.recipient['id']) {
+    _loadMessages();
+    _setupSocket();
+  }
+
+  Future<void> _loadMessages() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/messages/${widget.recipient['id']}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as List;
         setState(() {
-          _messages.add({
-            'id': DateTime.now().millisecondsSinceEpoch.toString(),
-            'text': data['text'] as String,
-            'from': widget.recipient['id'],
-            'time': _nowTime(),
-            'status': 'received',
-          });
+          _messages.clear();
+          _messages.addAll(data.map(_normalizeDbMessage));
+          _loading = false;
         });
         _scrollToBottom();
+        _markAsRead();
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Map<String, dynamic> _normalizeDbMessage(dynamic m) {
+    final map = m as Map<String, dynamic>;
+    return {
+      'id':     map['id'],
+      'text':   map['body'] ?? '',
+      'from':   map['sender_id'],
+      'time':   _formatTime(map['created_at']),
+      'status': (map['is_read'] == true || map['is_read'] == 1) ? 'read' : 'sent',
+      if (map['reply_to_id'] != null) 'replyTo': {
+        'id':   map['reply_to_id'],
+        'text': map['reply_body'] ?? '',
+      },
+      'isFile': map['type'] != null && map['type'] != 'text',
+    };
+  }
+
+  String _formatTime(dynamic raw) {
+    if (raw == null) return '';
+    final dt = DateTime.tryParse(raw.toString());
+    if (dt == null) return '';
+    final l = dt.toLocal();
+    return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
+  }
+
+  void _setupSocket() {
+    widget.socket?.on('chat:message', (data) {
+      if (data['fromUserId'] == widget.recipient['id']) {
+        if (!mounted) return;
+        setState(() {
+          _messages.add({
+            'id':     data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+            'text':   data['text'] as String? ?? '',
+            'from':   widget.recipient['id'],
+            'time':   data['createdAt'] != null ? _formatTime(data['createdAt']) : _nowTime(),
+            'status': 'received',
+            if (data['replyToId'] != null) 'replyTo': {'id': data['replyToId'], 'text': ''},
+          });
+          _isTyping = false;
+        });
+        _scrollToBottom();
+        _markAsRead();
       }
     });
+
+    widget.socket?.on('chat:typing', (data) {
+      if (data['fromUserId'] == widget.recipient['id'] && mounted) {
+        setState(() => _isTyping = true);
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _isTyping = false);
+        });
+      }
+    });
+
+    widget.socket?.on('messages:read', (_) {
+      if (!mounted) return;
+      setState(() {
+        for (final msg in _messages) {
+          if (msg['from'] == widget.me?['id']) msg['status'] = 'read';
+        }
+      });
+    });
+
+    widget.socket?.on('message:deleted', (data) {
+      if (!mounted) return;
+      setState(() {
+        final idx = _messages.indexWhere((m) => m['id'] == data['id']);
+        if (idx != -1) _messages[idx]['text'] = '🚫 הודעה נמחקה';
+      });
+    });
+  }
+
+  Future<void> _markAsRead() async {
+    try {
+      await http.put(
+        Uri.parse('$kApi/messages/read'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'senderId': widget.recipient['id']}),
+      );
+    } catch (_) {}
   }
 
   @override
   void dispose() {
     widget.socket?.off('chat:message');
+    widget.socket?.off('chat:typing');
+    widget.socket?.off('messages:read');
+    widget.socket?.off('message:deleted');
     _msgCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -1205,23 +1355,29 @@ class _ChatScreenState extends State<ChatScreen> {
   void _send() {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
+    final replySnapshot = _replyTo;
     setState(() {
       _messages.add({
-        'id': DateTime.now().millisecondsSinceEpoch.toString(),
-        'text': text,
-        'from': widget.me?['id'],
-        'time': _nowTime(),
+        'id':     'temp_${DateTime.now().millisecondsSinceEpoch}',
+        'text':   text,
+        'from':   widget.me?['id'],
+        'time':   _nowTime(),
         'status': 'sent',
-        if (_replyTo != null) 'replyTo': Map<String, dynamic>.from(_replyTo!),
+        if (replySnapshot != null) 'replyTo': Map<String, dynamic>.from(replySnapshot),
       });
       _replyTo = null;
     });
     widget.socket?.emit('chat:message', {
-      'toUserId': widget.recipient['id'],
-      'text': text,
+      'toUserId':  widget.recipient['id'],
+      'text':      text,
+      if (replySnapshot != null) 'replyToId': replySnapshot['id'],
     });
     _msgCtrl.clear();
     _scrollToBottom();
+  }
+
+  void _onTyping() {
+    widget.socket?.emit('chat:typing', {'toUserId': widget.recipient['id']});
   }
 
   void _scrollToBottom() {
@@ -1236,6 +1392,60 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  void _showChatMenu() {
+    final recipientName = widget.recipient['name'] as String? ?? '';
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.block, color: Colors.red),
+              title: Text('חסום את $recipientName',
+                  style: const TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(context);
+                _blockUser();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _blockUser() async {
+    final recipientName = widget.recipient['name'] as String? ?? 'משתמש זה';
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('חסימת משתמש'),
+        content: Text('לחסום את $recipientName?\nלא יוכל לשלוח לך הודעות.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false),
+              child: const Text('ביטול')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('חסום'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await http.post(
+        Uri.parse('$kApi/block/${widget.recipient['id']}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (mounted) Navigator.pop(context);
+    } catch (_) {}
+  }
+
   void _showAttachMenu() {
     showModalBottomSheet(
       context: context,
@@ -1247,46 +1457,29 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              'שיתוף קובץ',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
+            const Text('שיתוף קובץ',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 _AttachOption(
                   icon: Icons.image_outlined,
-                  label: 'תמונה',
+                  label: 'גלריה',
                   color: kPrimary,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _fakeScan('תמונה');
-                  },
+                  onTap: () { Navigator.pop(context); _pickFile(ImageSource.gallery); },
                 ),
                 _AttachOption(
                   icon: Icons.camera_alt_outlined,
                   label: 'מצלמה',
                   color: kPrimaryMid,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _fakeScan('צילום');
-                  },
+                  onTap: () { Navigator.pop(context); _pickFile(ImageSource.camera); },
                 ),
                 _AttachOption(
                   icon: Icons.picture_as_pdf_outlined,
                   label: 'מסמך',
                   color: Colors.orange,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _fakeScan('מסמך');
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.mic_outlined,
-                  label: 'הקלטה',
-                  color: Colors.deepPurple,
-                  onTap: () => Navigator.pop(context),
+                  onTap: () { Navigator.pop(context); _pickDocument(); },
                 ),
               ],
             ),
@@ -1298,18 +1491,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: Colors.red.shade200),
               ),
-              child: Row(
-                children: [
-                  Icon(Icons.block, color: Colors.red.shade600, size: 18),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'שליחת סרטוני וידאו וקישורי YouTube אינה נתמכת',
-                      style: TextStyle(fontSize: 12, color: Colors.red),
-                    ),
-                  ),
-                ],
-              ),
+              child: Row(children: [
+                Icon(Icons.block, color: Colors.red.shade600, size: 18),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('שליחת סרטוני וידאו וקישורי YouTube אינה נתמכת',
+                      style: TextStyle(fontSize: 12, color: Colors.red)),
+                ),
+              ]),
             ),
           ],
         ),
@@ -1317,43 +1506,105 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _fakeScan(String type) {
+  Future<void> _pickFile(ImageSource source) async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(
+      source: source,
+      maxWidth: 1920,
+      maxHeight: 1920,
+      imageQuality: 85,
+    );
+    if (picked == null) return;
+    await _uploadAndSend(File(picked.path), picked.name, 'image');
+  }
+
+  Future<void> _pickDocument() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'docx'],
+    );
+    if (result == null || result.files.single.path == null) return;
+    final f = result.files.single;
+    await _uploadAndSend(File(f.path!), f.name, 'document');
+  }
+
+  Future<void> _uploadAndSend(File file, String fileName, String fileType) async {
+    // Show scanning/upload dialog
+    if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (_) => AlertDialog(
-        title: Row(
-          children: const [
-            Icon(Icons.security, color: kPrimary),
-            SizedBox(width: 8),
-            Text('סריקת צניעות'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(color: kPrimary),
-            const SizedBox(height: 16),
-            Text('$type עובר סריקה אוטומטית...\nמקסימום 3 שניות'),
-          ],
-        ),
+        title: const Row(children: [
+          Icon(Icons.security, color: kPrimary),
+          SizedBox(width: 8),
+          Text('סריקה והעלאה'),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(color: kPrimary),
+          const SizedBox(height: 16),
+          Text('$fileName\nעובר סריקת צניעות והעלאה...'),
+        ]),
       ),
     );
-    Future.delayed(const Duration(seconds: 2), () {
+
+    try {
+      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+        ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..files.add(await http.MultipartFile.fromPath('file', file.path,
+            filename: fileName));
+      final streamed = await request.send();
+      final body     = await streamed.stream.bytesToString();
       if (!mounted) return;
-      Navigator.pop(context);
+      Navigator.pop(context); // close dialog
+
+      if (streamed.statusCode != 200) {
+        final err = jsonDecode(body)['error'] ?? 'שגיאה בהעלאה';
+        _showError(err);
+        return;
+      }
+
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      final fileUrl = data['url'] as String;
+
+      // Send via socket as file message
+      widget.socket?.emit('chat:message', {
+        'toUserId': widget.recipient['id'],
+        'fileUrl':  fileUrl,
+        'fileName': fileName,
+        'fileType': fileType,
+        'text':     null,
+      });
+
       setState(() {
         _messages.add({
-          'id': DateTime.now().millisecondsSinceEpoch.toString(),
-          'text': '[$type נשלח ✓]',
-          'from': widget.me?['id'],
-          'time': _nowTime(),
-          'status': 'sent',
-          'isFile': true,
+          'id':       'temp_${DateTime.now().millisecondsSinceEpoch}',
+          'text':     fileName,
+          'from':     widget.me?['id'],
+          'time':     _nowTime(),
+          'status':   'sent',
+          'isFile':   true,
+          'fileType': fileType,
+          'fileUrl':  fileUrl,
         });
       });
       _scrollToBottom();
-    });
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        _showError('שגיאת העלאה: ${e.toString()}');
+      }
+    }
+  }
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, textDirection: TextDirection.rtl),
+        backgroundColor: Colors.red.shade700,
+      ),
+    );
   }
 
   @override
@@ -1382,7 +1633,10 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
-          IconButton(icon: const Icon(Icons.more_vert), onPressed: () {}),
+          IconButton(
+            icon: const Icon(Icons.more_vert),
+            onPressed: () => _showChatMenu(),
+          ),
         ],
       ),
       body: Column(
@@ -1395,9 +1649,7 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Row(
                 children: [
                   Container(
-                    width: 3,
-                    height: 36,
-                    color: kPrimary,
+                    width: 3, height: 36, color: kPrimary,
                     margin: const EdgeInsets.only(left: 8),
                   ),
                   Expanded(
@@ -1405,9 +1657,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text('ציטוט',
-                            style: TextStyle(
-                                color: kPrimary,
-                                fontSize: 12,
+                            style: TextStyle(color: kPrimary, fontSize: 12,
                                 fontWeight: FontWeight.bold)),
                         Text(
                           _replyTo!['text'] as String,
@@ -1428,25 +1678,48 @@ class _ChatScreenState extends State<ChatScreen> {
 
           // Messages list
           Expanded(
-            child: ListView.builder(
-              controller: _scrollCtrl,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              itemCount: _messages.length,
-              itemBuilder: (_, i) {
-                final msg  = _messages[i];
-                final isMe = msg['from'] == widget.me?['id'];
-                return Column(
-                  children: [
-                    if (i == 0) const _DateDivider(label: 'היום'),
-                    GestureDetector(
-                      onLongPress: () => setState(() => _replyTo = msg),
-                      child: _MessageBubble(message: msg, isMe: isMe),
-                    ),
-                  ],
-                );
-              },
-            ),
+            child: _loading
+                ? const Center(child: CircularProgressIndicator(color: kPrimary))
+                : _messages.isEmpty
+                    ? const Center(
+                        child: Text('אין הודעות עדיין — שלח הודעה ראשונה!',
+                            style: TextStyle(color: kSubtext)))
+                    : ListView.builder(
+                        controller: _scrollCtrl,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        itemCount: _messages.length,
+                        itemBuilder: (_, i) {
+                          final msg  = _messages[i];
+                          final isMe = msg['from'] == widget.me?['id'];
+                          return Column(
+                            children: [
+                              if (i == 0) const _DateDivider(label: 'היום'),
+                              GestureDetector(
+                                onLongPress: () =>
+                                    setState(() => _replyTo = msg),
+                                child: _MessageBubble(message: msg, isMe: isMe),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
           ),
+
+          // Typing indicator
+          if (_isTyping)
+            Container(
+              width: double.infinity,
+              color: kBg,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text(
+                '${widget.recipient['name'] ?? ''} מקליד...',
+                style: const TextStyle(fontSize: 12, color: kSubtext,
+                    fontStyle: FontStyle.italic),
+                textDirection: TextDirection.rtl,
+              ),
+            ),
 
           // Input bar
           Container(
@@ -1464,6 +1737,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     textDirection: TextDirection.rtl,
                     maxLines: 4,
                     minLines: 1,
+                    onChanged: (_) => _onTyping(),
                     decoration: InputDecoration(
                       hintText: 'הודעה...',
                       hintTextDirection: TextDirection.rtl,
@@ -1689,49 +1963,61 @@ class _AttachOption extends StatelessWidget {
 class GroupsScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
-  const GroupsScreen({super.key, required this.token, required this.me});
+  final IO.Socket? socket;
+  const GroupsScreen({super.key, required this.token, required this.me, required this.socket});
   @override
   State<GroupsScreen> createState() => _GroupsScreenState();
 }
 
 class _GroupsScreenState extends State<GroupsScreen> {
-  final List<Map<String, dynamic>> _groups = [
-    {
-      'id': '1',
-      'name': 'שיעור יומי',
-      'desc': 'שיעור תורה יומי',
-      'members': 24,
-      'isAdmin': true,
-      'lastMsg': 'השיעור מחר בשעה 8:00',
-      'time': 'אתמול',
-      'unread': 3,
-    },
-    {
-      'id': '2',
-      'name': 'חברי הקהילה',
-      'desc': 'קהילת בתשובה',
-      'members': 87,
-      'isAdmin': false,
-      'lastMsg': 'ברכות לכולם!',
-      'time': '10:15',
-      'unread': 0,
-    },
-    {
-      'id': '3',
-      'name': 'הורים וילדים',
-      'desc': 'עדכונים מבית הספר',
-      'members': 42,
-      'isAdmin': false,
-      'lastMsg': 'אין לימודים מחר',
-      'time': '09:30',
-      'unread': 1,
-    },
-  ];
+  List<Map<String, dynamic>> _groups = [];
+  bool _loading = true;
 
-  void _createGroup() {
+  @override
+  void initState() {
+    super.initState();
+    _loadGroups();
+    widget.socket?.on('group:message', (data) {
+      final gid = data['groupId'];
+      if (!mounted) return;
+      setState(() {
+        final idx = _groups.indexWhere((g) => g['id'] == gid);
+        if (idx != -1) _groups[idx]['lastMsg'] = data['text'] as String? ?? '';
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    widget.socket?.off('group:message');
+    super.dispose();
+  }
+
+  Future<void> _loadGroups() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/groups'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as List;
+        setState(() {
+          _groups = data.cast<Map<String, dynamic>>();
+          _loading = false;
+        });
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _createGroup() async {
     final nameCtrl = TextEditingController();
     final descCtrl = TextEditingController();
-    showDialog(
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('קבוצה חדשה'),
@@ -1747,38 +2033,32 @@ class _GroupsScreenState extends State<GroupsScreen> {
             TextField(
               controller: descCtrl,
               textDirection: TextDirection.rtl,
-              decoration: const InputDecoration(labelText: 'תיאור'),
+              decoration: const InputDecoration(labelText: 'תיאור (אופציונלי)'),
             ),
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('ביטול'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (nameCtrl.text.isNotEmpty) {
-                setState(() {
-                  _groups.insert(0, {
-                    'id': DateTime.now().toString(),
-                    'name': nameCtrl.text,
-                    'desc': descCtrl.text,
-                    'members': 1,
-                    'isAdmin': true,
-                    'lastMsg': 'קבוצה חדשה נוצרה',
-                    'time': 'עכשיו',
-                    'unread': 0,
-                  });
-                });
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('צור'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('צור')),
         ],
       ),
     );
+    if (confirmed != true || nameCtrl.text.trim().isEmpty) return;
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/groups'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'name': nameCtrl.text.trim(), 'description': descCtrl.text.trim()}),
+      );
+      if (res.statusCode == 200 && mounted) {
+        final group = jsonDecode(res.body) as Map<String, dynamic>;
+        widget.socket?.emit('group:join', {'groupId': group['id']});
+        setState(() => _groups.insert(0, group));
+      }
+    } catch (_) {}
   }
 
   @override
@@ -1787,92 +2067,71 @@ class _GroupsScreenState extends State<GroupsScreen> {
       backgroundColor: kBg,
       appBar: AppBar(
         title: const Text('קבוצות'),
-        actions: [
-          IconButton(icon: const Icon(Icons.search), onPressed: () {}),
-        ],
+        actions: [IconButton(icon: const Icon(Icons.search), onPressed: () {})],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _createGroup,
         backgroundColor: kPrimary,
         child: const Icon(Icons.group_add, color: Colors.white),
       ),
-      body: ListView.separated(
-        itemCount: _groups.length,
-        separatorBuilder: (_, __) =>
-            const Divider(height: 1, indent: 76, endIndent: 0),
-        itemBuilder: (_, i) {
-          final g = _groups[i];
-          return ListTile(
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            leading: Stack(
-              children: [
-                CircleAvatar(
-                  radius: 26,
-                  backgroundColor: kPrimary,
-                  child: const Icon(Icons.group, color: Colors.white, size: 26),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: kPrimary))
+          : _groups.isEmpty
+              ? const Center(child: Text('אין קבוצות עדיין', style: TextStyle(color: kSubtext)))
+              : ListView.separated(
+                  itemCount: _groups.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1, indent: 76),
+                  itemBuilder: (_, i) {
+                    final g = _groups[i];
+                    final isAdmin = g['role'] == 'admin';
+                    final memberCount = g['member_count'] ?? 0;
+                    final lastMsg = g['lastMsg'] as String? ?? g['description'] as String? ?? '';
+                    return ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      leading: Stack(
+                        children: [
+                          CircleAvatar(
+                            radius: 26,
+                            backgroundColor: kPrimary,
+                            child: const Icon(Icons.group, color: Colors.white, size: 26),
+                          ),
+                          if (isAdmin)
+                            Positioned(
+                              left: 0, bottom: 0,
+                              child: Container(
+                                padding: const EdgeInsets.all(2),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Icon(Icons.star, size: 10, color: Colors.white),
+                              ),
+                            ),
+                        ],
+                      ),
+                      title: Text(g['name'] as String,
+                          style: const TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: Text(
+                        lastMsg.isNotEmpty ? lastMsg : '$memberCount חברים',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13, color: kSubtext),
+                      ),
+                      trailing: const Icon(Icons.chevron_left, color: kSubtext),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => GroupChatScreen(
+                            group: g,
+                            me: widget.me,
+                            token: widget.token,
+                            socket: widget.socket,
+                          ),
+                        ),
+                      ).then((_) => _loadGroups()),
+                    );
+                  },
                 ),
-                if (g['isAdmin'] == true)
-                  Positioned(
-                    left: 0,
-                    bottom: 0,
-                    child: Container(
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        color: Colors.orange,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Icon(Icons.star, size: 10, color: Colors.white),
-                    ),
-                  ),
-              ],
-            ),
-            title: Text(
-              g['name'] as String,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-            subtitle: Text(
-              g['lastMsg'] as String,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, color: kSubtext),
-            ),
-            trailing: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(g['time'] as String,
-                    style: const TextStyle(fontSize: 11, color: kSubtext)),
-                if ((g['unread'] as int) > 0)
-                  Container(
-                    margin: const EdgeInsets.only(top: 4),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: kPrimary,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '${g['unread']}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) =>
-                    GroupChatScreen(group: g, me: widget.me),
-              ),
-            ),
-          );
-        },
-      ),
     );
   }
 }
@@ -1881,7 +2140,15 @@ class _GroupsScreenState extends State<GroupsScreen> {
 class GroupChatScreen extends StatefulWidget {
   final Map<String, dynamic> group;
   final Map<String, dynamic>? me;
-  const GroupChatScreen({super.key, required this.group, required this.me});
+  final String token;
+  final IO.Socket? socket;
+  const GroupChatScreen({
+    super.key,
+    required this.group,
+    required this.me,
+    required this.token,
+    required this.socket,
+  });
   @override
   State<GroupChatScreen> createState() => _GroupChatScreenState();
 }
@@ -1890,32 +2157,99 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   final _msgCtrl    = TextEditingController();
   final _scrollCtrl = ScrollController();
-  late bool _isAdmin;
+  bool _loading   = true;
+  bool _isAdmin   = false;
+  bool _isTyping  = false;
+  String _typingName = '';
+
+  String get _groupId => widget.group['id'] as String;
 
   @override
   void initState() {
     super.initState();
-    _isAdmin = widget.group['isAdmin'] == true;
-    _messages.addAll([
-      {
-        'id': '1',
-        'text': 'ברוכים הבאים לקבוצה!',
-        'from': 'מנהל',
-        'time': '09:00',
-        'isMe': false,
+    _isAdmin = widget.group['role'] == 'admin';
+    _loadMessages();
+    _setupSocket();
+  }
+
+  Future<void> _loadMessages() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/groups/$_groupId/messages'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as List;
+        setState(() {
+          _messages.clear();
+          _messages.addAll(data.map(_normalize));
+          _loading = false;
+        });
+        _scrollToBottom();
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Map<String, dynamic> _normalize(dynamic m) {
+    final map = m as Map<String, dynamic>;
+    final isMe = map['sender_id'] == widget.me?['id'];
+    return {
+      'id':         map['id'],
+      'text':       map['body'] ?? '',
+      'senderName': map['sender_name'] ?? '',
+      'time':       _formatTime(map['created_at']),
+      'isMe':       isMe,
+      if (map['reply_to_id'] != null) 'replyTo': {
+        'id':   map['reply_to_id'],
+        'text': map['reply_body'] ?? '',
       },
-      {
-        'id': '2',
-        'text': widget.group['lastMsg'] as String,
-        'from': 'יעקב לוי',
-        'time': '10:15',
-        'isMe': false,
-      },
-    ]);
+    };
+  }
+
+  String _formatTime(dynamic raw) {
+    if (raw == null) return '';
+    final dt = DateTime.tryParse(raw.toString());
+    if (dt == null) return '';
+    final l = dt.toLocal();
+    return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
+  }
+
+  void _setupSocket() {
+    widget.socket?.on('group:message', (data) {
+      if (data['groupId'] != _groupId || !mounted) return;
+      setState(() {
+        _messages.add({
+          'id':         data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+          'text':       data['text'] as String? ?? '',
+          'senderName': data['fromName'] as String? ?? '',
+          'time':       data['createdAt'] != null ? _formatTime(data['createdAt']) : _nowTime(),
+          'isMe':       data['fromUserId'] == widget.me?['id'],
+          'isTyping':   false,
+        });
+        _isTyping = false;
+      });
+      _scrollToBottom();
+    });
+
+    widget.socket?.on('group:typing', (data) {
+      if (data['groupId'] == _groupId && mounted) {
+        setState(() { _isTyping = true; _typingName = data['fromName'] as String? ?? ''; });
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _isTyping = false);
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    widget.socket?.off('group:message');
+    widget.socket?.off('group:typing');
     _msgCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -1926,72 +2260,103 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return '${n.hour.toString().padLeft(2, '0')}:${n.minute.toString().padLeft(2, '0')}';
   }
 
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollCtrl.hasClients) {
+        _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+      }
+    });
+  }
+
   void _send() {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
     setState(() {
       _messages.add({
-        'id': DateTime.now().toString(),
-        'text': text,
-        'from': widget.me?['name'] as String? ?? 'אני',
-        'time': _nowTime(),
-        'isMe': true,
+        'id':         'temp_${DateTime.now().millisecondsSinceEpoch}',
+        'text':       text,
+        'senderName': widget.me?['name'] as String? ?? '',
+        'time':       _nowTime(),
+        'isMe':       true,
       });
     });
+    widget.socket?.emit('group:message', {'groupId': _groupId, 'text': text});
     _msgCtrl.clear();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollCtrl.hasClients) {
-        _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
-      }
-    });
+    _scrollToBottom();
+  }
+
+  Future<void> _leaveGroup() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('יציאה מקבוצה'),
+        content: Text('האם לצאת מ"${widget.group['name']}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('יציאה'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await http.delete(
+        Uri.parse('$kApi/groups/$_groupId/leave'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (mounted) Navigator.pop(context);
+    } catch (_) {}
   }
 
   void _showAdminPanel() {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => Padding(
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'ניהול: ${widget.group['name']}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
+            Text('ניהול: ${widget.group['name']}',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
+            if (_isAdmin) ...[
+              ListTile(
+                leading: const Icon(Icons.person_add_outlined, color: kPrimary),
+                title: const Text('הוסף חבר'),
+                onTap: () => Navigator.pop(context),
+              ),
+              ListTile(
+                leading: const Icon(Icons.tune, color: kPrimary),
+                title: const Text('הגדרות שליחה'),
+                subtitle: Text(widget.group['send_permission'] == 'admin'
+                    ? 'מנהלים בלבד' : 'כולם יכולים לשלוח'),
+                onTap: () => Navigator.pop(context),
+              ),
+              ListTile(
+                leading: const Icon(Icons.campaign_outlined, color: Colors.orange),
+                title: const Text('מצב ברודקסט'),
+                subtitle: Text(widget.group['is_broadcast'] == true ? 'פעיל' : 'לא פעיל'),
+                onTap: () => Navigator.pop(context),
+              ),
+              ListTile(
+                leading: const Icon(Icons.shield_outlined, color: kPrimary),
+                title: const Text('רמת סינון תוכן'),
+                subtitle: Text(widget.group['filter_level'] == 'strict' ? 'מחמיר' : 'רגיל'),
+                onTap: () => Navigator.pop(context),
+              ),
+              const Divider(),
+            ],
             ListTile(
-              leading: const Icon(Icons.person_add_outlined, color: kPrimary),
-              title: const Text('הוסף חבר'),
-              onTap: () => Navigator.pop(context),
-            ),
-            ListTile(
-              leading: const Icon(Icons.tune, color: kPrimary),
-              title: const Text('הגדרות שליחה'),
-              subtitle: const Text('כולם / מנהלים בלבד'),
-              onTap: () => Navigator.pop(context),
-            ),
-            ListTile(
-              leading: const Icon(Icons.campaign_outlined, color: Colors.orange),
-              title: const Text('מצב ברודקסט'),
-              subtitle: const Text('שליחה חד-כיוונית'),
-              onTap: () => Navigator.pop(context),
-            ),
-            ListTile(
-              leading: const Icon(Icons.shield_outlined, color: kPrimary),
-              title: const Text('רמת סינון תוכן'),
-              subtitle: const Text('Standard / Strict'),
-              onTap: () => Navigator.pop(context),
-            ),
-            ListTile(
-              leading: const Icon(Icons.people_outline, color: kPrimary),
-              title: const Text('רשימת חברים'),
-              subtitle:
-                  Text('${widget.group['members']} חברים'),
-              onTap: () => Navigator.pop(context),
+              leading: const Icon(Icons.exit_to_app, color: Colors.red),
+              title: const Text('יציאה מקבוצה', style: TextStyle(color: Colors.red)),
+              onTap: () { Navigator.pop(context); _leaveGroup(); },
             ),
           ],
         ),
@@ -2010,91 +2375,91 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              widget.group['name'] as String,
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            Text(
-              '${widget.group['members']} חברים',
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
-            ),
+            Text(widget.group['name'] as String,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text('${widget.group['member_count'] ?? ''} חברים',
+                style: const TextStyle(fontSize: 12, color: Colors.white70)),
           ],
         ),
         actions: [
-          if (_isAdmin)
-            IconButton(
-              icon: const Icon(Icons.admin_panel_settings_outlined),
-              onPressed: _showAdminPanel,
-            ),
-          IconButton(icon: const Icon(Icons.more_vert), onPressed: () {}),
+          IconButton(
+            icon: const Icon(Icons.admin_panel_settings_outlined),
+            onPressed: _showAdminPanel,
+          ),
         ],
       ),
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              controller: _scrollCtrl,
-              padding: const EdgeInsets.all(10),
-              itemCount: _messages.length,
-              itemBuilder: (_, i) {
-                final msg  = _messages[i];
-                final isMe = msg['isMe'] == true;
-                return Column(
-                  crossAxisAlignment: isMe
-                      ? CrossAxisAlignment.end
-                      : CrossAxisAlignment.start,
-                  children: [
-                    if (!isMe)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8, bottom: 2),
-                        child: Text(
-                          msg['from'] as String,
-                          style: const TextStyle(
-                              fontSize: 12,
-                              color: kPrimary,
-                              fontWeight: FontWeight.bold),
-                        ),
+            child: _loading
+                ? const Center(child: CircularProgressIndicator(color: kPrimary))
+                : _messages.isEmpty
+                    ? const Center(child: Text('אין הודעות עדיין', style: TextStyle(color: kSubtext)))
+                    : ListView.builder(
+                        controller: _scrollCtrl,
+                        padding: const EdgeInsets.all(10),
+                        itemCount: _messages.length,
+                        itemBuilder: (_, i) {
+                          final msg  = _messages[i];
+                          final isMe = msg['isMe'] == true;
+                          return Column(
+                            crossAxisAlignment: isMe
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
+                            children: [
+                              if (!isMe)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8, bottom: 2),
+                                  child: Text(
+                                    msg['senderName'] as String? ?? '',
+                                    style: const TextStyle(
+                                        fontSize: 12, color: kPrimary,
+                                        fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                              Container(
+                                margin: const EdgeInsets.only(bottom: 6),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                constraints: BoxConstraints(
+                                    maxWidth: MediaQuery.of(context).size.width * 0.75),
+                                decoration: BoxDecoration(
+                                  color: isMe ? kOutgoing : kCard,
+                                  borderRadius: BorderRadius.circular(12),
+                                  boxShadow: [BoxShadow(
+                                    color: Colors.black.withOpacity(0.05),
+                                    blurRadius: 3,
+                                  )],
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      msg['text'] as String? ?? '',
+                                      style: const TextStyle(fontSize: 15, height: 1.4),
+                                      textDirection: TextDirection.rtl,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(msg['time'] as String? ?? '',
+                                        style: const TextStyle(fontSize: 11, color: kSubtext)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          );
+                        },
                       ),
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      constraints: BoxConstraints(
-                        maxWidth: MediaQuery.of(context).size.width * 0.75,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isMe ? kOutgoing : kCard,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.05),
-                            blurRadius: 3,
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            msg['text'] as String,
-                            style: const TextStyle(fontSize: 15, height: 1.4),
-                            textDirection: TextDirection.rtl,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            msg['time'] as String,
-                            style:
-                                const TextStyle(fontSize: 11, color: kSubtext),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
           ),
+          if (_isTyping)
+            Container(
+              width: double.infinity,
+              color: kBg,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text('$_typingName מקליד...',
+                  style: const TextStyle(fontSize: 12, color: kSubtext,
+                      fontStyle: FontStyle.italic),
+                  textDirection: TextDirection.rtl),
+            ),
           Container(
             color: kCard,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -2148,8 +2513,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 // ── Settings Screen ───────────────────────────────────────────────
 class SettingsScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
+  final String token;
   final VoidCallback onLogout;
-  const SettingsScreen({super.key, required this.me, required this.onLogout});
+  const SettingsScreen({super.key, required this.me, required this.token, required this.onLogout});
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -2173,7 +2539,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(
-                  builder: (_) => ProfileScreen(me: widget.me)),
+                  builder: (_) => ProfileScreen(me: widget.me, token: widget.token)),
             ),
             child: Container(
               color: kCard,
@@ -2273,7 +2639,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: const Icon(Icons.block, color: kSubtext),
                   title: const Text('משתמשים חסומים'),
                   trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                  onTap: () {},
+                  onTap: () => Navigator.push(context, MaterialPageRoute(
+                    builder: (_) => BlockedUsersScreen(token: widget.token))),
                 ),
                 const Divider(height: 1, indent: 16),
                 ListTile(
@@ -2356,23 +2723,26 @@ class _SectionHeader extends StatelessWidget {
 // ── Profile Screen ────────────────────────────────────────────────
 class ProfileScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
-  const ProfileScreen({super.key, required this.me});
+  final String token;
+  const ProfileScreen({super.key, required this.me, required this.token});
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  late TextEditingController _nameCtrl;
-  late TextEditingController _cityCtrl;
-  late TextEditingController _communityCtrl;
-  bool _saved = false;
+  final _nameCtrl      = TextEditingController();
+  final _cityCtrl      = TextEditingController();
+  final _communityCtrl = TextEditingController();
+  String  _privacyPic  = 'all';
+  String? _picUrl;
+  bool    _loading     = true;
+  bool    _saving      = false;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _nameCtrl      = TextEditingController(text: widget.me?['name'] as String? ?? '');
-    _cityCtrl      = TextEditingController();
-    _communityCtrl = TextEditingController();
+    _loadProfile();
   }
 
   @override
@@ -2383,113 +2753,320 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.dispose();
   }
 
+  Future<void> _loadProfile() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/profile'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() {
+          _nameCtrl.text      = data['name']      as String? ?? '';
+          _cityCtrl.text      = data['city']      as String? ?? '';
+          _communityCtrl.text = data['community'] as String? ?? '';
+          _privacyPic         = data['privacy_pic'] as String? ?? 'all';
+          _picUrl             = data['profile_pic_url'] as String?;
+          _loading            = false;
+        });
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'נא להזין שם');
+      return;
+    }
+    setState(() { _saving = true; _error = null; });
+    try {
+      final res = await http.put(
+        Uri.parse('$kApi/profile'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type':  'application/json',
+        },
+        body: jsonEncode({
+          'name':            _nameCtrl.text.trim(),
+          'city':            _cityCtrl.text.trim(),
+          'community':       _communityCtrl.text.trim(),
+          'privacy_pic':     _privacyPic,
+          'profile_pic_url': _picUrl,
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        Navigator.pop(context, true);
+      } else {
+        final data = jsonDecode(res.body);
+        setState(() { _error = data['error'] ?? 'שגיאה'; _saving = false; });
+      }
+    } catch (_) {
+      if (mounted) setState(() { _error = 'שגיאת חיבור'; _saving = false; });
+    }
+  }
+
+  Future<void> _changePhoto() async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(
+      source: ImageSource.gallery, maxWidth: 512, maxHeight: 512, imageQuality: 80);
+    if (picked == null || !mounted) return;
+
+    setState(() => _saving = true);
+    try {
+      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+        ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..files.add(await http.MultipartFile.fromPath('file', picked.path,
+            filename: picked.name));
+      final streamed = await request.send();
+      final body     = await streamed.stream.bytesToString();
+      if (!mounted) return;
+      if (streamed.statusCode == 200) {
+        final url = (jsonDecode(body) as Map)['url'] as String;
+        setState(() { _picUrl = url; _saving = false; });
+      } else {
+        setState(() { _error = 'שגיאה בהעלאת תמונה'; _saving = false; });
+      }
+    } catch (_) {
+      if (mounted) setState(() { _error = 'שגיאת העלאה'; _saving = false; });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: kBg,
       appBar: AppBar(
         title: const Text('עריכת פרופיל'),
-        leading: BackButton(
-            color: Colors.white, onPressed: () => Navigator.pop(context)),
+        leading: BackButton(color: Colors.white, onPressed: () => Navigator.pop(context)),
         actions: [
-          TextButton(
-            onPressed: () {
-              setState(() => _saved = true);
-              Future.delayed(
-                  const Duration(seconds: 1), () => Navigator.pop(context));
-            },
-            child: const Text('שמור',
-                style: TextStyle(color: Colors.white, fontSize: 16)),
-          ),
+          if (!_loading)
+            TextButton(
+              onPressed: _saving ? null : _save,
+              child: _saving
+                  ? const SizedBox(width: 20, height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('שמור', style: TextStyle(color: Colors.white, fontSize: 16)),
+            ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          // Avatar
-          Center(
-            child: Stack(
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: kPrimary))
+          : ListView(
+              padding: const EdgeInsets.all(20),
               children: [
-                CircleAvatar(
-                  radius: 52,
-                  backgroundColor: kPrimaryMid,
-                  child: Text(
-                    _nameCtrl.text.isNotEmpty
-                        ? _nameCtrl.text[0].toUpperCase()
-                        : '?',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 38,
-                      fontWeight: FontWeight.bold,
+                // Avatar
+                Center(
+                  child: GestureDetector(
+                    onTap: _changePhoto,
+                    child: Stack(
+                      children: [
+                        CircleAvatar(
+                          radius: 52,
+                          backgroundColor: kPrimaryMid,
+                          backgroundImage: _picUrl != null ? NetworkImage(_picUrl!) : null,
+                          child: _picUrl == null
+                              ? Text(
+                                  _nameCtrl.text.isNotEmpty ? _nameCtrl.text[0].toUpperCase() : '?',
+                                  style: const TextStyle(color: Colors.white, fontSize: 38,
+                                      fontWeight: FontWeight.bold))
+                              : null,
+                        ),
+                        Positioned(
+                          bottom: 0, left: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                                color: kPrimary, borderRadius: BorderRadius.circular(20)),
+                            child: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  child: Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: kPrimary,
-                      borderRadius: BorderRadius.circular(20),
+                const SizedBox(height: 6),
+                const Center(
+                  child: Text('לחץ לשינוי תמונה • תעבור סריקת צניעות',
+                      style: TextStyle(fontSize: 12, color: kSubtext)),
+                ),
+                const SizedBox(height: 28),
+
+                if (_error != null) ...[
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+
+                _FieldLabel(label: 'שם מלא'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _nameCtrl,
+                  textDirection: TextDirection.rtl,
+                  decoration: const InputDecoration(hintText: 'השם שלך'),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 16),
+
+                _FieldLabel(label: 'עיר'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _cityCtrl,
+                  textDirection: TextDirection.rtl,
+                  decoration: const InputDecoration(hintText: 'עיר מגורים'),
+                ),
+                const SizedBox(height: 16),
+
+                _FieldLabel(label: 'קהילה'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _communityCtrl,
+                  textDirection: TextDirection.rtl,
+                  decoration: const InputDecoration(hintText: 'קהילה / כולל'),
+                ),
+                const SizedBox(height: 24),
+
+                _FieldLabel(label: 'מי רואה את תמונת הפרופיל שלי'),
+                const SizedBox(height: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: kBorder, width: 1.5),
+                    borderRadius: BorderRadius.circular(10),
+                    color: kCard,
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _privacyPic,
+                      isExpanded: true,
+                      items: const [
+                        DropdownMenuItem(value: 'all',      child: Text('כולם')),
+                        DropdownMenuItem(value: 'contacts', child: Text('אנשי קשר בלבד')),
+                        DropdownMenuItem(value: 'nobody',   child: Text('אף אחד')),
+                      ],
+                      onChanged: (v) => setState(() => _privacyPic = v!),
                     ),
-                    child: const Icon(Icons.camera_alt,
-                        color: Colors.white, size: 18),
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 8),
-          const Center(
-            child: Text(
-              'תמונת פרופיל תעבור סריקת צניעות',
-              style: TextStyle(fontSize: 12, color: kSubtext),
-            ),
-          ),
-          const SizedBox(height: 28),
+    );
+  }
+}
 
-          _FieldLabel(label: 'שם מלא'),
-          const SizedBox(height: 6),
-          TextField(
-            controller: _nameCtrl,
-            textDirection: TextDirection.rtl,
-            decoration: const InputDecoration(hintText: 'השם שלך'),
-            onChanged: (_) => setState(() {}),
-          ),
-          const SizedBox(height: 16),
+// ── Blocked Users Screen ──────────────────────────────────────────
+class BlockedUsersScreen extends StatefulWidget {
+  final String token;
+  const BlockedUsersScreen({super.key, required this.token});
+  @override
+  State<BlockedUsersScreen> createState() => _BlockedUsersScreenState();
+}
 
-          _FieldLabel(label: 'עיר'),
-          const SizedBox(height: 6),
-          TextField(
-            controller: _cityCtrl,
-            textDirection: TextDirection.rtl,
-            decoration: const InputDecoration(hintText: 'עיר מגורים'),
-          ),
-          const SizedBox(height: 16),
+class _BlockedUsersScreenState extends State<BlockedUsersScreen> {
+  List<Map<String, dynamic>> _blocked = [];
+  bool _loading = true;
 
-          _FieldLabel(label: 'קהילה'),
-          const SizedBox(height: 6),
-          TextField(
-            controller: _communityCtrl,
-            textDirection: TextDirection.rtl,
-            decoration: const InputDecoration(hintText: 'קהילה / כולל'),
-          ),
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
 
-          if (_saved)
-            Padding(
-              padding: const EdgeInsets.only(top: 20),
-              child: Row(
-                children: const [
-                  Icon(Icons.check_circle, color: kAccent),
-                  SizedBox(width: 8),
-                  Text('הפרטים נשמרו',
-                      style: TextStyle(color: kAccent, fontWeight: FontWeight.w600)),
-                ],
-              ),
-            ),
+  Future<void> _load() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/blocked'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        setState(() {
+          _blocked = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+          _loading = false;
+        });
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _unblock(String userId, String name) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('ביטול חסימה'),
+        content: Text('לבטל חסימה של $name?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false),
+              child: const Text('ביטול')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true),
+              child: const Text('בטל חסימה')),
         ],
       ),
+    );
+    if (confirm != true) return;
+    try {
+      await http.delete(
+        Uri.parse('$kApi/block/$userId'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      setState(() => _blocked.removeWhere((u) => u['id'] == userId));
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(title: const Text('משתמשים חסומים')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: kPrimary))
+          : _blocked.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.check_circle_outline, size: 64, color: kAccent),
+                      SizedBox(height: 12),
+                      Text('אין משתמשים חסומים',
+                          style: TextStyle(color: kSubtext, fontSize: 15)),
+                    ],
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: _blocked.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(height: 1, indent: 72),
+                  itemBuilder: (_, i) {
+                    final u    = _blocked[i];
+                    final name = u['name'] as String? ?? '';
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: kPrimaryMid,
+                        child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                            style: const TextStyle(color: Colors.white)),
+                      ),
+                      title: Text(name,
+                          style: const TextStyle(fontWeight: FontWeight.w600)),
+                      trailing: TextButton(
+                        onPressed: () => _unblock(u['id'] as String, name),
+                        child: const Text('בטל חסימה',
+                            style: TextStyle(color: kPrimary)),
+                      ),
+                    );
+                  },
+                ),
     );
   }
 }

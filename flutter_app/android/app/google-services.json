@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "862738339788",
+    "project_id": "betshuva-c74a3",
+    "storage_bucket": "betshuva-c74a3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:862738339788:android:c2c47641881b4284f4af69",
+        "android_client_info": {
+          "package_name": "com.betshuva.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAajr_DYmyfXFqhzzVqIPyf2aNV_WabvQk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
