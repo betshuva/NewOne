@@ -1126,7 +1126,8 @@ class ConversationsScreen extends StatelessWidget {
       ),
       body: users.isEmpty
           ? const Center(
-              child: CircularProgressIndicator(color: kPrimary),
+              child: Text('אין משתמשים רשומים עדיין',
+                  style: TextStyle(color: kSubtext, fontSize: 15)),
             )
           : ListView.separated(
               itemCount: users.length,
