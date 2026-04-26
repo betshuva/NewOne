@@ -1090,13 +1090,25 @@ app.get('/api/leaderboard', auth, async (req, res) => {
 
 // ── Send OTP via SMS (019 email gateway) ────────────────────────
 app.post('/api/send-otp', async (req, res) => {
-  const { phone, name } = req.body;
+  const { phone, name, email } = req.body;
   if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
-  const clean = phone.replace(/\D/g, '');
+  if (!email || !email.includes('@')) return res.status(400).json({ error: 'נדרשת כתובת אימייל תקינה' });
+  const clean      = phone.replace(/\D/g, '');
+  const cleanEmail = email.toLowerCase().trim();
   if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
+  try {
+    const pool = await getPool();
+    // Check email not already taken by another user
+    const emailExists = await pool.request()
+      .input('email', sql.NVarChar, cleanEmail)
+      .input('phone', sql.NVarChar, clean)
+      .query('SELECT id FROM users WHERE email=@email AND phone != @phone');
+    if (emailExists.recordset.length)
+      return res.status(400).json({ error: 'כתובת האימייל כבר רשומה' });
+  } catch (_) {}
   const code    = Math.floor(100000 + Math.random() * 900000).toString();
-  const expires = Date.now() + 5 * 60 * 1000; // 5 minutes
-  otpStore.set(clean, { code, expires, name: name || '' });
+  const expires = Date.now() + 5 * 60 * 1000;
+  otpStore.set(clean, { code, expires, name: name || '', email: cleanEmail });
   try {
     await sendEmail({
       to:      `${clean}@019sms.co.il`,
@@ -1118,28 +1130,47 @@ app.post('/api/verify-otp', async (req, res) => {
   if (!entry || entry.code !== code || Date.now() > entry.expires)
     return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
   otpStore.delete(clean);
-  const fakeMail = `${clean}@betshuva.app`;
-  const userName = name || entry.name || `משתמש_${clean.slice(-4)}`;
+  const userName  = name || entry.name || `משתמש_${clean.slice(-4)}`;
+  const userEmail = entry.email || `${clean}@betshuva.app`;
   try {
     const pool = await getPool();
-    const existing = await pool.request()
-      .input('email', sql.NVarChar, fakeMail)
-      .query('SELECT id, name, email, wins, games_played FROM users WHERE email = @email');
+    // Check existing user by phone
+    const byPhone = await pool.request()
+      .input('phone', sql.NVarChar, clean)
+      .query('SELECT id, name, email FROM users WHERE phone=@phone');
     let user;
-    if (existing.recordset.length) {
-      user = existing.recordset[0];
+    if (byPhone.recordset.length) {
+      user = byPhone.recordset[0];
+      await pool.request()
+        .input('id', sql.UniqueIdentifier, user.id)
+        .query('UPDATE users SET phone_verified=1, email_verified=1 WHERE id=@id');
     } else {
-      const hash   = await bcrypt.hash(`otp_${clean}`, 10);
-      const result = await pool.request()
-        .input('name',  sql.NVarChar, userName)
-        .input('email', sql.NVarChar, fakeMail)
-        .input('hash',  sql.NVarChar, hash)
-        .query(`INSERT INTO users (name, email, password_hash)
-                OUTPUT INSERTED.id, INSERTED.name, INSERTED.email, INSERTED.wins, INSERTED.games_played
-                VALUES (@name, @email, @hash)`);
-      user = result.recordset[0];
+      // Check by email
+      const byEmail = await pool.request()
+        .input('email', sql.NVarChar, userEmail)
+        .query('SELECT id, name, email FROM users WHERE email=@email');
+      if (byEmail.recordset.length) {
+        user = byEmail.recordset[0];
+        await pool.request()
+          .input('id',    sql.UniqueIdentifier, user.id)
+          .input('phone', sql.NVarChar,         clean)
+          .query('UPDATE users SET phone_verified=1, email_verified=1, phone=@phone WHERE id=@id');
+      } else {
+        // New user — verified by OTP
+        const hash   = await bcrypt.hash(`otp_${clean}`, 10);
+        const result = await pool.request()
+          .input('name',  sql.NVarChar, userName)
+          .input('email', sql.NVarChar, userEmail)
+          .input('phone', sql.NVarChar, clean)
+          .input('hash',  sql.NVarChar, hash)
+          .query(`INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified)
+                  OUTPUT INSERTED.id, INSERTED.name, INSERTED.email
+                  VALUES (@name, @email, @phone, @hash, 1, 1)`);
+        user = result.recordset[0];
+      }
     }
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    logActivity(user.id, 'otp_login', { phone: clean }, null);
     res.json({ token, user });
   } catch (e) {
     res.status(500).json({ error: e.message });

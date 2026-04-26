@@ -302,6 +302,7 @@ class PhoneAuthScreen extends StatefulWidget {
 class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   final _phoneCtrl = TextEditingController();
   final _nameCtrl  = TextEditingController();
+  final _emailCtrl = TextEditingController();
   final _otpCtrl   = TextEditingController();
   bool    _otpSent  = false;
   bool    _loading  = false;
@@ -311,20 +312,23 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   void dispose() {
     _phoneCtrl.dispose();
     _nameCtrl.dispose();
+    _emailCtrl.dispose();
     _otpCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _sendOtp() async {
     final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
-    if (phone.length < 9) { setState(() => _error = 'נא להזין מספר טלפון תקין'); return; }
+    final email = _emailCtrl.text.trim();
     if (_nameCtrl.text.trim().isEmpty) { setState(() => _error = 'נא להזין שם מלא'); return; }
+    if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
+    if (phone.length < 9) { setState(() => _error = 'נא להזין מספר טלפון תקין'); return; }
     setState(() { _loading = true; _error = null; });
     try {
       final res = await http.post(
         Uri.parse('$kApi/send-otp'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': phone, 'name': _nameCtrl.text.trim()}),
+        body: jsonEncode({'phone': phone, 'name': _nameCtrl.text.trim(), 'email': email}),
       ).timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
@@ -396,6 +400,17 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                   textDirection: TextDirection.rtl,
                   decoration: const InputDecoration(
                     labelText: 'שם מלא', prefixIcon: Icon(Icons.person_outline)),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _emailCtrl,
+                  keyboardType: TextInputType.emailAddress,
+                  textDirection: TextDirection.ltr,
+                  decoration: const InputDecoration(
+                    labelText: 'כתובת אימייל',
+                    hintText: 'example@gmail.com',
+                    prefixIcon: Icon(Icons.email_outlined),
+                  ),
                 ),
                 const SizedBox(height: 14),
                 TextField(
