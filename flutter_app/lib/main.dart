@@ -64,7 +64,7 @@ const kFilterBg   = Color(0xFFE8F4FD); // filter banner background
 
 const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi     = '$kServer/api';
-const kVersion = '1.0.1';
+const kVersion = '1.1.0';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
