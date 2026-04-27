@@ -249,8 +249,8 @@ class _SplashScreenState extends State<SplashScreen>
       if (!mounted) return;
       showDialog(
         context: context,
-        barrierDismissible: false,
-        builder: (_) => AlertDialog(
+        barrierDismissible: true,
+        builder: (ctx) => AlertDialog(
           title: const Row(children: [
             Icon(Icons.system_update, color: kPrimary),
             SizedBox(width: 10),
@@ -262,14 +262,13 @@ class _SplashScreenState extends State<SplashScreen>
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(ctx),
               child: const Text('אחר כך', style: TextStyle(color: kSubtext)),
             ),
             ElevatedButton.icon(
-              onPressed: () async {
-                Navigator.pop(context);
-                final uri = Uri.parse(apkUrl);
-                await http.get(uri); // trigger download via browser
+              onPressed: () {
+                Navigator.pop(ctx);
+                http.get(Uri.parse(apkUrl));
               },
               icon: const Icon(Icons.download),
               label: const Text('הורד עכשיו'),
