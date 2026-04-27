@@ -85,7 +85,10 @@
       <path d="M12 16l-5-5h3V4h4v7h3l-5 5z" fill="white"/>
       <path d="M5 20h14v-2H5v2z" fill="white"/>
     </svg>
-    הורד אפליקציה לאנדרואיד
+    <span>
+      הורד אפליקציה לאנדרואיד
+      <span id="apk-version" style="font-size:12px;font-weight:400;opacity:.8;margin-right:4px;"></span>
+    </span>
   </a>
   <button id="apk-dismiss">✕ סגור</button>
 
@@ -112,6 +115,14 @@
           document.getElementById('apk-dismiss').style.display = 'none';
           sessionStorage.setItem('apk-banner-dismissed', '1');
         });
+        // Load version from version.json
+        fetch('/version.json')
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if (d.version) {
+              document.getElementById('apk-version').textContent = 'v' + d.version;
+            }
+          }).catch(function(){});
       }
     })();
   </script>
