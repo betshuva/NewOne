@@ -34,12 +34,11 @@
 
   <style>
     #apk-banner {
-      display: none;
       position: fixed;
       bottom: 24px;
       left: 50%;
       transform: translateX(-50%);
-      z-index: 9999;
+      z-index: 2147483647;
       background: #1B6CA8;
       color: #fff;
       border-radius: 32px;
@@ -49,11 +48,12 @@
       font-weight: 600;
       text-decoration: none;
       box-shadow: 0 6px 24px rgba(27,108,168,.45);
-      display: flex;
+      display: none;
       align-items: center;
       gap: 10px;
       direction: rtl;
       transition: transform .15s, box-shadow .15s;
+      pointer-events: auto;
     }
     #apk-banner:hover {
       transform: translateX(-50%) scale(1.04);
@@ -62,19 +62,20 @@
     #apk-banner svg { flex-shrink: 0; }
     #apk-dismiss {
       position: fixed;
-      bottom: 76px;
+      bottom: 78px;
       left: 50%;
       transform: translateX(-50%);
-      z-index: 9999;
-      background: rgba(255,255,255,.15);
+      z-index: 2147483647;
+      background: rgba(13,79,130,.85);
       border: none;
       color: #fff;
       font-size: 11px;
       cursor: pointer;
-      padding: 3px 10px;
+      padding: 4px 12px;
       border-radius: 8px;
       font-family: Arial, sans-serif;
       display: none;
+      pointer-events: auto;
     }
   </style>
 </head>
@@ -103,27 +104,33 @@
       caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
     }
 
-    // Show APK banner only on Android, unless dismissed
+    // Show APK banner (Android only), unless dismissed
     (function() {
       var isAndroid = /Android/i.test(navigator.userAgent);
       var dismissed = sessionStorage.getItem('apk-banner-dismissed');
-      if (isAndroid && !dismissed) {
-        document.getElementById('apk-banner').style.display = 'flex';
-        document.getElementById('apk-dismiss').style.display = 'block';
-        document.getElementById('apk-dismiss').addEventListener('click', function() {
-          document.getElementById('apk-banner').style.display = 'none';
-          document.getElementById('apk-dismiss').style.display = 'none';
-          sessionStorage.setItem('apk-banner-dismissed', '1');
+      if (!isAndroid || dismissed) return;
+
+      var banner  = document.getElementById('apk-banner');
+      var dismiss = document.getElementById('apk-dismiss');
+      var verEl   = document.getElementById('apk-version');
+
+      // Load version then show
+      fetch('/version.json?_=' + Date.now())
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d.version) verEl.textContent = 'v' + d.version;
+        })
+        .catch(function(){})
+        .finally(function(){
+          banner.style.display  = 'flex';
+          dismiss.style.display = 'block';
         });
-        // Load version from version.json
-        fetch('/version.json')
-          .then(function(r){ return r.json(); })
-          .then(function(d){
-            if (d.version) {
-              document.getElementById('apk-version').textContent = 'v' + d.version;
-            }
-          }).catch(function(){});
-      }
+
+      dismiss.addEventListener('click', function() {
+        banner.style.display  = 'none';
+        dismiss.style.display = 'none';
+        sessionStorage.setItem('apk-banner-dismissed', '1');
+      });
     })();
   </script>
 
