@@ -47,3 +47,12 @@ jobs:
           name: betshuva-apk
           path: flutter_app/build/app/outputs/flutter-apk/betshuva-*.apk
           retention-days: 30
+
+      - name: Update app-release.apk on website
+        run: |
+          cp flutter_app/build/app/outputs/flutter-apk/app-release.apk app-release.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app-release.apk
+          git commit -m "build: update app-release.apk [skip ci]" || echo "No changes"
+          git push

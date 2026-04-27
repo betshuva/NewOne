@@ -18,12 +18,12 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="בתשובה — מסרים לקהילה החרדית">
 
   <!-- iOS meta tags & icons -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="flutter_app">
+  <meta name="apple-mobile-web-app-title" content="בתשובה">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
@@ -31,8 +31,64 @@
 
   <title>בתשובה</title>
   <link rel="manifest" href="manifest.json">
+
+  <style>
+    #apk-banner {
+      display: none;
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 9999;
+      background: #1B6CA8;
+      color: #fff;
+      border-radius: 32px;
+      padding: 14px 28px;
+      font-family: 'Heebo', 'Arial Hebrew', Arial, sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      box-shadow: 0 6px 24px rgba(27,108,168,.45);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      direction: rtl;
+      transition: transform .15s, box-shadow .15s;
+    }
+    #apk-banner:hover {
+      transform: translateX(-50%) scale(1.04);
+      box-shadow: 0 8px 32px rgba(27,108,168,.6);
+    }
+    #apk-banner svg { flex-shrink: 0; }
+    #apk-dismiss {
+      position: fixed;
+      bottom: 76px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 9999;
+      background: rgba(255,255,255,.15);
+      border: none;
+      color: #fff;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 3px 10px;
+      border-radius: 8px;
+      font-family: Arial, sans-serif;
+      display: none;
+    }
+  </style>
 </head>
 <body>
+  <!-- APK download banner — shown only on Android -->
+  <a id="apk-banner" href="/app-release.apk" download="betshuva.apk">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M12 16l-5-5h3V4h4v7h3l-5 5z" fill="white"/>
+      <path d="M5 20h14v-2H5v2z" fill="white"/>
+    </svg>
+    הורד אפליקציה לאנדרואיד
+  </a>
+  <button id="apk-dismiss">✕ סגור</button>
+
   <script>
     // Force clear old service workers and caches
     if ('serviceWorker' in navigator) {
@@ -43,7 +99,23 @@
     if ('caches' in window) {
       caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
     }
+
+    // Show APK banner only on Android, unless dismissed
+    (function() {
+      var isAndroid = /Android/i.test(navigator.userAgent);
+      var dismissed = sessionStorage.getItem('apk-banner-dismissed');
+      if (isAndroid && !dismissed) {
+        document.getElementById('apk-banner').style.display = 'flex';
+        document.getElementById('apk-dismiss').style.display = 'block';
+        document.getElementById('apk-dismiss').addEventListener('click', function() {
+          document.getElementById('apk-banner').style.display = 'none';
+          document.getElementById('apk-dismiss').style.display = 'none';
+          sessionStorage.setItem('apk-banner-dismissed', '1');
+        });
+      }
+    })();
   </script>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
