@@ -1,139 +1,719 @@
 <!DOCTYPE html>
-<html>
+<html lang="he" dir="rtl">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>בתשובה — Betshuva</title>
+<link rel="icon" href="favicon.png"/>
+<link rel="manifest" href="manifest.json"/>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --blue:#1B6CA8;--blue-dark:#0D4F82;--blue-light:#3A8FCC;
+  --blue-pale:#E8F4FD;--blue-mid:#C5DFF2;--div:#D4E9F7;
+  --white:#fff;--off:#F5F7FA;--chat-bg:#EBF5FC;
+  --text:#0D2137;--text2:#4A7FA5;--text3:#8AAFC9;
+  --bubble-out:#1B6CA8;--bubble-in:#fff;
+  --sidebar-w:340px;
+}
+body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);height:100vh;overflow:hidden;display:flex}
 
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
+/* ── AUTH ── */
+#auth-screen{position:fixed;inset:0;background:linear-gradient(135deg,var(--blue-dark),var(--blue));display:flex;align-items:center;justify-content:center;z-index:100}
+.auth-card{background:#fff;border-radius:20px;padding:40px 36px;width:360px;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.auth-logo{text-align:center;margin-bottom:24px}
+.auth-logo svg{display:block;margin:0 auto 12px}
+.auth-logo h1{font-size:28px;font-weight:700;color:var(--blue)}
+.auth-logo span{font-size:13px;color:var(--text3)}
+.auth-tabs{display:flex;border-bottom:2px solid var(--div);margin-bottom:24px}
+.auth-tab{flex:1;text-align:center;padding:10px;font-size:14px;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s}
+.auth-tab.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.auth-field{margin-bottom:14px}
+.auth-field label{display:block;font-size:12px;font-weight:600;color:var(--text2);margin-bottom:5px}
+.auth-field input{width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 13px;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);outline:none;transition:border .2s}
+.auth-field input:focus{border-color:var(--blue)}
+.auth-btn{width:100%;background:var(--blue);color:#fff;border:none;border-radius:10px;padding:13px;font-family:'Heebo',sans-serif;font-size:15px;font-weight:600;cursor:pointer;transition:background .2s;margin-top:6px}
+.auth-btn:hover{background:var(--blue-dark)}
+.auth-err{background:#fef2f2;color:#dc2626;border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:12px;display:none}
 
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+/* ── APP SHELL ── */
+#app{display:none;width:100%;height:100vh;align-items:stretch}
 
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-  <base href="/">
+/* ── SIDEBAR ── */
+.sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:#fff;border-left:1px solid var(--div);display:flex;flex-direction:column;height:100vh}
+.sidebar-header{background:var(--blue);padding:13px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+.brand{display:flex;align-items:center;gap:10px;cursor:default}
+.brand-logo{width:36px;height:36px;background:rgba(255,255,255,.15);border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.brand-text strong{display:block;font-size:16px;font-weight:700;color:#fff;line-height:1.1}
+.brand-text span{font-size:11px;font-weight:300;color:rgba(255,255,255,.75)}
+.hdr-icons{display:flex;gap:14px}
+.hdr-icon{cursor:pointer;opacity:.85;transition:opacity .15s;background:none;border:none;padding:2px}
+.hdr-icon:hover{opacity:1}
+.filter-strip{background:var(--blue-pale);border-bottom:1px solid var(--blue-mid);padding:7px 14px;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--blue-dark);font-weight:500;flex-shrink:0}
+.search-box{padding:8px 12px;background:#fff;border-bottom:1px solid var(--div);flex-shrink:0}
+.search-inner{background:var(--off);border-radius:20px;display:flex;align-items:center;gap:8px;padding:7px 12px;border:1.5px solid var(--blue-mid)}
+.search-inner input{border:none;background:transparent;outline:none;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);flex:1;text-align:right}
+.search-inner input::placeholder{color:var(--text3)}
+.tabs{display:flex;border-bottom:1px solid var(--div);flex-shrink:0}
+.tab{flex:1;text-align:center;padding:9px 0;font-size:12px;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
+.tab.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.chat-list{flex:1;overflow-y:auto}
+.chat-list::-webkit-scrollbar{width:3px}
+.chat-list::-webkit-scrollbar-thumb{background:var(--blue-mid);border-radius:4px}
+.chat-item{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--div);cursor:pointer;transition:background .15s;position:relative}
+.chat-item:hover,.chat-item.active{background:var(--blue-pale)}
+.chat-item.active{border-right:3px solid var(--blue)}
+.ci-av{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;flex-shrink:0;border:2px solid var(--blue-mid);color:var(--blue-dark);background:var(--blue-pale)}
+.ci-body{flex:1;min-width:0}
+.ci-top{display:flex;justify-content:space-between;margin-bottom:3px}
+.ci-name{font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+.ci-time{font-size:11px;color:var(--text3);flex-shrink:0}
+.ci-time.unread{color:var(--blue)}
+.ci-bot{display:flex;justify-content:space-between;align-items:center}
+.ci-prev{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.badge{background:var(--blue);color:#fff;font-size:10px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 4px;flex-shrink:0}
 
-  <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="בתשובה — מסרים לקהילה החרדית">
+/* ── MAIN ── */
+.main{flex:1;display:flex;flex-direction:column;height:100vh;background:var(--chat-bg)}
+.empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:var(--text2)}
+.empty-logo{width:90px;height:90px;border-radius:50%;background:var(--blue-pale);border:3px solid var(--blue-mid);display:flex;align-items:center;justify-content:center}
+.empty-state h2{font-size:20px;font-weight:600;color:var(--text)}
+.empty-state p{font-size:13px;text-align:center;line-height:1.6;max-width:280px}
 
-  <!-- iOS meta tags & icons -->
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="בתשובה">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+/* ── CHAT HEADER ── */
+.chat-header{background:var(--blue);padding:10px 16px;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.ch-av{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;border:2px solid rgba(255,255,255,.4);flex-shrink:0;background:var(--blue-light);color:#fff}
+.ch-info{flex:1}
+.ch-name{font-size:15px;font-weight:600;color:#fff}
+.ch-status{font-size:11.5px;color:rgba(255,255,255,.7);display:flex;align-items:center;gap:4px}
+.online-dot{width:7px;height:7px;border-radius:50%;background:#4DF0A0}
+.ch-actions{display:flex;gap:16px}
+.ch-act{cursor:pointer;opacity:.85;transition:opacity .15s;background:none;border:none}
+.ch-act:hover{opacity:1}
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+/* ── MESSAGES ── */
+.messages-area{flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:3px;position:relative}
+.messages-area::-webkit-scrollbar{width:4px}
+.messages-area::-webkit-scrollbar-thumb{background:var(--blue-mid);border-radius:4px}
+.messages-area::before{content:"";position:absolute;inset:0;background-image:repeating-linear-gradient(45deg,rgba(27,108,168,.025) 0,rgba(27,108,168,.025) 1px,transparent 1px,transparent 40px);pointer-events:none}
+.date-chip{align-self:center;background:rgba(255,255,255,.9);color:var(--text3);font-size:11px;padding:3px 14px;border-radius:12px;margin:6px 0;border:1px solid var(--div);backdrop-filter:blur(4px)}
+.bubble-wrap{display:flex;flex-direction:column;max-width:60%}
+.bubble-wrap.out{align-self:flex-end;align-items:flex-end}
+.bubble-wrap.in{align-self:flex-start;align-items:flex-start}
+.sender-name{font-size:11px;font-weight:600;color:var(--blue);margin-bottom:2px}
+.bubble{padding:9px 13px;font-size:13.5px;line-height:1.5;word-break:break-word}
+.bubble.out{background:var(--bubble-out);color:#fff;border-radius:14px 14px 3px 14px}
+.bubble.in{background:var(--bubble-in);color:var(--text);border-radius:14px 14px 14px 3px;border:1px solid var(--div);box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.bubble-meta{display:flex;align-items:center;gap:4px;margin-top:3px}
+.btime{font-size:10.5px;color:var(--text3)}
+.out .btime{color:rgba(255,255,255,.65)}
+.reply-bar{background:rgba(0,0,0,.06);border-right:3px solid rgba(255,255,255,.5);border-radius:8px;padding:6px 10px;margin-bottom:6px;font-size:12px}
+.out .reply-bar{background:rgba(0,0,0,.12)}
+.in .reply-bar{border-right-color:var(--blue)}
+.file-bubble{display:flex;align-items:center;gap:8px}
+.typing-wrap{align-self:flex-start}
+.typing-dots{display:flex;gap:4px;align-items:center;padding:2px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--blue-mid);animation:bounce 1.2s ease infinite}
+.dot:nth-child(2){animation-delay:.2s}
+.dot:nth-child(3){animation-delay:.4s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
+.msg-in{animation:sIn .2s ease-out}
+.msg-out{animation:sOut .18s ease-out}
+@keyframes sIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+@keyframes sOut{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
 
-  <title>בתשובה</title>
-  <link rel="manifest" href="manifest.json">
+/* ── REPLY PREVIEW BAR ── */
+#reply-bar{display:none;background:#fff;border-top:1px solid var(--div);padding:8px 16px;align-items:center;gap:10px;flex-shrink:0}
+#reply-bar .rb-line{width:3px;height:36px;background:var(--blue);border-radius:2px;flex-shrink:0}
+#reply-bar .rb-text{flex:1;font-size:13px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#reply-bar .rb-close{cursor:pointer;color:var(--text3);background:none;border:none;font-size:18px;line-height:1}
 
-  <style>
-    #apk-banner {
-      position: fixed;
-      bottom: 24px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 2147483647;
-      background: #1B6CA8;
-      color: #fff;
-      border-radius: 32px;
-      padding: 14px 28px;
-      font-family: 'Heebo', 'Arial Hebrew', Arial, sans-serif;
-      font-size: 16px;
-      font-weight: 600;
-      text-decoration: none;
-      box-shadow: 0 6px 24px rgba(27,108,168,.45);
-      display: none;
-      align-items: center;
-      gap: 10px;
-      direction: rtl;
-      transition: transform .15s, box-shadow .15s;
-      pointer-events: auto;
-    }
-    #apk-banner:hover {
-      transform: translateX(-50%) scale(1.04);
-      box-shadow: 0 8px 32px rgba(27,108,168,.6);
-    }
-    #apk-banner svg { flex-shrink: 0; }
-    #apk-dismiss {
-      position: fixed;
-      bottom: 78px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 2147483647;
-      background: rgba(13,79,130,.85);
-      border: none;
-      color: #fff;
-      font-size: 11px;
-      cursor: pointer;
-      padding: 4px 12px;
-      border-radius: 8px;
-      font-family: Arial, sans-serif;
-      display: none;
-      pointer-events: auto;
-    }
-  </style>
+/* ── INPUT ── */
+.input-toolbar{background:#fff;border-top:1px solid var(--div);padding:9px 14px;display:flex;align-items:flex-end;gap:9px;flex-shrink:0}
+.tb-btn{width:40px;height:40px;border-radius:50%;border:none;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s;flex-shrink:0}
+.tb-btn:hover{background:var(--blue-pale)}
+.input-wrap{flex:1;background:var(--off);border-radius:22px;display:flex;align-items:flex-end;padding:9px 14px;gap:10px;border:1.5px solid var(--blue-mid)}
+.input-wrap textarea{flex:1;background:transparent;border:none;outline:none;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);resize:none;line-height:1.5;max-height:120px;min-height:22px;text-align:right}
+.input-wrap textarea::placeholder{color:var(--text3)}
+.send-btn{width:44px;height:44px;border-radius:50%;background:var(--blue);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:transform .12s,background .15s;box-shadow:0 2px 8px rgba(27,108,168,.3)}
+.send-btn:hover{background:var(--blue-dark);transform:scale(1.06)}
+
+/* ── PROFILE MENU ── */
+#profile-menu{position:fixed;bottom:0;left:0;top:0;right:0;z-index:50;display:none;background:rgba(0,0,0,.3)}
+.pm-panel{position:absolute;right:0;top:0;bottom:0;width:280px;background:#fff;box-shadow:-4px 0 20px rgba(0,0,0,.15);display:flex;flex-direction:column}
+.pm-head{background:var(--blue);padding:24px 20px;color:#fff}
+.pm-av{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.2);border:3px solid rgba(255,255,255,.4);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;margin-bottom:12px}
+.pm-name{font-size:17px;font-weight:600}
+.pm-email{font-size:12px;opacity:.75}
+.pm-item{padding:14px 20px;border-bottom:1px solid var(--div);display:flex;align-items:center;gap:12px;cursor:pointer;font-size:14px;color:var(--text);transition:background .15s}
+.pm-item:hover{background:var(--blue-pale)}
+.pm-item.danger{color:#dc2626}
+
+/* scrollbar global */
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:var(--div);border-radius:4px}
+</style>
 </head>
 <body>
-  <!-- APK download banner — shown only on Android -->
-  <a id="apk-banner" href="/app-release.apk" download="betshuva.apk">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-      <path d="M12 16l-5-5h3V4h4v7h3l-5 5z" fill="white"/>
-      <path d="M5 20h14v-2H5v2z" fill="white"/>
-    </svg>
-    <span>
-      הורד אפליקציה לאנדרואיד
-      <span id="apk-version" style="font-size:12px;font-weight:400;opacity:.8;margin-right:4px;"></span>
-    </span>
-  </a>
-  <button id="apk-dismiss">✕ סגור</button>
 
-  <script>
-    // Force clear old service workers and caches
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(regs => {
-        regs.forEach(r => r.unregister());
-      });
+<!-- ── AUTH ── -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <svg id="auth-logo-svg" width="56" height="56" viewBox="0 0 56 56"></svg>
+      <h1>בתשובה</h1>
+      <span>Betshuva Messenger</span>
+    </div>
+    <div id="auth-err" class="auth-err"></div>
+    <div class="auth-tabs">
+      <div class="auth-tab active" onclick="switchAuth('login')">כניסה</div>
+      <div class="auth-tab" onclick="switchAuth('register')">הרשמה</div>
+    </div>
+
+    <!-- LOGIN -->
+    <div id="form-login">
+      <div class="auth-field"><label>אימייל</label><input id="l-email" type="email" placeholder="your@email.com" dir="ltr"/></div>
+      <div class="auth-field"><label>סיסמה</label><input id="l-pass" type="password" placeholder="••••••••" dir="ltr"/></div>
+      <button class="auth-btn" onclick="doLogin()">כניסה</button>
+    </div>
+
+    <!-- REGISTER -->
+    <div id="form-register" style="display:none">
+      <div class="auth-field"><label>שם מלא</label><input id="r-name" type="text" placeholder="ישראל ישראלי"/></div>
+      <div class="auth-field"><label>אימייל</label><input id="r-email" type="email" placeholder="your@email.com" dir="ltr"/></div>
+      <div class="auth-field"><label>סיסמה</label><input id="r-pass" type="password" placeholder="לפחות 8 תווים" dir="ltr"/></div>
+      <div class="auth-field"><label>טלפון</label><input id="r-phone" type="tel" placeholder="0501234567" dir="ltr"/></div>
+      <button class="auth-btn" onclick="doRegister()">הרשמה</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── APP ── -->
+<div id="app">
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand">
+        <div class="brand-logo" id="brand-logo-el"></div>
+        <div class="brand-text"><strong>בתשובה</strong><span>Betshuva Web</span></div>
+      </div>
+      <div class="hdr-icons">
+        <button class="hdr-icon" title="שיחה חדשה" onclick="openNewChat()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="white" stroke-width="1.8" fill="none"/><line x1="12" y1="8" x2="12" y2="16" stroke="white" stroke-width="2" stroke-linecap="round"/><line x1="8" y1="12" x2="16" y2="12" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="hdr-icon" onclick="toggleProfileMenu()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="1.5" fill="white"/><circle cx="12" cy="12" r="1.5" fill="white"/><circle cx="19" cy="12" r="1.5" fill="white"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="filter-strip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="#1B6CA8" opacity=".2" stroke="#1B6CA8" stroke-width="2"/><path d="M9 12l2 2 4-4" stroke="#1B6CA8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Betshuva Filter פעיל — תוכן מסונן ומאושר
+    </div>
+    <div class="search-box">
+      <div class="search-inner">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="#8AAFC9" stroke-width="1.8"/><path d="M17 17l3 3" stroke="#8AAFC9" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input id="search-inp" placeholder="חפש שיחה..." oninput="renderList()"/>
+      </div>
+    </div>
+    <div class="tabs">
+      <div class="tab active" onclick="setTab(this,'all')">כל השיחות</div>
+      <div class="tab" onclick="setTab(this,'unread')">לא נקרא</div>
+      <div class="tab" onclick="setTab(this,'groups')">קבוצות</div>
+    </div>
+    <div class="chat-list" id="chat-list"></div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main" id="main">
+    <div class="empty-state">
+      <div class="empty-logo" id="empty-logo-el"></div>
+      <h2>ברוך הבא לבתשובה</h2>
+      <p>בחר שיחה מהרשימה כדי להתחיל לשוחח.<br/>כל התוכן מסונן ומאושר.</p>
+    </div>
+  </div>
+</div>
+
+<!-- PROFILE MENU -->
+<div id="profile-menu" onclick="closeProfileMenu(event)">
+  <div class="pm-panel">
+    <div class="pm-head">
+      <div class="pm-av" id="pm-av"></div>
+      <div class="pm-name" id="pm-name"></div>
+      <div class="pm-email" id="pm-email"></div>
+    </div>
+    <div class="pm-item" onclick="logout()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" stroke="#dc2626" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      התנתק
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'https://xo-app-betshuva.azurewebsites.net';
+let token = localStorage.getItem('bt_token');
+let me = null;
+let socket = null;
+let users = [];
+let groups = [];
+let currentChat = null; // {type:'user'|'group', id, name, initials}
+let currentTab = 'all';
+let replyTo = null;
+let typingTimer = null;
+
+// ── Magen David ──────────────────────────────────────────────────
+function magenDavid(size, color, bg) {
+  const cx = size/2, cy = size/2, R = size*0.34;
+  function tri(up) {
+    const a = up ? -90 : 90;
+    return [0,1,2].map(i=>{const r=(a+i*120)*Math.PI/180;return`${cx+R*Math.cos(r)},${cy+R*Math.sin(r)}`;}).join(' ');
+  }
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <circle cx="${cx}" cy="${cy}" r="${size/2}" fill="${bg}"/>
+    <polygon points="${tri(true)}" fill="none" stroke="${color}" stroke-width="${size*0.07}" stroke-linejoin="round"/>
+    <polygon points="${tri(false)}" fill="none" stroke="${color}" stroke-width="${size*0.07}" stroke-linejoin="round"/>
+  </svg>`;
+}
+
+function initLogos() {
+  document.getElementById('auth-logo-svg').outerHTML = magenDavid(56,'#1B6CA8','#EBF5FC');
+  document.getElementById('brand-logo-el').innerHTML = magenDavid(28,'white','rgba(255,255,255,.15)');
+  document.getElementById('empty-logo-el').innerHTML = magenDavid(54,'#1B6CA8','transparent');
+}
+initLogos();
+
+// ── Auth ──────────────────────────────────────────────────────────
+function switchAuth(tab) {
+  document.querySelectorAll('.auth-tab').forEach((t,i)=>t.classList.toggle('active',i===(tab==='login'?0:1)));
+  document.getElementById('form-login').style.display = tab==='login'?'':'none';
+  document.getElementById('form-register').style.display = tab==='register'?'':'none';
+  document.getElementById('auth-err').style.display='none';
+}
+
+function showAuthErr(msg) {
+  const el = document.getElementById('auth-err');
+  el.textContent = msg; el.style.display = 'block';
+}
+
+async function doLogin() {
+  const email = document.getElementById('l-email').value.trim();
+  const pass  = document.getElementById('l-pass').value;
+  if (!email || !pass) return showAuthErr('נא למלא אימייל וסיסמה');
+  try {
+    const r = await fetch(`${API}/api/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pass})});
+    const d = await r.json();
+    if (!r.ok) return showAuthErr(d.error || 'שגיאה בכניסה');
+    token = d.token; me = d.user;
+    localStorage.setItem('bt_token', token);
+    startApp();
+  } catch(e) { showAuthErr('שגיאת תקשורת — נסה שוב'); }
+}
+
+async function doRegister() {
+  const name  = document.getElementById('r-name').value.trim();
+  const email = document.getElementById('r-email').value.trim();
+  const pass  = document.getElementById('r-pass').value;
+  const phone = document.getElementById('r-phone').value.trim();
+  if (!name||!email||!pass||!phone) return showAuthErr('נא למלא את כל השדות');
+  try {
+    const r = await fetch(`${API}/api/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password:pass,phone})});
+    const d = await r.json();
+    if (!r.ok) return showAuthErr(d.error || 'שגיאה בהרשמה');
+    showAuthErr('✅ נרשמת בהצלחה! אמת את האימייל שלך ואז התחבר.');
+    switchAuth('login');
+  } catch(e) { showAuthErr('שגיאת תקשורת'); }
+}
+
+// ── App Start ─────────────────────────────────────────────────────
+async function startApp() {
+  if (!token) return;
+  // decode me from token if not set
+  if (!me) {
+    try {
+      const p = token.split('.')[1];
+      me = JSON.parse(atob(p.replace(/-/g,'+').replace(/_/g,'/')));
+    } catch(e) {}
+  }
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  updateProfileMenu();
+  await Promise.all([loadUsers(), loadGroups()]);
+  connectSocket();
+  renderList();
+}
+
+function updateProfileMenu() {
+  if (!me) return;
+  const init = (me.name||'?')[0].toUpperCase();
+  document.getElementById('pm-av').textContent = init;
+  document.getElementById('pm-name').textContent = me.name || '';
+  document.getElementById('pm-email').textContent = me.email || '';
+}
+
+// ── Users & Groups ────────────────────────────────────────────────
+async function loadUsers() {
+  try {
+    const r = await fetch(`${API}/api/users`,{headers:{Authorization:`Bearer ${token}`}});
+    if (r.ok) users = await r.json();
+  } catch(e) {}
+}
+
+async function loadGroups() {
+  try {
+    const r = await fetch(`${API}/api/groups`,{headers:{Authorization:`Bearer ${token}`}});
+    if (r.ok) { const d = await r.json(); groups = d; }
+  } catch(e) {}
+}
+
+// ── Socket ────────────────────────────────────────────────────────
+function connectSocket() {
+  socket = io(API, {auth:{token}, transports:['websocket']});
+  socket.on('chat:message', onIncomingMsg);
+  socket.on('group:message', onIncomingGroupMsg);
+  socket.on('chat:typing', ({fromUserId}) => {
+    if (currentChat?.type==='user' && currentChat.id===fromUserId) showTyping();
+  });
+  socket.on('messages:read', () => {
+    if (currentChat) markBubblesRead();
+  });
+}
+
+function onIncomingMsg(data) {
+  const isActive = currentChat?.type==='user' && currentChat.id===data.fromUserId;
+  if (isActive) {
+    hideTyping();
+    appendBubble({dir:'in', text:data.text||'', time:nowTime(), id:data.id});
+    markRead(data.fromUserId);
+  }
+  updateChatPreview(data.fromUserId, data.text, 'user');
+  renderList();
+}
+
+function onIncomingGroupMsg(data) {
+  const isActive = currentChat?.type==='group' && currentChat.id===data.groupId;
+  if (isActive) appendBubble({dir:'in', text:data.text||'', time:nowTime(), sender:data.fromName});
+  updateChatPreview(data.groupId, data.text, 'group');
+  renderList();
+}
+
+// ── Render List ───────────────────────────────────────────────────
+const previews = {}; // id -> {text, time, unread}
+
+function updateChatPreview(id, text, type) {
+  const key = `${type}:${id}`;
+  if (!previews[key]) previews[key] = {unread:0};
+  previews[key].text = text;
+  previews[key].time = nowTime();
+  const isActive = currentChat && currentChat.type===(type==='group'?'group':'user') && currentChat.id===id;
+  if (!isActive) previews[key].unread = (previews[key].unread||0)+1;
+}
+
+function setTab(el, tab) {
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active'); currentTab = tab; renderList();
+}
+
+function renderList() {
+  const q = (document.getElementById('search-inp')?.value||'').toLowerCase();
+  const el = document.getElementById('chat-list');
+  el.innerHTML = '';
+
+  const items = [];
+  if (currentTab !== 'groups') {
+    users.forEach(u => {
+      if (q && !u.name.toLowerCase().includes(q)) return;
+      const key = `user:${u.id}`;
+      const p = previews[key]||{};
+      items.push({type:'user', id:u.id, name:u.name, preview:p.text||'לחץ לפתיחת שיחה', time:p.time||'', unread:p.unread||0});
+    });
+  }
+  if (currentTab !== 'unread') {
+    groups.forEach(g => {
+      if (q && !g.name.toLowerCase().includes(q)) return;
+      const key = `group:${g.id}`;
+      const p = previews[key]||{};
+      items.push({type:'group', id:g.id, name:g.name, preview:p.text||'קבוצה', time:p.time||'', unread:p.unread||0});
+    });
+  }
+
+  if (currentTab === 'unread') {
+    items.filter(i => i.unread > 0).forEach(i => renderItem(el, i));
+    return;
+  }
+  items.forEach(i => renderItem(el, i));
+}
+
+function renderItem(container, c) {
+  const div = document.createElement('div');
+  const active = currentChat && currentChat.type===c.type && currentChat.id===c.id;
+  div.className = 'chat-item' + (active?' active':'');
+  const init = (c.name||'?')[0].toUpperCase();
+  div.innerHTML = `
+    <div class="ci-av">${init}</div>
+    <div class="ci-body">
+      <div class="ci-top">
+        <span class="ci-name">${c.name}</span>
+        <span class="ci-time${c.unread?' unread':''}">${c.time}</span>
+      </div>
+      <div class="ci-bot">
+        <span class="ci-prev">${c.preview||''}</span>
+        ${c.unread?`<div class="badge">${c.unread}</div>`:''}
+      </div>
+    </div>`;
+  div.onclick = () => openChat(c);
+  container.appendChild(div);
+}
+
+// ── Open Chat ─────────────────────────────────────────────────────
+async function openChat(c) {
+  currentChat = c;
+  replyTo = null;
+  const key = (c.type==='group'?'group':'user')+':'+c.id;
+  if (previews[key]) previews[key].unread = 0;
+  renderList();
+
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="chat-header">
+      <div class="ch-av">${(c.name||'?')[0].toUpperCase()}</div>
+      <div class="ch-info">
+        <div class="ch-name">${c.name}</div>
+        <div class="ch-status"><span class="online-dot"></span>מקוון · מסונן</div>
+      </div>
+      <div class="ch-actions">
+        <button class="ch-act"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="rgba(255,255,255,.85)" stroke-width="1.8"/><path d="M17 17l3 3" stroke="rgba(255,255,255,.85)" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <button class="ch-act"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81 19.79 19.79 0 01.01 1.18 2 2 0 012 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92v2z" stroke="rgba(255,255,255,.85)" stroke-width="1.8"/></svg></button>
+        <button class="ch-act"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="1.5" fill="rgba(255,255,255,.85)"/><circle cx="12" cy="12" r="1.5" fill="rgba(255,255,255,.85)"/><circle cx="19" cy="12" r="1.5" fill="rgba(255,255,255,.85)"/></svg></button>
+      </div>
+    </div>
+    <div class="messages-area" id="msgs"></div>
+    <div id="reply-bar">
+      <div class="rb-line"></div>
+      <div class="rb-text" id="rb-text"></div>
+      <button class="rb-close" onclick="clearReply()">✕</button>
+    </div>
+    <div class="input-toolbar">
+      <label class="tb-btn" title="קובץ">
+        <input type="file" style="display:none" onchange="uploadFile(this)"/>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" stroke="#8AAFC9" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </label>
+      <div class="input-wrap">
+        <textarea id="msg-inp" placeholder="כתוב הודעה..." rows="1"
+          onkeydown="handleKey(event)" oninput="grow(this);onTyping()"></textarea>
+      </div>
+      <button class="send-btn" onclick="sendMsg()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>`;
+
+  const area = document.getElementById('msgs');
+  area.innerHTML = `<div class="date-chip">טוען...</div>`;
+  const msgs = await loadMessages(c);
+  area.innerHTML = `<div class="date-chip">היום</div>`;
+  msgs.forEach(m => appendBubble(m, false));
+  area.scrollTop = area.scrollHeight;
+  document.getElementById('msg-inp').focus();
+  if (c.type==='user') markRead(c.id);
+}
+
+async function loadMessages(c) {
+  try {
+    const url = c.type==='user'
+      ? `${API}/api/messages/${c.id}`
+      : `${API}/api/groups/${c.id}/messages`;
+    const r = await fetch(url, {headers:{Authorization:`Bearer ${token}`}});
+    if (!r.ok) return [];
+    const data = await r.json();
+    return data.map(m => ({
+      id: m.id,
+      dir: m.sender_id===me?.id ? 'out' : 'in',
+      text: m.body||m.text||'',
+      time: fmtTime(m.created_at),
+      ticks: (m.is_read||m.status==='read') ? 'read' : 'sent',
+      sender: m.sender_name||m.fromName||'',
+      fileUrl: m.file_url,
+      fileName: m.file_name,
+      replyText: m.reply_body,
+    }));
+  } catch(e) { return []; }
+}
+
+// ── Bubble ────────────────────────────────────────────────────────
+function ticks(s) {
+  const col = s==='read' ? '#93C5E8' : 'rgba(255,255,255,.55)';
+  if (s==='sent') return `<svg width="14" height="9" viewBox="0 0 14 9" fill="none"><path d="M2 4.5l3.5 3.5L12 1.5" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  return `<svg width="18" height="9" viewBox="0 0 18 9" fill="none"><path d="M1 4.5l3.5 3.5L10 1.5" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 4.5l3.5 3.5L15 1.5" stroke="${col}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function appendBubble(m, animate=true) {
+  const area = document.getElementById('msgs');
+  if (!area) return;
+  const w = document.createElement('div');
+  w.className = `bubble-wrap ${m.dir}` + (animate ? ` ${m.dir==='in'?'msg-in':'msg-out'}` : '');
+  if (m.id) w.dataset.id = m.id;
+
+  let inner = '';
+  if (m.sender && m.dir==='in') inner += `<div class="sender-name">${m.sender}</div>`;
+  if (m.replyText) inner += `<div class="reply-bar">${m.replyText}</div>`;
+
+  if (m.fileUrl) {
+    inner += `<div class="bubble ${m.dir}">
+      <div class="file-bubble">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" stroke-width="1.8"/><polyline points="14 2 14 8 20 8" stroke="currentColor" stroke-width="1.8"/></svg>
+        <a href="${m.fileUrl}" target="_blank" style="color:inherit;text-decoration:underline">${m.fileName||'קובץ'}</a>
+      </div>
+      <div class="bubble-meta"><span class="btime">${m.time}</span>${m.dir==='out'?ticks(m.ticks||'sent'):''}</div>
+    </div>`;
+  } else {
+    inner += `<div class="bubble ${m.dir}">${esc(m.text||'')}
+      <div class="bubble-meta"><span class="btime">${m.time}</span>${m.dir==='out'?ticks(m.ticks||'sent'):''}</div>
+    </div>`;
+  }
+
+  w.innerHTML = inner;
+  w.ondblclick = () => setReply(m);
+  area.appendChild(w);
+  if (animate) area.scrollTop = area.scrollHeight;
+}
+
+function markBubblesRead() {
+  document.querySelectorAll('.bubble-wrap.out').forEach(w => {
+    const sv = w.querySelector('svg');
+    if (sv) { sv.querySelectorAll('path').forEach(p=>p.setAttribute('stroke','#93C5E8')); }
+  });
+}
+
+// ── Send ──────────────────────────────────────────────────────────
+function sendMsg() {
+  const inp = document.getElementById('msg-inp');
+  const text = inp.value.trim();
+  if (!text || !currentChat || !socket) return;
+  const t = nowTime();
+  appendBubble({dir:'out', text, time:t, ticks:'sent'});
+  inp.value=''; inp.style.height='';
+
+  if (currentChat.type==='user') {
+    socket.emit('chat:message', {toUserId:currentChat.id, text, replyToId:replyTo?.id||null});
+  } else {
+    socket.emit('group:message', {groupId:currentChat.id, text, replyToId:replyTo?.id||null});
+  }
+  updateChatPreview(currentChat.id, text, currentChat.type);
+  clearReply(); renderList();
+}
+
+function onTyping() {
+  if (!socket || !currentChat || currentChat.type!=='user') return;
+  socket.emit('chat:typing', {toUserId:currentChat.id});
+}
+
+function handleKey(e) {
+  if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+  if (e.key==='Escape') clearReply();
+}
+
+function grow(el) { el.style.height=''; el.style.height=Math.min(el.scrollHeight,120)+'px'; }
+
+// ── Upload ────────────────────────────────────────────────────────
+async function uploadFile(input) {
+  if (!input.files[0]) return;
+  const fd = new FormData(); fd.append('file', input.files[0]);
+  try {
+    const r = await fetch(`${API}/api/upload`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:fd});
+    if (!r.ok) return;
+    const d = await r.json();
+    const t = nowTime();
+    appendBubble({dir:'out', text:'', time:t, ticks:'sent', fileUrl:d.url||d.fileUrl, fileName:input.files[0].name});
+    if (socket && currentChat) {
+      if (currentChat.type==='user') socket.emit('chat:message',{toUserId:currentChat.id,text:`[קובץ: ${input.files[0].name}]`,fileUrl:d.url||d.fileUrl,fileName:input.files[0].name});
+      else socket.emit('group:message',{groupId:currentChat.id,text:`[קובץ: ${input.files[0].name}]`});
     }
-    if ('caches' in window) {
-      caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
-    }
+    input.value='';
+  } catch(e) { alert('שגיאה בהעלאת הקובץ'); }
+}
 
-    // Show APK banner (Android only), unless dismissed
-    (function() {
-      var isAndroid = /Android/i.test(navigator.userAgent);
-      var dismissed = sessionStorage.getItem('apk-banner-dismissed');
-      if (!isAndroid || dismissed) return;
+// ── Reply ─────────────────────────────────────────────────────────
+function setReply(m) {
+  replyTo = m;
+  document.getElementById('reply-bar').style.display='flex';
+  document.getElementById('rb-text').textContent = m.text||'הודעה';
+  document.getElementById('msg-inp')?.focus();
+}
+function clearReply() {
+  replyTo=null;
+  const rb = document.getElementById('reply-bar');
+  if (rb) rb.style.display='none';
+}
 
-      var banner  = document.getElementById('apk-banner');
-      var dismiss = document.getElementById('apk-dismiss');
-      var verEl   = document.getElementById('apk-version');
+// ── Typing indicator ──────────────────────────────────────────────
+function showTyping() {
+  const area = document.getElementById('msgs');
+  if (!area || document.getElementById('typing-ind')) return;
+  const w = document.createElement('div');
+  w.id='typing-ind'; w.className='bubble-wrap in typing-wrap';
+  w.innerHTML='<div class="bubble in"><div class="typing-dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>';
+  area.appendChild(w); area.scrollTop=area.scrollHeight;
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(hideTyping, 4000);
+}
+function hideTyping() {
+  const el=document.getElementById('typing-ind');
+  if (el) el.remove();
+}
 
-      // Load version then show
-      fetch('/version.json?_=' + Date.now())
-        .then(function(r){ return r.json(); })
-        .then(function(d){
-          if (d.version) verEl.textContent = 'v' + d.version;
-        })
-        .catch(function(){})
-        .finally(function(){
-          banner.style.display  = 'flex';
-          dismiss.style.display = 'block';
-        });
+// ── Mark Read ─────────────────────────────────────────────────────
+async function markRead(userId) {
+  try {
+    await fetch(`${API}/api/messages/read`,{method:'PUT',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({senderId:userId})});
+  } catch(e) {}
+}
 
-      dismiss.addEventListener('click', function() {
-        banner.style.display  = 'none';
-        dismiss.style.display = 'none';
-        sessionStorage.setItem('apk-banner-dismissed', '1');
-      });
-    })();
-  </script>
+// ── Profile Menu ──────────────────────────────────────────────────
+function toggleProfileMenu() { document.getElementById('profile-menu').style.display='flex'; }
+function closeProfileMenu(e) { if (e.target===document.getElementById('profile-menu')) document.getElementById('profile-menu').style.display='none'; }
 
-  <script src="flutter_bootstrap.js" async></script>
+function logout() {
+  localStorage.removeItem('bt_token');
+  location.reload();
+}
+
+function openNewChat() {
+  setTab(document.querySelector('.tab'), 'all');
+  document.getElementById('search-inp').focus();
+}
+
+// ── Utils ─────────────────────────────────────────────────────────
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function nowTime() { const n=new Date(); return `${n.getHours()}:${String(n.getMinutes()).padStart(2,'0')}`; }
+function fmtTime(raw) {
+  if (!raw) return '';
+  const d = new Date(raw); if (isNaN(d)) return '';
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+// ── APK banner (Android only) ─────────────────────────────────────
+(function(){
+  if (!/Android/i.test(navigator.userAgent)) return;
+  if (sessionStorage.getItem('apk-dismissed')) return;
+  const b = document.createElement('a');
+  b.href='/app-release.apk'; b.download='betshuva.apk';
+  b.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:9999;background:#1B6CA8;color:#fff;border-radius:30px;padding:12px 24px;font-family:Heebo,Arial,sans-serif;font-size:15px;font-weight:600;text-decoration:none;box-shadow:0 4px 20px rgba(27,108,168,.5);display:flex;align-items:center;gap:8px;direction:rtl';
+  b.innerHTML='<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 16l-5-5h3V4h4v7h3l-5 5z" fill="white"/><path d="M5 20h14v-2H5v2z" fill="white"/></svg><span>הורד אפליקציה <span id="apk-v" style="opacity:.75;font-size:12px"></span></span>';
+  document.body.appendChild(b);
+  fetch('/version.json?_='+Date.now()).then(r=>r.json()).then(d=>{const v=document.getElementById('apk-v');if(v&&d.version)v.textContent='v'+d.version}).catch(()=>{});
+  const x=document.createElement('button');
+  x.textContent='✕'; x.style.cssText='position:fixed;bottom:68px;left:50%;transform:translateX(-50%);z-index:9999;background:rgba(13,79,130,.8);color:#fff;border:none;padding:3px 10px;border-radius:8px;cursor:pointer;font-size:11px';
+  x.onclick=()=>{b.remove();x.remove();sessionStorage.setItem('apk-dismissed','1')};
+  document.body.appendChild(x);
+})();
+
+// ── Boot ──────────────────────────────────────────────────────────
+if (token) {
+  startApp();
+} else {
+  document.getElementById('auth-screen').style.display='flex';
+  document.getElementById('app').style.display='none';
+}
+</script>
 </body>
 </html>
