@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -46,17 +47,20 @@ void _showLocalNotification(RemoteMessage msg) {
   );
 }
 
-// ── Color Palette ─────────────────────────────────────────────────
-const kPrimary    = Color(0xFF0038B8); // Israeli flag blue
-const kPrimaryMid = Color(0xFF0055D4);
-const kAccent     = Color(0xFF4B9CD3); // תכלת
-const kBg         = Color(0xFFFFFFFF); // white
+// ── Color Palette — Betshuva Brand ───────────────────────────────
+const kPrimary    = Color(0xFF1B6CA8); // Betshuva Blue
+const kPrimaryMid = Color(0xFF3A8FCC); // Blue Light
+const kAccent     = Color(0xFF3A8FCC); // Blue Light
+const kHeader     = Color(0xFF0D4F82); // App bar / header
+const kBg         = Color(0xFFFFFFFF);
 const kCard       = Color(0xFFFFFFFF);
-const kBorder     = Color(0xFFCCDFF5);
-const kSubtext    = Color(0xFF6C757D);
-const kReadGreen  = Color(0xFF25D366);
-const kOutgoing   = Color(0xFFDCEEFB); // light blue outgoing
-const kChatBg     = Color(0xFFF0F7FD); // very light blue chat bg
+const kBorder     = Color(0xFFD4E9F7); // divider
+const kSubtext    = Color(0xFF8AAFC9); // text-muted
+const kTextDark   = Color(0xFF0D2137); // text-primary
+const kReadTick   = Color(0xFF93C5E8); // read double-tick
+const kOutgoing   = Color(0xFF1B6CA8); // outgoing bubble — brand blue
+const kChatBg     = Color(0xFFEBF5FC); // chat background
+const kFilterBg   = Color(0xFFE8F4FD); // filter banner background
 
 const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi     = '$kServer/api';
@@ -76,6 +80,56 @@ Future<void> main() async {
   } catch (_) {}
   runApp(const BetshuvApp());
 }
+
+// ── Magen David Logo ──────────────────────────────────────────────
+class _MagenDavidPainter extends CustomPainter {
+  final Color color;
+  final Color bgColor;
+  const _MagenDavidPainter(this.color, this.bgColor);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bg = Paint()..color = bgColor;
+    canvas.drawCircle(Offset(size.width / 2, size.height / 2),
+        size.width / 2, bg);
+
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = size.width * 0.07
+      ..strokeJoin = StrokeJoin.round;
+
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final r = size.width * 0.36;
+
+    Path _tri(double startAngle) {
+      final p = Path();
+      for (int i = 0; i < 3; i++) {
+        final a = (startAngle + i * 120) * math.pi / 180;
+        final x = cx + r * math.cos(a);
+        final y = cy + r * math.sin(a);
+        if (i == 0) p.moveTo(x, y);
+        else p.lineTo(x, y);
+      }
+      p.close();
+      return p;
+    }
+
+    canvas.drawPath(_tri(-90), paint);
+    canvas.drawPath(_tri(90), paint);
+  }
+
+  @override
+  bool shouldRepaint(_) => false;
+}
+
+Widget _magenDavid({double size = 32, Color color = kPrimary,
+    Color bg = Colors.white}) =>
+    CustomPaint(
+      size: Size(size, size),
+      painter: _MagenDavidPainter(color, bg),
+    );
 
 // ── App Root ──────────────────────────────────────────────────────
 class BetshuvApp extends StatelessWidget {
@@ -99,7 +153,7 @@ class BetshuvApp extends StatelessWidget {
           surface: kCard,
         ),
         appBarTheme: const AppBarTheme(
-          backgroundColor: kPrimary,
+          backgroundColor: kHeader,
           foregroundColor: Colors.white,
           elevation: 0,
           centerTitle: false,
@@ -242,36 +296,31 @@ class _SplashScreenState extends State<SplashScreen>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                width: 110,
-                height: 110,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(28),
-                ),
-                child: const Icon(
-                  Icons.chat_bubble_outline_rounded,
-                  size: 60,
-                  color: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 28),
+              _magenDavid(size: 96, color: Colors.white, bg: Colors.transparent),
+              const SizedBox(height: 24),
               const Text(
                 'בתשובה',
                 style: TextStyle(
                   fontSize: 44,
                   fontWeight: FontWeight.bold,
                   color: Colors.white,
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Betshuva',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.white.withOpacity(0.7),
                   letterSpacing: 3,
                 ),
               ),
               const SizedBox(height: 8),
-              const Text('🇮🇱', style: TextStyle(fontSize: 28)),
-              const SizedBox(height: 6),
               Text(
                 'מסרים לקהילה החרדית',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 15,
                   color: Colors.white.withOpacity(0.8),
                 ),
               ),
@@ -1091,6 +1140,8 @@ class _MainShellState extends State<MainShell> {
         onTap: (i) => setState(() => _idx = i),
         selectedItemColor: kPrimary,
         unselectedItemColor: kSubtext,
+        backgroundColor: Colors.white,
+        elevation: 8,
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(
@@ -1115,7 +1166,7 @@ class _MainShellState extends State<MainShell> {
 }
 
 // ── Conversations Screen ──────────────────────────────────────────
-class ConversationsScreen extends StatelessWidget {
+class ConversationsScreen extends StatefulWidget {
   final List<Map<String, dynamic>> users;
   final String token;
   final Map<String, dynamic>? me;
@@ -1130,42 +1181,164 @@ class ConversationsScreen extends StatelessWidget {
   });
 
   @override
+  State<ConversationsScreen> createState() => _ConversationsScreenState();
+}
+
+class _ConversationsScreenState extends State<ConversationsScreen> {
+  int _tab = 0;
+  static const _tabs = ['כל השיחות', 'לא נקרא', 'קבוצות'];
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: const Color(0xFFF0F6FC),
       appBar: AppBar(
-        title: const Text('שיחות'),
+        backgroundColor: kPrimary,
+        elevation: 0,
+        titleSpacing: 16,
+        title: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: _magenDavid(size: 22, color: kPrimary, bg: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('בתשובה',
+                    style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        height: 1.1)),
+                Text('Betshuva',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w300,
+                        color: Colors.white70,
+                        letterSpacing: 0.5)),
+              ],
+            ),
+          ],
+        ),
         actions: [
-          IconButton(icon: const Icon(Icons.search), onPressed: () {}),
+          IconButton(
+            icon: const Icon(Icons.search, color: Colors.white),
+            onPressed: () {},
+          ),
+          IconButton(
+            icon: const Icon(Icons.more_vert, color: Colors.white),
+            onPressed: () {},
+          ),
         ],
-      ),
-      body: users.isEmpty
-          ? const Center(
-              child: Text('אין משתמשים רשומים עדיין',
-                  style: TextStyle(color: kSubtext, fontSize: 15)),
-            )
-          : ListView.separated(
-              itemCount: users.length,
-              separatorBuilder: (_, __) =>
-                  const Divider(height: 1, indent: 76, endIndent: 0),
-              itemBuilder: (_, i) {
-                final user = users[i];
-                return _ConversationTile(
-                  user: user,
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ChatScreen(
-                        token: token,
-                        me: me,
-                        recipient: user,
-                        socket: socket,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(38),
+          child: Container(
+            color: kHeader,
+            child: Row(
+              children: List.generate(_tabs.length, (i) {
+                final active = _tab == i;
+                return Expanded(
+                  child: GestureDetector(
+                    onTap: () => setState(() => _tab = i),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 9),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            color: active ? Colors.white : Colors.transparent,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      child: Text(
+                        _tabs[i],
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                          color: active
+                              ? Colors.white
+                              : Colors.white.withOpacity(0.6),
+                        ),
                       ),
                     ),
                   ),
                 );
-              },
+              }),
             ),
+          ),
+        ),
+      ),
+      body: Column(
+        children: [
+          // Filter banner
+          Container(
+            color: kFilterBg,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            child: Row(
+              children: [
+                const Icon(Icons.verified_user_outlined,
+                    size: 14, color: kPrimary),
+                const SizedBox(width: 7),
+                const Expanded(
+                  child: Text(
+                    'Betshuva Filter פעיל — תוכן מסונן ומאושר',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: kHeader),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Divider below banner
+          Container(height: 1, color: const Color(0xFFC5DFF2)),
+          // List
+          Expanded(
+            child: widget.users.isEmpty
+                ? const Center(
+                    child: Text('אין משתמשים רשומים עדיין',
+                        style: TextStyle(color: kSubtext, fontSize: 15)),
+                  )
+                : ListView.separated(
+                    itemCount: widget.users.length,
+                    separatorBuilder: (_, __) => const Divider(
+                        height: 1,
+                        color: Color(0xFFD4E9F7),
+                        indent: 76,
+                        endIndent: 0),
+                    itemBuilder: (_, i) {
+                      final user = widget.users[i];
+                      return _ConversationTile(
+                        user: user,
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChatScreen(
+                              token: widget.token,
+                              me: widget.me,
+                              recipient: user,
+                              socket: widget.socket,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1180,32 +1353,61 @@ class _ConversationTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final name     = user['name'] as String? ?? '';
     final initials = name.isNotEmpty ? name[0].toUpperCase() : '?';
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      leading: CircleAvatar(
-        radius: 26,
-        backgroundColor: kPrimaryMid,
-        child: Text(
-          initials,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 18,
-          ),
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        color: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: const BoxDecoration(
+                color: Color(0xFFC5DFF2),
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: Text(
+                  initials,
+                  style: const TextStyle(
+                    color: kHeader,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(name,
+                          style: const TextStyle(
+                              color: kTextDark,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600)),
+                      const Text('עכשיו',
+                          style: TextStyle(fontSize: 11, color: kSubtext)),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  const Text(
+                    'לחץ לפתיחת שיחה',
+                    style: TextStyle(fontSize: 12, color: kSubtext),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
-      title: Text(
-        name,
-        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
-      ),
-      subtitle: const Text(
-        'לחץ לפתיחת שיחה',
-        style: TextStyle(fontSize: 13, color: kSubtext),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: const Icon(Icons.chevron_left, color: kSubtext),
-      onTap: onTap,
     );
   }
 }
@@ -1630,25 +1832,64 @@ class _ChatScreenState extends State<ChatScreen> {
       backgroundColor: kChatBg,
       appBar: AppBar(
         backgroundColor: kPrimary,
-        leading: BackButton(color: Colors.white, onPressed: () => Navigator.pop(context)),
+        leading: BackButton(
+            color: Colors.white,
+            onPressed: () => Navigator.pop(context)),
+        leadingWidth: 40,
         title: Row(
           children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: kAccent,
-              child: Text(
-                recipientName.isNotEmpty ? recipientName[0].toUpperCase() : '?',
-                style: const TextStyle(color: Colors.white, fontSize: 14),
+            Container(
+              width: 38,
+              height: 38,
+              decoration: const BoxDecoration(
+                color: Color(0xFFC5DFF2),
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: Text(
+                  recipientName.isNotEmpty
+                      ? recipientName[0].toUpperCase()
+                      : '?',
+                  style: const TextStyle(
+                      color: kHeader,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16),
+                ),
               ),
             ),
             const SizedBox(width: 10),
-            Text(
-              recipientName,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(recipientName,
+                    style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white)),
+                Row(
+                  children: [
+                    const Icon(Icons.verified_user_outlined,
+                        size: 10, color: Colors.white60),
+                    const SizedBox(width: 3),
+                    const Text('מסונן · מקוון',
+                        style:
+                            TextStyle(fontSize: 11, color: Colors.white70)),
+                  ],
+                ),
+              ],
             ),
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.videocam_outlined, color: Colors.white),
+            onPressed: () {},
+          ),
+          IconButton(
+            icon: const Icon(Icons.phone_outlined, color: Colors.white),
+            onPressed: () {},
+          ),
           IconButton(
             icon: const Icon(Icons.more_vert),
             onPressed: () => _showChatMenu(),
@@ -1724,54 +1965,78 @@ class _ChatScreenState extends State<ChatScreen> {
 
           // Typing indicator
           if (_isTyping)
-            Container(
-              width: double.infinity,
-              color: kBg,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Text(
-                '${widget.recipient['name'] ?? ''} מקליד...',
-                style: const TextStyle(fontSize: 12, color: kSubtext,
-                    fontStyle: FontStyle.italic),
-                textDirection: TextDirection.rtl,
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Container(
+                margin: const EdgeInsets.only(right: 12, left: 12, bottom: 4),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: kBorder),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(width: 2),
+                    _TypingDots(),
+                  ],
+                ),
               ),
             ),
 
           // Input bar
           Container(
-            color: kCard,
+            color: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Row(
               children: [
-                IconButton(
-                  icon: const Icon(Icons.attach_file, color: kSubtext),
-                  onPressed: _showAttachMenu,
-                ),
                 Expanded(
-                  child: TextField(
-                    controller: _msgCtrl,
-                    textDirection: TextDirection.rtl,
-                    maxLines: 4,
-                    minLines: 1,
-                    onChanged: (_) => _onTyping(),
-                    decoration: InputDecoration(
-                      hintText: 'הודעה...',
-                      hintTextDirection: TextDirection.rtl,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
-                      ),
-                      filled: true,
-                      fillColor: kBg,
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.emoji_emotions_outlined,
-                            color: kSubtext),
-                        onPressed: () {},
-                      ),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0F6FC),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: const Color(0xFFC5DFF2),
+                          width: 1.5),
                     ),
-                    onSubmitted: (_) => _send(),
+                    child: Row(
+                      children: [
+                        const SizedBox(width: 10),
+                        const Icon(Icons.verified_user_outlined,
+                            size: 16, color: kPrimary),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: TextField(
+                            controller: _msgCtrl,
+                            textDirection: TextDirection.rtl,
+                            maxLines: 4,
+                            minLines: 1,
+                            onChanged: (_) => _onTyping(),
+                            decoration: InputDecoration(
+                              hintText: 'כתוב הודעה...',
+                              hintTextDirection: TextDirection.rtl,
+                              hintStyle: const TextStyle(
+                                  fontSize: 13, color: kSubtext),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 4, vertical: 9),
+                              border: InputBorder.none,
+                              isDense: true,
+                            ),
+                            style: const TextStyle(
+                                fontSize: 13, color: kTextDark),
+                            onSubmitted: (_) => _send(),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.attach_file,
+                              size: 18, color: kSubtext),
+                          onPressed: _showAttachMenu,
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -1784,7 +2049,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       color: kPrimary,
                       borderRadius: BorderRadius.circular(22),
                     ),
-                    child: const Icon(Icons.send, color: Colors.white, size: 20),
+                    child: const Icon(Icons.send,
+                        color: Colors.white, size: 20),
                   ),
                 ),
               ],
@@ -1796,6 +2062,54 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
+class _TypingDots extends StatefulWidget {
+  @override
+  State<_TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<_TypingDots>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(3, (i) {
+            final offset =
+                math.sin((_ctrl.value * 2 * math.pi) - (i * 0.6)) * 3;
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              width: 6,
+              height: 6,
+              decoration: const BoxDecoration(
+                  color: kSubtext, shape: BoxShape.circle),
+              transform: Matrix4.translationValues(0, -offset, 0),
+            );
+          }),
+        );
+      },
+    );
+  }
+}
+
 class _DateDivider extends StatelessWidget {
   final String label;
   const _DateDivider({required this.label});
@@ -1803,24 +2117,19 @@ class _DateDivider extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          const Expanded(child: Divider()),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              decoration: BoxDecoration(
-                color: kBorder,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(label,
-                  style: const TextStyle(fontSize: 12, color: kSubtext)),
-            ),
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Center(
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: kBorder),
           ),
-          const Expanded(child: Divider()),
-        ],
+          child: Text(label,
+              style: const TextStyle(fontSize: 11, color: kSubtext)),
+        ),
       ),
     );
   }
@@ -1836,35 +2145,49 @@ class _MessageBubble extends StatelessWidget {
     if (!isMe) return const SizedBox.shrink();
     switch (message['status'] as String? ?? 'sent') {
       case 'read':
-        return const Icon(Icons.done_all, size: 14, color: kReadGreen);
+        return const Icon(Icons.done_all, size: 14, color: kReadTick);
       case 'received':
-        return const Icon(Icons.done_all, size: 14, color: kSubtext);
+        return Icon(Icons.done_all, size: 14,
+            color: Colors.white.withOpacity(0.6));
       default:
-        return const Icon(Icons.done, size: 14, color: kSubtext);
+        return Icon(Icons.done, size: 14,
+            color: Colors.white.withOpacity(0.6));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final isFile = message['isFile'] == true;
+    final textColor = isMe ? Colors.white : kTextDark;
+    final timeColor =
+        isMe ? Colors.white.withOpacity(0.7) : kSubtext;
+    final replyBg = isMe
+        ? Colors.white.withOpacity(0.15)
+        : Colors.black.withOpacity(0.05);
+    final replyBorder =
+        isMe ? Colors.white.withOpacity(0.5) : kPrimary;
+
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 2),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
+          maxWidth: MediaQuery.of(context).size.width * 0.72,
         ),
         decoration: BoxDecoration(
-          color: isMe ? kOutgoing : kCard,
+          color: isMe ? kOutgoing : Colors.white,
           borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
+            topLeft: const Radius.circular(14),
+            topRight: const Radius.circular(14),
             bottomLeft:
-                isMe ? const Radius.circular(16) : const Radius.circular(4),
+                isMe ? const Radius.circular(14) : const Radius.circular(3),
             bottomRight:
-                isMe ? const Radius.circular(4) : const Radius.circular(16),
+                isMe ? const Radius.circular(3) : const Radius.circular(14),
           ),
+          border: isMe
+              ? null
+              : Border.all(color: kBorder, width: 1),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity(0.06),
@@ -1877,58 +2200,60 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Quote/reply preview
             if (message['replyTo'] != null)
               Container(
                 margin: const EdgeInsets.only(bottom: 6),
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.06),
+                  color: replyBg,
                   borderRadius: BorderRadius.circular(8),
-                  border: const Border(
-                    right: BorderSide(color: kPrimary, width: 3),
+                  border: Border(
+                    right: BorderSide(color: replyBorder, width: 3),
                   ),
                 ),
                 child: Text(
                   (message['replyTo'] as Map)['text'] as String,
-                  style: const TextStyle(fontSize: 12, color: kSubtext),
+                  style: TextStyle(fontSize: 12, color: timeColor),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textDirection: TextDirection.rtl,
                 ),
               ),
 
-            // Text or file
             if (isFile)
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.insert_drive_file, size: 18, color: kPrimary),
+                  Icon(Icons.insert_drive_file,
+                      size: 18,
+                      color: isMe ? Colors.white70 : kPrimary),
                   const SizedBox(width: 6),
-                  Text(
-                    message['text'] as String,
-                    style: const TextStyle(fontSize: 15),
-                    textDirection: TextDirection.rtl,
+                  Flexible(
+                    child: Text(
+                      message['text'] as String,
+                      style: TextStyle(fontSize: 14, color: textColor),
+                      textDirection: TextDirection.rtl,
+                    ),
                   ),
                 ],
               )
             else
               Text(
                 message['text'] as String,
-                style: const TextStyle(fontSize: 15, height: 1.4),
+                style: TextStyle(
+                    fontSize: 14, height: 1.45, color: textColor),
                 textDirection: TextDirection.rtl,
               ),
 
-            // Time + status
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   message['time'] as String? ?? '',
-                  style: const TextStyle(fontSize: 11, color: kSubtext),
+                  style: TextStyle(fontSize: 10, color: timeColor),
                 ),
-                const SizedBox(width: 4),
+                const SizedBox(width: 3),
                 _statusIcon(),
               ],
             ),
