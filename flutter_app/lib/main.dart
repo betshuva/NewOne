@@ -1455,8 +1455,16 @@ class _ChatScreenState extends State<ChatScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         setState(() {
+          // Keep pending (optimistic) messages not yet confirmed by server
+          final pending = _messages
+              .where((m) => (m['id'] as String? ?? '').startsWith('temp_'))
+              .toList();
           _messages.clear();
           _messages.addAll(data.map(_normalizeDbMessage));
+          for (final p in pending) {
+            final alreadyIn = _messages.any((m) => m['text'] == p['text']);
+            if (!alreadyIn) _messages.add(p);
+          }
           _loading = false;
         });
         _scrollToBottom();
@@ -1583,13 +1591,13 @@ class _ChatScreenState extends State<ChatScreen> {
         if (replySnapshot != null) 'replyTo': Map<String, dynamic>.from(replySnapshot),
       });
       _replyTo = null;
+      _msgCtrl.clear();
     });
     widget.socket?.emit('chat:message', {
       'toUserId':  widget.recipient['id'],
       'text':      text,
       if (replySnapshot != null) 'replyToId': replySnapshot['id'],
     });
-    _msgCtrl.clear();
     _scrollToBottom();
   }
 
@@ -2620,9 +2628,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'time':       _nowTime(),
         'isMe':       true,
       });
+      _msgCtrl.clear();
     });
     widget.socket?.emit('group:message', {'groupId': _groupId, 'text': text});
-    _msgCtrl.clear();
     _scrollToBottom();
   }
 
