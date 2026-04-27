@@ -53,11 +53,16 @@ jobs:
           path: flutter_app/build/app/outputs/flutter-apk/betshuva-*.apk
           retention-days: 30
 
-      - name: Update app-release.apk on website
+      - name: Update app-release.apk and version on website
         run: |
+          VERSION=$(grep "^version:" flutter_app/pubspec.yaml | awk '{print $2}')
           cp flutter_app/build/app/outputs/flutter-apk/app-release.apk app-release.apk
+          # Sync version.json
+          echo "{\"app_name\":\"betshuva\",\"version\":\"${VERSION}\",\"package_name\":\"betshuva\"}" > version.json
+          # Sync server version
+          sed -i "s/version: '[^']*'/version: '${VERSION}'/" server/index.js
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add app-release.apk
-          git commit -m "build: update app-release.apk [skip ci]" || echo "No changes"
+          git add app-release.apk version.json server/index.js
+          git commit -m "build: release v${VERSION} [skip ci]" || echo "No changes"
           git push

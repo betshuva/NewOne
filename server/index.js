@@ -1227,7 +1227,7 @@ app.get('/verify-email', async (req, res) => {
 
 // ── App Version ──────────────────────────────────────────────────
 app.get('/api/version', (req, res) => {
-  res.json({ version: '1.0.1', apkUrl: 'https://betshuva.com/app-release.apk' });
+  res.json({ version: '1.1.0', apkUrl: 'https://betshuva.com/app-release.apk' });
 });
 
 // ── Forgot Password ──────────────────────────────────────────────
