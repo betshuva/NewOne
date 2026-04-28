@@ -68,7 +68,7 @@ const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi     = '$kServer/api';
 const kVersion = '1.1.0';
 // Google Web Client ID — set in Firebase Console → Authentication → Google → Web SDK config
-const kGoogleWebClientId = '862738339788-Oo8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
+const kGoogleWebClientId = '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

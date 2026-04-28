@@ -12,7 +12,20 @@
           "package_name": "com.betshuva.app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "862738339788-umebs5qrpaaikhdr3uuu259hufc65l98.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.betshuva.app",
+            "certificate_hash": "21739e9e0bc24f26ab15b9462e0df8ab645ea658"
+          }
+        },
+        {
+          "client_id": "862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAajr_DYmyfXFqhzzVqIPyf2aNV_WabvQk"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
