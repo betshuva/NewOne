@@ -12,7 +12,6 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 // ── Local notifications setup ─────────────────────────────────────
 final _localNotif = FlutterLocalNotificationsPlugin();
@@ -2605,15 +2604,31 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _inviteViaSms(String phone, String contactName) async {
-    final myName = widget.me?['name'] as String? ?? 'חבר';
-    final groupName = widget.group['name'] as String? ?? 'הקבוצה';
-    final msg = Uri.encodeComponent(
-      'שלום $contactName! $myName מזמין אותך להצטרף לקבוצה "$groupName" באפליקציית בתשובה.\n'
-      'הורד את האפליקציה והצטרף אלינו!',
-    );
-    final uri = Uri.parse('sms:$phone?body=$msg');
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri);
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/groups/$_groupId/invite-sms'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'phone': phone, 'contactName': contactName}),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ההזמנה נשלחה ל$contactName')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שגיאה בשליחת ההזמנה')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שגיאת תקשורת')),
+        );
+      }
     }
   }
 

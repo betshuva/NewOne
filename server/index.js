@@ -979,6 +979,40 @@ app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Groups: invite non-member via SMS (admin) ─────────────────────
+app.post('/api/groups/:id/invite-sms', auth, async (req, res) => {
+  const { phone, contactName } = req.body;
+  if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
+  try {
+    const pool = await getPool();
+    const [adminCheck, grp] = await Promise.all([
+      pool.request()
+        .input('groupId', sql.UniqueIdentifier, req.params.id)
+        .input('myId',    sql.UniqueIdentifier, req.user.id)
+        .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`),
+      pool.request()
+        .input('id', sql.UniqueIdentifier, req.params.id)
+        .query('SELECT name FROM groups WHERE id=@id'),
+    ]);
+    if (!adminCheck.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+
+    const groupName  = grp.recordset[0]?.name || 'הקבוצה';
+    const senderName = req.user.name || 'חבר';
+    const greeting   = contactName ? `שלום ${contactName}!` : 'שלום!';
+    const msg = `${greeting} ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" באפליקציית בתשובה. הורד את האפליקציה: https://betshuva.com`;
+
+    const cleanPhone = phone.replace(/\D/g, '');
+    await mailer.sendMail({
+      from:    `"בתשובה" <${process.env.EMAIL_FROM}>`,
+      to:      `${cleanPhone}@019sms.co.il`,
+      subject: msg,
+      text:    msg,
+    });
+
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Groups: leave ─────────────────────────────────────────────────
 app.delete('/api/groups/:id/leave', auth, async (req, res) => {
   try {
