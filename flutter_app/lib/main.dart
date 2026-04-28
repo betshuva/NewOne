@@ -788,6 +788,125 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 }
 
+// ── Avatar helpers ────────────────────────────────────────────────
+
+const kAvatarCollections = {
+  'פרחים': ['🌸','🌺','🌻','🌹','🌼','🌷','💐','🪷','🏵️','🪻','🌱','🌿'],
+  'חיות':  ['🦋','🐝','🦚','🦜','🐬','🦁','🐘','🦒','🐧','🦅','🐠','🦌','🦉','🐢','🐦','🐈'],
+  'עצים':  ['🌲','🌳','🌴','🌵','🎋','🍀','🌿','🍁','🍃','🌾','🎄','🪨','⛰️','🏔️','🪺','🌏'],
+};
+
+// Returns true if stored value is an emoji avatar
+bool _isEmojiAvatar(String? url) => url != null && url.startsWith('emoji:');
+String _emojiFromAvatar(String url) => url.substring(6);
+
+class UserAvatar extends StatelessWidget {
+  final String? picUrl;
+  final String  name;
+  final double  radius;
+  const UserAvatar({super.key, this.picUrl, required this.name, this.radius = 22});
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isEmojiAvatar(picUrl)) {
+      final emoji = _emojiFromAvatar(picUrl!);
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: kBorder,
+        child: Text(emoji, style: TextStyle(fontSize: radius * 0.9)),
+      );
+    }
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: kPrimary,
+      backgroundImage: picUrl != null ? NetworkImage(picUrl!) : null,
+      child: picUrl == null
+          ? Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+              style: TextStyle(color: Colors.white,
+                  fontSize: radius * 0.9, fontWeight: FontWeight.bold))
+          : null,
+    );
+  }
+}
+
+class AvatarPickerSheet extends StatefulWidget {
+  const AvatarPickerSheet({super.key});
+  @override
+  State<AvatarPickerSheet> createState() => _AvatarPickerSheetState();
+}
+
+class _AvatarPickerSheetState extends State<AvatarPickerSheet>
+    with SingleTickerProviderStateMixin {
+  late TabController _tab;
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = TabController(length: kAvatarCollections.length, vsync: this);
+  }
+
+  @override
+  void dispose() { _tab.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    final categories = kAvatarCollections.keys.toList();
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.55,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 10),
+          Container(width: 36, height: 4,
+              decoration: BoxDecoration(color: kBorder, borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 12),
+          const Text('בחר אווטאר', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: kTextDark)),
+          const SizedBox(height: 8),
+          TabBar(
+            controller: _tab,
+            labelColor: kPrimary,
+            unselectedLabelColor: kSubtext,
+            indicatorColor: kPrimary,
+            tabs: categories.map((c) => Tab(text: c)).toList(),
+          ),
+          Expanded(
+            child: TabBarView(
+              controller: _tab,
+              children: categories.map((cat) {
+                final emojis = kAvatarCollections[cat]!;
+                return GridView.builder(
+                  padding: const EdgeInsets.all(16),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 4, mainAxisSpacing: 12, crossAxisSpacing: 12),
+                  itemCount: emojis.length,
+                  itemBuilder: (ctx, i) {
+                    return GestureDetector(
+                      onTap: () => Navigator.pop(context, 'emoji:${emojis[i]}'),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: kFilterBg,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: kBorder, width: 1.5),
+                        ),
+                        child: Center(
+                          child: Text(emojis[i], style: const TextStyle(fontSize: 36)),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _TabBtn extends StatelessWidget {
   final String label;
   final bool active;
@@ -2952,15 +3071,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   final isContact = contactUserIds.contains(u['id'] as String);
                                   final phone = u['phone'] as String? ?? '';
                                   return ListTile(
-                                    leading: CircleAvatar(
-                                      backgroundColor: kPrimary,
-                                      backgroundImage: u['profile_pic_url'] != null
-                                          ? NetworkImage(u['profile_pic_url'] as String)
-                                          : null,
-                                      child: u['profile_pic_url'] == null
-                                          ? Text((u['name'] as String)[0],
-                                              style: const TextStyle(color: Colors.white))
-                                          : null,
+                                    leading: UserAvatar(
+                                      picUrl: u['profile_pic_url'] as String?,
+                                      name: u['name'] as String,
                                     ),
                                     title: Text(u['name'] as String),
                                     subtitle: phone.isNotEmpty
@@ -3085,15 +3198,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       final isMe = m['id'] == myId;
                       final isAdminMember = m['role'] == 'admin';
                       return ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: kPrimary,
-                          backgroundImage: m['profile_pic_url'] != null
-                              ? NetworkImage(m['profile_pic_url'] as String)
-                              : null,
-                          child: m['profile_pic_url'] == null
-                              ? Text((m['name'] as String)[0],
-                                  style: const TextStyle(color: Colors.white))
-                              : null,
+                        leading: UserAvatar(
+                          picUrl: m['profile_pic_url'] as String?,
+                          name: m['name'] as String,
                         ),
                         title: Text(m['name'] as String),
                         subtitle: isAdminMember
@@ -3778,9 +3885,51 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _changePhoto() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const SizedBox(height: 8),
+          Container(width: 36, height: 4,
+              decoration: BoxDecoration(color: kBorder, borderRadius: BorderRadius.circular(2))),
+          const SizedBox(height: 8),
+          ListTile(
+            leading: const CircleAvatar(backgroundColor: kFilterBg,
+                child: Icon(Icons.photo_library_outlined, color: kPrimary)),
+            title: const Text('בחר מהגלריה'),
+            onTap: () => Navigator.pop(context, 'gallery'),
+          ),
+          ListTile(
+            leading: const CircleAvatar(backgroundColor: kFilterBg,
+                child: Icon(Icons.emoji_nature_outlined, color: kPrimary)),
+            title: const Text('בחר מאוסף אווטאר'),
+            subtitle: const Text('פרחים • חיות • עצים', style: TextStyle(fontSize: 12, color: kSubtext)),
+            onTap: () => Navigator.pop(context, 'collection'),
+          ),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    if (choice == 'collection') {
+      final emoji = await showModalBottomSheet<String>(
+        context: context,
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+        builder: (_) => const AvatarPickerSheet(),
+      );
+      if (emoji != null && mounted) setState(() => _picUrl = emoji);
+      return;
+    }
+
+    // gallery
     final picker = ImagePicker();
     final picked = await picker.pickImage(
-      source: ImageSource.gallery, maxWidth: 512, maxHeight: 512, imageQuality: 80);
+        source: ImageSource.gallery, maxWidth: 512, maxHeight: 512, imageQuality: 80);
     if (picked == null || !mounted) return;
 
     setState(() => _saving = true);
@@ -3832,16 +3981,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     onTap: _changePhoto,
                     child: Stack(
                       children: [
-                        CircleAvatar(
+                        UserAvatar(
+                          picUrl: _picUrl,
+                          name: _nameCtrl.text,
                           radius: 52,
-                          backgroundColor: kPrimaryMid,
-                          backgroundImage: _picUrl != null ? NetworkImage(_picUrl!) : null,
-                          child: _picUrl == null
-                              ? Text(
-                                  _nameCtrl.text.isNotEmpty ? _nameCtrl.text[0].toUpperCase() : '?',
-                                  style: const TextStyle(color: Colors.white, fontSize: 38,
-                                      fontWeight: FontWeight.bold))
-                              : null,
                         ),
                         Positioned(
                           bottom: 0, left: 0,
