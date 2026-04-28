@@ -157,12 +157,40 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
 #profile-menu{position:fixed;bottom:0;left:0;top:0;right:0;z-index:50;display:none;background:rgba(0,0,0,.3)}
 .pm-panel{position:absolute;right:0;top:0;bottom:0;width:280px;background:#fff;box-shadow:-4px 0 20px rgba(0,0,0,.15);display:flex;flex-direction:column}
 .pm-head{background:var(--blue);padding:24px 20px;color:#fff}
-.pm-av{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.2);border:3px solid rgba(255,255,255,.4);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;margin-bottom:12px}
+.pm-av{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.2);border:3px solid rgba(255,255,255,.4);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;margin-bottom:12px;cursor:pointer;position:relative;overflow:hidden}
+.pm-av img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.pm-av-edit{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.45);color:#fff;font-size:10px;text-align:center;padding:3px 0;opacity:0;transition:opacity .2s}
+.pm-av:hover .pm-av-edit{opacity:1}
 .pm-name{font-size:17px;font-weight:600}
 .pm-email{font-size:12px;opacity:.75}
 .pm-item{padding:14px 20px;border-bottom:1px solid var(--div);display:flex;align-items:center;gap:12px;cursor:pointer;font-size:14px;color:var(--text);transition:background .15s}
 .pm-item:hover{background:var(--blue-pale)}
 .pm-item.danger{color:#dc2626}
+/* ── PROFILE EDITOR MODAL ── */
+#profile-editor{position:fixed;inset:0;z-index:60;display:none;background:rgba(0,0,0,.4);align-items:center;justify-content:center}
+.pe-card{background:#fff;border-radius:18px;width:360px;max-width:95vw;padding:28px 24px;box-shadow:0 16px 48px rgba(0,0,0,.2)}
+.pe-card h2{font-size:18px;font-weight:700;color:var(--text);margin-bottom:20px;text-align:center}
+.pe-avatar-wrap{display:flex;flex-direction:column;align-items:center;margin-bottom:20px}
+.pe-avatar{width:80px;height:80px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:700;color:#fff;margin-bottom:10px;overflow:hidden;border:3px solid var(--div)}
+.pe-avatar img{width:100%;height:100%;object-fit:cover}
+.pe-av-btns{display:flex;gap:8px}
+.pe-av-btn{font-size:12px;padding:5px 12px;border-radius:8px;border:1.5px solid var(--div);background:#fff;cursor:pointer;color:var(--text2);font-family:'Heebo',sans-serif;transition:border-color .2s}
+.pe-av-btn:hover{border-color:var(--blue);color:var(--blue)}
+.pe-field{margin-bottom:14px}
+.pe-field label{display:block;font-size:12px;font-weight:600;color:var(--text2);margin-bottom:5px}
+.pe-field input{width:100%;border:1.5px solid var(--div);border-radius:10px;padding:9px 12px;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);outline:none;transition:border .2s}
+.pe-field input:focus{border-color:var(--blue)}
+.pe-save{width:100%;background:var(--blue);color:#fff;border:none;border-radius:10px;padding:12px;font-family:'Heebo',sans-serif;font-size:15px;font-weight:600;cursor:pointer;margin-top:6px}
+.pe-save:hover{background:var(--blue-dark)}
+/* ── AVATAR COLLECTION ── */
+#avatar-collection{position:fixed;inset:0;z-index:70;display:none;background:rgba(0,0,0,.4);align-items:flex-end;justify-content:center}
+.ac-sheet{background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:480px;padding-bottom:20px}
+.ac-tabs{display:flex;border-bottom:2px solid var(--div);margin:12px 16px 0}
+.ac-tab{flex:1;text-align:center;padding:10px 4px;font-size:14px;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s}
+.ac-tab.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.ac-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:14px 16px}
+.ac-item{aspect-ratio:1;background:var(--blue-pale);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:34px;cursor:pointer;border:2px solid transparent;transition:border-color .15s}
+.ac-item:hover{border-color:var(--blue)}
 
 /* scrollbar global */
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:var(--div);border-radius:4px}
@@ -348,10 +376,44 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
       <div class="pm-name" id="pm-name"></div>
       <div class="pm-email" id="pm-email"></div>
     </div>
-    <div class="pm-item" onclick="logout()">
+    <div class="pm-item" onclick="openProfileEditor()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="var(--blue)" stroke-width="1.8" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="var(--blue)" stroke-width="1.8" stroke-linecap="round"/></svg>
+      ערוך פרופיל
+    </div>
+    <div class="pm-item danger" onclick="logout()">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" stroke="#dc2626" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       התנתק
     </div>
+  </div>
+</div>
+
+<!-- ── PROFILE EDITOR ── -->
+<div id="profile-editor" onclick="if(event.target===this)closeProfileEditor()">
+  <div class="pe-card">
+    <h2>ערוך פרופיל</h2>
+    <div class="pe-avatar-wrap">
+      <div class="pe-avatar" id="pe-avatar"></div>
+      <div class="pe-av-btns">
+        <button class="pe-av-btn" onclick="document.getElementById('pe-file').click()">📷 העלה תמונה</button>
+        <button class="pe-av-btn" onclick="openAvatarCollection()">🎨 בחר אווטאר</button>
+        <input type="file" id="pe-file" accept="image/*" style="display:none" onchange="handlePeFile(this)"/>
+      </div>
+    </div>
+    <div class="pe-field"><label>שם מלא</label><input id="pe-name" type="text"/></div>
+    <div id="pe-err" style="display:none;color:#dc2626;font-size:13px;margin-bottom:8px"></div>
+    <button class="pe-save" onclick="saveProfile()">שמור</button>
+  </div>
+</div>
+
+<!-- ── AVATAR COLLECTION ── -->
+<div id="avatar-collection" onclick="if(event.target===this)closeAvatarCollection()">
+  <div class="ac-sheet">
+    <div style="display:flex;justify-content:center;padding:10px 0 0">
+      <div style="width:36px;height:4px;background:var(--div);border-radius:2px"></div>
+    </div>
+    <div style="text-align:center;font-size:16px;font-weight:700;color:var(--text);padding:10px 0 0">בחר אווטאר</div>
+    <div class="ac-tabs" id="ac-tabs"></div>
+    <div id="ac-grids"></div>
   </div>
 </div>
 
@@ -604,13 +666,141 @@ async function startApp() {
   renderList();
 }
 
+function renderAvatar(el, picUrl, name, size=64) {
+  el.innerHTML = '';
+  if (picUrl && picUrl.startsWith('emoji:')) {
+    const emoji = picUrl.slice(6);
+    el.style.background = 'var(--div)';
+    el.style.fontSize = Math.round(size * 0.45) + 'px';
+    el.textContent = emoji;
+  } else if (picUrl) {
+    el.style.background = 'transparent';
+    el.style.fontSize = '';
+    const img = document.createElement('img');
+    img.src = picUrl;
+    img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%';
+    el.appendChild(img);
+  } else {
+    el.style.background = 'rgba(255,255,255,.2)';
+    el.style.fontSize = Math.round(size * 0.43) + 'px';
+    el.textContent = (name||'?')[0].toUpperCase();
+  }
+}
+
 function updateProfileMenu() {
   if (!me) return;
-  const init = (me.name||'?')[0].toUpperCase();
-  document.getElementById('pm-av').textContent = init;
+  const av = document.getElementById('pm-av');
+  av.innerHTML = '<span class="pm-av-edit">שנה</span>';
+  renderAvatar(av, me.profile_pic_url, me.name);
+  const editSpan = document.createElement('span');
+  editSpan.className = 'pm-av-edit';
+  editSpan.textContent = 'שנה';
+  av.appendChild(editSpan);
+  av.onclick = openProfileEditor;
   document.getElementById('pm-name').textContent = me.name || '';
-  document.getElementById('pm-email').textContent = me.email || '';
+  document.getElementById('pm-email').textContent = me.email || me.phone || '';
   document.getElementById('header-username').textContent = me.name || 'Betshuva Web';
+}
+
+// ── Profile Editor ────────────────────────────────────────────────
+let peNewPicUrl = null;
+
+function openProfileEditor() {
+  document.getElementById('profile-menu').style.display = 'none';
+  peNewPicUrl = me.profile_pic_url || null;
+  document.getElementById('pe-name').value = me.name || '';
+  document.getElementById('pe-err').style.display = 'none';
+  const av = document.getElementById('pe-avatar');
+  renderAvatar(av, peNewPicUrl, me.name, 80);
+  document.getElementById('profile-editor').style.display = 'flex';
+}
+
+function closeProfileEditor() {
+  document.getElementById('profile-editor').style.display = 'none';
+}
+
+async function handlePeFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const res  = await fetch(`${API}/api/upload`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
+    const data = await res.json();
+    if (res.ok) {
+      peNewPicUrl = data.url;
+      renderAvatar(document.getElementById('pe-avatar'), peNewPicUrl, me.name, 80);
+    }
+  } catch {}
+  input.value = '';
+}
+
+async function saveProfile() {
+  const name = document.getElementById('pe-name').value.trim();
+  if (!name) { const e=document.getElementById('pe-err'); e.textContent='נא להזין שם'; e.style.display='block'; return; }
+  try {
+    const res  = await fetch(`${API}/api/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        name,
+        profile_pic_url: peNewPicUrl || null,
+        city: me.city || null,
+        community: me.community || null,
+        privacy_pic: me.privacy_pic || 'all',
+        filter_level: me.filter_level || 'standard',
+      }),
+    });
+    if (res.ok) {
+      me.name = name;
+      me.profile_pic_url = peNewPicUrl;
+      updateProfileMenu();
+      closeProfileEditor();
+    }
+  } catch {}
+}
+
+// ── Avatar Collection ─────────────────────────────────────────────
+const AVATAR_COLLECTIONS = {
+  'פרחים': ['🌸','🌺','🌻','🌹','🌼','🌷','💐','🪷','🏵️','🪻','🌱','🌿'],
+  'חיות':  ['🦋','🐝','🦚','🦜','🐬','🦁','🐘','🦒','🐧','🦅','🐠','🦌','🦉','🐢','🐦','🐈'],
+  'עצים':  ['🌲','🌳','🌴','🌵','🎋','🍀','🌿','🍁','🍃','🌾','🎄','🪨','⛰️','🏔️','🪺','🌏'],
+};
+let acActiveTab = 0;
+
+function openAvatarCollection() {
+  const cats = Object.keys(AVATAR_COLLECTIONS);
+  const tabsEl  = document.getElementById('ac-tabs');
+  const gridsEl = document.getElementById('ac-grids');
+  tabsEl.innerHTML  = cats.map((c,i) =>
+    `<div class="ac-tab${i===0?' active':''}" onclick="switchAcTab(${i})">${c}</div>`).join('');
+  gridsEl.innerHTML = cats.map((c,i) => `
+    <div class="ac-grid" id="ac-grid-${i}" style="display:${i===0?'grid':'none'}">
+      ${AVATAR_COLLECTIONS[c].map(e =>
+        `<div class="ac-item" onclick="selectEmoji('${e}')">${e}</div>`).join('')}
+    </div>`).join('');
+  acActiveTab = 0;
+  document.getElementById('avatar-collection').style.display = 'flex';
+}
+
+function switchAcTab(i) {
+  const cats = Object.keys(AVATAR_COLLECTIONS);
+  document.querySelectorAll('.ac-tab').forEach((t,j)=>t.classList.toggle('active',i===j));
+  cats.forEach((_,j) => {
+    document.getElementById(`ac-grid-${j}`).style.display = i===j ? 'grid' : 'none';
+  });
+  acActiveTab = i;
+}
+
+function selectEmoji(emoji) {
+  peNewPicUrl = 'emoji:' + emoji;
+  renderAvatar(document.getElementById('pe-avatar'), peNewPicUrl, me.name, 80);
+  closeAvatarCollection();
+}
+
+function closeAvatarCollection() {
+  document.getElementById('avatar-collection').style.display = 'none';
 }
 
 // ── Users & Groups ────────────────────────────────────────────────
@@ -710,9 +900,17 @@ function renderItem(container, c) {
   const div = document.createElement('div');
   const active = currentChat && currentChat.type===c.type && currentChat.id===c.id;
   div.className = 'chat-item' + (active?' active':'');
-  const init = (c.name||'?')[0].toUpperCase();
+  const picUrl = c.profile_pic_url || null;
+  let avHtml;
+  if (picUrl && picUrl.startsWith('emoji:')) {
+    avHtml = `<div class="ci-av" style="background:var(--div);font-size:24px">${picUrl.slice(6)}</div>`;
+  } else if (picUrl) {
+    avHtml = `<div class="ci-av" style="padding:0;overflow:hidden"><img src="${picUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/></div>`;
+  } else {
+    avHtml = `<div class="ci-av">${(c.name||'?')[0].toUpperCase()}</div>`;
+  }
   div.innerHTML = `
-    <div class="ci-av">${init}</div>
+    ${avHtml}
     <div class="ci-body">
       <div class="ci-top">
         <span class="ci-name">${c.name}</span>
