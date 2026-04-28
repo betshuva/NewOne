@@ -1293,7 +1293,7 @@ app.get('/verify-email', async (req, res) => {
 
 // ── App Version ──────────────────────────────────────────────────
 app.get('/api/version', (req, res) => {
-  res.json({ version: '1.2.0', apkUrl: 'https://betshuva.com/app-release.apk' });
+  res.json({ version: '1.2.1', apkUrl: 'https://betshuva.com/app-release.apk' });
 });
 
 // ── Forgot Password ──────────────────────────────────────────────
