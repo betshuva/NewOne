@@ -58,14 +58,15 @@ jobs:
       - name: Update app-release.apk and version on website
         run: |
           VERSION=$(grep "^version:" flutter_app/pubspec.yaml | awk '{print $2}')
-          cp flutter_app/build/app/outputs/flutter-apk/app-release.apk app-release.apk
-          # Sync version.json
-          echo "{\"app_name\":\"betshuva\",\"version\":\"${VERSION}\",\"package_name\":\"betshuva\"}" > version.json
-          # Sync server version
-          sed -i "s/version: '[^']*'/version: '${VERSION}'/" server/index.js
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Fetch latest remote state
+          git fetch origin main
+          git reset --hard origin/main
+          # Overwrite files with fresh build output
+          cp flutter_app/build/app/outputs/flutter-apk/app-release.apk app-release.apk
+          echo "{\"app_name\":\"betshuva\",\"version\":\"${VERSION}\",\"package_name\":\"betshuva\"}" > version.json
+          sed -i "s/version: '[^']*'/version: '${VERSION}'/" server/index.js
           git add app-release.apk version.json server/index.js
           git commit -m "build: release v${VERSION} [skip ci]" || echo "No changes"
-          git pull --rebase --autostash origin main
           git push
