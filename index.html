@@ -315,9 +315,7 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
         <button class="hdr-icon" title="שיחה חדשה" onclick="openNewChat()">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="white" stroke-width="1.8" fill="none"/><line x1="12" y1="8" x2="12" y2="16" stroke="white" stroke-width="2" stroke-linecap="round"/><line x1="8" y1="12" x2="16" y2="12" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
-        <button class="hdr-icon" onclick="toggleProfileMenu()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="1.5" fill="white"/><circle cx="12" cy="12" r="1.5" fill="white"/><circle cx="19" cy="12" r="1.5" fill="white"/></svg>
-        </button>
+        <div id="hdr-avatar" onclick="toggleProfileMenu()" style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.25);border:2px solid rgba(255,255,255,.5);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;font-weight:700;color:#fff;overflow:hidden;flex-shrink:0"></div>
       </div>
     </div>
     <div class="filter-strip">
@@ -655,7 +653,9 @@ async function startApp() {
   if (!me) {
     try {
       const p = token.split('.')[1];
-      me = JSON.parse(atob(p.replace(/-/g,'+').replace(/_/g,'/')));
+      const decoded = atob(p.replace(/-/g,'+').replace(/_/g,'/'));
+      const uint8 = Uint8Array.from(decoded, c => c.charCodeAt(0));
+      me = JSON.parse(new TextDecoder().decode(uint8));
     } catch(e) {}
   }
   document.getElementById('auth-screen').style.display = 'none';
@@ -689,9 +689,12 @@ function renderAvatar(el, picUrl, name, size=64) {
 
 function updateProfileMenu() {
   if (!me) return;
+  // Header avatar
+  const hdrAv = document.getElementById('hdr-avatar');
+  if (hdrAv) renderAvatar(hdrAv, me.profile_pic_url, me.name, 34);
+  // Profile panel avatar
   const av = document.getElementById('pm-av');
-  av.innerHTML = '<span class="pm-av-edit">שנה</span>';
-  renderAvatar(av, me.profile_pic_url, me.name);
+  renderAvatar(av, me.profile_pic_url, me.name, 64);
   const editSpan = document.createElement('span');
   editSpan.className = 'pm-av-edit';
   editSpan.textContent = 'שנה';
