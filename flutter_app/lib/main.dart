@@ -1491,7 +1491,9 @@ class _ChatScreenState extends State<ChatScreen> {
         'id':   map['reply_to_id'],
         'text': map['reply_body'] ?? '',
       },
-      'isFile': map['type'] != null && map['type'] != 'text',
+      'isFile':        map['type'] != null && map['type'] != 'text' && map['type'] != 'group_invite',
+      'isGroupInvite': map['type'] == 'group_invite',
+      'meta':          map['file_name'], // meta stored in file_name column
     };
   }
 
@@ -1961,11 +1963,18 @@ class _ChatScreenState extends State<ChatScreen> {
                           return Column(
                             children: [
                               if (i == 0) const _DateDivider(label: 'היום'),
-                              GestureDetector(
-                                onLongPress: () =>
-                                    setState(() => _replyTo = msg),
-                                child: _MessageBubble(message: msg, isMe: isMe),
-                              ),
+                              if (msg['isGroupInvite'] == true && !isMe)
+                                _GroupInviteCard(
+                                  message: msg,
+                                  token: widget.token,
+                                  onJoined: () => setState(() {}),
+                                )
+                              else
+                                GestureDetector(
+                                  onLongPress: () =>
+                                      setState(() => _replyTo = msg),
+                                  child: _MessageBubble(message: msg, isMe: isMe),
+                                ),
                             ],
                           );
                         },
@@ -2138,6 +2147,118 @@ class _DateDivider extends StatelessWidget {
           ),
           child: Text(label,
               style: const TextStyle(fontSize: 11, color: kSubtext)),
+        ),
+      ),
+    );
+  }
+}
+
+class _GroupInviteCard extends StatefulWidget {
+  final Map<String, dynamic> message;
+  final String token;
+  final VoidCallback onJoined;
+  const _GroupInviteCard({required this.message, required this.token, required this.onJoined});
+  @override
+  State<_GroupInviteCard> createState() => _GroupInviteCardState();
+}
+
+class _GroupInviteCardState extends State<_GroupInviteCard> {
+  bool _joined = false;
+  bool _declined = false;
+  bool _loading = false;
+
+  Map<String, dynamic> get _meta {
+    try {
+      final raw = widget.message['meta'] as String? ?? '{}';
+      return jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) { return {}; }
+  }
+
+  Future<void> _join() async {
+    final groupId = _meta['groupId'] as String?;
+    if (groupId == null) return;
+    setState(() => _loading = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/groups/$groupId/join'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        setState(() { _joined = true; _loading = false; });
+        widget.onJoined();
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) { setState(() => _loading = false); }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final groupName = _meta['groupName'] as String? ?? 'קבוצה';
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kPrimary.withOpacity(0.3)),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 4)],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Icon(Icons.group_add_outlined, color: kPrimary, size: 20),
+                const SizedBox(width: 8),
+                const Text('הזמנה לקבוצה',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: kPrimary)),
+              ]),
+              const SizedBox(height: 8),
+              Text('הוזמנת להצטרף לקבוצה\n"$groupName"',
+                  textDirection: TextDirection.rtl,
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 12),
+              if (_joined)
+                const Text('✓ הצטרפת לקבוצה', style: TextStyle(color: Colors.green, fontSize: 13))
+              else if (_declined)
+                const Text('ההזמנה נדחתה', style: TextStyle(color: kSubtext, fontSize: 13))
+              else
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: _loading ? null : _join,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: kPrimary,
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: _loading
+                            ? const SizedBox(width: 16, height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('הצטרף', style: TextStyle(color: Colors.white)),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => setState(() => _declined = true),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          side: const BorderSide(color: kSubtext),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: const Text('דחה', style: TextStyle(color: kSubtext)),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -2547,10 +2668,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     } catch (_) {}
   }
 
-  Future<void> _addMember(String userId) async {
+  Future<void> _addMember(String userId, String userName) async {
     try {
       final res = await http.post(
-        Uri.parse('$kApi/groups/$_groupId/members'),
+        Uri.parse('$kApi/groups/$_groupId/invite-message'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
@@ -2558,9 +2679,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         body: jsonEncode({'userId': userId}),
       );
       if (res.statusCode == 200 && mounted) {
-        await _loadMembers();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('החבר נוסף לקבוצה')),
+          SnackBar(content: Text('ההזמנה נשלחה ל$userName')),
         );
       }
     } catch (_) {}
@@ -2798,7 +2918,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                     ),
                                     onTap: () {
                                       Navigator.pop(ctx);
-                                      _addMember(u['id'] as String);
+                                      _addMember(u['id'] as String, u['name'] as String);
                                     },
                                   );
                                 }),

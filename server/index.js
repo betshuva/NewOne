@@ -980,7 +980,7 @@ app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: invite registered user via in-app message (admin) ──────
+// ── Groups: invite registered user via in-app invite card ──────────
 app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'נדרש userId' });
@@ -999,32 +999,42 @@ app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
 
     const groupName  = grp.recordset[0]?.name || 'קבוצה';
     const senderName = req.user.name || 'מנהל';
-    const text = `👋 ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" בבתשובה`;
+    const meta = JSON.stringify({ groupId: req.params.id, groupName });
 
-    // Insert private message from admin to the invited user
     const saved = await pool.request()
       .input('senderId',    sql.UniqueIdentifier, req.user.id)
       .input('recipientId', sql.UniqueIdentifier, userId)
-      .input('body',        sql.NVarChar,         text)
-      .input('type',        sql.NVarChar,         'text')
-      .query(`INSERT INTO messages (sender_id, recipient_id, body, type)
+      .input('body',        sql.NVarChar,         `הוזמנת להצטרף לקבוצה "${groupName}"`)
+      .input('type',        sql.NVarChar,         'group_invite')
+      .input('meta',        sql.NVarChar,         meta)
+      .query(`INSERT INTO messages (sender_id, recipient_id, body, type, file_name)
               OUTPUT INSERTED.id, INSERTED.created_at
-              VALUES (@senderId, @recipientId, @body, @type)`);
+              VALUES (@senderId, @recipientId, @body, @type, @meta)`);
 
     const row = saved.recordset[0];
-
-    // Real-time delivery if user is online
     const io = req.app.get('io');
     if (io) {
       io.to(`user:${userId}`).emit('chat:message', {
         id: row.id, fromUserId: req.user.id, fromName: senderName,
-        text, createdAt: row.created_at,
+        text: `הוזמנת להצטרף לקבוצה "${groupName}"`,
+        type: 'group_invite', meta, createdAt: row.created_at,
       });
     }
+    sendPush(userId, senderName, `הוזמנת להצטרף לקבוצה "${groupName}"`,
+      { type: 'group_invite', groupId: req.params.id });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    // Push notification if offline
-    sendPush(userId, senderName, text, { type: 'chat', fromUserId: req.user.id });
-
+// ── Groups: accept invite (join) ──────────────────────────────────
+app.post('/api/groups/:id/join', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
+              INSERT INTO group_members (group_id, user_id) VALUES (@groupId, @userId)`);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
