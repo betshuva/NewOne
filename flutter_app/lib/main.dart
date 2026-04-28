@@ -11,6 +11,8 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // ── Local notifications setup ─────────────────────────────────────
 final _localNotif = FlutterLocalNotificationsPlugin();
@@ -2509,6 +2511,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _isAdmin   = false;
   bool _isTyping  = false;
   String _typingName = '';
+  List<Map<String, dynamic>> _members = [];
 
   String get _groupId => widget.group['id'] as String;
 
@@ -2518,6 +2521,370 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _isAdmin = widget.group['role'] == 'admin';
     _loadMessages();
     _setupSocket();
+    if (_isAdmin) _loadMembers();
+  }
+
+  Future<void> _loadMembers() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/groups/$_groupId'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() => _members = (data['members'] as List).cast<Map<String, dynamic>>());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _addMember(String userId) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/groups/$_groupId/members'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'userId': userId}),
+      );
+      if (res.statusCode == 200 && mounted) {
+        await _loadMembers();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('החבר נוסף לקבוצה')),
+        );
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _removeMember(String userId, String userName) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('הסרת חבר'),
+        content: Text('להסיר את $userName מהקבוצה?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('הסרה'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    try {
+      final res = await http.delete(
+        Uri.parse('$kApi/groups/$_groupId/members/$userId'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        await _loadMembers();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$userName הוסר מהקבוצה')),
+        );
+      }
+    } catch (_) {}
+  }
+
+  String _normalizePhone(String p) {
+    String d = p.replaceAll(RegExp(r'\D'), '');
+    if (d.startsWith('972') && d.length > 10) d = '0${d.substring(3)}';
+    return d;
+  }
+
+  Future<void> _inviteViaSms(String phone, String contactName) async {
+    final myName = widget.me?['name'] as String? ?? 'חבר';
+    final groupName = widget.group['name'] as String? ?? 'הקבוצה';
+    final msg = Uri.encodeComponent(
+      'שלום $contactName! $myName מזמין אותך להצטרף לקבוצה "$groupName" באפליקציית בתשובה.\n'
+      'הורד את האפליקציה והצטרף אלינו!',
+    );
+    final uri = Uri.parse('sms:$phone?body=$msg');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    }
+  }
+
+  Future<void> _showAddMemberDialog() async {
+    final granted = await FlutterContacts.requestPermission(readonly: true);
+    if (!mounted) return;
+
+    // registered: users found in app — { id, name, profile_pic_url, phone }
+    List<Map<String, dynamic>> registered = [];
+    // unregistered: contacts NOT in app — { name, phone }
+    List<Map<String, dynamic>> unregistered = [];
+
+    if (granted) {
+      final contacts = await FlutterContacts.getContacts(withProperties: true);
+
+      // Build map: normalizedPhone → {name, phone (original best number)}
+      final Map<String, Map<String, String>> phoneToContact = {};
+      for (final c in contacts) {
+        for (final p in c.phones) {
+          final norm = _normalizePhone(p.number);
+          if (norm.length >= 9) {
+            phoneToContact.putIfAbsent(norm, () => {
+              'name': c.displayName,
+              'phone': p.number,
+            });
+          }
+        }
+      }
+
+      if (phoneToContact.isNotEmpty) {
+        try {
+          final res = await http.post(
+            Uri.parse('$kApi/contacts/match'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({'phones': phoneToContact.keys.toList()}),
+          );
+          if (res.statusCode == 200) {
+            registered = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+          }
+        } catch (_) {}
+      }
+
+      // Find unregistered: contacts whose normalized phones have no match
+      final registeredPhones = registered
+          .map((u) => _normalizePhone((u['phone'] as String? ?? '')))
+          .toSet();
+      unregistered = phoneToContact.entries
+          .where((e) => !registeredPhones.contains(e.key))
+          .map((e) => {'name': e.value['name']!, 'phone': e.value['phone']!})
+          .toList()
+        ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
+    } else {
+      // No contacts permission — show all app users
+      try {
+        final res = await http.get(
+          Uri.parse('$kApi/users'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        );
+        if (res.statusCode == 200) {
+          registered = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+        }
+      } catch (_) {}
+    }
+
+    final memberIds = _members.map((m) => m['id'] as String).toSet();
+    registered = registered.where((u) => !memberIds.contains(u['id'] as String)).toList();
+
+    if (!mounted) return;
+    final searchCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) {
+          final query = searchCtrl.text.toLowerCase();
+          final filteredReg = query.isEmpty
+              ? registered
+              : registered.where((u) =>
+                  (u['name'] as String).toLowerCase().contains(query)).toList();
+          final filteredUnreg = query.isEmpty
+              ? unregistered
+              : unregistered.where((u) =>
+                  (u['name'] as String).toLowerCase().contains(query)).toList();
+
+          return AlertDialog(
+            title: const Text('הוסף מאנשי קשר'),
+            contentPadding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: TextField(
+                      controller: searchCtrl,
+                      textDirection: TextDirection.rtl,
+                      decoration: const InputDecoration(
+                        hintText: 'חיפוש...',
+                        hintTextDirection: TextDirection.rtl,
+                        prefixIcon: Icon(Icons.search),
+                      ),
+                      onChanged: (_) => setS(() {}),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 380),
+                    child: (filteredReg.isEmpty && filteredUnreg.isEmpty)
+                        ? const Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Text('לא נמצאו אנשי קשר',
+                                style: TextStyle(color: kSubtext)),
+                          )
+                        : ListView(
+                            shrinkWrap: true,
+                            children: [
+                              // ── Registered users ──────────────────
+                              if (filteredReg.isNotEmpty) ...[
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                                  child: Text('בתשובה',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: kPrimary)),
+                                ),
+                                ...filteredReg.map((u) => ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundColor: kPrimary,
+                                    backgroundImage: u['profile_pic_url'] != null
+                                        ? NetworkImage(u['profile_pic_url'] as String)
+                                        : null,
+                                    child: u['profile_pic_url'] == null
+                                        ? Text((u['name'] as String)[0],
+                                            style: const TextStyle(color: Colors.white))
+                                        : null,
+                                  ),
+                                  title: Text(u['name'] as String),
+                                  trailing: const Icon(Icons.person_add_outlined,
+                                      color: kPrimary),
+                                  onTap: () {
+                                    Navigator.pop(ctx);
+                                    _addMember(u['id'] as String);
+                                  },
+                                )),
+                              ],
+                              // ── Unregistered contacts ─────────────
+                              if (granted && filteredUnreg.isNotEmpty) ...[
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                                  child: Text('לא בתשובה',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.grey[600])),
+                                ),
+                                ...filteredUnreg.map((c) => ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundColor: Colors.grey[300],
+                                    child: Text((c['name'] as String)[0],
+                                        style: const TextStyle(color: Colors.white)),
+                                  ),
+                                  title: Text(c['name'] as String),
+                                  subtitle: const Text('לא רשום בבתשובה',
+                                      style: TextStyle(fontSize: 11)),
+                                  trailing: TextButton.icon(
+                                    icon: const Icon(Icons.sms_outlined, size: 16),
+                                    label: const Text('הזמן'),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: kPrimary,
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 4),
+                                    ),
+                                    onPressed: () {
+                                      Navigator.pop(ctx);
+                                      _confirmAndInvite(
+                                          c['phone'] as String,
+                                          c['name'] as String);
+                                    },
+                                  ),
+                                )),
+                              ],
+                            ],
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('ביטול')),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _confirmAndInvite(String phone, String contactName) async {
+    final myName = widget.me?['name'] as String? ?? 'חבר';
+    final groupName = widget.group['name'] as String? ?? 'הקבוצה';
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('הזמן את $contactName'),
+        content: Text(
+          '$contactName אינו רשום בבתשובה.\n\n'
+          'האם לשלוח לו SMS עם הזמנה להצטרף לקבוצה "$groupName"?',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('ביטול')),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.sms_outlined),
+            label: const Text('שלח SMS'),
+            style: ElevatedButton.styleFrom(backgroundColor: kPrimary),
+            onPressed: () => Navigator.pop(context, true),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) _inviteViaSms(phone, contactName);
+  }
+
+  void _showMembersDialog() {
+    final myId = widget.me?['id'] as String?;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: Text('חברים בקבוצה (${_members.length})'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 400),
+            child: _members.isEmpty
+                ? const Center(child: CircularProgressIndicator())
+                : ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _members.length,
+                    itemBuilder: (_, i) {
+                      final m = _members[i];
+                      final isMe = m['id'] == myId;
+                      final isAdminMember = m['role'] == 'admin';
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: kPrimary,
+                          backgroundImage: m['profile_pic_url'] != null
+                              ? NetworkImage(m['profile_pic_url'] as String)
+                              : null,
+                          child: m['profile_pic_url'] == null
+                              ? Text((m['name'] as String)[0],
+                                  style: const TextStyle(color: Colors.white))
+                              : null,
+                        ),
+                        title: Text(m['name'] as String),
+                        subtitle: isAdminMember
+                            ? const Text('מנהל', style: TextStyle(color: kPrimary))
+                            : null,
+                        trailing: (!isMe && !isAdminMember)
+                            ? IconButton(
+                                icon: const Icon(Icons.person_remove, color: Colors.red),
+                                onPressed: () {
+                                  Navigator.pop(ctx);
+                                  _removeMember(m['id'] as String, m['name'] as String);
+                                },
+                              )
+                            : null,
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('סגור')),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadMessages() async {
@@ -2678,7 +3045,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               ListTile(
                 leading: const Icon(Icons.person_add_outlined, color: kPrimary),
                 title: const Text('הוסף חבר'),
-                onTap: () => Navigator.pop(context),
+                onTap: () { Navigator.pop(context); _showAddMemberDialog(); },
+              ),
+              ListTile(
+                leading: const Icon(Icons.group_outlined, color: kPrimary),
+                title: const Text('ניהול חברים'),
+                subtitle: Text('${_members.length} חברים'),
+                onTap: () { Navigator.pop(context); _showMembersDialog(); },
               ),
               ListTile(
                 leading: const Icon(Icons.tune, color: kPrimary),

@@ -45,5 +45,7 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSContactsUsageDescription</key>
+	<string>האפליקציה צריכה גישה לאנשי הקשר כדי למצוא חברים רשומים בבתשובה</string>
 </dict>
 </plist>

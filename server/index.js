@@ -587,6 +587,38 @@ app.get('/api/users', auth, async (req, res) => {
   }
 });
 
+// ── Contacts: match phone numbers with registered users ───────────
+app.post('/api/contacts/match', auth, async (req, res) => {
+  const { phones } = req.body;
+  if (!Array.isArray(phones) || phones.length === 0)
+    return res.status(400).json({ error: 'נדרש מערך phones' });
+
+  // Normalize: keep digits only, handle Israeli prefix (972 → 0)
+  const normalize = (p) => {
+    let d = p.replace(/\D/g, '');
+    if (d.startsWith('972') && d.length > 10) d = '0' + d.slice(3);
+    return d;
+  };
+  const normalized = [...new Set(phones.map(normalize).filter(Boolean))];
+  if (normalized.length === 0) return res.json([]);
+
+  try {
+    const pool = await getPool();
+    // Build a values list for IN clause using parameterized inputs
+    const inputs = normalized.map((p, i) => `@p${i}`).join(',');
+    const req2 = pool.request().input('myId', sql.UniqueIdentifier, req.user.id);
+    normalized.forEach((p, i) => req2.input(`p${i}`, sql.NVarChar, p));
+    const result = await req2.query(
+      `SELECT id, name, profile_pic_url, phone
+       FROM users
+       WHERE phone IN (${inputs})
+         AND id != @myId
+         AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = @myId)`
+    );
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Messages: load history ─────────────────────────────────────────
 app.get('/api/messages/:userId', auth, async (req, res) => {
   const otherId = req.params.userId;
