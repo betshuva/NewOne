@@ -199,6 +199,14 @@ function resetPasswordEmail(resetUrl) {
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='filter_level')
         ALTER TABLE users ADD filter_level NVARCHAR(20) NOT NULL DEFAULT 'standard'`);
 
+    // ── Allow phone-only / email-only accounts ─────────────────────
+    await pool.request().query(`
+      IF COLUMNPROPERTY(OBJECT_ID('users'), 'email', 'AllowsNull') = 0
+        ALTER TABLE users ALTER COLUMN email NVARCHAR(255) NULL`);
+    await pool.request().query(`
+      IF COLUMNPROPERTY(OBJECT_ID('users'), 'password_hash', 'AllowsNull') = 0
+        ALTER TABLE users ALTER COLUMN password_hash NVARCHAR(255) NULL`);
+
     // ── Groups ─────────────────────────────────────────────────────
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='groups' AND xtype='U')
@@ -487,58 +495,69 @@ io.on('connection', async (socket) => {
 // ── Register ─────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
   const { name, email, password, phone } = req.body;
-  if (!name || !email || !password || !phone) return res.status(400).json({ error: 'חסרים שדות' });
-  const cleanPhone = phone.replace(/\D/g, '');
-  if (cleanPhone.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
+  if (!name) return res.status(400).json({ error: 'חסר שם' });
+  const hasEmail = !!(email && password);
+  const hasPhone = !!phone;
+  if (!hasEmail && !hasPhone)
+    return res.status(400).json({ error: 'יש לספק אימייל עם סיסמה, מספר טלפון, או שניהם' });
+
+  const cleanPhone = hasPhone ? phone.replace(/\D/g, '') : null;
+  if (hasPhone && cleanPhone.length < 9)
+    return res.status(400).json({ error: 'מספר טלפון לא תקין' });
   try {
     const pool = await getPool();
-    const emailExists = await pool.request()
-      .input('email', sql.NVarChar, email)
-      .query('SELECT id FROM users WHERE email = @email');
-    if (emailExists.recordset.length) return res.status(400).json({ error: 'האימייל כבר רשום' });
-    const phoneExists = await pool.request()
-      .input('phone', sql.NVarChar, cleanPhone)
-      .query('SELECT id FROM users WHERE phone = @phone');
-    if (phoneExists.recordset.length) return res.status(400).json({ error: 'מספר הטלפון כבר רשום' });
+    if (hasEmail) {
+      const emailExists = await pool.request()
+        .input('email', sql.NVarChar, email)
+        .query('SELECT id FROM users WHERE email = @email');
+      if (emailExists.recordset.length) return res.status(400).json({ error: 'האימייל כבר רשום' });
+    }
+    if (hasPhone) {
+      const phoneExists = await pool.request()
+        .input('phone', sql.NVarChar, cleanPhone)
+        .query('SELECT id FROM users WHERE phone = @phone');
+      if (phoneExists.recordset.length) return res.status(400).json({ error: 'מספר הטלפון כבר רשום' });
+    }
 
-    const hash = await bcrypt.hash(password, 10);
+    const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
     const result = await pool.request()
       .input('name',  sql.NVarChar, name)
-      .input('email', sql.NVarChar, email)
-      .input('phone', sql.NVarChar, cleanPhone)
+      .input('email', sql.NVarChar, hasEmail ? email : null)
+      .input('phone', sql.NVarChar, hasPhone ? cleanPhone : null)
       .input('hash',  sql.NVarChar, hash)
       .query(`INSERT INTO users (name, email, phone, password_hash)
               OUTPUT INSERTED.id, INSERTED.name, INSERTED.email
               VALUES (@name, @email, @phone, @hash)`);
     const user = result.recordset[0];
 
-    // Email verification token
-    const emailToken = crypto.randomBytes(32).toString('hex');
-    const expires24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    await pool.request()
-      .input('token',   sql.NVarChar,        emailToken)
-      .input('userId',  sql.UniqueIdentifier, user.id)
-      .input('expires', sql.DateTime,         expires24h)
-      .query('INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES (@token, @userId, @expires)');
+    if (hasEmail) {
+      const emailToken = crypto.randomBytes(32).toString('hex');
+      const expires24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await pool.request()
+        .input('token',   sql.NVarChar,        emailToken)
+        .input('userId',  sql.UniqueIdentifier, user.id)
+        .input('expires', sql.DateTime,         expires24h)
+        .query('INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES (@token, @userId, @expires)');
+      const base = process.env.APP_URL || 'https://xo-app-betshuva.azurewebsites.net';
+      sendEmail({
+        to: user.email,
+        subject: 'אמת את כתובת האימייל שלך – בתשובה',
+        html: emailVerificationEmail(user.name, `${base}/verify-email?token=${emailToken}`),
+      }).catch(() => {});
+    }
 
-    const base = process.env.APP_URL || 'https://xo-app-betshuva.azurewebsites.net';
-    sendEmail({
-      to: user.email,
-      subject: 'אמת את כתובת האימייל שלך – בתשובה',
-      html: emailVerificationEmail(user.name, `${base}/verify-email?token=${emailToken}`),
-    }).catch(() => {});
+    if (hasPhone) {
+      const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
+      otpStore.set(cleanPhone, { code: smsCode, expires: Date.now() + 10 * 60 * 1000, name });
+      sendEmail({
+        to: `${cleanPhone}@019sms.co.il`,
+        subject: `קוד אימות הטלפון שלך לבתשובה: ${smsCode}`,
+        html: '',
+      }).catch(() => {});
+    }
 
-    // SMS OTP
-    const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore.set(cleanPhone, { code: smsCode, expires: Date.now() + 10 * 60 * 1000 });
-    sendEmail({
-      to: `${cleanPhone}@019sms.co.il`,
-      subject: `קוד אימות הטלפון שלך לבתשובה: ${smsCode}`,
-      html: '',
-    }).catch(() => {});
-
-    logActivity(user.id, 'register', { email, phone: cleanPhone }, req.ip);
-    res.json({ pending: true, phone: cleanPhone });
+    logActivity(user.id, 'register', { email: email || null, phone: cleanPhone }, req.ip);
+    res.json({ pending: true, phone: cleanPhone, hasEmail, hasPhone });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -553,12 +572,10 @@ app.post('/api/login', async (req, res) => {
       .input('email', sql.NVarChar, email)
       .query('SELECT * FROM users WHERE email = @email');
     const user = result.recordset[0];
-    if (!user || !(await bcrypt.compare(password, user.password_hash)))
+    if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash)))
       return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
     if (!user.email_verified)
       return res.status(403).json({ error: 'יש לאמת את כתובת האימייל תחילה — בדוק את תיבת הדואר שלך', code: 'EMAIL_UNVERIFIED' });
-    if (!user.phone_verified)
-      return res.status(403).json({ error: 'יש לאמת את מספר הטלפון תחילה', code: 'PHONE_UNVERIFIED' });
 
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     const { password_hash, ...safeUser } = user;
@@ -1218,20 +1235,20 @@ app.get('/api/leaderboard', auth, async (req, res) => {
 app.post('/api/send-otp', async (req, res) => {
   const { phone, name, email } = req.body;
   if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
-  if (!email || !email.includes('@')) return res.status(400).json({ error: 'נדרשת כתובת אימייל תקינה' });
   const clean      = phone.replace(/\D/g, '');
-  const cleanEmail = email.toLowerCase().trim();
+  const cleanEmail = (email || '').toLowerCase().trim();
   if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
-  try {
-    const pool = await getPool();
-    // Check email not already taken by another user
-    const emailExists = await pool.request()
-      .input('email', sql.NVarChar, cleanEmail)
-      .input('phone', sql.NVarChar, clean)
-      .query('SELECT id FROM users WHERE email=@email AND phone != @phone');
-    if (emailExists.recordset.length)
-      return res.status(400).json({ error: 'כתובת האימייל כבר רשומה' });
-  } catch (_) {}
+  if (cleanEmail.includes('@')) {
+    try {
+      const pool = await getPool();
+      const emailExists = await pool.request()
+        .input('email', sql.NVarChar, cleanEmail)
+        .input('phone', sql.NVarChar, clean)
+        .query('SELECT id FROM users WHERE email=@email AND phone != @phone');
+      if (emailExists.recordset.length)
+        return res.status(400).json({ error: 'כתובת האימייל כבר רשומה' });
+    } catch (_) {}
+  }
   const code    = Math.floor(100000 + Math.random() * 900000).toString();
   const expires = Date.now() + 5 * 60 * 1000;
   otpStore.set(clean, { code, expires, name: name || '', email: cleanEmail });
@@ -1321,7 +1338,7 @@ app.post('/api/verify-phone', async (req, res) => {
       .query('SELECT id, name, email, email_verified FROM users WHERE phone = @phone');
     const user = result.recordset[0];
     if (!user) return res.status(400).json({ error: 'משתמש לא נמצא' });
-    if (user.email_verified) {
+    if (!user.email || user.email_verified) {
       const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
       return res.json({ ok: true, token });
     }

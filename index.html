@@ -37,6 +37,14 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
 .auth-btn{width:100%;background:var(--blue);color:#fff;border:none;border-radius:10px;padding:13px;font-family:'Heebo',sans-serif;font-size:15px;font-weight:600;cursor:pointer;transition:background .2s;margin-top:6px}
 .auth-btn:hover{background:var(--blue-dark)}
 .auth-err{background:#fef2f2;color:#dc2626;border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:12px;display:none}
+.lm-tabs{display:flex;margin-bottom:16px;border:1.5px solid var(--div);border-radius:9px;overflow:hidden}
+.lm-tab{flex:1;text-align:center;padding:8px 4px;font-size:13px;cursor:pointer;color:var(--text3);background:#fff;font-weight:500;transition:all .2s}
+.lm-tab.active{background:var(--blue);color:#fff;font-weight:600}
+.reg-method{display:flex;margin-bottom:14px;border:1.5px solid var(--div);border-radius:9px;overflow:hidden}
+.reg-meth-btn{flex:1;text-align:center;padding:8px 4px;font-size:12.5px;cursor:pointer;color:var(--text3);background:#fff;font-weight:500;border:none;font-family:'Heebo',sans-serif;transition:all .2s}
+.reg-meth-btn.active{background:var(--blue);color:#fff;font-weight:600}
+.auth-note{font-size:12px;color:var(--text3);text-align:center;margin-top:10px;cursor:pointer}
+.auth-note:hover{color:var(--blue)}
 
 /* ── APP SHELL ── */
 #app{display:none;width:100%;height:100vh;align-items:stretch}
@@ -209,18 +217,47 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
 
     <!-- LOGIN -->
     <div id="form-login">
-      <div class="auth-field"><label>אימייל</label><input id="l-email" type="email" placeholder="your@email.com" dir="ltr"/></div>
-      <div class="auth-field"><label>סיסמה</label><input id="l-pass" type="password" placeholder="••••••••" dir="ltr"/></div>
-      <button class="auth-btn" onclick="doLogin()">כניסה</button>
+      <div class="lm-tabs">
+        <div class="lm-tab active" onclick="setLoginMethod('email')">אימייל</div>
+        <div class="lm-tab" onclick="setLoginMethod('phone')">טלפון</div>
+      </div>
+      <div id="lm-email">
+        <div class="auth-field"><label>אימייל</label><input id="l-email" type="email" placeholder="your@email.com" dir="ltr"/></div>
+        <div class="auth-field"><label>סיסמה</label><input id="l-pass" type="password" placeholder="••••••••" dir="ltr"/></div>
+        <button class="auth-btn" onclick="doLogin()">כניסה</button>
+      </div>
+      <div id="lm-phone" style="display:none">
+        <div id="lm-step1">
+          <div class="auth-field"><label>מספר טלפון</label><input id="l-phone" type="tel" placeholder="0501234567" dir="ltr"/></div>
+          <button class="auth-btn" onclick="sendLoginOtp()">שלח קוד אימות</button>
+        </div>
+        <div id="lm-step2" style="display:none">
+          <div class="auth-field"><label>קוד אימות (SMS)</label><input id="l-otp" type="text" placeholder="123456" dir="ltr" maxlength="6"/></div>
+          <button class="auth-btn" onclick="verifyLoginOtp()">כניסה</button>
+          <p class="auth-note" onclick="backToPhoneInput()">שלח קוד שוב</p>
+        </div>
+      </div>
     </div>
 
     <!-- REGISTER -->
     <div id="form-register" style="display:none">
       <div class="auth-field"><label>שם מלא</label><input id="r-name" type="text" placeholder="ישראל ישראלי"/></div>
-      <div class="auth-field"><label>אימייל</label><input id="r-email" type="email" placeholder="your@email.com" dir="ltr"/></div>
-      <div class="auth-field"><label>סיסמה</label><input id="r-pass" type="password" placeholder="לפחות 8 תווים" dir="ltr"/></div>
-      <div class="auth-field"><label>טלפון</label><input id="r-phone" type="tel" placeholder="0501234567" dir="ltr"/></div>
-      <button class="auth-btn" onclick="doRegister()">הרשמה</button>
+      <div class="reg-method" id="r-method-tabs">
+        <button class="reg-meth-btn active" onclick="setRegMethod('email',this)">אימייל</button>
+        <button class="reg-meth-btn" onclick="setRegMethod('phone',this)">טלפון</button>
+        <button class="reg-meth-btn" onclick="setRegMethod('both',this)">שניהם</button>
+      </div>
+      <div id="r-email-sec">
+        <div class="auth-field"><label>אימייל</label><input id="r-email" type="email" placeholder="your@email.com" dir="ltr"/></div>
+        <div class="auth-field"><label>סיסמה</label><input id="r-pass" type="password" placeholder="לפחות 8 תווים" dir="ltr"/></div>
+      </div>
+      <div id="r-phone-sec" style="display:none">
+        <div class="auth-field"><label>מספר טלפון</label><input id="r-phone" type="tel" placeholder="0501234567" dir="ltr"/></div>
+      </div>
+      <div id="r-otp-sec" style="display:none">
+        <div class="auth-field"><label>קוד אימות (SMS)</label><input id="r-otp" type="text" placeholder="123456" dir="ltr" maxlength="6"/></div>
+      </div>
+      <button class="auth-btn" id="r-submit-btn" onclick="doRegister()">הרשמה</button>
     </div>
   </div>
 </div>
@@ -348,6 +385,46 @@ function switchAuth(tab) {
   document.getElementById('form-login').style.display = tab==='login'?'':'none';
   document.getElementById('form-register').style.display = tab==='register'?'':'none';
   document.getElementById('auth-err').style.display='none';
+  if (tab==='login') setLoginMethod('email');
+  if (tab==='register') resetRegForm();
+}
+
+let regMethod = 'email';
+let regPhoneForOtp = '';
+let regPhoneOtpStep = false;
+
+function setLoginMethod(m) {
+  document.getElementById('lm-email').style.display = m==='email'?'':'none';
+  document.getElementById('lm-phone').style.display = m==='phone'?'':'none';
+  document.querySelectorAll('.lm-tab').forEach((t,i)=>t.classList.toggle('active',i===(m==='email'?0:1)));
+  if (m==='phone') { document.getElementById('lm-step1').style.display=''; document.getElementById('lm-step2').style.display='none'; }
+  document.getElementById('auth-err').style.display='none';
+}
+
+function setRegMethod(m, btn) {
+  regMethod = m;
+  document.querySelectorAll('.reg-meth-btn').forEach(b=>b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  document.getElementById('r-email-sec').style.display = (m==='email'||m==='both')?'':'none';
+  document.getElementById('r-phone-sec').style.display = (m==='phone'||m==='both')?'':'none';
+  document.getElementById('r-otp-sec').style.display='none';
+  document.getElementById('auth-err').style.display='none';
+}
+
+function resetRegForm() {
+  regMethod='email'; regPhoneForOtp=''; regPhoneOtpStep=false;
+  document.getElementById('r-method-tabs').style.display='';
+  document.getElementById('r-email-sec').style.display='';
+  document.getElementById('r-phone-sec').style.display='none';
+  document.getElementById('r-otp-sec').style.display='none';
+  document.getElementById('r-submit-btn').textContent='הרשמה';
+  document.querySelectorAll('.reg-meth-btn').forEach((b,i)=>b.classList.toggle('active',i===0));
+}
+
+function backToPhoneInput() {
+  document.getElementById('lm-step1').style.display='';
+  document.getElementById('lm-step2').style.display='none';
+  document.getElementById('auth-err').style.display='none';
 }
 
 function showAuthErr(msg) {
@@ -369,18 +446,94 @@ async function doLogin() {
   } catch(e) { showAuthErr('שגיאת תקשורת — נסה שוב'); }
 }
 
-async function doRegister() {
-  const name  = document.getElementById('r-name').value.trim();
-  const email = document.getElementById('r-email').value.trim();
-  const pass  = document.getElementById('r-pass').value;
-  const phone = document.getElementById('r-phone').value.trim();
-  if (!name||!email||!pass||!phone) return showAuthErr('נא למלא את כל השדות');
+async function sendLoginOtp() {
+  const phone = document.getElementById('l-phone').value.trim();
+  if (!phone) return showAuthErr('נא להזין מספר טלפון');
   try {
-    const r = await fetch(`${API}/api/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password:pass,phone})});
+    const r = await fetch(`${API}/api/send-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone})});
     const d = await r.json();
-    if (!r.ok) return showAuthErr(d.error || 'שגיאה בהרשמה');
-    showAuthErr('✅ נרשמת בהצלחה! אמת את האימייל שלך ואז התחבר.');
-    switchAuth('login');
+    if (!r.ok) return showAuthErr(d.error||'שגיאה בשליחת קוד');
+    document.getElementById('lm-step1').style.display='none';
+    document.getElementById('lm-step2').style.display='';
+    document.getElementById('auth-err').style.display='none';
+  } catch(e) { showAuthErr('שגיאת תקשורת — נסה שוב'); }
+}
+
+async function verifyLoginOtp() {
+  const phone = document.getElementById('l-phone').value.trim();
+  const code  = document.getElementById('l-otp').value.trim();
+  if (!code) return showAuthErr('נא להזין את קוד האימות');
+  try {
+    const r = await fetch(`${API}/api/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,code})});
+    const d = await r.json();
+    if (!r.ok) return showAuthErr(d.error||'קוד שגוי');
+    token=d.token; me=d.user;
+    localStorage.setItem('bt_token',token);
+    startApp();
+  } catch(e) { showAuthErr('שגיאת תקשורת — נסה שוב'); }
+}
+
+async function doRegister() {
+  const name = document.getElementById('r-name').value.trim();
+  if (!name) return showAuthErr('נא להזין שם מלא');
+
+  // OTP confirmation step (phone-only or both)
+  if (regPhoneOtpStep) {
+    const code = document.getElementById('r-otp').value.trim();
+    if (!code) return showAuthErr('נא להזין את קוד האימות');
+    try {
+      const r = await fetch(`${API}/api/verify-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:regPhoneForOtp,code,name})});
+      const d = await r.json();
+      if (!r.ok) return showAuthErr(d.error||'קוד שגוי');
+      token=d.token; me=d.user;
+      localStorage.setItem('bt_token',token);
+      startApp();
+    } catch(e) { showAuthErr('שגיאת תקשורת'); }
+    return;
+  }
+
+  const hasEmail = regMethod==='email'||regMethod==='both';
+  const hasPhone = regMethod==='phone'||regMethod==='both';
+  const email = hasEmail ? document.getElementById('r-email').value.trim() : '';
+  const pass  = hasEmail ? document.getElementById('r-pass').value : '';
+  const phone = hasPhone ? document.getElementById('r-phone').value.trim() : '';
+
+  if (hasEmail && (!email||!pass)) return showAuthErr('נא להזין אימייל וסיסמה');
+  if (hasPhone && !phone) return showAuthErr('נא להזין מספר טלפון');
+
+  // Phone-only: use send-otp → verify-otp (auto-creates user)
+  if (regMethod==='phone') {
+    try {
+      const r = await fetch(`${API}/api/send-otp`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,name})});
+      const d = await r.json();
+      if (!r.ok) return showAuthErr(d.error||'שגיאה בשליחת קוד');
+      regPhoneForOtp=phone; regPhoneOtpStep=true;
+      document.getElementById('r-phone-sec').style.display='none';
+      document.getElementById('r-otp-sec').style.display='';
+      document.getElementById('r-submit-btn').textContent='אמת קוד';
+      document.getElementById('r-method-tabs').style.display='none';
+      showAuthErr('✅ קוד אימות נשלח לטלפון שלך');
+    } catch(e) { showAuthErr('שגיאת תקשורת'); }
+    return;
+  }
+
+  // Email or Both: use register endpoint
+  try {
+    const r = await fetch(`${API}/api/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email:email||undefined,password:pass||undefined,phone:phone||undefined})});
+    const d = await r.json();
+    if (!r.ok) return showAuthErr(d.error||'שגיאה בהרשמה');
+    if (regMethod==='both' && d.phone) {
+      regPhoneForOtp=d.phone; regPhoneOtpStep=true;
+      document.getElementById('r-email-sec').style.display='none';
+      document.getElementById('r-phone-sec').style.display='none';
+      document.getElementById('r-otp-sec').style.display='';
+      document.getElementById('r-submit-btn').textContent='אמת קוד';
+      document.getElementById('r-method-tabs').style.display='none';
+      showAuthErr('✅ קוד SMS נשלח. לאחר אימות הטלפון תוכל להיכנס גם לאחר אימות האימייל.');
+    } else {
+      showAuthErr('✅ נרשמת! בדוק את האימייל לאימות ואז התחבר.');
+      switchAuth('login');
+    }
   } catch(e) { showAuthErr('שגיאת תקשורת'); }
 }
 
