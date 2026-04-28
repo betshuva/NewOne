@@ -1214,15 +1214,16 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
-              children: const [
-                Text('בתשובה',
+              children: [
+                const Text('בתשובה',
                     style: TextStyle(
                         fontSize: 19,
                         fontWeight: FontWeight.w700,
                         color: Colors.white,
                         height: 1.1)),
-                Text('Betshuva',
-                    style: TextStyle(
+                Text(
+                    widget.me?['name'] as String? ?? '',
+                    style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w300,
                         color: Colors.white70,
@@ -2416,7 +2417,17 @@ class _GroupsScreenState extends State<GroupsScreen> {
     return Scaffold(
       backgroundColor: kBg,
       appBar: AppBar(
-        title: const Text('קבוצות'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('קבוצות',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            if ((widget.me?['name'] as String? ?? '').isNotEmpty)
+              Text(widget.me!['name'] as String,
+                  style: const TextStyle(fontSize: 11, color: Colors.white70)),
+          ],
+        ),
         actions: [IconButton(icon: const Icon(Icons.search), onPressed: () {})],
       ),
       floatingActionButton: FloatingActionButton(
@@ -3252,7 +3263,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final name = widget.me?['name'] as String? ?? 'משתמש';
     return Scaffold(
       backgroundColor: kBg,
-      appBar: AppBar(title: const Text('הגדרות')),
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('הגדרות',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            if (name.isNotEmpty)
+              Text(name,
+                  style: const TextStyle(fontSize: 11, color: Colors.white70)),
+          ],
+        ),
+      ),
       body: ListView(
         children: [
           // Profile header
