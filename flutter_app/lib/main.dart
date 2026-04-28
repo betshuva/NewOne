@@ -2632,33 +2632,47 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
+  bool _matchesQuery(Map<String, dynamic> u, String q) {
+    if (q.isEmpty) return true;
+    final name  = (u['name']  as String? ?? '').toLowerCase();
+    final phone = _normalizePhone(u['phone'] as String? ?? '');
+    final normQ = _normalizePhone(q);
+    return name.contains(q) || phone.contains(normQ);
+  }
+
   Future<void> _showAddMemberDialog() async {
     final granted = await FlutterContacts.requestPermission(readonly: true);
     if (!mounted) return;
 
-    // registered: users found in app — { id, name, profile_pic_url, phone }
-    List<Map<String, dynamic>> registered = [];
-    // unregistered: contacts NOT in app — { name, phone }
+    // All registered users not in group
+    List<Map<String, dynamic>> allUsers = [];
+    // Unregistered phone contacts — { name, phone }
     List<Map<String, dynamic>> unregistered = [];
+    // IDs of users found via phone contacts (to show badge)
+    Set<String> contactUserIds = {};
+
+    // Always fetch all app users
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/users'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200) {
+        allUsers = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+      }
+    } catch (_) {}
 
     if (granted) {
       final contacts = await FlutterContacts.getContacts(withProperties: true);
-
-      // Build map: normalizedPhone → {name, phone (original best number)}
-      final Map<String, Map<String, String>> phoneToContact = {};
+      final Map<String, String> phoneToName = {};
       for (final c in contacts) {
         for (final p in c.phones) {
           final norm = _normalizePhone(p.number);
-          if (norm.length >= 9) {
-            phoneToContact.putIfAbsent(norm, () => {
-              'name': c.displayName,
-              'phone': p.number,
-            });
-          }
+          if (norm.length >= 9) phoneToName.putIfAbsent(norm, () => c.displayName);
         }
       }
 
-      if (phoneToContact.isNotEmpty) {
+      if (phoneToName.isNotEmpty) {
         try {
           final res = await http.post(
             Uri.parse('$kApi/contacts/match'),
@@ -2666,38 +2680,36 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               'Authorization': 'Bearer ${widget.token}',
               'Content-Type': 'application/json',
             },
-            body: jsonEncode({'phones': phoneToContact.keys.toList()}),
+            body: jsonEncode({'phones': phoneToName.keys.toList()}),
           );
           if (res.statusCode == 200) {
-            registered = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+            final matched = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+            contactUserIds = matched.map((u) => u['id'] as String).toSet();
           }
         } catch (_) {}
-      }
 
-      // Find unregistered: contacts whose normalized phones have no match
-      final registeredPhones = registered
-          .map((u) => _normalizePhone((u['phone'] as String? ?? '')))
-          .toSet();
-      unregistered = phoneToContact.entries
-          .where((e) => !registeredPhones.contains(e.key))
-          .map((e) => {'name': e.value['name']!, 'phone': e.value['phone']!})
-          .toList()
-        ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
-    } else {
-      // No contacts permission — show all app users
-      try {
-        final res = await http.get(
-          Uri.parse('$kApi/users'),
-          headers: {'Authorization': 'Bearer ${widget.token}'},
-        );
-        if (res.statusCode == 200) {
-          registered = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
-        }
-      } catch (_) {}
+        // Unregistered: contacts whose phones don't match any app user
+        final appPhones = allUsers
+            .map((u) => _normalizePhone(u['phone'] as String? ?? ''))
+            .where((p) => p.isNotEmpty)
+            .toSet();
+        unregistered = phoneToName.entries
+            .where((e) => !appPhones.contains(e.key))
+            .map((e) => {'name': e.value, 'phone': e.key})
+            .toList()
+          ..sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
+      }
     }
 
     final memberIds = _members.map((m) => m['id'] as String).toSet();
-    registered = registered.where((u) => !memberIds.contains(u['id'] as String)).toList();
+    allUsers = allUsers.where((u) => !memberIds.contains(u['id'] as String)).toList()
+      ..sort((a, b) {
+        // contacts first, then alphabetical
+        final aC = contactUserIds.contains(a['id']) ? 0 : 1;
+        final bC = contactUserIds.contains(b['id']) ? 0 : 1;
+        if (aC != bC) return aC - bC;
+        return (a['name'] as String).compareTo(b['name'] as String);
+      });
 
     if (!mounted) return;
     final searchCtrl = TextEditingController();
@@ -2707,17 +2719,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setS) {
           final query = searchCtrl.text.toLowerCase();
-          final filteredReg = query.isEmpty
-              ? registered
-              : registered.where((u) =>
-                  (u['name'] as String).toLowerCase().contains(query)).toList();
-          final filteredUnreg = query.isEmpty
-              ? unregistered
-              : unregistered.where((u) =>
-                  (u['name'] as String).toLowerCase().contains(query)).toList();
+          final filteredReg   = allUsers.where((u) => _matchesQuery(u, query)).toList();
+          final filteredUnreg = unregistered.where((u) => _matchesQuery(u, query)).toList();
 
           return AlertDialog(
-            title: const Text('הוסף מאנשי קשר'),
+            title: const Text('הוסף חבר לקבוצה'),
             contentPadding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
             content: SizedBox(
               width: double.maxFinite,
@@ -2728,9 +2734,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: TextField(
                       controller: searchCtrl,
-                      textDirection: TextDirection.rtl,
+                      keyboardType: TextInputType.text,
                       decoration: const InputDecoration(
-                        hintText: 'חיפוש...',
+                        hintText: 'חיפוש לפי שם או מספר...',
                         hintTextDirection: TextDirection.rtl,
                         prefixIcon: Icon(Icons.search),
                       ),
@@ -2759,25 +2765,43 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                           fontWeight: FontWeight.bold,
                                           color: kPrimary)),
                                 ),
-                                ...filteredReg.map((u) => ListTile(
-                                  leading: CircleAvatar(
-                                    backgroundColor: kPrimary,
-                                    backgroundImage: u['profile_pic_url'] != null
-                                        ? NetworkImage(u['profile_pic_url'] as String)
+                                ...filteredReg.map((u) {
+                                  final isContact = contactUserIds.contains(u['id'] as String);
+                                  final phone = u['phone'] as String? ?? '';
+                                  return ListTile(
+                                    leading: CircleAvatar(
+                                      backgroundColor: kPrimary,
+                                      backgroundImage: u['profile_pic_url'] != null
+                                          ? NetworkImage(u['profile_pic_url'] as String)
+                                          : null,
+                                      child: u['profile_pic_url'] == null
+                                          ? Text((u['name'] as String)[0],
+                                              style: const TextStyle(color: Colors.white))
+                                          : null,
+                                    ),
+                                    title: Text(u['name'] as String),
+                                    subtitle: phone.isNotEmpty
+                                        ? Text(phone,
+                                            style: const TextStyle(fontSize: 11, color: kSubtext))
                                         : null,
-                                    child: u['profile_pic_url'] == null
-                                        ? Text((u['name'] as String)[0],
-                                            style: const TextStyle(color: Colors.white))
-                                        : null,
-                                  ),
-                                  title: Text(u['name'] as String),
-                                  trailing: const Icon(Icons.person_add_outlined,
-                                      color: kPrimary),
-                                  onTap: () {
-                                    Navigator.pop(ctx);
-                                    _addMember(u['id'] as String);
-                                  },
-                                )),
+                                    trailing: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (isContact)
+                                          const Padding(
+                                            padding: EdgeInsets.only(left: 4),
+                                            child: Icon(Icons.contacts_outlined,
+                                                size: 14, color: kSubtext),
+                                          ),
+                                        const Icon(Icons.person_add_outlined, color: kPrimary),
+                                      ],
+                                    ),
+                                    onTap: () {
+                                      Navigator.pop(ctx);
+                                      _addMember(u['id'] as String);
+                                    },
+                                  );
+                                }),
                               ],
                               // ── Unregistered contacts ─────────────
                               if (granted && filteredUnreg.isNotEmpty) ...[

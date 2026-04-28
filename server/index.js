@@ -574,7 +574,7 @@ app.get('/api/users', auth, async (req, res) => {
     const pool = await getPool();
     const result = await pool.request()
       .input('myId', sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT id, name, profile_pic_url, city, community
+      .query(`SELECT id, name, profile_pic_url, city, community, phone
               FROM users
               WHERE id != @myId
               AND id NOT IN (
