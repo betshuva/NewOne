@@ -153,6 +153,42 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
 
 /* scrollbar global */
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:var(--div);border-radius:4px}
+
+/* ── GROUP MANAGE MODAL ── */
+#gm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:60;display:none;align-items:center;justify-content:center}
+#gm-overlay.open{display:flex}
+.gm-panel{background:#fff;border-radius:16px;width:420px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.2);overflow:hidden}
+.gm-head{background:var(--blue);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.gm-title{font-size:16px;font-weight:700;color:#fff}
+.gm-close{background:none;border:none;color:rgba(255,255,255,.8);font-size:22px;cursor:pointer;line-height:1;padding:0 2px}
+.gm-close:hover{color:#fff}
+.gm-search{padding:10px 16px;border-bottom:1px solid var(--div);flex-shrink:0}
+.gm-search input{width:100%;border:1.5px solid var(--blue-mid);border-radius:20px;padding:8px 14px;font-family:'Heebo',sans-serif;font-size:13px;outline:none;text-align:right;background:var(--off)}
+.gm-search input:focus{border-color:var(--blue)}
+.gm-section-label{font-size:11px;font-weight:700;color:var(--blue);padding:10px 16px 4px;text-transform:uppercase;letter-spacing:.5px;flex-shrink:0}
+.gm-body{flex:1;overflow-y:auto;padding-bottom:8px}
+.gm-item{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--div);transition:background .15s}
+.gm-item:hover{background:var(--blue-pale)}
+.gm-av{width:38px;height:38px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;flex-shrink:0}
+.gm-av.grey{background:#b0bec5}
+.gm-info{flex:1;min-width:0}
+.gm-name{font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gm-sub{font-size:11px;color:var(--text3)}
+.gm-sub.admin{color:var(--blue)}
+.gm-btn{padding:5px 12px;border-radius:20px;border:none;font-family:'Heebo',sans-serif;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;transition:opacity .15s}
+.gm-btn:hover{opacity:.85}
+.gm-btn.add{background:var(--blue);color:#fff}
+.gm-btn.remove{background:#fee2e2;color:#dc2626}
+.gm-btn.invite{background:var(--blue-pale);color:var(--blue);border:1px solid var(--blue-mid)}
+.gm-footer{padding:12px 16px;border-top:1px solid var(--div);flex-shrink:0}
+.gm-invite-row{display:flex;gap:8px}
+.gm-invite-row input{flex:1;border:1.5px solid var(--blue-mid);border-radius:8px;padding:8px 12px;font-family:'Heebo',sans-serif;font-size:13px;outline:none;text-align:right}
+.gm-invite-row input:focus{border-color:var(--blue)}
+.gm-invite-row button{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-family:'Heebo',sans-serif;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.gm-empty{padding:24px;text-align:center;color:var(--text3);font-size:13px}
+.gm-tabs{display:flex;border-bottom:1px solid var(--div);flex-shrink:0}
+.gm-tab{flex:1;text-align:center;padding:9px;font-size:13px;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;transition:all .2s}
+.gm-tab.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
 </style>
 </head>
 <body>
@@ -235,6 +271,32 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
   </div>
 </div>
 
+<!-- GROUP MANAGE MODAL -->
+<div id="gm-overlay" onclick="gmOverlayClick(event)">
+  <div class="gm-panel">
+    <div class="gm-head">
+      <span class="gm-title" id="gm-title">ניהול קבוצה</span>
+      <button class="gm-close" onclick="closeGroupManage()">✕</button>
+    </div>
+    <div class="gm-tabs" id="gm-tabs">
+      <div class="gm-tab active" onclick="gmSetTab('members')">חברים</div>
+      <div class="gm-tab" onclick="gmSetTab('add')">הוסף חבר</div>
+      <div class="gm-tab" onclick="gmSetTab('invite')">הזמן ב-SMS</div>
+    </div>
+    <div class="gm-search" id="gm-search-wrap">
+      <input id="gm-search" placeholder="חיפוש..." oninput="gmRender()"/>
+    </div>
+    <div class="gm-body" id="gm-body"></div>
+    <div class="gm-footer" id="gm-footer" style="display:none">
+      <div class="gm-invite-row">
+        <input id="inv-phone" type="tel" placeholder="מספר טלפון" dir="ltr"/>
+        <input id="inv-name" type="text" placeholder="שם איש הקשר"/>
+        <button onclick="sendWebInviteSms()">שלח SMS</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- PROFILE MENU -->
 <div id="profile-menu" onclick="closeProfileMenu(event)">
   <div class="pm-panel">
@@ -258,6 +320,9 @@ let socket = null;
 let users = [];
 let groups = [];
 let currentChat = null; // {type:'user'|'group', id, name, initials}
+let gmMembers = [];
+let gmIsAdmin = false;
+let gmTab = 'members';
 let currentTab = 'all';
 let replyTo = null;
 let typingTimer = null;
@@ -484,7 +549,7 @@ async function openChat(c) {
       </div>
       <div class="ch-actions">
         <button class="ch-act"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="rgba(255,255,255,.85)" stroke-width="1.8"/><path d="M17 17l3 3" stroke="rgba(255,255,255,.85)" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-        <button class="ch-act"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81 19.79 19.79 0 01.01 1.18 2 2 0 012 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92v2z" stroke="rgba(255,255,255,.85)" stroke-width="1.8"/></svg></button>
+        ${c.type==='group' ? `<button class="ch-act" title="ניהול קבוצה" onclick="showGroupManage()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" stroke="rgba(255,255,255,.85)" stroke-width="1.8" stroke-linecap="round"/><circle cx="9" cy="7" r="4" stroke="rgba(255,255,255,.85)" stroke-width="1.8"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" stroke="rgba(255,255,255,.85)" stroke-width="1.8" stroke-linecap="round"/></svg></button>` : ''}
         <button class="ch-act"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="1.5" fill="rgba(255,255,255,.85)"/><circle cx="12" cy="12" r="1.5" fill="rgba(255,255,255,.85)"/><circle cx="19" cy="12" r="1.5" fill="rgba(255,255,255,.85)"/></svg></button>
       </div>
     </div>
@@ -714,6 +779,159 @@ if (token) {
 } else {
   document.getElementById('auth-screen').style.display='flex';
   document.getElementById('app').style.display='none';
+}
+
+// ── Group Management ──────────────────────────────────────────────
+async function showGroupManage() {
+  if (!currentChat || currentChat.type !== 'group') return;
+  gmTab = 'members';
+  gmMembers = [];
+  gmIsAdmin = false;
+  document.getElementById('gm-title').textContent = 'ניהול: ' + currentChat.name;
+  document.getElementById('gm-search').value = '';
+  document.getElementById('gm-overlay').classList.add('open');
+  document.getElementById('gm-body').innerHTML = '<div class="gm-empty">טוען...</div>';
+  gmSetTab('members');
+  await gmLoadDetails();
+  gmRender();
+}
+
+async function gmLoadDetails() {
+  try {
+    const r = await fetch(`${API}/api/groups/${currentChat.id}`, {headers:{Authorization:`Bearer ${token}`}});
+    if (r.ok) {
+      const d = await r.json();
+      gmMembers = d.members || [];
+      gmIsAdmin = d.myRole === 'admin';
+    }
+  } catch(e) {}
+}
+
+function gmSetTab(tab) {
+  gmTab = tab;
+  document.getElementById('gm-search').value = '';
+  document.querySelectorAll('.gm-tab').forEach((t,i) => {
+    t.classList.toggle('active', ['members','add','invite'][i] === tab);
+  });
+  document.getElementById('gm-footer').style.display = tab === 'invite' ? 'block' : 'none';
+  document.getElementById('gm-search-wrap').style.display = tab === 'invite' ? 'none' : 'block';
+  gmRender();
+}
+
+function gmRender() {
+  const q = (document.getElementById('gm-search').value || '').toLowerCase();
+  const body = document.getElementById('gm-body');
+
+  if (gmTab === 'members') {
+    const list = gmMembers.filter(m => !q || m.name.toLowerCase().includes(q));
+    if (!list.length) { body.innerHTML = '<div class="gm-empty">אין חברים</div>'; return; }
+    body.innerHTML = list.map(m => {
+      const isMe = m.id === me?.id;
+      const isAdmin = m.role === 'admin';
+      const removeBtn = gmIsAdmin && !isMe && !isAdmin
+        ? `<button class="gm-btn remove" onclick="gmRemoveMember('${m.id}','${escH(m.name)}')">הסר</button>` : '';
+      return `<div class="gm-item">
+        <div class="gm-av">${m.name[0].toUpperCase()}</div>
+        <div class="gm-info">
+          <div class="gm-name">${escH(m.name)}</div>
+          <div class="gm-sub ${isAdmin?'admin':''}">${isAdmin?'מנהל':'חבר'}</div>
+        </div>
+        ${removeBtn}
+      </div>`;
+    }).join('');
+    return;
+  }
+
+  if (gmTab === 'add') {
+    const memberIds = new Set(gmMembers.map(m => m.id));
+    const available = users.filter(u => !memberIds.has(u.id) && (!q || u.name.toLowerCase().includes(q)));
+    if (!available.length) { body.innerHTML = '<div class="gm-empty">אין משתמשים להוסיף</div>'; return; }
+    body.innerHTML = available.map(u => `
+      <div class="gm-item">
+        <div class="gm-av">${u.name[0].toUpperCase()}</div>
+        <div class="gm-info"><div class="gm-name">${escH(u.name)}</div></div>
+        <button class="gm-btn add" onclick="gmAddMember('${u.id}','${escH(u.name)}')">הוסף</button>
+      </div>`).join('');
+    return;
+  }
+
+  if (gmTab === 'invite') {
+    body.innerHTML = `<div class="gm-empty" style="text-align:right;padding:16px">
+      <p style="font-size:13px;color:var(--text2);line-height:1.7">
+        הזן מספר טלפון ושם של איש קשר שאינו רשום בבתשובה.<br/>
+        המערכת תשלח לו SMS עם הזמנה להצטרף לקבוצה.
+      </p>
+    </div>`;
+  }
+}
+
+async function gmAddMember(userId, userName) {
+  try {
+    const r = await fetch(`${API}/api/groups/${currentChat.id}/members`, {
+      method:'POST', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
+      body: JSON.stringify({userId})
+    });
+    if (r.ok) {
+      await gmLoadDetails();
+      gmRender();
+      showToast(`${userName} נוסף לקבוצה`);
+    }
+  } catch(e) {}
+}
+
+async function gmRemoveMember(userId, userName) {
+  if (!confirm(`להסיר את ${userName} מהקבוצה?`)) return;
+  try {
+    const r = await fetch(`${API}/api/groups/${currentChat.id}/members/${userId}`, {
+      method:'DELETE', headers:{Authorization:`Bearer ${token}`}
+    });
+    if (r.ok) {
+      await gmLoadDetails();
+      gmRender();
+      showToast(`${userName} הוסר מהקבוצה`);
+    }
+  } catch(e) {}
+}
+
+async function sendWebInviteSms() {
+  const phone = document.getElementById('inv-phone').value.trim();
+  const name  = document.getElementById('inv-name').value.trim();
+  if (!phone) { alert('נדרש מספר טלפון'); return; }
+  try {
+    const r = await fetch(`${API}/api/groups/${currentChat.id}/invite-sms`, {
+      method:'POST', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
+      body: JSON.stringify({phone, contactName: name})
+    });
+    if (r.ok) {
+      document.getElementById('inv-phone').value = '';
+      document.getElementById('inv-name').value = '';
+      showToast(`ההזמנה נשלחה ל${name||phone}`);
+    } else {
+      alert('שגיאה בשליחת SMS');
+    }
+  } catch(e) { alert('שגיאת תקשורת'); }
+}
+
+function closeGroupManage() {
+  document.getElementById('gm-overlay').classList.remove('open');
+}
+function gmOverlayClick(e) {
+  if (e.target === document.getElementById('gm-overlay')) closeGroupManage();
+}
+function escH(s) { return (s||'').replace(/'/g,"&#39;").replace(/"/g,'&quot;'); }
+
+function showToast(msg) {
+  let t = document.getElementById('toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1B6CA8;color:#fff;padding:10px 20px;border-radius:24px;font-size:13px;font-family:Heebo,sans-serif;z-index:999;box-shadow:0 4px 16px rgba(0,0,0,.2);transition:opacity .3s';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.style.opacity = '0', 2500);
 }
 </script>
 </body>
