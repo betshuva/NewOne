@@ -206,6 +206,9 @@ function resetPasswordEmail(resetUrl) {
     await pool.request().query(`
       IF COLUMNPROPERTY(OBJECT_ID('users'), 'password_hash', 'AllowsNull') = 0
         ALTER TABLE users ALTER COLUMN password_hash NVARCHAR(255) NULL`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='google_id')
+        ALTER TABLE users ADD google_id NVARCHAR(128)`);
 
     // ── Groups ─────────────────────────────────────────────────────
     await pool.request().query(`
@@ -580,6 +583,77 @@ app.post('/api/login', async (req, res) => {
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     const { password_hash, ...safeUser } = user;
     logActivity(user.id, 'login', { email: user.email }, req.ip);
+    res.json({ token, user: safeUser });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Google Sign-In ────────────────────────────────────────────────
+app.post('/api/auth/google', async (req, res) => {
+  const { idToken } = req.body;
+  if (!idToken) return res.status(400).json({ error: 'חסר idToken' });
+  try {
+    const tokenRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+    const payload  = await tokenRes.json();
+    if (payload.error_description || !payload.sub)
+      return res.status(401).json({ error: 'טוקן גוגל לא תקין' });
+
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (clientId && payload.aud !== clientId)
+      return res.status(401).json({ error: 'Client ID לא תואם' });
+
+    const { sub: googleId, email, name, picture } = payload;
+    const pool = await getPool();
+
+    // 1. Find by google_id
+    let byGoogle = await pool.request()
+      .input('googleId', sql.NVarChar, googleId)
+      .query('SELECT * FROM users WHERE google_id = @googleId');
+
+    if (byGoogle.recordset.length) {
+      const user  = byGoogle.recordset[0];
+      const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+      logActivity(user.id, 'google_login', { email: user.email }, req.ip);
+      const { password_hash, ...safeUser } = user;
+      return res.json({ token, user: safeUser });
+    }
+
+    // 2. Find by email — link google_id
+    if (email) {
+      const byEmail = await pool.request()
+        .input('email', sql.NVarChar, email)
+        .query('SELECT * FROM users WHERE email = @email');
+      if (byEmail.recordset.length) {
+        const user = byEmail.recordset[0];
+        await pool.request()
+          .input('id',       sql.UniqueIdentifier, user.id)
+          .input('googleId', sql.NVarChar,         googleId)
+          .input('picture',  sql.NVarChar,         picture || null)
+          .query(`UPDATE users
+                  SET google_id=@googleId, email_verified=1,
+                      profile_pic_url=COALESCE(profile_pic_url, @picture)
+                  WHERE id=@id`);
+        const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+        logActivity(user.id, 'google_login', { email: user.email }, req.ip);
+        const { password_hash, ...safeUser } = user;
+        return res.json({ token, user: safeUser });
+      }
+    }
+
+    // 3. Create new user
+    const inserted = await pool.request()
+      .input('name',     sql.NVarChar, name || (email ? email.split('@')[0] : 'משתמש'))
+      .input('email',    sql.NVarChar, email || null)
+      .input('googleId', sql.NVarChar, googleId)
+      .input('picture',  sql.NVarChar, picture || null)
+      .query(`INSERT INTO users (name, email, email_verified, google_id, profile_pic_url)
+              OUTPUT INSERTED.*
+              VALUES (@name, @email, 1, @googleId, @picture)`);
+    const user  = inserted.recordset[0];
+    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    logActivity(user.id, 'google_register', { email: user.email }, req.ip);
+    const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser });
   } catch (e) {
     res.status(500).json({ error: e.message });

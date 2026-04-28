@@ -12,6 +12,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 // ── Local notifications setup ─────────────────────────────────────
 final _localNotif = FlutterLocalNotificationsPlugin();
@@ -66,6 +67,8 @@ const kFilterBg   = Color(0xFFE8F4FD); // filter banner background
 const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi     = '$kServer/api';
 const kVersion = '1.1.0';
+// Google Web Client ID — set in Firebase Console → Authentication → Google → Web SDK config
+const kGoogleWebClientId = '862738339788-REPLACE_WITH_WEB_CLIENT_ID.apps.googleusercontent.com';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -548,6 +551,38 @@ class _AuthScreenState extends State<AuthScreen> {
   final _passCtrl  = TextEditingController();
   final _phoneCtrl = TextEditingController();
 
+  final _googleSignIn = GoogleSignIn(serverClientId: kGoogleWebClientId);
+
+  Future<void> _signInWithGoogle() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      await _googleSignIn.signOut();
+      final account = await _googleSignIn.signIn();
+      if (account == null) { setState(() { _loading = false; }); return; }
+      final auth    = await account.authentication;
+      final idToken = auth.idToken;
+      if (idToken == null) throw Exception('לא התקבל טוקן מגוגל');
+
+      final res  = await http.post(
+        Uri.parse('$kApi/auth/google'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'idToken': idToken}),
+      ).timeout(const Duration(seconds: 30));
+      final data = jsonDecode(res.body);
+      if (res.statusCode != 200) {
+        setState(() { _error = data['error'] ?? 'שגיאה'; _loading = false; });
+        return;
+      }
+      final token = data['token'] as String;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('token', token);
+      if (!mounted) return;
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => MainShell(token: token)));
+    } catch (e) {
+      setState(() { _error = 'שגיאה בכניסה עם גוגל'; _loading = false; });
+    }
+  }
+
   @override
   void dispose() {
     _nameCtrl.dispose();
@@ -715,6 +750,34 @@ class _AuthScreenState extends State<AuthScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                       : Text(_isLogin ? 'כניסה' : 'הרשמה',
                           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(children: [
+                const Expanded(child: Divider(color: kBorder)),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Text('או', style: TextStyle(color: kSubtext, fontSize: 13)),
+                ),
+                const Expanded(child: Divider(color: kBorder)),
+              ]),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _loading ? null : _signInWithGoogle,
+                  icon: Image.network(
+                    'https://www.google.com/favicon.ico',
+                    width: 18, height: 18,
+                    errorBuilder: (_, __, ___) => const Icon(Icons.g_mobiledata, size: 22),
+                  ),
+                  label: const Text('המשך עם Google',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: kTextDark)),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: kBorder, width: 1.5),
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
                 ),
               ),
             ],
