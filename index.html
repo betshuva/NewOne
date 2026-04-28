@@ -196,7 +196,7 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
     <div class="sidebar-header">
       <div class="brand">
         <div class="brand-logo" id="brand-logo-el"></div>
-        <div class="brand-text"><strong>בתשובה</strong><span>Betshuva Web</span></div>
+        <div class="brand-text"><strong>בתשובה</strong><span id="header-username">Betshuva Web</span></div>
       </div>
       <div class="hdr-icons">
         <button class="hdr-icon" title="שיחה חדשה" onclick="openNewChat()">
@@ -349,6 +349,7 @@ function updateProfileMenu() {
   document.getElementById('pm-av').textContent = init;
   document.getElementById('pm-name').textContent = me.name || '';
   document.getElementById('pm-email').textContent = me.email || '';
+  document.getElementById('header-username').textContent = me.name || 'Betshuva Web';
 }
 
 // ── Users & Groups ────────────────────────────────────────────────
