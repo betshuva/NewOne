@@ -281,19 +281,13 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
     <div class="gm-tabs" id="gm-tabs">
       <div class="gm-tab active" onclick="gmSetTab('members')">חברים</div>
       <div class="gm-tab" onclick="gmSetTab('add')">הוסף חבר</div>
-      <div class="gm-tab" onclick="gmSetTab('invite')">הזמן ב-SMS</div>
+      <div class="gm-tab" onclick="gmSetTab('invite')">הזמן</div>
     </div>
     <div class="gm-search" id="gm-search-wrap">
       <input id="gm-search" placeholder="חיפוש..." oninput="gmRender()"/>
     </div>
     <div class="gm-body" id="gm-body"></div>
-    <div class="gm-footer" id="gm-footer" style="display:none">
-      <div class="gm-invite-row">
-        <input id="inv-phone" type="tel" placeholder="מספר טלפון" dir="ltr"/>
-        <input id="inv-name" type="text" placeholder="שם איש הקשר"/>
-        <button onclick="sendWebInviteSms()">שלח SMS</button>
-      </div>
-    </div>
+    <div class="gm-footer" id="gm-footer" style="display:none"></div>
   </div>
 </div>
 
@@ -856,12 +850,15 @@ function gmRender() {
   }
 
   if (gmTab === 'invite') {
-    body.innerHTML = `<div class="gm-empty" style="text-align:right;padding:16px">
-      <p style="font-size:13px;color:var(--text2);line-height:1.7">
-        הזן מספר טלפון ושם של איש קשר שאינו רשום בבתשובה.<br/>
-        המערכת תשלח לו SMS עם הזמנה להצטרף לקבוצה.
-      </p>
-    </div>`;
+    const memberIds = new Set(gmMembers.map(m => m.id));
+    const available = users.filter(u => !memberIds.has(u.id) && (!q || u.name.toLowerCase().includes(q)));
+    if (!available.length) { body.innerHTML = '<div class="gm-empty">אין משתמשים להזמין</div>'; return; }
+    body.innerHTML = available.map(u => `
+      <div class="gm-item">
+        <div class="gm-av">${u.name[0].toUpperCase()}</div>
+        <div class="gm-info"><div class="gm-name">${escH(u.name)}</div><div class="gm-sub">הזמנה תישלח כהודעה פרטית</div></div>
+        <button class="gm-btn invite" onclick="gmSendInviteMsg('${u.id}','${escH(u.name)}')">הזמן</button>
+      </div>`).join('');
   }
 }
 
@@ -893,21 +890,17 @@ async function gmRemoveMember(userId, userName) {
   } catch(e) {}
 }
 
-async function sendWebInviteSms() {
-  const phone = document.getElementById('inv-phone').value.trim();
-  const name  = document.getElementById('inv-name').value.trim();
-  if (!phone) { alert('נדרש מספר טלפון'); return; }
+async function gmSendInviteMsg(userId, userName) {
   try {
-    const r = await fetch(`${API}/api/groups/${currentChat.id}/invite-sms`, {
+    const r = await fetch(`${API}/api/groups/${currentChat.id}/invite-message`, {
       method:'POST', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
-      body: JSON.stringify({phone, contactName: name})
+      body: JSON.stringify({userId})
     });
     if (r.ok) {
-      document.getElementById('inv-phone').value = '';
-      document.getElementById('inv-name').value = '';
-      showToast(`ההזמנה נשלחה ל${name||phone}`);
+      showToast(`ההזמנה נשלחה ל${userName}`);
     } else {
-      alert('שגיאה בשליחת SMS');
+      const d = await r.json().catch(()=>({}));
+      alert(d.error || 'שגיאה בשליחת ההזמנה');
     }
   } catch(e) { alert('שגיאת תקשורת'); }
 }

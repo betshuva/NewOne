@@ -322,6 +322,7 @@ async function logActivity(userId, action, details = {}, ip = null) {
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
+app.set('io', io);
 
 app.use(cors());
 app.use(express.json());
@@ -975,6 +976,55 @@ app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
       .input('groupId', sql.UniqueIdentifier, req.params.id)
       .input('userId',  sql.UniqueIdentifier, req.params.userId)
       .query('DELETE FROM group_members WHERE group_id=@groupId AND user_id=@userId');
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: invite registered user via in-app message (admin) ──────
+app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'נדרש userId' });
+  try {
+    const pool = await getPool();
+    const [adminCheck, grp] = await Promise.all([
+      pool.request()
+        .input('groupId', sql.UniqueIdentifier, req.params.id)
+        .input('myId',    sql.UniqueIdentifier, req.user.id)
+        .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`),
+      pool.request()
+        .input('id', sql.UniqueIdentifier, req.params.id)
+        .query('SELECT name FROM groups WHERE id=@id'),
+    ]);
+    if (!adminCheck.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+
+    const groupName  = grp.recordset[0]?.name || 'קבוצה';
+    const senderName = req.user.name || 'מנהל';
+    const text = `👋 ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" בבתשובה`;
+
+    // Insert private message from admin to the invited user
+    const saved = await pool.request()
+      .input('senderId',    sql.UniqueIdentifier, req.user.id)
+      .input('recipientId', sql.UniqueIdentifier, userId)
+      .input('body',        sql.NVarChar,         text)
+      .input('type',        sql.NVarChar,         'text')
+      .query(`INSERT INTO messages (sender_id, recipient_id, body, type)
+              OUTPUT INSERTED.id, INSERTED.created_at
+              VALUES (@senderId, @recipientId, @body, @type)`);
+
+    const row = saved.recordset[0];
+
+    // Real-time delivery if user is online
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user:${userId}`).emit('chat:message', {
+        id: row.id, fromUserId: req.user.id, fromName: senderName,
+        text, createdAt: row.created_at,
+      });
+    }
+
+    // Push notification if offline
+    sendPush(userId, senderName, text, { type: 'chat', fromUserId: req.user.id });
+
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
