@@ -579,7 +579,7 @@ class _AuthScreenState extends State<AuthScreen> {
       if (!mounted) return;
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => MainShell(token: token)));
     } catch (e) {
-      setState(() { _error = 'שגיאה בכניסה עם גוגל'; _loading = false; });
+      setState(() { _error = 'שגיאה: $e'; _loading = false; });
     }
   }
 
