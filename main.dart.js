@@ -9676,7 +9676,8 @@ anb:function anb(a){this.a=a},
 anc:function anc(a,b){this.a=a
 this.b=b},
 and:function and(a){this.a=a},
-ane:function ane(a){this.a=a},
+ane:function ane(a,b){this.a=a
+this.b=b},
 anf:function anf(a){this.a=a},
 ang:function ang(a){this.a=a},
 anh:function anh(a){this.a=a},
@@ -50284,48 +50285,49 @@ ad(){var s=$.aD(),r=new A.MZ("862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps
 r.yW()
 return new A.EM(new A.dV(B.aK,s),new A.dV(B.aK,s),new A.dV(B.aK,s),new A.dV(B.aK,s),r,B.j)}}
 A.EM.prototype={
-lo(){var s=0,r=A.G(t.H),q,p=2,o,n=this,m,l,k,j,i,h,g,f,e,d,c,b
-var $async$lo=A.B(function(a,a0){if(a===1){o=a0
+lo(){var s=0,r=A.G(t.H),q,p=2,o,n=this,m,l,k,j,i,h,g,f,e,d,c,b,a
+var $async$lo=A.B(function(a0,a1){if(a0===1){o=a1
 s=p}while(true)switch(s){case 0:n.J(new A.ana(n))
 p=4
-f=n.z
+e=n.z
 s=7
-return A.w(f.a7o($.JO().gNo()),$async$lo)
+return A.w(e.a7o($.JO().gNo()),$async$lo)
 case 7:s=8
-return A.w(f.i2(),$async$lo)
-case 8:m=a0
+return A.w(e.i2(),$async$lo)
+case 8:m=a1
 if(m==null){n.J(new A.anb(n))
 s=1
 break}s=9
 return A.w(m.gAZ(),$async$lo)
-case 9:l=a0
+case 9:l=a1
 k=l.a.a
-if(k==null){f=A.d6("\u05dc\u05d0 \u05d4\u05ea\u05e7\u05d1\u05dc \u05d8\u05d5\u05e7\u05df \u05de\u05d2\u05d5\u05d2\u05dc")
-throw A.c(f)}f=A.bD("https://xo-app-betshuva.azurewebsites.net/api/auth/google")
-e=t.N
-d=A.Q(["Content-Type","application/json"],e,e)
+if(k==null){e=A.d6("\u05dc\u05d0 \u05d4\u05ea\u05e7\u05d1\u05dc \u05d8\u05d5\u05e7\u05df \u05de\u05d2\u05d5\u05d2\u05dc")
+throw A.c(e)}e=A.bD("https://xo-app-betshuva.azurewebsites.net/api/auth/google")
+d=t.N
+c=A.Q(["Content-Type","application/json"],d,d)
 s=10
-return A.w(A.hE(f,B.J.fZ(A.Q(["idToken",k],e,e),null),d).nJ(0,B.dE),$async$lo)
-case 10:j=a0
-d=j
-i=B.J.ek(0,A.ez(A.ey(d.e)).c9(0,d.w),null)
+return A.w(A.hE(e,B.J.fZ(A.Q(["idToken",k],d,d),null),c).nJ(0,B.dE),$async$lo)
+case 10:j=a1
+c=j
+i=B.J.ek(0,A.ez(A.ey(c.e)).c9(0,c.w),null)
 if(j.b!==200){n.J(new A.anc(n,i))
 s=1
 break}h=A.av(J.Y(i,"token"))
 s=11
 return A.w(A.ov(),$async$lo)
-case 11:g=a0
+case 11:g=a1
 s=12
 return A.w(g.Ab("String","token",h),$async$lo)
-case 12:f=n.c
-if(f==null){s=1
-break}A.qW(f,A.hl(new A.and(h),null,t.z))
+case 12:e=n.c
+if(e==null){s=1
+break}A.qW(e,A.hl(new A.and(h),null,t.z))
 p=2
 s=6
 break
 case 4:p=3
-b=o
-n.J(new A.ane(n))
+a=o
+f=A.aj(a)
+n.J(new A.ane(n,f))
 s=6
 break
 case 3:s=2
@@ -50456,7 +50458,7 @@ $1(a){return new A.jk(this.a,null)},
 $S:72}
 A.ane.prototype={
 $0(){var s=this.a
-s.f="\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05db\u05e0\u05d9\u05e1\u05d4 \u05e2\u05dd \u05d2\u05d5\u05d2\u05dc"
+s.f="\u05e9\u05d2\u05d9\u05d0\u05d4: "+A.h(this.b)
 s.e=!1},
 $S:0}
 A.anf.prototype={
