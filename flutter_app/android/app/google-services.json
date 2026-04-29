@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "862738339788-4ogau0m9c0nh2h8jh7k6fosj2i3tah28.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.betshuva.app",
+            "certificate_hash": "b33684c015be52cea725fb41e69867af60a4a9dc"
+          }
+        },
+        {
           "client_id": "862738339788-umebs5qrpaaikhdr3uuu259hufc65l98.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

@@ -37,9 +37,19 @@ jobs:
         working-directory: flutter_app
         run: flutter pub get
 
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > flutter_app/android/app/betshuva-release.jks
+
       - name: Build APK
         working-directory: flutter_app
-        run: flutter build apk --release
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          flutter build apk --release \
+            --dart-define=KEYSTORE_FILE=betshuva-release.jks
 
       - name: Rename APK with version
         working-directory: flutter_app

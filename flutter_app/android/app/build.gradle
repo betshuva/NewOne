@@ -19,6 +19,15 @@ android {
         jvmTarget = JavaVersion.VERSION_1_8
     }
 
+    signingConfigs {
+        release {
+            storeFile = file("betshuva-release.jks")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "betshuva2024"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "betshuva"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "betshuva2024"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.betshuva.app"
         minSdk = 26
@@ -29,7 +38,7 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+            signingConfig = signingConfigs.release
         }
     }
 }
