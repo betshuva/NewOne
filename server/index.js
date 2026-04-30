@@ -209,6 +209,18 @@ function resetPasswordEmail(resetUrl) {
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='google_id')
         ALTER TABLE users ADD google_id NVARCHAR(128)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='country')
+        ALTER TABLE users ADD country NVARCHAR(100)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='street')
+        ALTER TABLE users ADD street NVARCHAR(200)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='house_number')
+        ALTER TABLE users ADD house_number NVARCHAR(20)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='apartment')
+        ALTER TABLE users ADD apartment NVARCHAR(20)`);
 
     // ── group_members: pending membership columns ──────────────────
     await pool.request().query(`
@@ -890,7 +902,8 @@ app.get('/api/profile', auth, async (req, res) => {
     const pool = await getPool();
     const result = await pool.request()
       .input('id', sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT id, name, email, phone, city, community,
+      .query(`SELECT id, name, email, phone, email_verified, phone_verified,
+                     city, community, country, street, house_number, apartment,
                      profile_pic_url, privacy_pic, filter_level
               FROM users WHERE id = @id`);
     if (!result.recordset.length) return res.status(404).json({ error: 'לא נמצא' });
@@ -900,7 +913,8 @@ app.get('/api/profile', auth, async (req, res) => {
 
 // ── Profile: update ───────────────────────────────────────────────
 app.put('/api/profile', auth, async (req, res) => {
-  const { name, city, community, privacy_pic, filter_level, profile_pic_url } = req.body;
+  const { name, city, community, privacy_pic, filter_level, profile_pic_url,
+          country, street, house_number, apartment } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'נדרש שם' });
   const validPrivacy = ['all', 'contacts', 'nobody'];
   const validFilter  = ['standard', 'strict'];
@@ -909,17 +923,22 @@ app.put('/api/profile', auth, async (req, res) => {
     await pool.request()
       .input('id',          sql.UniqueIdentifier, req.user.id)
       .input('name',        sql.NVarChar,         name.trim())
-      .input('city',        sql.NVarChar,         city        || null)
-      .input('community',   sql.NVarChar,         community   || null)
-      .input('privacyPic',  sql.NVarChar,         validPrivacy.includes(privacy_pic)  ? privacy_pic  : 'all')
-      .input('filterLevel', sql.NVarChar,         validFilter.includes(filter_level)  ? filter_level : 'standard')
+      .input('city',        sql.NVarChar,         city         || null)
+      .input('community',   sql.NVarChar,         community    || null)
+      .input('country',     sql.NVarChar,         country      || 'ישראל')
+      .input('street',      sql.NVarChar,         street       || null)
+      .input('houseNum',    sql.NVarChar,         house_number || null)
+      .input('apartment',   sql.NVarChar,         apartment    || null)
+      .input('privacyPic',  sql.NVarChar,         validPrivacy.includes(privacy_pic) ? privacy_pic  : 'all')
+      .input('filterLevel', sql.NVarChar,         validFilter.includes(filter_level) ? filter_level : 'standard')
       .input('picUrl',      sql.NVarChar,         profile_pic_url || null)
       .query(`UPDATE users
               SET name=@name, city=@city, community=@community,
+                  country=@country, street=@street, house_number=@houseNum, apartment=@apartment,
                   privacy_pic=@privacyPic, filter_level=@filterLevel,
                   profile_pic_url=@picUrl
               WHERE id=@id`);
-    logActivity(req.user.id, 'update_profile', { name: name.trim(), city, community }, req.ip);
+    logActivity(req.user.id, 'update_profile', { name: name.trim(), city, country }, req.ip);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -4120,13 +4120,21 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  final _nameCtrl      = TextEditingController();
-  final _cityCtrl      = TextEditingController();
-  final _communityCtrl = TextEditingController();
-  String  _privacyPic  = 'all';
+  final _nameCtrl        = TextEditingController();
+  final _cityCtrl        = TextEditingController();
+  final _communityCtrl   = TextEditingController();
+  final _countryCtrl     = TextEditingController(text: 'ישראל');
+  final _streetCtrl      = TextEditingController();
+  final _houseCtrl       = TextEditingController();
+  final _apartmentCtrl   = TextEditingController();
+  String  _privacyPic    = 'all';
   String? _picUrl;
-  bool    _loading     = true;
-  bool    _saving      = false;
+  String? _email;
+  String? _phone;
+  bool    _emailVerified = false;
+  bool    _phoneVerified = false;
+  bool    _loading       = true;
+  bool    _saving        = false;
   String? _error;
 
   @override
@@ -4140,6 +4148,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _nameCtrl.dispose();
     _cityCtrl.dispose();
     _communityCtrl.dispose();
+    _countryCtrl.dispose();
+    _streetCtrl.dispose();
+    _houseCtrl.dispose();
+    _apartmentCtrl.dispose();
     super.dispose();
   }
 
@@ -4153,11 +4165,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         setState(() {
-          _nameCtrl.text      = data['name']      as String? ?? '';
-          _cityCtrl.text      = data['city']      as String? ?? '';
-          _communityCtrl.text = data['community'] as String? ?? '';
-          _privacyPic         = data['privacy_pic'] as String? ?? 'all';
+          _nameCtrl.text      = data['name']         as String? ?? '';
+          _cityCtrl.text      = data['city']         as String? ?? '';
+          _communityCtrl.text = data['community']    as String? ?? '';
+          _countryCtrl.text   = data['country']      as String? ?? 'ישראל';
+          _streetCtrl.text    = data['street']       as String? ?? '';
+          _houseCtrl.text     = data['house_number'] as String? ?? '';
+          _apartmentCtrl.text = data['apartment']    as String? ?? '';
+          _privacyPic         = data['privacy_pic']  as String? ?? 'all';
           _picUrl             = data['profile_pic_url'] as String?;
+          _email              = data['email']  as String?;
+          _phone              = data['phone']  as String?;
+          _emailVerified      = data['email_verified']  == true || data['email_verified']  == 1;
+          _phoneVerified      = data['phone_verified']  == true || data['phone_verified']  == 1;
           _loading            = false;
         });
       } else {
@@ -4185,6 +4205,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           'name':            _nameCtrl.text.trim(),
           'city':            _cityCtrl.text.trim(),
           'community':       _communityCtrl.text.trim(),
+          'country':         _countryCtrl.text.trim().isEmpty ? 'ישראל' : _countryCtrl.text.trim(),
+          'street':          _streetCtrl.text.trim(),
+          'house_number':    _houseCtrl.text.trim(),
+          'apartment':       _apartmentCtrl.text.trim(),
           'privacy_pic':     _privacyPic,
           'profile_pic_url': _picUrl,
         }),
@@ -4333,6 +4357,47 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   const SizedBox(height: 12),
                 ],
 
+                // ── פרטי קשר (read-only) ─────────────────────────────
+                const _SectionHeader(title: 'פרטי קשר'),
+                Container(
+                  decoration: BoxDecoration(
+                    color: kCard,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: kBorder),
+                  ),
+                  child: Column(children: [
+                    if (_email != null) ...[
+                      _InfoTile(
+                        icon: Icons.email_outlined,
+                        label: 'אימייל',
+                        value: _email!,
+                        verified: _emailVerified,
+                      ),
+                      const Divider(height: 1, indent: 52),
+                    ],
+                    if (_phone != null)
+                      _InfoTile(
+                        icon: Icons.phone_android,
+                        label: 'טלפון',
+                        value: _phone!,
+                        verified: _phoneVerified,
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        child: Row(children: [
+                          const Icon(Icons.phone_android, color: kSubtext, size: 20),
+                          const SizedBox(width: 12),
+                          Text('לא נוסף מספר טלפון',
+                              style: const TextStyle(color: kSubtext, fontSize: 14)),
+                        ]),
+                      ),
+                  ]),
+                ),
+                const SizedBox(height: 20),
+
+                // ── פרטים אישיים ─────────────────────────────────────
+                const _SectionHeader(title: 'פרטים אישיים'),
                 _FieldLabel(label: 'שם מלא'),
                 const SizedBox(height: 6),
                 TextField(
@@ -4341,16 +4406,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   decoration: const InputDecoration(hintText: 'השם שלך'),
                   onChanged: (_) => setState(() {}),
                 ),
-                const SizedBox(height: 16),
-
-                _FieldLabel(label: 'עיר'),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: _cityCtrl,
-                  textDirection: TextDirection.rtl,
-                  decoration: const InputDecoration(hintText: 'עיר מגורים'),
-                ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
 
                 _FieldLabel(label: 'קהילה'),
                 const SizedBox(height: 6),
@@ -4359,6 +4415,71 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   textDirection: TextDirection.rtl,
                   decoration: const InputDecoration(hintText: 'קהילה / כולל'),
                 ),
+                const SizedBox(height: 20),
+
+                // ── כתובת ─────────────────────────────────────────────
+                const _SectionHeader(title: 'כתובת'),
+                _FieldLabel(label: 'ארץ'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _countryCtrl,
+                  textDirection: TextDirection.rtl,
+                  decoration: InputDecoration(
+                    hintText: 'ישראל',
+                    prefixIcon: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text('🇮🇱', style: const TextStyle(fontSize: 22)),
+                    ),
+                    prefixIconConstraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                  ),
+                ),
+                const SizedBox(height: 14),
+
+                _FieldLabel(label: 'עיר'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _cityCtrl,
+                  textDirection: TextDirection.rtl,
+                  decoration: const InputDecoration(hintText: 'עיר מגורים'),
+                ),
+                const SizedBox(height: 14),
+
+                _FieldLabel(label: 'רחוב'),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _streetCtrl,
+                  textDirection: TextDirection.rtl,
+                  decoration: const InputDecoration(hintText: 'שם הרחוב'),
+                ),
+                const SizedBox(height: 14),
+
+                Row(children: [
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      _FieldLabel(label: 'מס\' בית'),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: _houseCtrl,
+                        textDirection: TextDirection.ltr,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(hintText: '12'),
+                      ),
+                    ]),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      _FieldLabel(label: 'דירה'),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: _apartmentCtrl,
+                        textDirection: TextDirection.ltr,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(hintText: '5'),
+                      ),
+                    ]),
+                  ),
+                ]),
                 const SizedBox(height: 24),
 
                 _FieldLabel(label: 'מי רואה את תמונת הפרופיל שלי'),
@@ -4503,4 +4624,47 @@ class _FieldLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       Text(label, style: const TextStyle(color: kSubtext, fontSize: 13));
+}
+
+class _InfoTile extends StatelessWidget {
+  final IconData icon;
+  final String   label;
+  final String   value;
+  final bool     verified;
+  const _InfoTile({required this.icon, required this.label,
+                   required this.value, this.verified = false});
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(children: [
+        Icon(icon, color: kSubtext, size: 20),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, style: const TextStyle(fontSize: 11, color: kSubtext)),
+            const SizedBox(height: 2),
+            Text(value, style: const TextStyle(fontSize: 14, color: kTextDark)),
+          ]),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: verified ? const Color(0xFFDCFCE7) : const Color(0xFFFEF9C3),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(verified ? Icons.verified : Icons.schedule,
+                size: 13,
+                color: verified ? Colors.green.shade700 : Colors.orange.shade700),
+            const SizedBox(width: 4),
+            Text(verified ? 'מאומת' : 'לא מאומת',
+                style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w600,
+                  color: verified ? Colors.green.shade700 : Colors.orange.shade700)),
+          ]),
+        ),
+      ]),
+    );
+  }
 }
