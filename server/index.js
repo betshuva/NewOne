@@ -8,7 +8,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const multer     = require('multer');
-const { BlobServiceClient } = require('@azure/storage-blob');
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getPool, sql } = require('./db');
 
 // ── FCM via HTTP Legacy API (no service account key needed) ───────
@@ -64,21 +64,39 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-function getBlobClient() {
-  const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING || '';
-  if (!connStr || connStr.includes('YOUR_ACCOUNT')) return null;
-  const container = process.env.AZURE_BLOB_CONTAINER || 'betshuva-files';
-  return BlobServiceClient.fromConnectionString(connStr).getContainerClient(container);
+// ── Backblaze B2 + Cloudflare CDN ────────────────────────────────
+// Required env vars:
+//   B2_KEY_ID       — Application Key ID
+//   B2_APP_KEY      — Application Key
+//   B2_BUCKET       — Bucket name
+//   B2_ENDPOINT     — e.g. https://s3.us-west-004.backblazeb2.com
+//   CDN_BASE_URL    — Cloudflare CDN URL, e.g. https://cdn.betshuva.com
+
+function getS3() {
+  const keyId    = process.env.B2_KEY_ID;
+  const appKey   = process.env.B2_APP_KEY;
+  const endpoint = process.env.B2_ENDPOINT;
+  if (!keyId || !appKey || !endpoint) return null;
+  return new S3Client({
+    endpoint,
+    region: 'auto',
+    credentials: { accessKeyId: keyId, secretAccessKey: appKey },
+    forcePathStyle: true,
+  });
 }
 
-async function uploadToBlob(buffer, blobName, contentType) {
-  const container = getBlobClient();
-  if (!container) throw new Error('Azure Blob Storage לא מוגדר');
-  const blockBlob = container.getBlockBlobClient(blobName);
-  await blockBlob.uploadData(buffer, {
-    blobHTTPHeaders: { blobContentType: contentType },
-  });
-  return blockBlob.url;
+async function uploadToBlob(buffer, key, contentType) {
+  const s3 = getS3();
+  if (!s3) throw new Error('B2 Storage לא מוגדר — הגדר B2_KEY_ID, B2_APP_KEY, B2_ENDPOINT, B2_BUCKET, CDN_BASE_URL');
+  const bucket  = process.env.B2_BUCKET;
+  const cdnBase = (process.env.CDN_BASE_URL || '').replace(/\/$/, '');
+  await s3.send(new PutObjectCommand({
+    Bucket:      bucket,
+    Key:         key,
+    Body:        buffer,
+    ContentType: contentType,
+  }));
+  return `${cdnBase}/${key}`;
 }
 
 const mailer = nodemailer.createTransport({
