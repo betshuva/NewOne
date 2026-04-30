@@ -1812,6 +1812,32 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Storage diagnostic ───────────────────────────────────────────
+app.get('/api/test-storage', async (req, res) => {
+  const vars = {
+    B2_KEY_ID:    !!process.env.B2_KEY_ID,
+    B2_APP_KEY:   !!process.env.B2_APP_KEY,
+    B2_BUCKET:    process.env.B2_BUCKET    || '(לא מוגדר)',
+    B2_ENDPOINT:  process.env.B2_ENDPOINT  || '(לא מוגדר)',
+    CDN_BASE_URL: process.env.CDN_BASE_URL || '(לא מוגדר)',
+  };
+  const s3 = getS3();
+  if (!s3) return res.json({ ok: false, error: 'S3 client לא נוצר — בדוק משתנים', vars });
+  try {
+    const testKey = `test/ping-${Date.now()}.txt`;
+    await s3.send(new PutObjectCommand({
+      Bucket: process.env.B2_BUCKET,
+      Key:    testKey,
+      Body:   Buffer.from('ping'),
+      ContentType: 'text/plain',
+    }));
+    const cdnUrl = `${(process.env.CDN_BASE_URL||'').replace(/\/$/,'')}/${testKey}`;
+    res.json({ ok: true, testUrl: cdnUrl, vars });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, vars });
+  }
+});
+
 // ── App Version (also wakes up DB on cold start) ─────────────────
 app.get('/api/version', async (req, res) => {
   try { const pool = await getPool(); await pool.request().query('SELECT 1'); } catch (_) {}
