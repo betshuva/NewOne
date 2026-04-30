@@ -8,7 +8,6 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const multer     = require('multer');
-const crypto = require('crypto');
 const { getPool, sql } = require('./db');
 
 // ── FCM via HTTP Legacy API (no service account key needed) ───────
