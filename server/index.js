@@ -70,8 +70,8 @@ let _b2Cache = null;
 
 async function b2Auth() {
   if (_b2Cache && Date.now() < _b2Cache.exp) return _b2Cache;
-  const keyId  = process.env.B2_KEY_ID;
-  const appKey = process.env.B2_APP_KEY;
+  const keyId  = (process.env.B2_KEY_ID  || '').trim();
+  const appKey = (process.env.B2_APP_KEY || '').trim().replace(/ /g, '+');
   if (!keyId || !appKey) throw new Error('B2_KEY_ID / B2_APP_KEY לא מוגדרים');
   const creds = Buffer.from(`${keyId}:${appKey}`).toString('base64');
   const res   = await fetch('https://api.backblazeb2.com/b2api/v2/b2_authorize_account', {
@@ -1845,11 +1845,13 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
 
 // ── Storage diagnostic ───────────────────────────────────────────
 app.get('/api/test-storage', async (req, res) => {
+  const rawKey = process.env.B2_APP_KEY || '';
   const vars = {
-    B2_KEY_ID:    !!process.env.B2_KEY_ID,
-    B2_APP_KEY:   !!process.env.B2_APP_KEY,
-    B2_BUCKET:    process.env.B2_BUCKET    || '(לא מוגדר)',
-    CDN_BASE_URL: process.env.CDN_BASE_URL || '(לא מוגדר)',
+    B2_KEY_ID:       !!process.env.B2_KEY_ID,
+    B2_APP_KEY_len:  rawKey.length,
+    B2_APP_KEY_spaces: rawKey.includes(' '),
+    B2_BUCKET:       process.env.B2_BUCKET    || '(לא מוגדר)',
+    CDN_BASE_URL:    process.env.CDN_BASE_URL || '(לא מוגדר)',
   };
   try {
     const testKey = `test/ping-${Date.now()}.txt`;
