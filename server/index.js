@@ -210,6 +210,25 @@ function resetPasswordEmail(resetUrl) {
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='google_id')
         ALTER TABLE users ADD google_id NVARCHAR(128)`);
 
+    // ── Admin permissions ──────────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='admin_permissions' AND xtype='U')
+      CREATE TABLE admin_permissions (
+        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        permission NVARCHAR(10) NOT NULL DEFAULT 'view',
+        granted_at DATETIME DEFAULT GETDATE(),
+        PRIMARY KEY (user_id)
+      )`);
+    // Seed betshuva@betshuva.com as edit admin
+    await pool.request().query(`
+      IF NOT EXISTS (
+        SELECT 1 FROM admin_permissions ap
+        JOIN users u ON u.id = ap.user_id
+        WHERE u.email = 'betshuva@betshuva.com'
+      )
+      INSERT INTO admin_permissions (user_id, permission)
+      SELECT id, 'edit' FROM users WHERE email = 'betshuva@betshuva.com'`);
+
     // ── Groups ─────────────────────────────────────────────────────
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='groups' AND xtype='U')
@@ -1470,6 +1489,169 @@ app.get('/verify-email', async (req, res) => {
       .query('UPDATE email_verification_tokens SET used = 1 WHERE token = @token');
     ok('<h2>✅ האימייל אומת בהצלחה!</h2><p>כעת תוכל להתחבר לאפליקציה.</p>');
   } catch (e) { ok('<h2>❌ שגיאה</h2><p>' + e.message + '</p>'); }
+});
+
+// ── Admin DB Dashboard ────────────────────────────────────────────
+
+const ADMIN_TABLES = {
+  users:             { label: 'משתמשים',     pk: 'id',        hide: ['password_hash'] },
+  groups:            { label: 'קבוצות',       pk: 'id',        hide: [] },
+  group_members:     { label: 'חברי קבוצות', pk: null,        hide: [] },
+  messages:          { label: 'הודעות',       pk: 'id',        hide: [] },
+  message_status:    { label: 'סטטוס הודעות', pk: null,       hide: [] },
+  blocked_users:     { label: 'חסומים',       pk: null,        hide: [] },
+  fcm_tokens:        { label: 'FCM Tokens',  pk: 'id',        hide: ['token'] },
+  activity_log:      { label: 'פעילות',       pk: 'id',        hide: [] },
+  audit_log:         { label: 'אודיט',        pk: 'id',        hide: [] },
+  admin_permissions: { label: 'הרשאות מנהל', pk: 'user_id',  hide: [] },
+};
+
+async function adminAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token  = header.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'לא מחובר' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    const pool   = await getPool();
+    const result = await pool.request()
+      .input('userId', sql.UniqueIdentifier, req.user.id)
+      .query('SELECT permission FROM admin_permissions WHERE user_id = @userId');
+    if (!result.recordset.length)
+      return res.status(403).json({ error: 'אין הרשאת גישה לדשבורד' });
+    req.adminPerm = result.recordset[0].permission; // 'view' or 'edit'
+    next();
+  } catch {
+    res.status(401).json({ error: 'טוקן לא תקין' });
+  }
+}
+
+// List tables + row counts
+app.get('/api/admin/db', adminAuth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const names = Object.keys(ADMIN_TABLES);
+    const counts = await Promise.all(names.map(async t => {
+      try {
+        const r = await pool.request().query(`SELECT COUNT(*) AS n FROM ${t}`);
+        return { table: t, label: ADMIN_TABLES[t].label, count: r.recordset[0].n };
+      } catch { return { table: t, label: ADMIN_TABLES[t].label, count: 0 }; }
+    }));
+    res.json({ tables: counts, permission: req.adminPerm });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get table data (paginated)
+app.get('/api/admin/db/:table', adminAuth, async (req, res) => {
+  const cfg = ADMIN_TABLES[req.params.table];
+  if (!cfg) return res.status(400).json({ error: 'טבלה לא מורשית' });
+  const limit  = Math.min(parseInt(req.query.limit)  || 200, 500);
+  const offset = parseInt(req.query.offset) || 0;
+  const search = (req.query.search || '').trim();
+  try {
+    const pool   = await getPool();
+    const tbl    = req.params.table;
+    const filter = search
+      ? `WHERE CAST((SELECT * FROM ${tbl} FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS NVARCHAR(MAX)) LIKE @s`
+      : '';
+    const request = pool.request().input('s', sql.NVarChar, `%${search}%`);
+    const result  = await request.query(
+      `SELECT * FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) rn FROM ${tbl}) t
+       WHERE rn > ${offset} AND rn <= ${offset + limit}`);
+    const countR  = await pool.request().query(`SELECT COUNT(*) AS n FROM ${tbl}`);
+    const rows    = result.recordset.map(r => {
+      const row = { ...r }; delete row.rn;
+      cfg.hide.forEach(h => delete row[h]);
+      return row;
+    });
+    res.json({ rows, total: countR.recordset[0].n, permission: req.adminPerm });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Update a row
+app.put('/api/admin/db/:table/:id', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const cfg = ADMIN_TABLES[req.params.table];
+  if (!cfg || !cfg.pk) return res.status(400).json({ error: 'לא ניתן לערוך טבלה זו' });
+  const updates = req.body;
+  const safe = Object.keys(updates).filter(k => k !== cfg.pk && !cfg.hide.includes(k));
+  if (!safe.length) return res.status(400).json({ error: 'אין שדות לעדכון' });
+  // Validate column names against DB schema
+  try {
+    const pool = await getPool();
+    const schema = await pool.request()
+      .input('tbl', sql.NVarChar, req.params.table)
+      .query(`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = @tbl`);
+    const validCols = new Set(schema.recordset.map(r => r.COLUMN_NAME));
+    const filtered  = safe.filter(k => validCols.has(k));
+    if (!filtered.length) return res.status(400).json({ error: 'עמודות לא תקינות' });
+    const setClause = filtered.map(k => `[${k}]=@${k}`).join(',');
+    const req2 = pool.request().input('pk', sql.NVarChar, req.params.id);
+    filtered.forEach(k => req2.input(k, sql.NVarChar, updates[k] == null ? null : String(updates[k])));
+    await req2.query(`UPDATE ${req.params.table} SET ${setClause} WHERE [${cfg.pk}]=@pk`);
+    logActivity(req.user.id, 'admin_edit', { table: req.params.table, id: req.params.id }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete a row
+app.delete('/api/admin/db/:table/:id', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const cfg = ADMIN_TABLES[req.params.table];
+  if (!cfg || !cfg.pk) return res.status(400).json({ error: 'לא ניתן למחוק מטבלה זו' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('pk', sql.NVarChar, req.params.id)
+      .query(`DELETE FROM ${req.params.table} WHERE [${cfg.pk}]=@pk`);
+    logActivity(req.user.id, 'admin_delete', { table: req.params.table, id: req.params.id }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Manage permissions
+app.get('/api/admin/permissions', adminAuth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const r = await pool.request().query(
+      `SELECT ap.user_id, u.name, u.email, ap.permission, ap.granted_at
+       FROM admin_permissions ap JOIN users u ON u.id = ap.user_id
+       ORDER BY ap.granted_at`);
+    res.json(r.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/admin/permissions', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const { email, permission } = req.body;
+  if (!['view','edit'].includes(permission)) return res.status(400).json({ error: 'הרשאה לא תקינה' });
+  try {
+    const pool = await getPool();
+    const user = await pool.request()
+      .input('email', sql.NVarChar, email)
+      .query('SELECT id FROM users WHERE email = @email');
+    if (!user.recordset.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
+    const userId = user.recordset[0].id;
+    await pool.request()
+      .input('userId', sql.UniqueIdentifier, userId)
+      .input('perm',   sql.NVarChar,         permission)
+      .query(`MERGE admin_permissions AS t USING (SELECT @userId AS user_id) AS s
+              ON t.user_id = s.user_id
+              WHEN MATCHED THEN UPDATE SET permission = @perm
+              WHEN NOT MATCHED THEN INSERT (user_id, permission) VALUES (@userId, @perm);`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  if (req.params.userId === req.user.id) return res.status(400).json({ error: 'לא ניתן להסיר את עצמך' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('userId', sql.UniqueIdentifier, req.params.userId)
+      .query('DELETE FROM admin_permissions WHERE user_id = @userId');
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── App Version ──────────────────────────────────────────────────
