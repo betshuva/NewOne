@@ -1773,8 +1773,9 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── App Version ──────────────────────────────────────────────────
-app.get('/api/version', (req, res) => {
+// ── App Version (also wakes up DB on cold start) ─────────────────
+app.get('/api/version', async (req, res) => {
+  try { const pool = await getPool(); await pool.request().query('SELECT 1'); } catch (_) {}
   res.json({ version: '1.2.1', apkUrl: 'https://betshuva.com/app-release.apk' });
 });
 
