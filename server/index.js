@@ -77,9 +77,11 @@ function getS3() {
   const appKey   = process.env.B2_APP_KEY;
   const endpoint = process.env.B2_ENDPOINT;
   if (!keyId || !appKey || !endpoint) return null;
+  // Extract region from endpoint: https://s3.us-east-005.backblazeb2.com → us-east-005
+  const region = endpoint.replace(/https?:\/\/s3\./, '').replace(/\.backblazeb2\.com.*/, '') || 'us-east-005';
   return new S3Client({
     endpoint,
-    region: 'auto',
+    region,
     credentials: { accessKeyId: keyId, secretAccessKey: appKey },
     forcePathStyle: true,
   });
