@@ -8,7 +8,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const multer     = require('multer');
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const crypto = require('crypto');
 const { getPool, sql } = require('./db');
 
 // ── FCM via HTTP Legacy API (no service account key needed) ───────
@@ -64,42 +64,72 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-// ── Backblaze B2 + Cloudflare CDN ────────────────────────────────
-// Required env vars:
-//   B2_KEY_ID       — Application Key ID
-//   B2_APP_KEY      — Application Key
-//   B2_BUCKET       — Bucket name
-//   B2_ENDPOINT     — e.g. https://s3.us-west-004.backblazeb2.com
-//   CDN_BASE_URL    — Cloudflare CDN URL, e.g. https://cdn.betshuva.com
+// ── Backblaze B2 Native API ───────────────────────────────────────
+// Env vars: B2_KEY_ID, B2_APP_KEY, B2_BUCKET, CDN_BASE_URL
 
-function getS3() {
-  const keyId    = process.env.B2_KEY_ID;
-  const appKey   = process.env.B2_APP_KEY;
-  const endpoint = process.env.B2_ENDPOINT;
-  if (!keyId || !appKey || !endpoint) return null;
-  // Extract region from endpoint: https://s3.us-east-005.backblazeb2.com → us-east-005
-  const region = endpoint.replace(/https?:\/\/s3\./, '').replace(/\.backblazeb2\.com.*/, '') || 'us-east-005';
-  return new S3Client({
-    endpoint,
-    region,
-    credentials: { accessKeyId: keyId, secretAccessKey: appKey },
-    forcePathStyle: true,
-    requestChecksumCalculation: 'WHEN_REQUIRED',
-    responseChecksumValidation: 'WHEN_REQUIRED',
+let _b2Cache = null;
+
+async function b2Auth() {
+  if (_b2Cache && Date.now() < _b2Cache.exp) return _b2Cache;
+  const keyId  = process.env.B2_KEY_ID;
+  const appKey = process.env.B2_APP_KEY;
+  if (!keyId || !appKey) throw new Error('B2_KEY_ID / B2_APP_KEY לא מוגדרים');
+  const creds = Buffer.from(`${keyId}:${appKey}`).toString('base64');
+  const res   = await fetch('https://api.backblazeb2.com/b2api/v2/b2_authorize_account', {
+    headers: { Authorization: `Basic ${creds}` },
   });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`B2 auth: ${data.message || res.status}`);
+  _b2Cache = {
+    token:   data.authorizationToken,
+    apiUrl:  data.apiUrl,
+    exp:     Date.now() + 22 * 3600 * 1000,
+    bucketId: data.allowed?.bucketId || null,
+    accountId: data.accountId,
+  };
+  return _b2Cache;
+}
+
+async function b2BucketId(auth) {
+  if (auth.bucketId) return auth.bucketId;
+  const bucket = process.env.B2_BUCKET;
+  const res  = await fetch(
+    `${auth.apiUrl}/b2api/v2/b2_list_buckets?accountId=${auth.accountId}&bucketName=${encodeURIComponent(bucket)}`,
+    { headers: { Authorization: auth.token } });
+  const data = await res.json();
+  if (!data.buckets?.length) throw new Error(`Bucket "${bucket}" לא נמצא`);
+  return data.buckets[0].bucketId;
 }
 
 async function uploadToBlob(buffer, key, contentType) {
-  const s3 = getS3();
-  if (!s3) throw new Error('B2 Storage לא מוגדר — הגדר B2_KEY_ID, B2_APP_KEY, B2_ENDPOINT, B2_BUCKET, CDN_BASE_URL');
-  const bucket  = process.env.B2_BUCKET;
   const cdnBase = (process.env.CDN_BASE_URL || '').replace(/\/$/, '');
-  await s3.send(new PutObjectCommand({
-    Bucket:      bucket,
-    Key:         key,
-    Body:        buffer,
-    ContentType: contentType,
-  }));
+  const auth     = await b2Auth();
+  const bucketId = await b2BucketId(auth);
+
+  // Get one-time upload URL
+  const urlRes  = await fetch(`${auth.apiUrl}/b2api/v2/b2_get_upload_url`, {
+    method:  'POST',
+    headers: { Authorization: auth.token, 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ bucketId }),
+  });
+  const urlData = await urlRes.json();
+  if (!urlRes.ok) throw new Error(`b2_get_upload_url: ${urlData.message}`);
+
+  // Upload
+  const sha1   = crypto.createHash('sha1').update(buffer).digest('hex');
+  const upRes  = await fetch(urlData.uploadUrl, {
+    method:  'POST',
+    headers: {
+      Authorization:    urlData.authorizationToken,
+      'X-Bz-File-Name': encodeURIComponent(key).replace(/%2F/g, '/'),
+      'Content-Type':   contentType,
+      'Content-Length': String(buffer.length),
+      'X-Bz-Content-Sha1': sha1,
+    },
+    body: buffer,
+  });
+  const upData = await upRes.json();
+  if (!upRes.ok) throw new Error(`b2_upload_file: ${upData.message}`);
   return `${cdnBase}/${key}`;
 }
 
@@ -1820,21 +1850,12 @@ app.get('/api/test-storage', async (req, res) => {
     B2_KEY_ID:    !!process.env.B2_KEY_ID,
     B2_APP_KEY:   !!process.env.B2_APP_KEY,
     B2_BUCKET:    process.env.B2_BUCKET    || '(לא מוגדר)',
-    B2_ENDPOINT:  process.env.B2_ENDPOINT  || '(לא מוגדר)',
     CDN_BASE_URL: process.env.CDN_BASE_URL || '(לא מוגדר)',
   };
-  const s3 = getS3();
-  if (!s3) return res.json({ ok: false, error: 'S3 client לא נוצר — בדוק משתנים', vars });
   try {
     const testKey = `test/ping-${Date.now()}.txt`;
-    await s3.send(new PutObjectCommand({
-      Bucket: process.env.B2_BUCKET,
-      Key:    testKey,
-      Body:   Buffer.from('ping'),
-      ContentType: 'text/plain',
-    }));
-    const cdnUrl = `${(process.env.CDN_BASE_URL||'').replace(/\/$/,'')}/${testKey}`;
-    res.json({ ok: true, testUrl: cdnUrl, vars });
+    const url = await uploadToBlob(Buffer.from('ping'), testKey, 'text/plain');
+    res.json({ ok: true, testUrl: url, vars });
   } catch (e) {
     res.json({ ok: false, error: e.message, vars });
   }
