@@ -84,6 +84,8 @@ function getS3() {
     region,
     credentials: { accessKeyId: keyId, secretAccessKey: appKey },
     forcePathStyle: true,
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   });
 }
 
