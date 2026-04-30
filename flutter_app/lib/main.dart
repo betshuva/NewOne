@@ -573,13 +573,23 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() { _error = data['error'] ?? 'שגיאה'; _loading = false; });
         return;
       }
-      final token = data['token'] as String;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('token', token);
+      final token   = data['token'] as String;
+      final user    = data['user'] as Map<String, dynamic>?;
+      final hasPhone = user != null &&
+          (user['phone'] as String?) != null &&
+          (user['phone'] as String).isNotEmpty;
       if (!mounted) return;
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => MainShell(token: token)));
+      if (!hasPhone) {
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => GooglePhoneSetupScreen(token: token)));
+      } else {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('token', token);
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => MainShell(token: token)));
+      }
     } catch (e) {
-      setState(() { _error = 'שגיאה: $e'; _loading = false; });
+      setState(() { _error = 'שגיאה בכניסה עם גוגל'; _loading = false; });
     }
   }
 
@@ -782,6 +792,172 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Phone Setup Screen (after Google Sign-In) ────────────────────
+class GooglePhoneSetupScreen extends StatefulWidget {
+  final String token;
+  const GooglePhoneSetupScreen({super.key, required this.token});
+  @override
+  State<GooglePhoneSetupScreen> createState() => _GooglePhoneSetupScreenState();
+}
+
+class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
+  final _phoneCtrl = TextEditingController();
+  final _otpCtrl   = TextEditingController();
+  bool   _sentOtp  = false;
+  bool   _loading  = false;
+  String? _error;
+
+  @override
+  void dispose() { _phoneCtrl.dispose(); _otpCtrl.dispose(); super.dispose(); }
+
+  Future<void> _sendOtp() async {
+    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+    if (phone.length < 9) { setState(() => _error = 'נא להזין מספר טלפון תקין'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/send-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'phone': phone}),
+      ).timeout(const Duration(seconds: 20));
+      if (res.statusCode == 200) {
+        setState(() { _sentOtp = true; _loading = false; });
+      } else {
+        final d = jsonDecode(res.body);
+        setState(() { _error = d['error'] ?? 'שגיאה'; _loading = false; });
+      }
+    } catch (_) {
+      setState(() { _error = 'שגיאת חיבור'; _loading = false; });
+    }
+  }
+
+  Future<void> _verify() async {
+    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+    final code  = _otpCtrl.text.trim();
+    if (code.length != 6) { setState(() => _error = 'נא להזין קוד בן 6 ספרות'); return; }
+    setState(() { _loading = true; _error = null; });
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/link-phone'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ${widget.token}'},
+        body: jsonEncode({'phone': phone, 'code': code}),
+      ).timeout(const Duration(seconds: 20));
+      if (res.statusCode == 200) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('token', widget.token);
+        if (!mounted) return;
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => MainShell(token: widget.token)));
+      } else {
+        final d = jsonDecode(res.body);
+        setState(() { _error = d['error'] ?? 'שגיאה'; _loading = false; });
+      }
+    } catch (_) {
+      setState(() { _error = 'שגיאת חיבור'; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(28),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
+            const SizedBox(height: 48),
+            Container(
+              width: 80, height: 80,
+              decoration: BoxDecoration(color: kPrimary, borderRadius: BorderRadius.circular(20)),
+              child: const Icon(Icons.phone_android, size: 44, color: Colors.white),
+            ),
+            const SizedBox(height: 20),
+            const Text('הוסף מספר טלפון',
+                style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: kPrimary)),
+            const SizedBox(height: 8),
+            const Text('אפליקציית בתשובה משתמשת במספר הטלפון\nכדי לחבר אותך עם אנשי הקשר שלך',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, color: kSubtext, height: 1.5)),
+            const SizedBox(height: 36),
+            if (!_sentOtp) ...[
+              TextField(
+                controller: _phoneCtrl,
+                keyboardType: TextInputType.phone,
+                textDirection: TextDirection.ltr,
+                decoration: const InputDecoration(
+                  labelText: 'מספר טלפון', hintText: '05X-XXX-XXXX',
+                  prefixIcon: Icon(Icons.phone_android)),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _loading ? null : _sendOtp,
+                  child: _loading
+                      ? const SizedBox(height: 22, width: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('שלח קוד אימות',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ] else ...[
+              Text('נשלח קוד SMS ל-${_phoneCtrl.text}',
+                  style: const TextStyle(color: kSubtext, fontSize: 13)),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _otpCtrl,
+                keyboardType: TextInputType.number,
+                textDirection: TextDirection.ltr,
+                maxLength: 6,
+                decoration: const InputDecoration(
+                  labelText: 'קוד אימות', hintText: '123456',
+                  prefixIcon: Icon(Icons.sms_outlined)),
+              ),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _loading ? null : _verify,
+                  child: _loading
+                      ? const SizedBox(height: 22, width: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Text('אמת וכנס',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              TextButton(
+                onPressed: () => setState(() { _sentOtp = false; _otpCtrl.clear(); }),
+                child: const Text('חזור לשינוי מספר',
+                    style: TextStyle(color: kSubtext, fontSize: 13)),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity, padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                    color: Colors.red.shade50, borderRadius: BorderRadius.circular(8)),
+                child: Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+              ),
+            ],
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: () async {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString('token', widget.token);
+                if (!mounted) return;
+                Navigator.pushReplacement(context,
+                    MaterialPageRoute(builder: (_) => MainShell(token: widget.token)));
+              },
+              child: const Text('דלג על שלב זה',
+                  style: TextStyle(color: kSubtext, fontSize: 13)),
+            ),
+          ]),
         ),
       ),
     );

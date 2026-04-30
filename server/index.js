@@ -1270,7 +1270,10 @@ app.get('/api/admin/users', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.request()
-      .query('SELECT id, name, email, wins, games_played, created_at FROM users ORDER BY created_at DESC');
+      .query(`SELECT id, name, email, phone, email_verified, phone_verified,
+                     google_id, profile_pic_url, city, community,
+                     filter_level, created_at
+              FROM users ORDER BY created_at DESC`);
     res.json(result.recordset);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1392,6 +1395,33 @@ app.post('/api/verify-otp', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Link Phone to existing account (after Google sign-in) ───────
+app.post('/api/link-phone', auth, async (req, res) => {
+  const { phone, code } = req.body;
+  const clean = (phone || '').replace(/\D/g, '');
+  if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
+  if (!code) return res.status(400).json({ error: 'נדרש קוד אימות' });
+  const entry = otpStore.get(clean);
+  if (!entry || entry.code !== code || Date.now() > entry.expires)
+    return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
+  otpStore.delete(clean);
+  try {
+    const pool = await getPool();
+    const taken = await pool.request()
+      .input('phone', sql.NVarChar, clean)
+      .input('id',    sql.UniqueIdentifier, req.user.id)
+      .query('SELECT id FROM users WHERE phone=@phone AND id != @id');
+    if (taken.recordset.length)
+      return res.status(400).json({ error: 'מספר הטלפון כבר רשום למשתמש אחר' });
+    await pool.request()
+      .input('id',    sql.UniqueIdentifier, req.user.id)
+      .input('phone', sql.NVarChar,         clean)
+      .query('UPDATE users SET phone=@phone, phone_verified=1 WHERE id=@id');
+    logActivity(req.user.id, 'link_phone', { phone: clean }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Verify Phone (after registration) ───────────────────────────

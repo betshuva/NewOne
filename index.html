@@ -385,6 +385,28 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
   </div>
 </div>
 
+<!-- ── PHONE SETUP (after Google Sign-In) ── -->
+<div id="phone-setup" style="display:none;position:fixed;inset:0;z-index:90;background:linear-gradient(135deg,var(--blue-dark),var(--blue));align-items:center;justify-content:center">
+  <div class="auth-card" style="max-width:360px;width:90%">
+    <div class="auth-logo">
+      <svg width="52" height="52" viewBox="0 0 52 52"><rect width="52" height="52" rx="14" fill="#1B6CA8"/><text x="26" y="36" text-anchor="middle" font-size="28" fill="white">📱</text></svg>
+      <h1 style="font-size:22px">הוסף מספר טלפון</h1>
+      <span>כדי להתחבר עם אנשי הקשר שלך</span>
+    </div>
+    <div id="ps-err" class="auth-err"></div>
+    <div id="ps-step1">
+      <div class="auth-field"><label>מספר טלפון</label><input id="ps-phone" type="tel" placeholder="0501234567" dir="ltr"/></div>
+      <button id="ps-send-btn" class="auth-btn" onclick="sendSetupOtp()">שלח קוד אימות</button>
+    </div>
+    <div id="ps-step2" style="display:none">
+      <div class="auth-field"><label>קוד אימות (SMS)</label><input id="ps-otp" type="text" placeholder="123456" dir="ltr" maxlength="6"/></div>
+      <button id="ps-verify-btn" class="auth-btn" onclick="verifySetupOtp()">אמת וכנס</button>
+      <p class="auth-note" onclick="document.getElementById('ps-step1').style.display='';document.getElementById('ps-step2').style.display='none';document.getElementById('ps-send-btn').disabled=false">שנה מספר</p>
+    </div>
+    <p class="auth-note" style="margin-top:14px" onclick="skipPhoneSetup()">דלג על שלב זה</p>
+  </div>
+</div>
+
 <!-- ── PROFILE EDITOR ── -->
 <div id="profile-editor" onclick="if(event.target===this)closeProfileEditor()">
   <div class="pe-card">
@@ -474,12 +496,65 @@ async function handleGoogleCredential(response) {
     const data = await res.json();
     if (!res.ok) { showAuthErr(data.error || 'שגיאה בכניסה עם גוגל'); return; }
     token = data.token;
+    me    = data.user;
     localStorage.setItem('bt_token', token);
     document.getElementById('auth-screen').style.display = 'none';
-    initApp();
+    if (!me?.phone) {
+      showPhoneSetup();
+    } else {
+      initApp();
+    }
   } catch {
     showAuthErr('שגיאת חיבור. נסה שוב.');
   }
+}
+
+function showPhoneSetup() {
+  document.getElementById('phone-setup').style.display = 'flex';
+}
+
+async function sendSetupOtp() {
+  const phone = document.getElementById('ps-phone').value.replace(/\D/g,'');
+  if (phone.length < 9) { showPsErr('נא להזין מספר טלפון תקין'); return; }
+  document.getElementById('ps-send-btn').disabled = true;
+  try {
+    const res = await fetch(`${API}/api/send-otp`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({phone})
+    });
+    const d = await res.json();
+    if (!res.ok) { showPsErr(d.error||'שגיאה'); document.getElementById('ps-send-btn').disabled=false; return; }
+    document.getElementById('ps-step1').style.display = 'none';
+    document.getElementById('ps-step2').style.display = '';
+  } catch { showPsErr('שגיאת חיבור'); document.getElementById('ps-send-btn').disabled=false; }
+}
+
+async function verifySetupOtp() {
+  const phone = document.getElementById('ps-phone').value.replace(/\D/g,'');
+  const code  = document.getElementById('ps-otp').value.trim();
+  if (code.length !== 6) { showPsErr('קוד בן 6 ספרות'); return; }
+  document.getElementById('ps-verify-btn').disabled = true;
+  try {
+    const res = await fetch(`${API}/api/link-phone`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},
+      body: JSON.stringify({phone, code})
+    });
+    const d = await res.json();
+    if (!res.ok) { showPsErr(d.error||'שגיאה'); document.getElementById('ps-verify-btn').disabled=false; return; }
+    document.getElementById('phone-setup').style.display = 'none';
+    initApp();
+  } catch { showPsErr('שגיאת חיבור'); document.getElementById('ps-verify-btn').disabled=false; }
+}
+
+function skipPhoneSetup() {
+  document.getElementById('phone-setup').style.display = 'none';
+  initApp();
+}
+
+function showPsErr(msg) {
+  const e = document.getElementById('ps-err');
+  e.textContent = msg; e.style.display = 'block';
 }
 
 function showAuthErr(msg) {
