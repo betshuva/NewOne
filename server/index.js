@@ -210,6 +210,17 @@ function resetPasswordEmail(resetUrl) {
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='google_id')
         ALTER TABLE users ADD google_id NVARCHAR(128)`);
 
+    // ── group_members: pending membership columns ──────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('group_members') AND name='status')
+        ALTER TABLE group_members ADD status NVARCHAR(20) NOT NULL DEFAULT 'member'`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('group_members') AND name='added_by')
+        ALTER TABLE group_members ADD added_by UNIQUEIDENTIFIER`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('group_members') AND name='pending_since')
+        ALTER TABLE group_members ADD pending_since DATETIME`);
+
     // ── Admin permissions ──────────────────────────────────────────
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='admin_permissions' AND xtype='U')
@@ -394,7 +405,7 @@ io.on('connection', async (socket) => {
     const pool = await getPool();
     const grps = await pool.request()
       .input('userId', sql.UniqueIdentifier, socket.user.id)
-      .query('SELECT group_id FROM group_members WHERE user_id = @userId');
+      .query("SELECT group_id FROM group_members WHERE user_id = @userId AND status = 'member'");
     for (const { group_id } of grps.recordset) socket.join(`group:${group_id}`);
   } catch (_) {}
 
@@ -969,8 +980,8 @@ app.get('/api/groups', auth, async (req, res) => {
       .input('userId', sql.UniqueIdentifier, req.user.id)
       .query(`
         SELECT g.id, g.name, g.description, g.is_broadcast, g.send_permission, g.filter_level,
-               gm.role,
-               (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
+               gm.role, gm.status,
+               (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count
         FROM groups g
         JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = @userId
         ORDER BY g.created_at DESC
@@ -1053,22 +1064,65 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: add member (admin) ────────────────────────────────────
+// ── Groups: add member as pending (admin) ─────────────────────────
 app.post('/api/groups/:id/members', auth, async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'נדרש userId' });
   try {
     const pool = await getPool();
+    // Check caller is admin
     const isAdmin = await pool.request()
       .input('groupId', sql.UniqueIdentifier, req.params.id)
       .input('myId',    sql.UniqueIdentifier, req.user.id)
       .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`);
     if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
-    await pool.request()
+
+    // Check existing membership
+    const existing = await pool.request()
       .input('groupId', sql.UniqueIdentifier, req.params.id)
       .input('userId',  sql.UniqueIdentifier, userId)
+      .query(`SELECT status FROM group_members WHERE group_id=@groupId AND user_id=@userId`);
+    if (existing.recordset.length) {
+      const st = existing.recordset[0].status;
+      if (st === 'member')  return res.json({ ok: true, alreadyMember: true });
+      if (st === 'pending') return res.json({ ok: true, alreadyPending: true });
+    }
+
+    // Insert/update as pending
+    await pool.request()
+      .input('groupId',  sql.UniqueIdentifier, req.params.id)
+      .input('userId',   sql.UniqueIdentifier, userId)
+      .input('addedBy',  sql.UniqueIdentifier, req.user.id)
       .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
-              INSERT INTO group_members (group_id, user_id) VALUES (@groupId, @userId)`);
+                INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
+                VALUES (@groupId, @userId, 'pending', @addedBy, GETDATE())
+              ELSE
+                UPDATE group_members SET status='pending', added_by=@addedBy, pending_since=GETDATE()
+                WHERE group_id=@groupId AND user_id=@userId`);
+
+    // Fetch group name and adder name
+    const [grpRes, adderRes] = await Promise.all([
+      pool.request().input('id', sql.UniqueIdentifier, req.params.id)
+        .query('SELECT name FROM groups WHERE id=@id'),
+      pool.request().input('id', sql.UniqueIdentifier, req.user.id)
+        .query('SELECT name FROM users WHERE id=@id'),
+    ]);
+    const groupName   = grpRes.recordset[0]?.name   || 'קבוצה';
+    const addedByName = adderRes.recordset[0]?.name || 'מנהל';
+
+    // Emit socket event to invited user
+    const ioInst = req.app.get('io');
+    const invitedSid = onlineUsers.get(userId);
+    if (invitedSid) {
+      ioInst.to(invitedSid).emit('group:invited', {
+        groupId: req.params.id, groupName, addedByName, addedById: req.user.id,
+      });
+    }
+
+    // Send push notification
+    sendPush(userId, groupName, `${addedByName} הוסיף אותך לקבוצה`,
+      { type: 'group_invite', groupId: req.params.id });
+
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1090,61 +1144,126 @@ app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: invite registered user via in-app invite card ──────────
+// ── Groups: invite registered user (redirect to pending logic) ─────
 app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
+  // Delegate to the same add-as-pending logic as POST /members
+  req.url = `/api/groups/${req.params.id}/members`;
+  // Just forward by calling the members handler inline
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'נדרש userId' });
   try {
     const pool = await getPool();
-    const [adminCheck, grp] = await Promise.all([
-      pool.request()
-        .input('groupId', sql.UniqueIdentifier, req.params.id)
-        .input('myId',    sql.UniqueIdentifier, req.user.id)
-        .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`),
-      pool.request()
-        .input('id', sql.UniqueIdentifier, req.params.id)
+    const isAdmin = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('myId',    sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`);
+    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+
+    const existing = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, userId)
+      .query(`SELECT status FROM group_members WHERE group_id=@groupId AND user_id=@userId`);
+    if (existing.recordset.length) {
+      const st = existing.recordset[0].status;
+      if (st === 'member')  return res.json({ ok: true, alreadyMember: true });
+      if (st === 'pending') return res.json({ ok: true, alreadyPending: true });
+    }
+
+    await pool.request()
+      .input('groupId',  sql.UniqueIdentifier, req.params.id)
+      .input('userId',   sql.UniqueIdentifier, userId)
+      .input('addedBy',  sql.UniqueIdentifier, req.user.id)
+      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
+                INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
+                VALUES (@groupId, @userId, 'pending', @addedBy, GETDATE())
+              ELSE
+                UPDATE group_members SET status='pending', added_by=@addedBy, pending_since=GETDATE()
+                WHERE group_id=@groupId AND user_id=@userId`);
+
+    const [grpRes, adderRes] = await Promise.all([
+      pool.request().input('id', sql.UniqueIdentifier, req.params.id)
         .query('SELECT name FROM groups WHERE id=@id'),
+      pool.request().input('id', sql.UniqueIdentifier, req.user.id)
+        .query('SELECT name FROM users WHERE id=@id'),
     ]);
-    if (!adminCheck.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+    const groupName   = grpRes.recordset[0]?.name   || 'קבוצה';
+    const addedByName = adderRes.recordset[0]?.name || 'מנהל';
 
-    const groupName  = grp.recordset[0]?.name || 'קבוצה';
-    const senderName = req.user.name || 'מנהל';
-    const meta = JSON.stringify({ groupId: req.params.id, groupName });
-
-    const saved = await pool.request()
-      .input('senderId',    sql.UniqueIdentifier, req.user.id)
-      .input('recipientId', sql.UniqueIdentifier, userId)
-      .input('body',        sql.NVarChar,         `הוזמנת להצטרף לקבוצה "${groupName}"`)
-      .input('type',        sql.NVarChar,         'group_invite')
-      .input('meta',        sql.NVarChar,         meta)
-      .query(`INSERT INTO messages (sender_id, recipient_id, body, type, file_name)
-              OUTPUT INSERTED.id, INSERTED.created_at
-              VALUES (@senderId, @recipientId, @body, @type, @meta)`);
-
-    const row = saved.recordset[0];
-    const io = req.app.get('io');
-    if (io) {
-      io.to(`user:${userId}`).emit('chat:message', {
-        id: row.id, fromUserId: req.user.id, fromName: senderName,
-        text: `הוזמנת להצטרף לקבוצה "${groupName}"`,
-        type: 'group_invite', meta, createdAt: row.created_at,
+    const ioInst = req.app.get('io');
+    const invitedSid = onlineUsers.get(userId);
+    if (invitedSid) {
+      ioInst.to(invitedSid).emit('group:invited', {
+        groupId: req.params.id, groupName, addedByName, addedById: req.user.id,
       });
     }
-    sendPush(userId, senderName, `הוזמנת להצטרף לקבוצה "${groupName}"`,
+    sendPush(userId, groupName, `${addedByName} הוסיף אותך לקבוצה`,
       { type: 'group_invite', groupId: req.params.id });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: accept invite (join) ──────────────────────────────────
+// ── Groups: accept pending invite (join) ──────────────────────────
 app.post('/api/groups/:id/join', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+
+    // Get pending_since timestamp before updating
+    const pendingRow = await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query(`SELECT status, pending_since FROM group_members
+              WHERE group_id=@groupId AND user_id=@userId`);
+
+    const wasPending = pendingRow.recordset[0]?.status === 'pending';
+    const pendingSince = pendingRow.recordset[0]?.pending_since || null;
+
+    // Update status to member (or insert if not exists)
+    await pool.request()
+      .input('groupId', sql.UniqueIdentifier, req.params.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
+                INSERT INTO group_members (group_id, user_id, status) VALUES (@groupId, @userId, 'member')
+              ELSE
+                UPDATE group_members SET status='member'
+                WHERE group_id=@groupId AND user_id=@userId`);
+
+    // Fetch missed messages since pending_since
+    let missedMessages = [];
+    if (wasPending && pendingSince) {
+      const missedRes = await pool.request()
+        .input('groupId', sql.UniqueIdentifier, req.params.id)
+        .input('since',   sql.DateTime,         new Date(pendingSince))
+        .query(`SELECT m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name,
+                       m.reply_to_id, m.created_at,
+                       u.name AS sender_name,
+                       r.body AS reply_body
+                FROM messages m
+                JOIN users u ON m.sender_id = u.id
+                LEFT JOIN messages r ON m.reply_to_id = r.id
+                WHERE m.group_id = @groupId AND m.deleted_for_everyone = 0
+                  AND m.created_at >= @since
+                ORDER BY m.created_at ASC`);
+      missedMessages = missedRes.recordset;
+    }
+
+    // Emit group:member_joined to the group room
+    const ioInst = req.app.get('io');
+    ioInst.to(`group:${req.params.id}`).emit('group:member_joined', {
+      groupId: req.params.id, userId: req.user.id, name: req.user.name,
+    });
+
+    res.json({ ok: true, missedMessages });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: decline pending invite ───────────────────────────────
+app.delete('/api/groups/:id/decline', auth, async (req, res) => {
   try {
     const pool = await getPool();
     await pool.request()
       .input('groupId', sql.UniqueIdentifier, req.params.id)
       .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
-              INSERT INTO group_members (group_id, user_id) VALUES (@groupId, @userId)`);
+      .query(`DELETE FROM group_members WHERE group_id=@groupId AND user_id=@userId AND status='pending'`);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

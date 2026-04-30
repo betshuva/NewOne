@@ -2814,11 +2814,19 @@ class _GroupsScreenState extends State<GroupsScreen> {
         if (idx != -1) _groups[idx]['lastMsg'] = data['text'] as String? ?? '';
       });
     });
+    widget.socket?.on('group:invited', (data) {
+      if (!mounted) return;
+      _loadGroups();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${data['addedByName']} הוסיף אותך לקבוצה "${data['groupName']}"')),
+      );
+    });
   }
 
   @override
   void dispose() {
     widget.socket?.off('group:message');
+    widget.socket?.off('group:invited');
     super.dispose();
   }
 
@@ -2923,51 +2931,90 @@ class _GroupsScreenState extends State<GroupsScreen> {
                   itemBuilder: (_, i) {
                     final g = _groups[i];
                     final isAdmin = g['role'] == 'admin';
+                    final isPending = g['status'] == 'pending';
                     final memberCount = g['member_count'] ?? 0;
                     final lastMsg = g['lastMsg'] as String? ?? g['description'] as String? ?? '';
-                    return ListTile(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                      leading: Stack(
-                        children: [
-                          CircleAvatar(
-                            radius: 26,
-                            backgroundColor: kPrimary,
-                            child: const Icon(Icons.group, color: Colors.white, size: 26),
-                          ),
-                          if (isAdmin)
-                            Positioned(
-                              left: 0, bottom: 0,
-                              child: Container(
-                                padding: const EdgeInsets.all(2),
+                    return Container(
+                      color: isPending ? const Color(0xFFFFF3CD) : null,
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                        leading: Stack(
+                          children: [
+                            CircleAvatar(
+                              radius: 26,
+                              backgroundColor: isPending ? Colors.orange : kPrimary,
+                              child: const Icon(Icons.group, color: Colors.white, size: 26),
+                            ),
+                            if (isAdmin && !isPending)
+                              Positioned(
+                                left: 0, bottom: 0,
+                                child: Container(
+                                  padding: const EdgeInsets.all(2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(Icons.star, size: 10, color: Colors.white),
+                                ),
+                              ),
+                            if (isPending)
+                              Positioned(
+                                left: 0, bottom: 0,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Text('ממתין',
+                                      style: TextStyle(fontSize: 9, color: Colors.white,
+                                          fontWeight: FontWeight.bold)),
+                                ),
+                              ),
+                          ],
+                        ),
+                        title: Row(
+                          children: [
+                            Expanded(child: Text(g['name'] as String,
+                                style: const TextStyle(fontWeight: FontWeight.w600))),
+                            if (isPending)
+                              Container(
+                                margin: const EdgeInsets.only(right: 6),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                 decoration: BoxDecoration(
                                   color: Colors.orange,
-                                  borderRadius: BorderRadius.circular(8),
+                                  borderRadius: BorderRadius.circular(12),
                                 ),
-                                child: const Icon(Icons.star, size: 10, color: Colors.white),
+                                child: const Text('בהשהייה',
+                                    style: TextStyle(fontSize: 11, color: Colors.white,
+                                        fontWeight: FontWeight.bold)),
                               ),
-                            ),
-                        ],
-                      ),
-                      title: Text(g['name'] as String,
-                          style: const TextStyle(fontWeight: FontWeight.w600)),
-                      subtitle: Text(
-                        lastMsg.isNotEmpty ? lastMsg : '$memberCount חברים',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13, color: kSubtext),
-                      ),
-                      trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => GroupChatScreen(
-                            group: g,
-                            me: widget.me,
-                            token: widget.token,
-                            socket: widget.socket,
+                          ],
+                        ),
+                        subtitle: Text(
+                          isPending
+                              ? 'ממתין לאישורך'
+                              : (lastMsg.isNotEmpty ? lastMsg : '$memberCount חברים'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: isPending ? const Color(0xFF856404) : kSubtext,
                           ),
                         ),
-                      ).then((_) => _loadGroups()),
+                        trailing: const Icon(Icons.chevron_left, color: kSubtext),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => GroupChatScreen(
+                              group: g,
+                              me: widget.me,
+                              token: widget.token,
+                              socket: widget.socket,
+                            ),
+                          ),
+                        ).then((_) => _loadGroups()),
+                      ),
                     );
                   },
                 ),
@@ -3001,6 +3048,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _isTyping  = false;
   String _typingName = '';
   List<Map<String, dynamic>> _members = [];
+  String _myStatus = 'member'; // 'member' or 'pending'
 
   String get _groupId => widget.group['id'] as String;
 
@@ -3008,6 +3056,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void initState() {
     super.initState();
     _isAdmin = widget.group['role'] == 'admin';
+    _myStatus = widget.group['status'] as String? ?? 'member';
     _loadMessages();
     _setupSocket();
     if (_isAdmin) _loadMembers();
@@ -3029,7 +3078,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _addMember(String userId, String userName) async {
     try {
       final res = await http.post(
-        Uri.parse('$kApi/groups/$_groupId/invite-message'),
+        Uri.parse('$kApi/groups/$_groupId/members'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
@@ -3038,9 +3087,61 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (res.statusCode == 200 && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('ההזמנה נשלחה ל$userName')),
+          SnackBar(content: Text('$userName נוסף לקבוצה — ממתין לאישור')),
         );
+        _loadMembers();
       }
+    } catch (_) {}
+  }
+
+  Map<String, dynamic> _mapMsg(dynamic m) {
+    final map = m as Map<String, dynamic>;
+    final isMe = map['sender_id'] == widget.me?['id'];
+    return {
+      'id':         map['id'],
+      'text':       map['body'] ?? '',
+      'senderName': map['sender_name'] ?? '',
+      'time':       _formatTime(map['created_at']),
+      'isMe':       isMe,
+      if (map['reply_to_id'] != null) 'replyTo': {
+        'id':   map['reply_to_id'],
+        'text': map['reply_body'] ?? '',
+      },
+    };
+  }
+
+  Future<void> _acceptPending() async {
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/groups/$_groupId/join'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() => _myStatus = 'member');
+        // Join socket room
+        widget.socket?.emit('group:join', {'groupId': _groupId});
+        // Load missed messages
+        final missed = (data['missedMessages'] as List? ?? [])
+            .map((m) => _mapMsg(m))
+            .toList();
+        if (missed.isNotEmpty) {
+          setState(() {
+            _messages.insertAll(0, missed);
+          });
+        }
+        _scrollToBottom();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _declinePending() async {
+    try {
+      await http.delete(
+        Uri.parse('$kApi/groups/$_groupId/decline'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (mounted) Navigator.pop(context);
     } catch (_) {}
   }
 
@@ -3627,6 +3728,45 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ),
       body: Column(
         children: [
+          // ── Pending banner ──────────────────────────────────────────
+          if (_myStatus == 'pending')
+            Container(
+              width: double.infinity,
+              color: const Color(0xFFFFF3CD),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    'הוזמנת להצטרף לקבוצה זו',
+                    style: const TextStyle(
+                      color: Color(0xFF856404),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                    textDirection: TextDirection.rtl,
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: _declinePending,
+                        style: TextButton.styleFrom(foregroundColor: Colors.red),
+                        child: const Text('דחה'),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: _acceptPending,
+                        style: ElevatedButton.styleFrom(backgroundColor: kPrimary),
+                        child: const Text('אשר הצטרפות',
+                            style: TextStyle(color: Colors.white)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator(color: kPrimary))
@@ -3687,7 +3827,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         },
                       ),
           ),
-          if (_isTyping)
+          if (_isTyping && _myStatus == 'member')
             Container(
               width: double.infinity,
               color: kBg,
@@ -3697,50 +3837,51 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       fontStyle: FontStyle.italic),
                   textDirection: TextDirection.rtl),
             ),
-          Container(
-            color: kCard,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.attach_file, color: kSubtext),
-                  onPressed: () {},
-                ),
-                Expanded(
-                  child: TextField(
-                    controller: _msgCtrl,
-                    textDirection: TextDirection.rtl,
-                    decoration: InputDecoration(
-                      hintText: 'הודעה לקבוצה...',
-                      hintTextDirection: TextDirection.rtl,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
+          if (_myStatus == 'member')
+            Container(
+              color: kCard,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.attach_file, color: kSubtext),
+                    onPressed: () {},
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _msgCtrl,
+                      textDirection: TextDirection.rtl,
+                      decoration: InputDecoration(
+                        hintText: 'הודעה לקבוצה...',
+                        hintTextDirection: TextDirection.rtl,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(24),
+                          borderSide: BorderSide.none,
+                        ),
+                        filled: true,
+                        fillColor: kBg,
                       ),
-                      filled: true,
-                      fillColor: kBg,
+                      onSubmitted: (_) => _send(),
                     ),
-                    onSubmitted: (_) => _send(),
                   ),
-                ),
-                const SizedBox(width: 6),
-                GestureDetector(
-                  onTap: _send,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: kPrimary,
-                      borderRadius: BorderRadius.circular(22),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: _send,
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: kPrimary,
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                      child: const Icon(Icons.send, color: Colors.white, size: 20),
                     ),
-                    child: const Icon(Icons.send, color: Colors.white, size: 20),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
