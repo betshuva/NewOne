@@ -1083,6 +1083,86 @@ class _AvatarPickerSheetState extends State<AvatarPickerSheet>
   }
 }
 
+// ── Full-screen image preview ─────────────────────────────────────
+class ImagePreviewScreen extends StatefulWidget {
+  final String url;
+  final String? filename;
+  const ImagePreviewScreen({super.key, required this.url, this.filename});
+  @override
+  State<ImagePreviewScreen> createState() => _ImagePreviewScreenState();
+}
+
+class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
+  final _transform = TransformationController();
+  bool _showBars = true;
+
+  @override
+  void dispose() { _transform.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: GestureDetector(
+        onTap: () => setState(() => _showBars = !_showBars),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            InteractiveViewer(
+              transformationController: _transform,
+              minScale: 0.5,
+              maxScale: 5.0,
+              child: Center(
+                child: Image.network(
+                  widget.url,
+                  fit: BoxFit.contain,
+                  loadingBuilder: (_, child, progress) => progress == null
+                      ? child
+                      : const Center(child: CircularProgressIndicator(color: Colors.white)),
+                  errorBuilder: (_, __, ___) =>
+                      const Icon(Icons.broken_image, color: Colors.white54, size: 64),
+                ),
+              ),
+            ),
+            if (_showBars) ...[
+              Positioned(
+                top: 0, left: 0, right: 0,
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                      colors: [Colors.black87, Colors.transparent]),
+                  ),
+                  child: SafeArea(
+                    child: Row(children: [
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back, color: Colors.white),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                      Expanded(
+                        child: Text(
+                          widget.filename ?? '',
+                          style: const TextStyle(color: Colors.white, fontSize: 14),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.zoom_out_map, color: Colors.white),
+                        onPressed: () => _transform.value = Matrix4.identity(),
+                        tooltip: 'אפס זום',
+                      ),
+                    ]),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _TabBtn extends StatelessWidget {
   final String label;
   final bool active;
@@ -2708,7 +2788,39 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ),
 
-            if (isFile)
+            if (isFile && message['fileType'] == 'image' && message['fileUrl'] != null)
+              GestureDetector(
+                onTap: () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => ImagePreviewScreen(
+                    url: message['fileUrl'] as String,
+                    filename: message['text'] as String?,
+                  ),
+                )),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: Image.network(
+                    message['fileUrl'] as String,
+                    width: 220,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (_, child, p) => p == null ? child
+                        : Container(
+                            width: 220, height: 160,
+                            color: isMe
+                                ? Colors.white.withOpacity(0.15)
+                                : kBorder,
+                            child: const Center(
+                              child: CircularProgressIndicator(
+                                  color: kPrimary, strokeWidth: 2)),
+                          ),
+                    errorBuilder: (_, __, ___) => Container(
+                      width: 220, height: 120,
+                      color: kBorder,
+                      child: const Icon(Icons.broken_image, color: kSubtext, size: 40),
+                    ),
+                  ),
+                ),
+              )
+            else if (isFile)
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
