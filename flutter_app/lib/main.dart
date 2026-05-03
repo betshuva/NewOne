@@ -1918,20 +1918,25 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Map<String, dynamic> _normalizeDbMessage(dynamic m) {
-    final map = m as Map<String, dynamic>;
+    final map      = m as Map<String, dynamic>;
+    final msgType  = map['type'] as String? ?? 'text';
+    final isFile   = msgType != 'text' && msgType != 'group_invite';
     return {
-      'id':     map['id'],
-      'text':   map['body'] ?? '',
-      'from':   map['sender_id'],
-      'time':   _formatTime(map['created_at']),
-      'status': (map['is_read'] == true || map['is_read'] == 1) ? 'read' : 'sent',
+      'id':            map['id'],
+      'text':          map['body'] ?? map['file_name'] ?? '',
+      'from':          map['sender_id'],
+      'time':          _formatTime(map['created_at']),
+      'status':        (map['is_read'] == true || map['is_read'] == 1) ? 'read' : 'sent',
       if (map['reply_to_id'] != null) 'replyTo': {
         'id':   map['reply_to_id'],
         'text': map['reply_body'] ?? '',
       },
-      'isFile':        map['type'] != null && map['type'] != 'text' && map['type'] != 'group_invite',
-      'isGroupInvite': map['type'] == 'group_invite',
-      'meta':          map['file_name'], // meta stored in file_name column
+      'isFile':        isFile,
+      'fileType':      isFile ? msgType : null,
+      'fileUrl':       map['file_url'],
+      'fileName':      map['file_name'],
+      'isGroupInvite': msgType == 'group_invite',
+      'meta':          map['file_name'],
     };
   }
 
@@ -1947,13 +1952,21 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.on('chat:message', (data) {
       if (data['fromUserId'] == widget.recipient['id']) {
         if (!mounted) return;
+        final fileType = data['fileType'] as String?;
+        final fileUrl  = data['fileUrl']  as String?;
+        final fileName = data['fileName'] as String?;
+        final isFile   = fileUrl != null;
         setState(() {
           _messages.add({
-            'id':     data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
-            'text':   data['text'] as String? ?? '',
-            'from':   widget.recipient['id'],
-            'time':   data['createdAt'] != null ? _formatTime(data['createdAt']) : _nowTime(),
-            'status': 'received',
+            'id':       data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+            'text':     data['text'] as String? ?? fileName ?? '',
+            'from':     widget.recipient['id'],
+            'time':     data['createdAt'] != null ? _formatTime(data['createdAt']) : _nowTime(),
+            'status':   'received',
+            'isFile':   isFile,
+            'fileType': fileType,
+            'fileUrl':  fileUrl,
+            'fileName': fileName,
             if (data['replyToId'] != null) 'replyTo': {'id': data['replyToId'], 'text': ''},
           });
           _isTyping = false;

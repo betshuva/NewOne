@@ -1085,6 +1085,7 @@ async function loadMessages(c) {
       sender: m.sender_name||m.fromName||'',
       fileUrl: m.file_url,
       fileName: m.file_name,
+      fileType: m.type,
       replyText: m.reply_body,
     }));
   } catch(e) { return []; }
@@ -1109,7 +1110,7 @@ function appendBubble(m, animate=true) {
   if (m.replyText) inner += `<div class="reply-bar">${m.replyText}</div>`;
 
   if (m.fileUrl) {
-    const isImg = /\.(jpe?g|png|gif|webp|bmp|svg)(\?.*)?$/i.test(m.fileUrl);
+    const isImg = m.fileType === 'image' || /\.(jpe?g|png|gif|webp|bmp)(\?.*)?$/i.test(m.fileUrl);
     if (isImg) {
       inner += `<div class="bubble ${m.dir}" style="padding:6px">
         <img class="img-bubble" src="${m.fileUrl}" alt="${m.fileName||'תמונה'}"
