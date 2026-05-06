@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,6 +14,22 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+
+MediaType _mimeFromFileName(String fileName) {
+  switch (fileName.split('.').last.toLowerCase()) {
+    case 'jpg':
+    case 'jpeg': return MediaType('image', 'jpeg');
+    case 'png':  return MediaType('image', 'png');
+    case 'gif':  return MediaType('image', 'gif');
+    case 'webp': return MediaType('image', 'webp');
+    case 'pdf':  return MediaType('application', 'pdf');
+    case 'docx': return MediaType('application',
+        'vnd.openxmlformats-officedocument.wordprocessingml.document');
+    case 'mp3':  return MediaType('audio', 'mpeg');
+    case 'aac':  return MediaType('audio', 'aac');
+    default:     return MediaType('application', 'octet-stream');
+  }
+}
 
 // ── Local notifications setup ─────────────────────────────────────
 final _localNotif = FlutterLocalNotificationsPlugin();
@@ -2233,7 +2250,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..fields['toUserId'] = widget.recipient['id'].toString()
         ..files.add(await http.MultipartFile.fromPath('file', file.path,
-            filename: fileName));
+            filename: fileName,
+            contentType: _mimeFromFileName(fileName)));
       final streamed = await request.send();
       final body     = await streamed.stream.bytesToString();
       if (!mounted) return;
@@ -4436,7 +4454,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..files.add(await http.MultipartFile.fromPath('file', picked.path,
-            filename: picked.name));
+            filename: picked.name,
+            contentType: _mimeFromFileName(picked.name)));
       final streamed = await request.send();
       final body     = await streamed.stream.bytesToString();
       if (!mounted) return;
