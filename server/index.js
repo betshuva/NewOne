@@ -1953,7 +1953,7 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
 
 // ── Admin: Scan results (blocked + pending) ──────────────────────
 app.get('/api/admin/scans', adminAuth, async (req, res) => {
-  const type   = req.query.type === 'pending' ? 'pending' : 'blocked';
+  const type   = ['pending','approved'].includes(req.query.type) ? req.query.type : 'blocked';
   const limit  = Math.min(parseInt(req.query.limit)  || 100, 500);
   const offset = parseInt(req.query.offset) || 0;
   try {
@@ -1972,13 +1972,32 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
       `);
       const cnt = await pool.request().query('SELECT COUNT(*) AS n FROM pending_scans');
       res.json({ rows: result.recordset, total: cnt.recordset[0].n });
+    } else if (type === 'approved') {
+      const result = await pool.request().query(`
+        SELECT a.id, a.created_at,
+               u.name AS user_name, u.email AS user_email,
+               JSON_VALUE(a.details, '$.fileName') AS file_name,
+               JSON_VALUE(a.details, '$.fileUrl')  AS file_url,
+               JSON_VALUE(a.details, '$.fileType') AS file_type,
+               ru.name AS recipient_name
+        FROM activity_log a
+        LEFT JOIN users u  ON u.id = a.user_id
+        LEFT JOIN users ru ON ru.id = TRY_CAST(JSON_VALUE(a.details, '$.toUserId') AS UNIQUEIDENTIFIER)
+        WHERE a.action = 'send_file_delayed'
+        ORDER BY a.created_at DESC
+        OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
+      `);
+      const cnt = await pool.request().query(`
+        SELECT COUNT(*) AS n FROM activity_log WHERE action='send_file_delayed'`);
+      res.json({ rows: result.recordset, total: cnt.recordset[0].n });
     } else {
       const result = await pool.request().query(`
         SELECT a.id, a.created_at, a.ip, a.action,
                u.name AS user_name, u.email AS user_email,
                JSON_VALUE(a.details, '$.fileName') AS file_name,
                JSON_VALUE(a.details, '$.reason')   AS reason,
-               JSON_VALUE(a.details, '$.fileType')  AS file_type
+               JSON_VALUE(a.details, '$.fileType')  AS file_type,
+               JSON_VALUE(a.details, '$.fileUrl')   AS file_url
         FROM activity_log a
         LEFT JOIN users u ON u.id = a.user_id
         WHERE a.action IN ('blocked_upload','blocked_upload_delayed')
@@ -2221,7 +2240,7 @@ async function retryPendingScans() {
           if (!recipientSid)
             sendPush(row.to_user_id, '', `📎 ${row.file_name}`, { type: 'chat', fromUserId: row.user_id });
           logActivity(row.user_id, 'send_file_delayed',
-            { toUserId: row.to_user_id, fileName: row.file_name });
+            { toUserId: row.to_user_id, fileName: row.file_name, fileUrl: row.file_url, fileType: row.file_type });
         }
       } catch (e) { console.error('retry row', row.id, e.message); }
     }

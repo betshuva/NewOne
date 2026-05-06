@@ -122,6 +122,16 @@ tr:hover td{background:rgba(33,38,45,.8)}
 .reason-cell{color:var(--red);font-size:12px}
 .pending-cell{color:var(--orange)}
 .action-delayed{color:var(--orange);font-size:11px}
+.scan-badge.green{background:rgba(63,185,80,.15);color:var(--green)}
+.thumb-wrap{width:56px;height:56px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;background:var(--bg3);border-radius:6px;overflow:hidden;cursor:pointer;border:1px solid var(--border)}
+.thumb-wrap img{width:56px;height:56px;object-fit:cover;transition:opacity .2s}
+.thumb-wrap img:hover{opacity:.8}
+.thumb-none{color:var(--text2);font-size:18px}
+#lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:100;align-items:center;justify-content:center;flex-direction:column;gap:12px}
+#lightbox img{max-width:90vw;max-height:82vh;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.6)}
+#lightbox-name{color:#fff;font-size:13px;opacity:.7}
+#lightbox-close{position:absolute;top:16px;left:20px;background:none;border:none;color:#fff;font-size:26px;cursor:pointer;opacity:.7}
+#lightbox-close:hover{opacity:1}
 </style>
 </head>
 <body>
@@ -174,6 +184,9 @@ tr:hover td{background:rgba(33,38,45,.8)}
       <div class="scan-tab" id="stab-pending" onclick="switchScanTab('pending')">
         ⏳ ממתינות לסריקה <span id="scan-badge-pending" class="scan-badge orange">—</span>
       </div>
+      <div class="scan-tab" id="stab-approved" onclick="switchScanTab('approved')">
+        ✅ אושרו <span id="scan-badge-approved" class="scan-badge green">—</span>
+      </div>
     </div>
     <div class="table-wrap" id="scan-table-wrap"><div class="loader">טוען...</div></div>
     <div class="pagination" id="scan-pagination"></div>
@@ -213,6 +226,13 @@ tr:hover td{background:rgba(33,38,45,.8)}
       <button class="btn-sm" onclick="saveEdit()">שמור</button>
     </div>
   </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" onclick="closeLightbox()">
+  <button id="lightbox-close" onclick="closeLightbox()">✕</button>
+  <img id="lightbox-img" src="" alt=""/>
+  <div id="lightbox-name"></div>
 </div>
 
 <script>
@@ -556,6 +576,24 @@ function switchScanTab(type) {
   loadScanPanel(type, 0);
 }
 
+function thumbCell(fileUrl, fileName, fileType) {
+  if (fileUrl && fileType === 'image') {
+    return `<div class="thumb-wrap" onclick="openLightbox('${escHtml(fileUrl)}','${escHtml(fileName||'')}')">
+              <img src="${escHtml(fileUrl)}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'thumb-none\\'>🖼️</span>'"/>
+            </div>`;
+  }
+  if (fileType === 'document') return '<div class="thumb-wrap"><span class="thumb-none">📄</span></div>';
+  return '<div class="thumb-wrap"><span class="thumb-none">📎</span></div>';
+}
+
+function openLightbox(url, name) {
+  document.getElementById('lightbox-img').src  = url;
+  document.getElementById('lightbox-name').textContent = name;
+  document.getElementById('lightbox').style.display = 'flex';
+}
+function closeLightbox() { document.getElementById('lightbox').style.display = 'none'; }
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeLightbox(); });
+
 async function loadScanPanel(type, offset) {
   scanOffset = offset;
   const wrap = document.getElementById('scan-table-wrap');
@@ -568,25 +606,23 @@ async function loadScanPanel(type, offset) {
     const data = await res.json();
     if (!res.ok) { wrap.innerHTML = `<div class="loader" style="color:var(--red)">${data.error}</div>`; return; }
 
-    // Update badge count
     document.getElementById('scan-badge-' + type).textContent = data.total.toLocaleString();
-
     if (!data.rows.length) { wrap.innerHTML = '<div class="empty">אין רשומות</div>'; return; }
 
     if (type === 'blocked') {
       wrap.innerHTML = `
         <table>
           <thead><tr>
-            <th>תאריך</th><th>משתמש</th><th>שם קובץ</th><th>סוג</th>
+            <th></th><th>תאריך</th><th>משתמש</th><th>שם קובץ</th>
             <th>סיבת חסימה</th><th>זמן</th><th>IP</th>
           </tr></thead>
           <tbody>
             ${data.rows.map(r => `<tr>
+              <td style="padding:6px 10px">${thumbCell(r.file_url, r.file_name, r.file_type)}</td>
               <td class="td-date">${fmtDate(r.created_at)}</td>
               <td title="${escHtml(r.user_email||'')}">${escHtml(r.user_name||'—')}</td>
-              <td title="${escHtml(r.file_name||'')}">${escHtml((r.file_name||'—').slice(0,40))}</td>
-              <td>${escHtml(r.file_type||'—')}</td>
-              <td class="reason-cell" title="${escHtml(r.reason||'')}">${escHtml((r.reason||'—').slice(0,55))}</td>
+              <td title="${escHtml(r.file_name||'')}">${escHtml((r.file_name||'—').slice(0,36))}</td>
+              <td class="reason-cell" title="${escHtml(r.reason||'')}">${escHtml((r.reason||'—').slice(0,50))}</td>
               <td>${r.action==='blocked_upload_delayed'
                 ? '<span class="action-delayed">⏱ בדיעבד</span>'
                 : '<span style="color:var(--green);font-size:11px">⚡ מיידי</span>'}</td>
@@ -594,21 +630,21 @@ async function loadScanPanel(type, offset) {
             </tr>`).join('')}
           </tbody>
         </table>`;
-    } else {
+    } else if (type === 'pending') {
       wrap.innerHTML = `
         <table>
           <thead><tr>
-            <th>תאריך</th><th>שולח</th><th>נמען</th><th>שם קובץ</th>
-            <th>סוג</th><th>ניסיונות</th><th>סריקה אחרונה</th>
+            <th></th><th>תאריך</th><th>שולח</th><th>נמען</th><th>שם קובץ</th>
+            <th>ניסיונות</th><th>סריקה אחרונה</th>
             ${adminPerm==='edit'?'<th>פעולות</th>':''}
           </tr></thead>
           <tbody>
             ${data.rows.map(r => `<tr>
+              <td style="padding:6px 10px">${thumbCell(r.file_url, r.file_name, r.file_type)}</td>
               <td class="td-date">${fmtDate(r.created_at)}</td>
               <td title="${escHtml(r.sender_email||'')}">${escHtml(r.sender_name||'—')}</td>
               <td>${escHtml(r.recipient_name||'—')}</td>
-              <td title="${escHtml(r.file_url||'')}">${escHtml((r.file_name||'—').slice(0,40))}</td>
-              <td>${escHtml(r.file_type||'—')}</td>
+              <td title="${escHtml(r.file_url||'')}">${escHtml((r.file_name||'—').slice(0,36))}</td>
               <td class="pending-cell">${r.retry_count}</td>
               <td class="td-date">${r.last_retry ? fmtDate(r.last_retry) : '—'}</td>
               ${adminPerm==='edit'?`<td class="td-actions">
@@ -617,9 +653,26 @@ async function loadScanPanel(type, offset) {
             </tr>`).join('')}
           </tbody>
         </table>`;
+    } else {
+      // approved
+      wrap.innerHTML = `
+        <table>
+          <thead><tr>
+            <th></th><th>תאריך</th><th>שולח</th><th>נמען</th><th>שם קובץ</th><th>סוג</th>
+          </tr></thead>
+          <tbody>
+            ${data.rows.map(r => `<tr>
+              <td style="padding:6px 10px">${thumbCell(r.file_url, r.file_name, r.file_type)}</td>
+              <td class="td-date">${fmtDate(r.created_at)}</td>
+              <td title="${escHtml(r.user_email||'')}">${escHtml(r.user_name||'—')}</td>
+              <td>${escHtml(r.recipient_name||'—')}</td>
+              <td title="${escHtml(r.file_name||'')}">${escHtml((r.file_name||'—').slice(0,40))}</td>
+              <td>${escHtml(r.file_type||'—')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
     }
 
-    // Pagination
     const total = data.total;
     pag.innerHTML = `
       <button class="pag-btn" onclick="loadScanPanel('${type}',${Math.max(0,offset-SCAN_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
