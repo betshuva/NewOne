@@ -1984,13 +1984,13 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
         FROM activity_log a
         LEFT JOIN users u  ON u.id = a.user_id
         LEFT JOIN users ru ON ru.id = TRY_CAST(JSON_VALUE(a.details, '$.toUserId') AS UNIQUEIDENTIFIER)
-        WHERE a.action IN ('upload_file', 'send_file_delayed')
+        WHERE a.action IN ('upload_file', 'upload_pending', 'send_file_delayed')
         ORDER BY a.created_at DESC
         OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
       `);
       const cnt = await pool.request().query(`
         SELECT COUNT(*) AS n FROM activity_log
-        WHERE action IN ('upload_file', 'send_file_delayed')`);
+        WHERE action IN ('upload_file', 'upload_pending', 'send_file_delayed')`);
       res.json({ rows: result.recordset, total: cnt.recordset[0].n });
     } else {
       const result = await pool.request().query(`

@@ -670,6 +670,8 @@ async function loadScanPanel(type, offset) {
               <td>${escHtml(r.file_type||'—')}</td>
               <td>${r.action==='send_file_delayed'
                 ? '<span class="action-delayed">⏱ בדיעבד</span>'
+                : r.action==='upload_pending'
+                ? '<span style="color:var(--orange);font-size:11px">⏳ ממתין לסריקה</span>'
                 : '<span style="color:var(--green);font-size:11px">⚡ מיידי</span>'}</td>
             </tr>`).join('')}
           </tbody>
