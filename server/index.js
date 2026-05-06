@@ -1142,7 +1142,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     }
 
     logActivity(req.user.id, 'upload_file',
-      { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
+      { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
+        fileUrl: url, toUserId: req.body.toUserId || null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType });
   } catch (e) {
     console.error('upload:', e.message);
@@ -1974,7 +1975,7 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
       res.json({ rows: result.recordset, total: cnt.recordset[0].n });
     } else if (type === 'approved') {
       const result = await pool.request().query(`
-        SELECT a.id, a.created_at,
+        SELECT a.id, a.created_at, a.action,
                u.name AS user_name, u.email AS user_email,
                JSON_VALUE(a.details, '$.fileName') AS file_name,
                JSON_VALUE(a.details, '$.fileUrl')  AS file_url,
@@ -1983,12 +1984,13 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
         FROM activity_log a
         LEFT JOIN users u  ON u.id = a.user_id
         LEFT JOIN users ru ON ru.id = TRY_CAST(JSON_VALUE(a.details, '$.toUserId') AS UNIQUEIDENTIFIER)
-        WHERE a.action = 'send_file_delayed'
+        WHERE a.action IN ('upload_file', 'send_file_delayed')
         ORDER BY a.created_at DESC
         OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
       `);
       const cnt = await pool.request().query(`
-        SELECT COUNT(*) AS n FROM activity_log WHERE action='send_file_delayed'`);
+        SELECT COUNT(*) AS n FROM activity_log
+        WHERE action IN ('upload_file', 'send_file_delayed')`);
       res.json({ rows: result.recordset, total: cnt.recordset[0].n });
     } else {
       const result = await pool.request().query(`

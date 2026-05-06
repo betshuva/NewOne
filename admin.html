@@ -658,7 +658,7 @@ async function loadScanPanel(type, offset) {
       wrap.innerHTML = `
         <table>
           <thead><tr>
-            <th></th><th>תאריך</th><th>שולח</th><th>נמען</th><th>שם קובץ</th><th>סוג</th>
+            <th></th><th>תאריך</th><th>שולח</th><th>נמען</th><th>שם קובץ</th><th>סוג</th><th>אישור</th>
           </tr></thead>
           <tbody>
             ${data.rows.map(r => `<tr>
@@ -668,6 +668,9 @@ async function loadScanPanel(type, offset) {
               <td>${escHtml(r.recipient_name||'—')}</td>
               <td title="${escHtml(r.file_name||'')}">${escHtml((r.file_name||'—').slice(0,40))}</td>
               <td>${escHtml(r.file_type||'—')}</td>
+              <td>${r.action==='send_file_delayed'
+                ? '<span class="action-delayed">⏱ בדיעבד</span>'
+                : '<span style="color:var(--green);font-size:11px">⚡ מיידי</span>'}</td>
             </tr>`).join('')}
           </tbody>
         </table>`;
