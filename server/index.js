@@ -2047,7 +2047,7 @@ app.get('/api/test-storage', async (req, res) => {
 // ── App Version (also wakes up DB on cold start) ─────────────────
 app.get('/api/version', async (req, res) => {
   try { const pool = await getPool(); await pool.request().query('SELECT 1'); } catch (_) {}
-  res.json({ version: '1.2.2', apkUrl: 'https://betshuva.com/app-release.apk' });
+  res.json({ version: '1.2.3', apkUrl: 'https://betshuva.com/app-release.apk' });
 });
 
 // ── Forgot Password ──────────────────────────────────────────────
