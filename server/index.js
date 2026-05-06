@@ -132,6 +132,76 @@ async function uploadToBlob(buffer, key, contentType) {
   return `${cdnBase}/${key}`;
 }
 
+// ── Content Moderation ────────────────────────────────────────────
+
+const FEMALE_LABELS = ['woman','women','girl','female','lady','ladies','bride','actress'];
+const BLOCKED_WORDS = [
+  'עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות',
+  'porn','nude','naked','xxx','sex','erotic','adult content',
+];
+
+async function scanImage(buffer) {
+  const key = process.env.GOOGLE_VISION_API_KEY;
+  if (!key) return { pending: true };
+
+  let res;
+  try {
+    res = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${key}`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            image:    { content: buffer.toString('base64') },
+            features: [
+              { type: 'SAFE_SEARCH_DETECTION' },
+              { type: 'LABEL_DETECTION', maxResults: 20 },
+            ],
+          }],
+        }),
+      }
+    );
+  } catch { return { pending: true }; }
+
+  const data = await res.json();
+  if (!res.ok || data.error) return { pending: true };
+
+  const ann = data.responses?.[0];
+  if (!ann) return { pending: true };
+
+  const ss  = ann.safeSearchAnnotation || {};
+  const BAD = ['POSSIBLE', 'LIKELY', 'VERY_LIKELY'];
+
+  if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
+    return { blocked: true, reason: 'התמונה נחסמה — תוכן לא צנוע' };
+
+  const labels = (ann.labelAnnotations || []).map(l => l.description.toLowerCase());
+  if (labels.some(l => FEMALE_LABELS.some(f => l.includes(f))))
+    return { blocked: true, reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות' };
+
+  return { blocked: false };
+}
+
+async function scanDocument(buffer, mimetype) {
+  if (!process.env.GOOGLE_VISION_API_KEY) return { pending: true };
+  try {
+    let text = '';
+    if (mimetype === 'application/pdf') {
+      const pdfParse = require('pdf-parse');
+      const d = await pdfParse(buffer);
+      text = d.text.toLowerCase();
+    } else {
+      const mammoth = require('mammoth');
+      const r = await mammoth.extractRawText({ buffer });
+      text = r.value.toLowerCase();
+    }
+    const found = BLOCKED_WORDS.find(w => text.includes(w.toLowerCase()));
+    if (found) return { blocked: true, reason: 'המסמך נחסם — תוכן לא הולם' };
+    return { blocked: false };
+  } catch { return { pending: true }; }
+}
+
 const mailer = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 465,
@@ -1031,8 +1101,46 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
 
   try {
+    // Content moderation scan
+    let scanResult;
+    if (allowed.dbType === 'image')
+      scanResult = await scanImage(file.buffer);
+    else if (allowed.dbType === 'document')
+      scanResult = await scanDocument(file.buffer, file.mimetype);
+
+    if (scanResult?.blocked) {
+      logActivity(req.user.id, 'blocked_upload',
+        { fileName: file.originalname, reason: scanResult.reason }, req.ip);
+      return res.status(400).json({ error: scanResult.reason });
+    }
+
     const blobName = `${req.user.id}/${Date.now()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
     const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
+
+    if (scanResult?.pending) {
+      // Scan service unavailable — save for retry
+      const toUserId = req.body.toUserId || null;
+      const groupId  = req.body.groupId  || null;
+      const pool = await getPool();
+      const ins = await pool.request()
+        .input('userId',   sql.UniqueIdentifier, req.user.id)
+        .input('toUserId', sql.UniqueIdentifier, toUserId)
+        .input('groupId',  sql.UniqueIdentifier, groupId)
+        .input('fileUrl',  sql.NVarChar,         url)
+        .input('fileName', sql.NVarChar,         file.originalname)
+        .input('fileType', sql.NVarChar,         allowed.dbType)
+        .input('mimeType', sql.NVarChar,         file.mimetype)
+        .query(`INSERT INTO pending_scans (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
+                OUTPUT INSERTED.id
+                VALUES (@userId, @toUserId, @groupId, @fileUrl, @fileName, @fileType, @mimeType)`);
+      logActivity(req.user.id, 'upload_pending',
+        { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
+      return res.json({
+        url, fileName: file.originalname, fileSize: file.size,
+        fileType: allowed.dbType, status: 'pending', pendingId: ins.recordset[0].id,
+      });
+    }
+
     logActivity(req.user.id, 'upload_file',
       { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType });
@@ -1843,6 +1951,59 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Admin: Scan results (blocked + pending) ──────────────────────
+app.get('/api/admin/scans', adminAuth, async (req, res) => {
+  const type   = req.query.type === 'pending' ? 'pending' : 'blocked';
+  const limit  = Math.min(parseInt(req.query.limit)  || 100, 500);
+  const offset = parseInt(req.query.offset) || 0;
+  try {
+    const pool = await getPool();
+    if (type === 'pending') {
+      const result = await pool.request().query(`
+        SELECT ps.id, ps.file_name, ps.file_type, ps.file_url,
+               ps.retry_count, ps.created_at, ps.last_retry,
+               u.name  AS sender_name,  u.email  AS sender_email,
+               ru.name AS recipient_name
+        FROM pending_scans ps
+        LEFT JOIN users u  ON u.id  = ps.user_id
+        LEFT JOIN users ru ON ru.id = ps.to_user_id
+        ORDER BY ps.created_at DESC
+        OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
+      `);
+      const cnt = await pool.request().query('SELECT COUNT(*) AS n FROM pending_scans');
+      res.json({ rows: result.recordset, total: cnt.recordset[0].n });
+    } else {
+      const result = await pool.request().query(`
+        SELECT a.id, a.created_at, a.ip, a.action,
+               u.name AS user_name, u.email AS user_email,
+               JSON_VALUE(a.details, '$.fileName') AS file_name,
+               JSON_VALUE(a.details, '$.reason')   AS reason,
+               JSON_VALUE(a.details, '$.fileType')  AS file_type
+        FROM activity_log a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE a.action IN ('blocked_upload','blocked_upload_delayed')
+        ORDER BY a.created_at DESC
+        OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
+      `);
+      const cnt = await pool.request().query(`
+        SELECT COUNT(*) AS n FROM activity_log
+        WHERE action IN ('blocked_upload','blocked_upload_delayed')`);
+      res.json({ rows: result.recordset, total: cnt.recordset[0].n });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/admin/scans/pending/:id', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('id', sql.Int, parseInt(req.params.id))
+      .query('DELETE FROM pending_scans WHERE id = @id');
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Storage diagnostic ───────────────────────────────────────────
 app.get('/api/test-storage', async (req, res) => {
   const rawKey = process.env.B2_APP_KEY || '';
@@ -1865,7 +2026,7 @@ app.get('/api/test-storage', async (req, res) => {
 // ── App Version (also wakes up DB on cold start) ─────────────────
 app.get('/api/version', async (req, res) => {
   try { const pool = await getPool(); await pool.request().query('SELECT 1'); } catch (_) {}
-  res.json({ version: '1.2.1', apkUrl: 'https://betshuva.com/app-release.apk' });
+  res.json({ version: '1.2.2', apkUrl: 'https://betshuva.com/app-release.apk' });
 });
 
 // ── Forgot Password ──────────────────────────────────────────────
@@ -1969,6 +2130,106 @@ app.get('/reset-password', (req, res) => {
 </body>
 </html>`);
 });
+
+// ── Pending Scans — table init + background retry ─────────────────
+
+async function initPendingTable() {
+  try {
+    const pool = await getPool();
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='pending_scans')
+      CREATE TABLE pending_scans (
+        id          INT IDENTITY(1,1) PRIMARY KEY,
+        user_id     UNIQUEIDENTIFIER NOT NULL,
+        to_user_id  UNIQUEIDENTIFIER NULL,
+        group_id    UNIQUEIDENTIFIER NULL,
+        file_url    NVARCHAR(500)    NOT NULL,
+        file_name   NVARCHAR(255)    NOT NULL,
+        file_type   NVARCHAR(50)     NOT NULL,
+        mime_type   NVARCHAR(100)    NOT NULL,
+        retry_count INT              NOT NULL DEFAULT 0,
+        last_retry  DATETIME         NULL,
+        created_at  DATETIME         DEFAULT GETDATE()
+      )
+    `);
+    console.log('pending_scans table ready');
+  } catch (e) { console.error('initPendingTable:', e.message); }
+}
+
+async function retryPendingScans() {
+  try {
+    const pool = await getPool();
+    const rows = await pool.request().query(`
+      SELECT TOP 10 * FROM pending_scans
+      WHERE retry_count < 20
+        AND (last_retry IS NULL OR last_retry < DATEADD(MINUTE, -2, GETDATE()))
+      ORDER BY created_at ASC
+    `);
+
+    for (const row of rows.recordset) {
+      try {
+        // Update last_retry immediately to avoid double-processing
+        await pool.request()
+          .input('id', sql.Int, row.id)
+          .query(`UPDATE pending_scans SET retry_count=retry_count+1, last_retry=GETDATE() WHERE id=@id`);
+
+        // Download file from B2 for re-scan
+        const fileRes = await fetch(row.file_url);
+        if (!fileRes.ok) continue;
+        const buffer = Buffer.from(await fileRes.arrayBuffer());
+
+        let scanResult;
+        if (row.file_type === 'image') scanResult = await scanImage(buffer);
+        else                           scanResult = await scanDocument(buffer, row.mime_type);
+
+        if (scanResult.pending) continue; // service still unavailable
+
+        // Remove from pending regardless of outcome
+        await pool.request()
+          .input('id', sql.Int, row.id)
+          .query(`DELETE FROM pending_scans WHERE id=@id`);
+
+        if (scanResult.blocked) {
+          logActivity(row.user_id, 'blocked_upload_delayed',
+            { fileName: row.file_name, reason: scanResult.reason, fileUrl: row.file_url });
+          // Notify sender that file was rejected
+          const sid = onlineUsers.get(row.user_id);
+          if (sid) io.to(sid).emit('scan:rejected', { fileName: row.file_name, reason: scanResult.reason });
+          continue;
+        }
+
+        // Scan passed — save message and deliver
+        if (row.to_user_id) {
+          const saved = await pool.request()
+            .input('senderId',    sql.UniqueIdentifier, row.user_id)
+            .input('recipientId', sql.UniqueIdentifier, row.to_user_id)
+            .input('type',        sql.NVarChar,         row.file_type)
+            .input('fileUrl',     sql.NVarChar,         row.file_url)
+            .input('fileName',    sql.NVarChar,         row.file_name)
+            .query(`INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name)
+                    OUTPUT INSERTED.id, INSERTED.created_at
+                    VALUES (@senderId, @recipientId, @type, @fileName, @fileUrl, @fileName)`);
+          const msg = saved.recordset[0];
+          const payload = {
+            id: msg.id, fromUserId: row.user_id, createdAt: msg.created_at,
+            fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
+          };
+          const senderSid    = onlineUsers.get(row.user_id);
+          const recipientSid = onlineUsers.get(row.to_user_id);
+          if (senderSid)    io.to(senderSid).emit('chat:message', payload);
+          if (recipientSid) io.to(recipientSid).emit('chat:message', payload);
+          if (!recipientSid)
+            sendPush(row.to_user_id, '', `📎 ${row.file_name}`, { type: 'chat', fromUserId: row.user_id });
+          logActivity(row.user_id, 'send_file_delayed',
+            { toUserId: row.to_user_id, fileName: row.file_name });
+        }
+      } catch (e) { console.error('retry row', row.id, e.message); }
+    }
+  } catch (e) { console.error('retryPendingScans:', e.message); }
+}
+
+initPendingTable();
+setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => console.log(`Server running on port ${PORT}`));

@@ -66,7 +66,7 @@ const kFilterBg   = Color(0xFFE8F4FD); // filter banner background
 
 const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
 const kApi     = '$kServer/api';
-const kVersion = '1.1.0';
+const kVersion = '1.2.2';
 // Google Web Client ID — set in Firebase Console → Authentication → Google → Web SDK config
 const kGoogleWebClientId = '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
 
@@ -2231,6 +2231,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
         ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..fields['toUserId'] = widget.recipient['id'].toString()
         ..files.add(await http.MultipartFile.fromPath('file', file.path,
             filename: fileName));
       final streamed = await request.send();
@@ -2244,10 +2245,37 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
 
-      final data = jsonDecode(body) as Map<String, dynamic>;
+      final data    = jsonDecode(body) as Map<String, dynamic>;
       final fileUrl = data['url'] as String;
+      final isPending = data['status'] == 'pending';
 
-      // Send via socket as file message
+      if (isPending) {
+        // Scan service unavailable — file queued, server will send it later
+        setState(() {
+          _messages.add({
+            'id':       'temp_${DateTime.now().millisecondsSinceEpoch}',
+            'text':     fileName,
+            'from':     widget.me?['id'],
+            'time':     _nowTime(),
+            'status':   'pending_scan',
+            'isFile':   true,
+            'fileType': fileType,
+            'fileUrl':  fileUrl,
+          });
+        });
+        _scrollToBottom();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('הקובץ בהמתנה לסריקה — יישלח אוטומטית כשהשירות יחזור',
+                textDirection: TextDirection.rtl),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+
+      // Scan passed — send via socket as usual
       widget.socket?.emit('chat:message', {
         'toUserId': widget.recipient['id'],
         'fileUrl':  fileUrl,
@@ -2730,6 +2758,11 @@ class _MessageBubble extends StatelessWidget {
       case 'received':
         return Icon(Icons.done_all, size: 14,
             color: Colors.white.withOpacity(0.6));
+      case 'pending_scan':
+        return const Tooltip(
+          message: 'בהמתנה לסריקת צניעות',
+          child: Icon(Icons.hourglass_top, size: 14, color: Colors.orangeAccent),
+        );
       default:
         return Icon(Icons.done, size: 14,
             color: Colors.white.withOpacity(0.6));

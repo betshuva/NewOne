@@ -109,6 +109,19 @@ tr:hover td{background:rgba(33,38,45,.8)}
 .perm-select{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);outline:none}
 .loader{color:var(--text2);padding:40px;text-align:center}
 .empty{color:var(--text2);padding:40px;text-align:center;font-size:14px}
+
+/* Scan Panel */
+#scan-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+.scan-tabs{display:flex;gap:0;padding:14px 20px 0;border-bottom:1px solid var(--border);flex-shrink:0}
+.scan-tab{padding:8px 18px;cursor:pointer;font-size:13px;font-weight:600;color:var(--text2);border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.scan-tab:hover{color:var(--text)}
+.scan-tab.active{color:var(--blue-light);border-bottom-color:var(--blue)}
+.scan-badge{background:var(--bg3);color:var(--text2);font-size:11px;padding:1px 7px;border-radius:8px;margin-right:6px}
+.scan-badge.red{background:rgba(248,81,73,.15);color:var(--red)}
+.scan-badge.orange{background:rgba(210,153,34,.15);color:var(--orange)}
+.reason-cell{color:var(--red);font-size:12px}
+.pending-cell{color:var(--orange)}
+.action-delayed{color:var(--orange);font-size:11px}
 </style>
 </head>
 <body>
@@ -135,6 +148,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     </div>
     <div id="sb-tables"></div>
     <div class="sb-section">ניהול</div>
+    <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
     <div class="sb-footer">
       <div class="sb-user" id="sb-user"></div>
@@ -145,6 +159,24 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <!-- Main -->
   <div class="main" id="main-area">
     <div class="loader">בחר טבלה מהתפריט</div>
+  </div>
+
+  <!-- Scan Panel -->
+  <div id="scan-panel">
+    <div class="main-head">
+      <h1>🔍 סריקות צניעות</h1>
+      <button class="btn-sm" onclick="loadScanPanel(activeScanTab,scanOffset)">🔄 רענן</button>
+    </div>
+    <div class="scan-tabs">
+      <div class="scan-tab active" id="stab-blocked" onclick="switchScanTab('blocked')">
+        ⛔ נחסמו <span id="scan-badge-blocked" class="scan-badge red">—</span>
+      </div>
+      <div class="scan-tab" id="stab-pending" onclick="switchScanTab('pending')">
+        ⏳ ממתינות לסריקה <span id="scan-badge-pending" class="scan-badge orange">—</span>
+      </div>
+    </div>
+    <div class="table-wrap" id="scan-table-wrap"><div class="loader">טוען...</div></div>
+    <div class="pagination" id="scan-pagination"></div>
   </div>
 
   <!-- Permissions Panel -->
@@ -500,6 +532,113 @@ async function removePerm(userId) {
     if (!res.ok) { alert(data.error||'שגיאה'); return; }
     loadPermPanel();
   } catch(e) { alert(e.message); }
+}
+
+// ── Scan Panel ────────────────────────────────────────────────────
+let activeScanTab = 'blocked';
+let scanOffset    = 0;
+const SCAN_PAGE   = 100;
+
+function showScanPanel() {
+  document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('sb-scan-item').classList.add('active');
+  document.getElementById('main-area').style.display  = 'none';
+  document.getElementById('perm-panel').style.display = 'none';
+  document.getElementById('scan-panel').style.display = 'flex';
+  loadScanPanel(activeScanTab, 0);
+}
+
+function switchScanTab(type) {
+  activeScanTab = type;
+  scanOffset    = 0;
+  document.querySelectorAll('.scan-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('stab-' + type).classList.add('active');
+  loadScanPanel(type, 0);
+}
+
+async function loadScanPanel(type, offset) {
+  scanOffset = offset;
+  const wrap = document.getElementById('scan-table-wrap');
+  const pag  = document.getElementById('scan-pagination');
+  wrap.innerHTML = '<div class="loader">טוען...</div>';
+  pag.innerHTML  = '';
+  try {
+    const res  = await fetch(`${API}/api/admin/scans?type=${type}&limit=${SCAN_PAGE}&offset=${offset}`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) { wrap.innerHTML = `<div class="loader" style="color:var(--red)">${data.error}</div>`; return; }
+
+    // Update badge count
+    document.getElementById('scan-badge-' + type).textContent = data.total.toLocaleString();
+
+    if (!data.rows.length) { wrap.innerHTML = '<div class="empty">אין רשומות</div>'; return; }
+
+    if (type === 'blocked') {
+      wrap.innerHTML = `
+        <table>
+          <thead><tr>
+            <th>תאריך</th><th>משתמש</th><th>שם קובץ</th><th>סוג</th>
+            <th>סיבת חסימה</th><th>זמן</th><th>IP</th>
+          </tr></thead>
+          <tbody>
+            ${data.rows.map(r => `<tr>
+              <td class="td-date">${fmtDate(r.created_at)}</td>
+              <td title="${escHtml(r.user_email||'')}">${escHtml(r.user_name||'—')}</td>
+              <td title="${escHtml(r.file_name||'')}">${escHtml((r.file_name||'—').slice(0,40))}</td>
+              <td>${escHtml(r.file_type||'—')}</td>
+              <td class="reason-cell" title="${escHtml(r.reason||'')}">${escHtml((r.reason||'—').slice(0,55))}</td>
+              <td>${r.action==='blocked_upload_delayed'
+                ? '<span class="action-delayed">⏱ בדיעבד</span>'
+                : '<span style="color:var(--green);font-size:11px">⚡ מיידי</span>'}</td>
+              <td class="td-id">${escHtml(r.ip||'—')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    } else {
+      wrap.innerHTML = `
+        <table>
+          <thead><tr>
+            <th>תאריך</th><th>שולח</th><th>נמען</th><th>שם קובץ</th>
+            <th>סוג</th><th>ניסיונות</th><th>סריקה אחרונה</th>
+            ${adminPerm==='edit'?'<th>פעולות</th>':''}
+          </tr></thead>
+          <tbody>
+            ${data.rows.map(r => `<tr>
+              <td class="td-date">${fmtDate(r.created_at)}</td>
+              <td title="${escHtml(r.sender_email||'')}">${escHtml(r.sender_name||'—')}</td>
+              <td>${escHtml(r.recipient_name||'—')}</td>
+              <td title="${escHtml(r.file_url||'')}">${escHtml((r.file_name||'—').slice(0,40))}</td>
+              <td>${escHtml(r.file_type||'—')}</td>
+              <td class="pending-cell">${r.retry_count}</td>
+              <td class="td-date">${r.last_retry ? fmtDate(r.last_retry) : '—'}</td>
+              ${adminPerm==='edit'?`<td class="td-actions">
+                <button class="btn-del" onclick="deletePending(${r.id})" title="מחק מהמתנה">🗑️</button>
+              </td>`:''}
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
+    // Pagination
+    const total = data.total;
+    pag.innerHTML = `
+      <button class="pag-btn" onclick="loadScanPanel('${type}',${Math.max(0,offset-SCAN_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
+      <span>${offset+1}–${Math.min(offset+SCAN_PAGE,total)} מתוך ${total.toLocaleString()}</span>
+      <button class="pag-btn" onclick="loadScanPanel('${type}',${offset+SCAN_PAGE})" ${offset+SCAN_PAGE>=total?'disabled':''}>הבא ▶</button>`;
+  } catch (e) {
+    wrap.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`;
+  }
+}
+
+async function deletePending(id) {
+  if (!confirm('למחוק קובץ זה מרשימת ההמתנה?')) return;
+  try {
+    const res  = await fetch(`${API}/api/admin/scans/pending/${id}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'שגיאה'); return; }
+    loadScanPanel('pending', scanOffset);
+  } catch (e) { alert(e.message); }
 }
 
 // ── Start ─────────────────────────────────────────────────────────
