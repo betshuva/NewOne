@@ -115,6 +115,32 @@ tr:hover td{background:rgba(33,38,45,.8)}
 .perm-select{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);outline:none}
 .loader{color:var(--text2);padding:40px;text-align:center}
 .empty{color:var(--text2);padding:40px;text-align:center;font-size:14px}
+/* Vision Panel */
+#vision-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+.vision-grid{flex:1;overflow-y:auto;padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-content:start}
+.vision-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.vision-card.blocked{border-color:var(--red)}
+.vision-card.approved{border-color:rgba(63,185,80,.4)}
+.vc-img{width:100%;height:160px;object-fit:cover;background:var(--bg3);cursor:pointer;display:block}
+.vc-img:hover{opacity:.85}
+.vc-nothumb{width:100%;height:80px;display:flex;align-items:center;justify-content:center;font-size:32px;background:var(--bg3)}
+.vc-body{padding:12px 14px;flex:1;display:flex;flex-direction:column;gap:8px}
+.vc-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.vc-status{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px}
+.vc-status.blocked{background:rgba(248,81,73,.15);color:var(--red)}
+.vc-status.approved{background:rgba(63,185,80,.15);color:var(--green)}
+.vc-filename{font-size:12px;font-weight:600;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vc-user{font-size:11px;color:var(--text2)}
+.vc-time{font-size:11px;color:var(--text2);margin-right:auto}
+.vc-ss{display:flex;gap:6px;flex-wrap:wrap}
+.vc-ss-item{font-size:11px;padding:2px 7px;border-radius:5px;background:var(--bg3)}
+.vc-ss-item.bad{background:rgba(248,81,73,.15);color:var(--red);font-weight:700}
+.vc-ss-item.ok{color:var(--text2)}
+.vc-labels{display:flex;gap:5px;flex-wrap:wrap}
+.vc-label{font-size:11px;background:rgba(58,143,204,.15);color:var(--blue-light);padding:2px 7px;border-radius:5px}
+.vc-label.danger{background:rgba(248,81,73,.15);color:var(--red);font-weight:700}
+.vc-reason{font-size:12px;color:var(--red);font-weight:600}
+
 /* New Group Modal */
 #newgroup-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:50;align-items:center;justify-content:center}
 .ng-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:540px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column}
@@ -239,6 +265,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div class="sb-section">ניהול</div>
     <div class="sb-item" id="sb-newgroup-item" onclick="openNewGroupModal()">➕ קבוצה חדשה</div>
     <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
+    <div class="sb-item" id="sb-vision-item" onclick="showVisionPanel()">🔬 תוצאות Vision</div>
     <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
     <div class="sb-footer">
@@ -250,6 +277,16 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <!-- Main -->
   <div class="main" id="main-area">
     <div class="loader">בחר טבלה מהתפריט</div>
+  </div>
+
+  <!-- Vision Panel -->
+  <div id="vision-panel">
+    <div class="main-head">
+      <h1>🔬 תוצאות Google Vision</h1>
+      <button class="btn-sm" onclick="loadVision()">🔄 רענן</button>
+    </div>
+    <div class="vision-grid" id="vision-grid"><div class="loader">טוען...</div></div>
+    <div class="pagination" id="vision-pagination"></div>
   </div>
 
   <!-- Activity Panel -->
@@ -701,6 +738,90 @@ async function deleteRow(table, pkVal) {
       if (cnt) cnt.textContent = Math.max(0, parseInt(cnt.textContent)-1);
     }
   } catch(e) { alert(e.message); }
+}
+
+// ── Vision Panel ──────────────────────────────────────────────────
+const VISION_PAGE = 30;
+const FEMALE_LABELS_JS = ['woman','women','girl','female','lady','ladies','bride','actress','child','baby','infant','kid'];
+const BAD_SS = ['POSSIBLE','LIKELY','VERY_LIKELY'];
+const SS_HE = { adult:'בוגרים', racy:'מגרה', violence:'אלימות', spoof:'זיוף', medical:'רפואי' };
+
+function ssClass(val) { return BAD_SS.includes(val) ? 'bad' : 'ok'; }
+function ssShort(val) {
+  return { VERY_UNLIKELY:'לא סביר מאוד', UNLIKELY:'לא סביר', POSSIBLE:'אפשרי',
+           LIKELY:'סביר', VERY_LIKELY:'סביר מאוד' }[val] || val || '—';
+}
+
+function renderVisionCard(r) {
+  const blocked  = r.action === 'blocked_upload' || r.action === 'blocked_upload_delayed';
+  const isImg    = r.fileType === 'image';
+  const ss       = r.safeSearch || {};
+  const labels   = r.labels    || [];
+
+  const thumbHtml = isImg && r.fileUrl
+    ? `<img class="vc-img" src="${escHtml(r.fileUrl)}" loading="lazy"
+        onclick="openLightbox('${escHtml(r.fileUrl)}','${escHtml(r.fileName||'')}')"
+        onerror="this.outerHTML='<div class=\\'vc-nothumb\\'>🖼️</div>'">`
+    : `<div class="vc-nothumb">${r.fileType==='document'?'📄':r.fileType==='audio'?'🎵':'📎'}</div>`;
+
+  const ssHtml = Object.entries(ss).filter(([k])=>SS_HE[k]).map(([k,v])=>
+    `<span class="vc-ss-item ${ssClass(v)}">${SS_HE[k]}: ${ssShort(v)}</span>`).join('');
+
+  const labelsHtml = labels.map(l => {
+    const isDanger = FEMALE_LABELS_JS.some(f => l.name.toLowerCase().includes(f));
+    return `<span class="vc-label ${isDanger?'danger':''}">${escHtml(l.name)} ${l.score}%</span>`;
+  }).join('');
+
+  const size = r.fileSize ? `${(r.fileSize/1024).toFixed(0)}KB` : '';
+
+  return `<div class="vision-card ${blocked?'blocked':'approved'}">
+    ${thumbHtml}
+    <div class="vc-body">
+      <div class="vc-top">
+        <span class="vc-status ${blocked?'blocked':'approved'}">${blocked?'⛔ נחסם':'✅ אושר'}</span>
+        <span class="vc-filename" title="${escHtml(r.fileName||'')}">${escHtml(r.fileName||'—')}</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <span class="vc-user">👤 ${escHtml(r.user_name||'—')}</span>
+        ${size?`<span class="vc-user">📦 ${size}</span>`:''}
+        <span class="vc-time">${fmtDate(r.created_at)}</span>
+      </div>
+      ${r.reason?`<div class="vc-reason">⚠️ ${escHtml(r.reason)}</div>`:''}
+      ${ssHtml?`<div class="vc-ss">${ssHtml}</div>`:''}
+      ${labelsHtml?`<div class="vc-labels">${labelsHtml}</div>`:'<div style="font-size:11px;color:var(--text2)">אין תוויות</div>'}
+    </div>
+  </div>`;
+}
+
+let visionOffset = 0;
+async function loadVision(offset=0) {
+  visionOffset = offset;
+  const grid = document.getElementById('vision-grid');
+  const pag  = document.getElementById('vision-pagination');
+  grid.innerHTML = '<div class="loader">טוען ותוצאות Vision...</div>';
+  try {
+    const res  = await fetch(`${API}/api/admin/vision?limit=${VISION_PAGE}&offset=${offset}`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    const rows = await res.json();
+    if (!rows.length) { grid.innerHTML='<div class="empty">אין נתונים</div>'; pag.innerHTML=''; return; }
+    grid.innerHTML = rows.map(renderVisionCard).join('');
+    pag.innerHTML = `
+      <button class="pag-btn" onclick="loadVision(${Math.max(0,offset-VISION_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
+      <span>רשומות ${offset+1}–${offset+rows.length}</span>
+      <button class="pag-btn" onclick="loadVision(${offset+VISION_PAGE})" ${rows.length<VISION_PAGE?'disabled':''}>הבא ▶</button>`;
+  } catch(e) { grid.innerHTML=`<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`; }
+}
+
+function showVisionPanel() {
+  clearInterval(actTimer);
+  document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
+  document.getElementById('sb-vision-item').classList.add('active');
+  document.getElementById('main-area').style.display     = 'none';
+  document.getElementById('perm-panel').style.display    = 'none';
+  document.getElementById('scan-panel').style.display    = 'none';
+  document.getElementById('activity-panel').style.display = 'none';
+  document.getElementById('vision-panel').style.display  = 'flex';
+  loadVision(0);
 }
 
 // ── New Group Modal ───────────────────────────────────────────────

@@ -134,7 +134,11 @@ async function uploadToBlob(buffer, key, contentType) {
 
 // ── Content Moderation ────────────────────────────────────────────
 
-const FEMALE_LABELS = ['woman','women','girl','female','lady','ladies','bride','actress'];
+const FEMALE_LABELS = [
+  'woman','women','girl','female','lady','ladies','bride','actress',
+  'child','baby','infant','kid','toddler','boy','person','human',
+  'sketch','drawing','illustration','line art','cartoon','anime',
+];
 const BLOCKED_WORDS = [
   'עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות',
   'porn','nude','naked','xxx','sex','erotic','adult content',
@@ -172,15 +176,16 @@ async function scanImage(buffer) {
 
   const ss  = ann.safeSearchAnnotation || {};
   const BAD = ['POSSIBLE', 'LIKELY', 'VERY_LIKELY'];
+  const labelsRaw = (ann.labelAnnotations || []).map(l => ({ name: l.description, score: Math.round(l.score * 100) }));
+  const labelNames = labelsRaw.map(l => l.name.toLowerCase());
 
   if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
-    return { blocked: true, reason: 'התמונה נחסמה — תוכן לא צנוע' };
+    return { blocked: true, reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw };
 
-  const labels = (ann.labelAnnotations || []).map(l => l.description.toLowerCase());
-  if (labels.some(l => FEMALE_LABELS.some(f => l.includes(f))))
-    return { blocked: true, reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות' };
+  if (labelNames.some(l => FEMALE_LABELS.some(f => l.includes(f))))
+    return { blocked: true, reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw };
 
-  return { blocked: false };
+  return { blocked: false, safeSearch: ss, labels: labelsRaw };
 }
 
 async function scanDocument(buffer, mimetype) {
@@ -1121,7 +1126,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
 
     if (scanResult?.blocked) {
       logActivity(req.user.id, 'blocked_upload',
-        { fileName: file.originalname, reason: scanResult.reason }, req.ip);
+        { fileName: file.originalname, reason: scanResult.reason,
+          safeSearch: scanResult.safeSearch, labels: scanResult.labels }, req.ip);
       return res.status(400).json({ error: scanResult.reason });
     }
 
@@ -1154,7 +1160,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
 
     logActivity(req.user.id, 'upload_file',
       { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
-        fileUrl: url, toUserId: req.body.toUserId || null }, req.ip);
+        fileUrl: url, toUserId: req.body.toUserId || null,
+        safeSearch: scanResult?.safeSearch || null,
+        labels: scanResult?.labels || null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType });
   } catch (e) {
     console.error('upload:', e.message);
@@ -2074,6 +2082,49 @@ app.post('/api/admin/groups', adminAuth, async (req, res) => {
     }
     logActivity(req.user.id, 'create_group', { groupId: group.id, name, members: memberIds.length }, req.ip);
     res.json({ ok: true, groupId: group.id, name: group.name, memberCount: memberIds.length + 1 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Admin: Vision scan results ───────────────────────────────────
+app.get('/api/admin/vision', adminAuth, async (req, res) => {
+  const limit  = Math.min(parseInt(req.query.limit || 50), 200);
+  const offset = parseInt(req.query.offset || 0);
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('limit', sql.Int, limit)
+      .input('offset', sql.Int, offset)
+      .query(`
+        SELECT a.id, a.details, a.created_at, a.action,
+               u.name AS user_name, u.email AS user_email
+        FROM activity_log a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE a.action IN ('upload_file','blocked_upload','blocked_upload_delayed')
+        ORDER BY a.created_at DESC
+        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+      `);
+    const rows = result.recordset.map(r => {
+      let d = {};
+      try { d = JSON.parse(r.details || '{}'); } catch {}
+      return { id: r.id, action: r.action, created_at: r.created_at,
+               user_name: r.user_name, user_email: r.user_email,
+               fileName: d.fileName, fileType: d.fileType, fileSize: d.fileSize,
+               fileUrl: d.fileUrl, reason: d.reason,
+               safeSearch: d.safeSearch || null, labels: d.labels || null };
+    });
+    // For images without saved Vision results — re-scan on demand (up to 5)
+    const toScan = rows.filter(r => r.fileType === 'image' && !r.safeSearch && r.fileUrl).slice(0, 5);
+    await Promise.all(toScan.map(async r => {
+      try {
+        const imgRes = await fetch(r.fileUrl);
+        if (!imgRes.ok) return;
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        const sr  = await scanImage(buf);
+        r.safeSearch = sr.safeSearch || null;
+        r.labels     = sr.labels     || null;
+      } catch {}
+    }));
+    res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
