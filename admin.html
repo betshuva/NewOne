@@ -759,7 +759,7 @@ async function deleteRow(table, pkVal) {
 
 // ── Vision Panel ──────────────────────────────────────────────────
 const VISION_PAGE = 30;
-const FEMALE_LABELS_JS = ['woman','women','girl','female','lady','ladies','bride','actress','child','baby','infant','kid','toddler','boy','person','human','sketch','drawing','illustration','line art','cartoon','anime'];
+const FEMALE_LABELS_JS = ['woman','women','girl','female','lady','ladies','bride','actress','child','baby','infant','kid','toddler','boy','person','human','sketch','drawing','illustration','line art','cartoon','anime','child model','child modeling','child actor','child actress'];
 const BAD_SS = ['POSSIBLE','LIKELY','VERY_LIKELY'];
 const SS_HE = { adult:'בוגרים', racy:'מגרה', violence:'אלימות', spoof:'זיוף', medical:'רפואי' };
 
@@ -785,6 +785,8 @@ const LABEL_HE = {
   'gesture':'תנועת גוף',
   // ציורים מורחב
   'figure drawing':'ציור דמות', 'fashion illustration':'איור אופנה',
+  'child model':'דוגמן ילד', 'child modeling':'דוגמנות ילדים',
+  'child actor':'שחקן ילד', 'child actress':'שחקנית ילדה',
   'figure':'דמות', 'silhouette':'צלליה', 'outline':'מתאר',
   'comic book':'ספר קומיקס', 'manga':'מנגה', 'character':'דמות',
   'fictional character':'דמות בדיונית', 'art':'אמנות', 'artwork':'יצירת אמנות',

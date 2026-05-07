@@ -137,6 +137,7 @@ async function uploadToBlob(buffer, key, contentType) {
 const FEMALE_LABELS = [
   'woman','women','girl','female','lady','ladies','bride','actress',
   'child','baby','infant','kid','toddler','boy','person','human',
+  'child model','child modeling','child actor','child actress',
   'sketch','drawing','illustration','line art','cartoon','anime',
 ];
 const BLOCKED_WORDS = [
