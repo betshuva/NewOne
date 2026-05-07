@@ -850,14 +850,16 @@ function openVisionDetail(idx) {
 
   const labelRows = labels.map(l=>{
     const isDanger = FEMALE_LABELS_JS.some(f=>l.name.toLowerCase().includes(f));
+    const he = labelHe(l.name);
     return `<tr>
-      <td style="padding:5px 10px;color:${isDanger?'var(--red)':'var(--text)'};font-weight:${isDanger?700:400}">${escHtml(l.name)}</td>
-      <td style="padding:5px 10px">
-        <div style="background:var(--bg3);border-radius:4px;height:8px;width:100%;overflow:hidden">
+      <td style="padding:5px 10px;color:${isDanger?'var(--red)':'var(--text)'};font-weight:${isDanger?700:400};white-space:nowrap">${escHtml(l.name)}</td>
+      <td style="padding:5px 10px;color:var(--text2);font-size:11px;white-space:nowrap">${he !== l.name ? escHtml(he) : ''}</td>
+      <td style="padding:5px 10px;width:120px">
+        <div style="background:var(--bg3);border-radius:4px;height:8px;overflow:hidden">
           <div style="background:${isDanger?'var(--red)':'var(--blue)'};height:8px;width:${l.score}%"></div>
         </div>
       </td>
-      <td style="padding:5px 10px;color:var(--text2);font-size:12px">${l.score}%</td>
+      <td style="padding:5px 10px;color:var(--text2);font-size:12px;white-space:nowrap">${l.score}%</td>
     </tr>`;
   }).join('');
 
