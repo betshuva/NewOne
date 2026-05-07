@@ -1118,6 +1118,10 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
 
   try {
+    // העלאה לאחסון תחילה (גם קבצים חסומים נשמרים לצורך ביקורת אדמין)
+    const blobName = `${req.user.id}/${Date.now()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
+    const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
+
     // Content moderation scan
     let scanResult;
     if (allowed.dbType === 'image')
@@ -1127,13 +1131,11 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
 
     if (scanResult?.blocked) {
       logActivity(req.user.id, 'blocked_upload',
-        { fileName: file.originalname, reason: scanResult.reason,
+        { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
+          fileUrl: url, reason: scanResult.reason,
           safeSearch: scanResult.safeSearch, labels: scanResult.labels }, req.ip);
       return res.status(400).json({ error: scanResult.reason });
     }
-
-    const blobName = `${req.user.id}/${Date.now()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
-    const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
 
     if (scanResult?.pending) {
       // Scan service unavailable — save for retry

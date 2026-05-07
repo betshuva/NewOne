@@ -840,8 +840,15 @@ function renderVisionCard(r, idx) {
   const size    = r.fileSize ? `${(r.fileSize/1024).toFixed(0)}KB` : '';
 
   let thumbHtml;
-  if (blocked) {
-    // חסומות — אין fileUrl, מציג placeholder עם סיבה
+  if (blocked && r.fileUrl) {
+    // חסומות עם תמונה שמורה — מציג תמונה + כותרת חסום
+    thumbHtml = `<div style="position:relative">
+      <img class="vc-img" src="${escHtml(r.fileUrl)}" loading="lazy"
+        onerror="this.outerHTML='<div class=\\'vc-nothumb\\'>⛔</div>'">
+      <div style="position:absolute;top:6px;right:6px;background:rgba(248,81,73,.9);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px">⛔ נחסם</div>
+    </div>`;
+  } else if (blocked) {
+    // חסומות ישנות ללא URL
     const triggerLabels = labels.filter(l=>FEMALE_LABELS_JS.some(f=>l.name.toLowerCase().includes(f))).slice(0,2).map(l=>l.name).join(', ');
     thumbHtml = `<div style="background:rgba(248,81,73,.08);height:100px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:10px">
       <span style="font-size:28px">⛔</span>
