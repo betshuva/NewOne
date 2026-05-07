@@ -2039,6 +2039,44 @@ app.delete('/api/admin/scans/pending/:id', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Admin: create group + add members directly ───────────────────
+app.post('/api/admin/groups', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const { name, description, memberIds = [], isBroadcast = false, sendPermission = 'all' } = req.body;
+  if (!name) return res.status(400).json({ error: 'נדרש שם קבוצה' });
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('name',    sql.NVarChar, name)
+      .input('desc',    sql.NVarChar, description || '')
+      .input('creator', sql.UniqueIdentifier, req.user.id)
+      .input('isBroadcast',    sql.Bit,      isBroadcast ? 1 : 0)
+      .input('sendPermission', sql.NVarChar, sendPermission)
+      .query(`INSERT INTO groups (name, description, creator_id, is_broadcast, send_permission)
+              OUTPUT INSERTED.id, INSERTED.name
+              VALUES (@name, @desc, @creator, @isBroadcast, @sendPermission)`);
+    const group = result.recordset[0];
+    // Add creator as admin
+    await pool.request()
+      .input('groupId', sql.UniqueIdentifier, group.id)
+      .input('userId',  sql.UniqueIdentifier, req.user.id)
+      .query(`INSERT INTO group_members (group_id, user_id, role, status)
+              VALUES (@groupId, @userId, 'admin', 'member')`);
+    // Add members directly as 'member' (no pending)
+    for (const uid of memberIds) {
+      try {
+        await pool.request()
+          .input('groupId', sql.UniqueIdentifier, group.id)
+          .input('userId',  sql.UniqueIdentifier, uid)
+          .query(`INSERT INTO group_members (group_id, user_id, role, status)
+                  VALUES (@groupId, @userId, 'member', 'member')`);
+      } catch (_) {}
+    }
+    logActivity(req.user.id, 'create_group', { groupId: group.id, name, members: memberIds.length }, req.ip);
+    res.json({ ok: true, groupId: group.id, name: group.name, memberCount: memberIds.length + 1 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Storage diagnostic ───────────────────────────────────────────
 app.get('/api/test-storage', async (req, res) => {
   const rawKey = process.env.B2_APP_KEY || '';

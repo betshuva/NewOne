@@ -115,6 +115,26 @@ tr:hover td{background:rgba(33,38,45,.8)}
 .perm-select{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);outline:none}
 .loader{color:var(--text2);padding:40px;text-align:center}
 .empty{color:var(--text2);padding:40px;text-align:center;font-size:14px}
+/* New Group Modal */
+#newgroup-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:50;align-items:center;justify-content:center}
+.ng-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:540px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column}
+.ng-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.ng-head h2{font-size:16px;font-weight:700;color:var(--blue-light)}
+.ng-body{padding:18px 20px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px}
+.ng-field label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px;font-weight:600}
+.ng-field input,.ng-field textarea,.ng-field select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);outline:none}
+.ng-field input:focus,.ng-field textarea:focus,.ng-field select:focus{border-color:var(--blue)}
+.ng-field textarea{resize:vertical;min-height:60px}
+.ng-members-list{max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg3)}
+.ng-member{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;transition:background .15s}
+.ng-member:hover{background:var(--bg)}
+.ng-member input[type=checkbox]{accent-color:var(--blue);width:15px;height:15px}
+.ng-member-name{font-size:13px}
+.ng-member-email{font-size:11px;color:var(--text2)}
+.ng-toggle{display:flex;align-items:center;gap:10px}
+.ng-toggle input[type=checkbox]{accent-color:var(--blue);width:16px;height:16px}
+.ng-foot{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;align-items:center}
+.ng-err{color:var(--red);font-size:12px;flex:1}
 
 /* Activity Panel */
 #activity-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
@@ -217,6 +237,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     </div>
     <div id="sb-tables"></div>
     <div class="sb-section">ניהול</div>
+    <div class="sb-item" id="sb-newgroup-item" onclick="openNewGroupModal()">➕ קבוצה חדשה</div>
     <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
     <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
@@ -313,6 +334,49 @@ tr:hover td{background:rgba(33,38,45,.8)}
       <div id="em-err" class="em-err"></div>
       <button class="btn-outline" onclick="closeEdit()">ביטול</button>
       <button class="btn-sm" onclick="saveEdit()">שמור</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Group Modal -->
+<div id="newgroup-modal" onclick="if(event.target===this)closeNewGroupModal()">
+  <div class="ng-card">
+    <div class="ng-head">
+      <h2>➕ יצירת קבוצה חדשה</h2>
+      <button class="em-close" onclick="closeNewGroupModal()">✕</button>
+    </div>
+    <div class="ng-body">
+      <div class="ng-field">
+        <label>שם הקבוצה *</label>
+        <input id="ng-name" placeholder="שם הקבוצה" dir="rtl"/>
+      </div>
+      <div class="ng-field">
+        <label>תיאור</label>
+        <textarea id="ng-desc" placeholder="תיאור אופציונלי" dir="rtl"></textarea>
+      </div>
+      <div class="ng-field">
+        <label>הרשאת שליחה</label>
+        <select id="ng-perm">
+          <option value="all">כולם יכולים לשלוח</option>
+          <option value="admin">מנהלים בלבד</option>
+        </select>
+      </div>
+      <div class="ng-field">
+        <div class="ng-toggle">
+          <input type="checkbox" id="ng-broadcast"/>
+          <label for="ng-broadcast" style="margin:0;cursor:pointer">קבוצת שידור (Broadcast) — שליחה חד-כיוונית</label>
+        </div>
+      </div>
+      <div class="ng-field">
+        <label>בחר חברים <span id="ng-sel-count" style="color:var(--blue-light)"></span></label>
+        <input id="ng-member-search" placeholder="סנן לפי שם..." oninput="filterNgMembers()" style="margin-bottom:8px"/>
+        <div class="ng-members-list" id="ng-members-list"><div class="loader" style="padding:16px">טוען משתמשים...</div></div>
+      </div>
+    </div>
+    <div class="ng-foot">
+      <span class="ng-err" id="ng-err"></span>
+      <button class="btn-outline" onclick="closeNewGroupModal()">ביטול</button>
+      <button class="btn-sm" onclick="createGroup()" id="ng-submit">צור קבוצה</button>
     </div>
   </div>
 </div>
@@ -637,6 +701,78 @@ async function deleteRow(table, pkVal) {
       if (cnt) cnt.textContent = Math.max(0, parseInt(cnt.textContent)-1);
     }
   } catch(e) { alert(e.message); }
+}
+
+// ── New Group Modal ───────────────────────────────────────────────
+let ngAllUsers = [];
+
+async function openNewGroupModal() {
+  document.getElementById('ng-name').value    = '';
+  document.getElementById('ng-desc').value    = '';
+  document.getElementById('ng-err').textContent = '';
+  document.getElementById('ng-member-search').value = '';
+  document.getElementById('ng-broadcast').checked = false;
+  document.getElementById('ng-perm').value = 'all';
+  document.getElementById('newgroup-modal').style.display = 'flex';
+  document.getElementById('ng-members-list').innerHTML = '<div class="loader" style="padding:16px">טוען...</div>';
+  document.getElementById('ng-sel-count').textContent = '';
+  try {
+    const res  = await fetch(`${API}/api/admin/users`, { headers: { Authorization: `Bearer ${token}` } });
+    ngAllUsers = await res.json();
+    renderNgMembers();
+  } catch { document.getElementById('ng-members-list').innerHTML = '<div class="loader" style="color:var(--red);padding:16px">שגיאה בטעינת משתמשים</div>'; }
+}
+
+function closeNewGroupModal() {
+  document.getElementById('newgroup-modal').style.display = 'none';
+}
+
+function renderNgMembers() {
+  const q    = document.getElementById('ng-member-search').value.toLowerCase();
+  const list = document.getElementById('ng-members-list');
+  const filtered = ngAllUsers.filter(u =>
+    !q || (u.name||'').toLowerCase().includes(q) || (u.email||'').toLowerCase().includes(q));
+  if (!filtered.length) { list.innerHTML = '<div class="loader" style="padding:12px">אין תוצאות</div>'; return; }
+  list.innerHTML = filtered.map(u => `
+    <label class="ng-member">
+      <input type="checkbox" class="ng-cb" value="${u.id}" onchange="updateNgCount()"/>
+      <div>
+        <div class="ng-member-name">${escHtml(u.name||'—')}</div>
+        <div class="ng-member-email">${escHtml(u.email||'')}</div>
+      </div>
+    </label>`).join('');
+}
+
+function filterNgMembers() { renderNgMembers(); }
+
+function updateNgCount() {
+  const n = document.querySelectorAll('.ng-cb:checked').length;
+  document.getElementById('ng-sel-count').textContent = n ? `(${n} נבחרו)` : '';
+}
+
+async function createGroup() {
+  const name        = document.getElementById('ng-name').value.trim();
+  const description = document.getElementById('ng-desc').value.trim();
+  const sendPerm    = document.getElementById('ng-perm').value;
+  const isBroadcast = document.getElementById('ng-broadcast').checked;
+  const memberIds   = [...document.querySelectorAll('.ng-cb:checked')].map(el => el.value);
+  const errEl       = document.getElementById('ng-err');
+  errEl.textContent = '';
+  if (!name) { errEl.textContent = 'נדרש שם קבוצה'; return; }
+  const btn = document.getElementById('ng-submit');
+  btn.disabled = true; btn.textContent = 'יוצר...';
+  try {
+    const res  = await fetch(`${API}/api/admin/groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name, description, memberIds, isBroadcast, sendPermission: sendPerm })
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'שגיאה'; return; }
+    closeNewGroupModal();
+    alert(`✅ הקבוצה "${data.name}" נוצרה עם ${data.memberCount} חברים`);
+  } catch (e) { errEl.textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'צור קבוצה'; }
 }
 
 // ── Activity Panel ────────────────────────────────────────────────
