@@ -1571,6 +1571,7 @@ app.get('/api/admin/activity', auth, async (req, res) => {
   const offset = parseInt(req.query.offset || 0);
   const userId = req.query.userId || null;
   const action = req.query.action || null;
+  const search = req.query.search || null;
   try {
     const pool = await getPool();
     const req2 = pool.request()
@@ -1578,6 +1579,7 @@ app.get('/api/admin/activity', auth, async (req, res) => {
       .input('offset', sql.Int, offset);
     if (userId) req2.input('userId', sql.UniqueIdentifier, userId);
     if (action) req2.input('action', sql.NVarChar, action);
+    if (search) req2.input('search', sql.NVarChar, `%${search}%`);
     const result = await req2.query(`
       SELECT a.id, a.action, a.details, a.ip, a.created_at,
              u.name AS user_name, u.email AS user_email
@@ -1586,6 +1588,7 @@ app.get('/api/admin/activity', auth, async (req, res) => {
       WHERE 1=1
         ${userId ? 'AND a.user_id = @userId' : ''}
         ${action ? 'AND a.action  = @action'  : ''}
+        ${search ? 'AND (u.name LIKE @search OR u.email LIKE @search)' : ''}
       ORDER BY a.created_at DESC
       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
     `);

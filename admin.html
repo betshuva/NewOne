@@ -116,6 +116,48 @@ tr:hover td{background:rgba(33,38,45,.8)}
 .loader{color:var(--text2);padding:40px;text-align:center}
 .empty{color:var(--text2);padding:40px;text-align:center;font-size:14px}
 
+/* Activity Panel */
+#activity-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+.act-filters{display:flex;gap:10px;padding:12px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;flex-shrink:0}
+.act-filters input,.act-filters select{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);outline:none}
+.act-filters input:focus,.act-filters select:focus{border-color:var(--blue)}
+.act-filters input{width:180px}
+.act-live{display:flex;align-items:center;gap:6px;margin-right:auto;font-size:12px;color:var(--text2)}
+.act-live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.act-feed{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:8px}
+.act-item{display:flex;gap:12px;align-items:flex-start;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;transition:border-color .15s}
+.act-item:hover{border-color:var(--blue-dark)}
+.act-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.act-body{flex:1;min-width:0}
+.act-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.act-user{font-weight:700;font-size:13px;color:var(--text)}
+.act-action{font-size:12px;padding:2px 8px;border-radius:6px;font-weight:600}
+.act-time{font-size:11px;color:var(--text2);margin-right:auto}
+.act-ip{font-size:10px;color:var(--text2);font-family:monospace}
+.act-detail{font-size:12px;color:var(--text2);margin-top:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.act-thumb{width:48px;height:48px;border-radius:6px;object-fit:cover;cursor:pointer;border:1px solid var(--border);margin-top:6px}
+.act-thumb:hover{opacity:.8}
+/* action color classes */
+.ac-connect{background:rgba(63,185,80,.15);color:var(--green)}
+.ai-connect{background:rgba(63,185,80,.15)}
+.ac-disconnect{background:rgba(139,148,158,.12);color:var(--text2)}
+.ai-disconnect{background:rgba(139,148,158,.12)}
+.ac-login{background:rgba(27,108,168,.2);color:var(--blue-light)}
+.ai-login{background:rgba(27,108,168,.2)}
+.ac-message{background:rgba(63,185,80,.12);color:#7ee787}
+.ai-message{background:rgba(63,185,80,.12)}
+.ac-file{background:rgba(210,153,34,.15);color:var(--orange)}
+.ai-file{background:rgba(210,153,34,.15)}
+.ac-block{background:rgba(248,81,73,.15);color:var(--red)}
+.ai-block{background:rgba(248,81,73,.15)}
+.ac-admin{background:rgba(188,140,255,.15);color:#d2a8ff}
+.ai-admin{background:rgba(188,140,255,.15)}
+.ac-group{background:rgba(58,143,204,.15);color:var(--blue-light)}
+.ai-group{background:rgba(58,143,204,.15)}
+.ac-other{background:rgba(139,148,158,.1);color:var(--text2)}
+.ai-other{background:rgba(139,148,158,.1)}
+
 /* Scan Panel */
 #scan-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
 .scan-tabs{display:flex;gap:0;padding:14px 20px 0;border-bottom:1px solid var(--border);flex-shrink:0}
@@ -175,6 +217,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     </div>
     <div id="sb-tables"></div>
     <div class="sb-section">ניהול</div>
+    <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
     <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
     <div class="sb-footer">
@@ -186,6 +229,34 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <!-- Main -->
   <div class="main" id="main-area">
     <div class="loader">בחר טבלה מהתפריט</div>
+  </div>
+
+  <!-- Activity Panel -->
+  <div id="activity-panel">
+    <div class="main-head">
+      <h1>📊 יומן פעילות</h1>
+      <div class="act-live"><span class="act-live-dot"></span> עדכון חי</div>
+      <button class="btn-sm" onclick="loadActivity()">🔄 רענן</button>
+    </div>
+    <div class="act-filters">
+      <input id="act-search" placeholder="חיפוש משתמש..." oninput="loadActivity()"/>
+      <select id="act-type" onchange="loadActivity()">
+        <option value="">כל הפעולות</option>
+        <option value="send_message">💬 הודעות</option>
+        <option value="send_file">🖼️ קבצים/תמונות</option>
+        <option value="upload_file">📤 העלאות</option>
+        <option value="google_login,login,otp_login">🔐 כניסות</option>
+        <option value="google_register,register">🆕 הרשמות</option>
+        <option value="connect,disconnect">🔌 חיבורים</option>
+        <option value="blocked_upload,blocked_upload_delayed">⛔ חסימות</option>
+        <option value="block_user,unblock_user">🚫 חסימת משתמשים</option>
+        <option value="create_group,leave_group,send_group_message">👥 קבוצות</option>
+        <option value="admin_edit,admin_delete">🛡️ פעולות אדמין</option>
+      </select>
+      <span id="act-total" style="font-size:12px;color:var(--text2)"></span>
+    </div>
+    <div class="act-feed" id="act-feed"><div class="loader">טוען...</div></div>
+    <div class="pagination" id="act-pagination"></div>
   </div>
 
   <!-- Scan Panel -->
@@ -402,7 +473,10 @@ async function loadTable(name, offset=0) {
   const sbEl = document.getElementById('sb-'+name);
   if (sbEl) sbEl.classList.add('active');
 
-  document.getElementById('perm-panel').style.display = 'none';
+  clearInterval(actTimer);
+  document.getElementById('perm-panel').style.display     = 'none';
+  document.getElementById('activity-panel').style.display = 'none';
+  document.getElementById('scan-panel').style.display     = 'none';
   const main = document.getElementById('main-area');
   main.style.display = 'flex';
   main.innerHTML = '<div class="loader">טוען...</div>';
@@ -564,12 +638,148 @@ async function deleteRow(table, pkVal) {
   } catch(e) { alert(e.message); }
 }
 
+// ── Activity Panel ────────────────────────────────────────────────
+let actOffset = 0;
+let actTimer  = null;
+const ACT_PAGE = 50;
+
+const ACT_META = {
+  connect:                { icon:'🔌', label:'חיבור',           cls:'connect' },
+  disconnect:             { icon:'🔌', label:'ניתוק',           cls:'disconnect' },
+  login:                  { icon:'🔐', label:'כניסה',           cls:'login' },
+  google_login:           { icon:'🔐', label:'כניסה Google',    cls:'login' },
+  otp_login:              { icon:'🔐', label:'כניסה OTP',       cls:'login' },
+  register:               { icon:'🆕', label:'הרשמה',           cls:'login' },
+  google_register:        { icon:'🆕', label:'הרשמה Google',    cls:'login' },
+  send_message:           { icon:'💬', label:'הודעה',           cls:'message' },
+  send_file:              { icon:'🖼️', label:'קובץ/תמונה',     cls:'file' },
+  send_group_message:     { icon:'👥', label:'הודעת קבוצה',     cls:'group' },
+  upload_file:            { icon:'📤', label:'העלאת קובץ',      cls:'file' },
+  upload_pending:         { icon:'⏳', label:'ממתין לסריקה',    cls:'file' },
+  blocked_upload:         { icon:'⛔', label:'חסום (מיידי)',    cls:'block' },
+  blocked_upload_delayed: { icon:'⛔', label:'חסום (בדיעבד)',   cls:'block' },
+  send_file_delayed:      { icon:'✅', label:'אושר בדיעבד',     cls:'file' },
+  block_user:             { icon:'🚫', label:'חסימת משתמש',     cls:'block' },
+  unblock_user:           { icon:'✔️', label:'ביטול חסימה',    cls:'connect' },
+  update_profile:         { icon:'✏️', label:'עדכון פרופיל',   cls:'other' },
+  create_group:           { icon:'👥', label:'יצירת קבוצה',     cls:'group' },
+  leave_group:            { icon:'🚪', label:'יציאה מקבוצה',    cls:'group' },
+  link_phone:             { icon:'📱', label:'קישור טלפון',     cls:'other' },
+  admin_edit:             { icon:'🛡️', label:'עריכת אדמין',    cls:'admin' },
+  admin_delete:           { icon:'🛡️', label:'מחיקת אדמין',    cls:'admin' },
+};
+
+function actClass(action) {
+  return (ACT_META[action] || { cls:'other' }).cls;
+}
+
+function renderActItem(a) {
+  const meta = ACT_META[a.action] || { icon:'📋', label: a.action, cls:'other' };
+  const cls  = meta.cls;
+  let details = {};
+  try { details = JSON.parse(a.details || '{}'); } catch {}
+
+  // Build detail line
+  let detailHtml = '';
+  if (details.to)          detailHtml += `<span>➜ <strong>${escHtml(details.to)}</strong></span>`;
+  if (details.email)       detailHtml += `<span>${escHtml(details.email)}</span>`;
+  if (details.name)        detailHtml += `<span>${escHtml(details.name)}</span>`;
+  if (details.fileName)    detailHtml += `<span>📎 ${escHtml(details.fileName)}</span>`;
+  if (details.fileSize)    detailHtml += `<span>${(details.fileSize/1024).toFixed(1)} KB</span>`;
+  if (details.reason)      detailHtml += `<span style="color:var(--red)">⚠️ ${escHtml(details.reason.slice(0,80))}</span>`;
+  if (details.groupId)     detailHtml += `<span>קבוצה: ${escHtml(String(details.groupId).slice(0,8))}…</span>`;
+  if (details.table)       detailHtml += `<span>טבלה: ${escHtml(details.table)}</span>`;
+  if (details.phone)       detailHtml += `<span>📱 ${escHtml(details.phone)}</span>`;
+
+  // Image thumb
+  let thumbHtml = '';
+  if (details.fileUrl && details.fileType === 'image') {
+    thumbHtml = `<br><img class="act-thumb" src="${escHtml(details.fileUrl)}"
+      loading="lazy" onclick="openLightbox('${escHtml(details.fileUrl)}','${escHtml(details.fileName||'')}')"
+      onerror="this.style.display='none'"/>`;
+  }
+
+  return `<div class="act-item">
+    <div class="act-icon ai-${cls}">${meta.icon}</div>
+    <div class="act-body">
+      <div class="act-top">
+        <span class="act-user">${escHtml(a.user_name || 'מערכת')}</span>
+        <span class="act-action ac-${cls}">${meta.label}</span>
+        <span class="act-time">${fmtDate(a.created_at)}</span>
+        ${a.ip ? `<span class="act-ip">${escHtml(a.ip.replace('::ffff:',''))}</span>` : ''}
+      </div>
+      ${detailHtml || thumbHtml ? `<div class="act-detail">${detailHtml}${thumbHtml}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+async function loadActivity(offset = 0) {
+  actOffset = offset;
+  const search = document.getElementById('act-search')?.value.trim() || '';
+  const type   = document.getElementById('act-type')?.value || '';
+  const feed   = document.getElementById('act-feed');
+  const pag    = document.getElementById('act-pagination');
+  if (!feed) return;
+  if (offset === 0) feed.innerHTML = '<div class="loader">טוען...</div>';
+
+  try {
+    // Build URL — support comma-separated action types
+    const actions = type ? type.split(',') : [];
+    const params  = new URLSearchParams({ limit: ACT_PAGE, offset });
+    if (search) params.set('search', search);
+    // Fetch each action type separately if multiple, then merge
+    let rows = [];
+    if (actions.length > 1) {
+      const results = await Promise.all(actions.map(a =>
+        fetch(`${API}/api/admin/activity?limit=${ACT_PAGE}&offset=0&action=${a}`,
+          { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+      ));
+      rows = results.flat().sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, ACT_PAGE);
+    } else {
+      const url = `${API}/api/admin/activity?${params}${type ? `&action=${type}` : ''}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      rows = await res.json();
+    }
+
+    document.getElementById('act-total').textContent = rows.length ? `${rows.length}+ רשומות` : '';
+
+    if (!rows.length) {
+      feed.innerHTML = '<div class="empty">אין פעילות</div>';
+      if (pag) pag.innerHTML = '';
+      return;
+    }
+    feed.innerHTML = rows.map(renderActItem).join('');
+
+    if (pag) pag.innerHTML = `
+      <button class="pag-btn" onclick="loadActivity(${Math.max(0,offset-ACT_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
+      <span>רשומות ${offset+1}–${offset+rows.length}</span>
+      <button class="pag-btn" onclick="loadActivity(${offset+ACT_PAGE})" ${rows.length<ACT_PAGE?'disabled':''}>הבא ▶</button>`;
+  } catch(e) {
+    if (feed) feed.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`;
+  }
+}
+
+function showActivityPanel() {
+  document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('sb-activity-item').classList.add('active');
+  document.getElementById('main-area').style.display   = 'none';
+  document.getElementById('perm-panel').style.display  = 'none';
+  document.getElementById('scan-panel').style.display  = 'none';
+  document.getElementById('activity-panel').style.display = 'flex';
+  loadActivity(0);
+  // עדכון אוטומטי כל 15 שניות
+  clearInterval(actTimer);
+  actTimer = setInterval(() => { if (actOffset === 0) loadActivity(0); }, 15000);
+}
+
 // ── Permissions Panel ─────────────────────────────────────────────
 function showPermPanel() {
+  clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-perm-item').classList.add('active');
-  document.getElementById('main-area').style.display  = 'none';
-  document.getElementById('perm-panel').style.display = 'flex';
+  document.getElementById('main-area').style.display     = 'none';
+  document.getElementById('activity-panel').style.display = 'none';
+  document.getElementById('perm-panel').style.display    = 'flex';
   loadPermPanel();
 }
 
@@ -630,11 +840,13 @@ let scanOffset    = 0;
 const SCAN_PAGE   = 100;
 
 function showScanPanel() {
+  clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-scan-item').classList.add('active');
-  document.getElementById('main-area').style.display  = 'none';
-  document.getElementById('perm-panel').style.display = 'none';
-  document.getElementById('scan-panel').style.display = 'flex';
+  document.getElementById('main-area').style.display     = 'none';
+  document.getElementById('perm-panel').style.display    = 'none';
+  document.getElementById('activity-panel').style.display = 'none';
+  document.getElementById('scan-panel').style.display    = 'flex';
   loadScanPanel(activeScanTab, 0);
 }
 
