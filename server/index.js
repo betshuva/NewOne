@@ -2090,6 +2090,10 @@ app.post('/api/admin/groups', adminAuth, async (req, res) => {
 app.get('/api/admin/vision', adminAuth, async (req, res) => {
   const limit  = Math.min(parseInt(req.query.limit || 50), 200);
   const offset = parseInt(req.query.offset || 0);
+  const filter = req.query.filter || 'all';
+  const actionFilter = filter === 'blocked'  ? `AND a.action IN ('blocked_upload','blocked_upload_delayed')`
+                     : filter === 'approved' ? `AND a.action = 'upload_file'`
+                     : `AND a.action IN ('upload_file','blocked_upload','blocked_upload_delayed')`;
   try {
     const pool = await getPool();
     const result = await pool.request()
@@ -2100,7 +2104,7 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
                u.name AS user_name, u.email AS user_email
         FROM activity_log a
         LEFT JOIN users u ON u.id = a.user_id
-        WHERE a.action IN ('upload_file','blocked_upload','blocked_upload_delayed')
+        WHERE 1=1 ${actionFilter}
         ORDER BY a.created_at DESC
         OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
       `);
