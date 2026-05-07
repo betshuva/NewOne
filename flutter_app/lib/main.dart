@@ -3163,12 +3163,14 @@ class _GroupsScreenState extends State<GroupsScreen> {
                   style: const TextStyle(fontSize: 11, color: Colors.white70)),
           ],
         ),
-        actions: [IconButton(icon: const Icon(Icons.search), onPressed: () {})],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _createGroup,
-        backgroundColor: kPrimary,
-        child: const Icon(Icons.group_add, color: Colors.white),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.group_add),
+            tooltip: 'קבוצה חדשה',
+            onPressed: _createGroup,
+          ),
+          IconButton(icon: const Icon(Icons.search), onPressed: () {}),
+        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: kPrimary))
