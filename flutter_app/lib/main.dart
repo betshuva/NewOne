@@ -376,6 +376,45 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   bool    _otpSent  = false;
   bool    _loading  = false;
   String? _error;
+  final _googleSignIn = GoogleSignIn(serverClientId: kGoogleWebClientId);
+
+  Future<void> _signInWithGoogle() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      await _googleSignIn.signOut();
+      final account = await _googleSignIn.signIn();
+      if (account == null) { setState(() { _loading = false; }); return; }
+      final auth    = await account.authentication;
+      final idToken = auth.idToken;
+      if (idToken == null) throw Exception('לא התקבל טוקן מגוגל');
+      final res  = await http.post(
+        Uri.parse('$kApi/auth/google'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'idToken': idToken}),
+      ).timeout(const Duration(seconds: 30));
+      final data = jsonDecode(res.body);
+      if (res.statusCode != 200) {
+        setState(() { _error = data['error'] ?? 'שגיאה'; _loading = false; }); return;
+      }
+      final token   = data['token'] as String;
+      final user    = data['user'] as Map<String, dynamic>?;
+      final hasPhone = user != null &&
+          (user['phone'] as String?) != null &&
+          (user['phone'] as String).isNotEmpty;
+      if (!mounted) return;
+      if (!hasPhone) {
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => GooglePhoneSetupScreen(token: token)));
+      } else {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('token', token);
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => MainShell(token: token)));
+      }
+    } catch (e) {
+      setState(() { _error = 'שגיאה בכניסה עם גוגל'; _loading = false; });
+    }
+  }
 
   @override
   void dispose() {
@@ -535,6 +574,25 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                 ),
               ] else ...[
                 const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _loading ? null : _signInWithGoogle,
+                    icon: Image.network(
+                      'https://www.google.com/favicon.ico',
+                      width: 18, height: 18,
+                      errorBuilder: (_, __, ___) => const Icon(Icons.g_mobiledata, size: 22),
+                    ),
+                    label: const Text('המשך עם Google',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: kTextDark)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: kBorder, width: 1.5),
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
                 TextButton(
                   onPressed: () => Navigator.push(
                     context,
@@ -1488,6 +1546,7 @@ class _MainShellState extends State<MainShell> {
   IO.Socket? _socket;
   Map<String, dynamic>? _me;
   List<Map<String, dynamic>> _users = [];
+  String? _adminPerm;
 
   @override
   void initState() {
@@ -1496,6 +1555,20 @@ class _MainShellState extends State<MainShell> {
     _connectSocket();
     _loadUsers();
     _registerFcmToken();
+    _loadAdminPerm();
+  }
+
+  Future<void> _loadAdminPerm() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/admin/db'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        final data = jsonDecode(res.body);
+        setState(() => _adminPerm = data['permission'] as String?);
+      }
+    } catch (_) {}
   }
 
   Future<void> _registerFcmToken() async {
@@ -1585,7 +1658,7 @@ class _MainShellState extends State<MainShell> {
         socket: _socket,
       ),
       GroupsScreen(token: widget.token, me: _me, socket: _socket),
-      SettingsScreen(me: _me, token: widget.token, onLogout: _logout),
+      SettingsScreen(me: _me, token: widget.token, onLogout: _logout, adminPerm: _adminPerm),
     ];
 
     return Scaffold(
@@ -4069,7 +4142,8 @@ class SettingsScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
   final String token;
   final VoidCallback onLogout;
-  const SettingsScreen({super.key, required this.me, required this.token, required this.onLogout});
+  final String? adminPerm;
+  const SettingsScreen({super.key, required this.me, required this.token, required this.onLogout, this.adminPerm});
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -4240,7 +4314,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 8),
+
+          // Admin Panel (visible only to admins)
+          if (widget.adminPerm != null) ...[
+            const _SectionHeader(title: 'ניהול'),
+            Container(
+              color: kCard,
+              child: ListTile(
+                leading: const Icon(Icons.admin_panel_settings, color: kPrimary),
+                title: const Text('לוח ניהול'),
+                subtitle: Text(widget.adminPerm == 'edit' ? 'הרשאת עריכה' : 'הרשאת צפייה',
+                    style: const TextStyle(fontSize: 12)),
+                trailing: const Icon(Icons.chevron_left, color: kSubtext),
+                onTap: () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => AdminScreen(token: widget.token, perm: widget.adminPerm!))),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+
+          const SizedBox(height: 8),
 
           // Logout
           Padding(
@@ -4842,6 +4936,515 @@ class _InfoTile extends StatelessWidget {
           ]),
         ),
       ]),
+    );
+  }
+}
+
+// ── Admin Screen ──────────────────────────────────────────────────
+class AdminScreen extends StatefulWidget {
+  final String token;
+  final String perm;
+  const AdminScreen({super.key, required this.token, required this.perm});
+  @override
+  State<AdminScreen> createState() => _AdminScreenState();
+}
+
+class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabs;
+  List<Map<String, dynamic>> _tables = [];
+  bool _loadingTables = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs = TabController(length: 2, vsync: this);
+    _loadTables();
+  }
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadTables() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/admin/db'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        setState(() {
+          _tables = (data['tables'] as List).cast<Map<String, dynamic>>();
+          _loadingTables = false;
+        });
+      } else {
+        setState(() => _loadingTables = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingTables = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(
+        title: const Text('לוח ניהול'),
+        bottom: TabBar(
+          controller: _tabs,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white70,
+          indicatorColor: Colors.white,
+          tabs: const [
+            Tab(icon: Icon(Icons.table_chart_outlined), text: 'טבלאות'),
+            Tab(icon: Icon(Icons.manage_accounts_outlined), text: 'הרשאות'),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabs,
+        children: [
+          _TablesView(token: widget.token, perm: widget.perm,
+              tables: _tables, loading: _loadingTables, onRefresh: _loadTables),
+          _PermissionsView(token: widget.token, perm: widget.perm),
+        ],
+      ),
+    );
+  }
+}
+
+class _TablesView extends StatelessWidget {
+  final String token;
+  final String perm;
+  final List<Map<String, dynamic>> tables;
+  final bool loading;
+  final VoidCallback onRefresh;
+  const _TablesView({required this.token, required this.perm,
+      required this.tables, required this.loading, required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) return const Center(child: CircularProgressIndicator());
+    if (tables.isEmpty) return const Center(child: Text('שגיאה בטעינת הנתונים'));
+    return RefreshIndicator(
+      onRefresh: () async => onRefresh(),
+      child: ListView.separated(
+        padding: const EdgeInsets.all(12),
+        itemCount: tables.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 8),
+        itemBuilder: (ctx, i) {
+          final t = tables[i];
+          return Card(
+            elevation: 0,
+            color: kCard,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor: kPrimaryMid.withOpacity(0.15),
+                child: Text('${t['count']}',
+                    style: const TextStyle(color: kPrimary, fontWeight: FontWeight.bold, fontSize: 13)),
+              ),
+              title: Text(t['label'] as String,
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(t['table'] as String,
+                  style: const TextStyle(fontSize: 11, color: kSubtext)),
+              trailing: const Icon(Icons.chevron_left, color: kSubtext),
+              onTap: () => Navigator.push(ctx, MaterialPageRoute(
+                builder: (_) => _TableDetailScreen(
+                    token: token, perm: perm,
+                    table: t['table'] as String,
+                    label: t['label'] as String))),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _TableDetailScreen extends StatefulWidget {
+  final String token;
+  final String perm;
+  final String table;
+  final String label;
+  const _TableDetailScreen({required this.token, required this.perm,
+      required this.table, required this.label});
+  @override
+  State<_TableDetailScreen> createState() => _TableDetailScreenState();
+}
+
+class _TableDetailScreenState extends State<_TableDetailScreen> {
+  List<Map<String, dynamic>> _rows = [];
+  bool _loading = true;
+  int  _total   = 0;
+  final _searchCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load({String search = ''}) async {
+    setState(() => _loading = true);
+    try {
+      final uri = Uri.parse('$kApi/admin/db/${widget.table}')
+          .replace(queryParameters: {'search': search, 'limit': '100'});
+      final res = await http.get(uri, headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        setState(() {
+          _rows  = (data['rows'] as List).cast<Map<String, dynamic>>();
+          _total = data['total'] as int;
+          _loading = false;
+        });
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _deleteRow(String id) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('מחיקת רשומה'),
+        content: const Text('האם למחוק את הרשומה לצמיתות?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('מחק', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      final res = await http.delete(
+        Uri.parse('$kApi/admin/db/${widget.table}/$id'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        setState(() => _rows.removeWhere((r) => r.values.first.toString() == id));
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('נמחק בהצלחה')));
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBg,
+      appBar: AppBar(
+        title: Text(widget.label),
+        actions: [
+          if (_total > 0)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Center(child: Text('$_total רשומות',
+                  style: const TextStyle(fontSize: 13, color: Colors.white70))),
+            ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: TextField(
+              controller: _searchCtrl,
+              textDirection: TextDirection.rtl,
+              decoration: InputDecoration(
+                hintText: 'חיפוש...',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchCtrl.text.isNotEmpty
+                    ? IconButton(icon: const Icon(Icons.clear),
+                        onPressed: () { _searchCtrl.clear(); _load(); })
+                    : null,
+                filled: true,
+                fillColor: kCard,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none),
+              ),
+              onSubmitted: (v) => _load(search: v),
+            ),
+          ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _rows.isEmpty
+                    ? const Center(child: Text('אין רשומות'))
+                    : ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        itemCount: _rows.length,
+                        itemBuilder: (ctx, i) {
+                          final row = _rows[i];
+                          final firstVal = row.values.first?.toString() ?? '';
+                          return Card(
+                            elevation: 0,
+                            color: kCard,
+                            margin: const EdgeInsets.only(bottom: 8),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
+                            child: ExpansionTile(
+                              title: Text(
+                                row.values.take(2).map((v) => v?.toString() ?? '—').join(' · '),
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      ...row.entries.map((e) => Padding(
+                                        padding: const EdgeInsets.only(bottom: 6),
+                                        child: Row(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            SizedBox(
+                                              width: 110,
+                                              child: Text(e.key,
+                                                  style: const TextStyle(
+                                                      color: kSubtext, fontSize: 11)),
+                                            ),
+                                            Expanded(
+                                              child: Text(e.value?.toString() ?? '—',
+                                                  style: const TextStyle(fontSize: 12)),
+                                            ),
+                                          ],
+                                        ),
+                                      )),
+                                      if (widget.perm == 'edit') ...[
+                                        const Divider(),
+                                        Align(
+                                          alignment: Alignment.centerLeft,
+                                          child: TextButton.icon(
+                                            onPressed: () => _deleteRow(firstVal),
+                                            icon: const Icon(Icons.delete_outline,
+                                                color: Colors.red, size: 18),
+                                            label: const Text('מחק',
+                                                style: TextStyle(color: Colors.red)),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PermissionsView extends StatefulWidget {
+  final String token;
+  final String perm;
+  const _PermissionsView({required this.token, required this.perm});
+  @override
+  State<_PermissionsView> createState() => _PermissionsViewState();
+}
+
+class _PermissionsViewState extends State<_PermissionsView> {
+  List<Map<String, dynamic>> _perms = [];
+  bool _loading = true;
+  final _emailCtrl = TextEditingController();
+  String _newPerm = 'view';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _emailCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/admin/permissions'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        setState(() {
+          _perms = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+          _loading = false;
+        });
+      } else {
+        setState(() => _loading = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _grant() async {
+    final email = _emailCtrl.text.trim();
+    if (email.isEmpty) return;
+    try {
+      final res = await http.post(
+        Uri.parse('$kApi/admin/permissions'),
+        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'permission': _newPerm}),
+      );
+      if (res.statusCode == 200 && mounted) {
+        _emailCtrl.clear();
+        _load();
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('הרשאה עודכנה בהצלחה')));
+      } else if (mounted) {
+        final err = jsonDecode(res.body)['error'] ?? 'שגיאה';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _revoke(String userId, String name) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('הסרת הרשאה'),
+        content: Text('להסיר הרשאת אדמין מ-$name?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('הסר', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      final res = await http.delete(
+        Uri.parse('$kApi/admin/permissions/$userId'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        _load();
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('הרשאה הוסרה')));
+      }
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        if (widget.perm == 'edit') ...[
+          const _SectionHeader(title: 'הענקת הרשאה'),
+          Container(
+            color: kCard,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _emailCtrl,
+                  keyboardType: TextInputType.emailAddress,
+                  textDirection: TextDirection.ltr,
+                  decoration: const InputDecoration(
+                    labelText: 'אימייל משתמש',
+                    prefixIcon: Icon(Icons.email_outlined),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Text('הרשאה: ', style: TextStyle(color: kSubtext)),
+                    const SizedBox(width: 8),
+                    ChoiceChip(
+                      label: const Text('צפייה'),
+                      selected: _newPerm == 'view',
+                      onSelected: (_) => setState(() => _newPerm = 'view'),
+                    ),
+                    const SizedBox(width: 8),
+                    ChoiceChip(
+                      label: const Text('עריכה'),
+                      selected: _newPerm == 'edit',
+                      selectedColor: kPrimary.withOpacity(0.2),
+                      onSelected: (_) => setState(() => _newPerm = 'edit'),
+                    ),
+                    const Spacer(),
+                    ElevatedButton(onPressed: _grant, child: const Text('הענק')),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        const _SectionHeader(title: 'מנהלים קיימים'),
+        if (_loading)
+          const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+        else if (_perms.isEmpty)
+          const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('אין מנהלים')))
+        else
+          Container(
+            color: kCard,
+            child: Column(
+              children: _perms.asMap().entries.map((e) {
+                final p = e.value;
+                final isEdit = p['permission'] == 'edit';
+                return Column(
+                  children: [
+                    if (e.key > 0) const Divider(height: 1, indent: 16),
+                    ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: isEdit ? kPrimary.withOpacity(0.15) : kCard,
+                        child: Icon(isEdit ? Icons.edit : Icons.visibility,
+                            color: isEdit ? kPrimary : kSubtext, size: 18),
+                      ),
+                      title: Text(p['name'] as String? ?? '—'),
+                      subtitle: Text(p['email'] as String? ?? '—',
+                          style: const TextStyle(fontSize: 11)),
+                      trailing: widget.perm == 'edit'
+                          ? IconButton(
+                              icon: const Icon(Icons.remove_circle_outline, color: Colors.red),
+                              onPressed: () => _revoke(p['user_id'] as String, p['name'] as String? ?? ''))
+                          : Chip(
+                              label: Text(isEdit ? 'עריכה' : 'צפייה',
+                                  style: const TextStyle(fontSize: 11)),
+                              backgroundColor: isEdit
+                                  ? kPrimary.withOpacity(0.1)
+                                  : kBorder.withOpacity(0.3)),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
+          ),
+      ],
     );
   }
 }
