@@ -520,9 +520,15 @@ function auth(req, res, next) {
 }
 
 // ── Socket.io ────────────────────────────────────────────────────
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   try {
     socket.user = jwt.verify(socket.handshake.auth.token, JWT_SECRET);
+    // וידוא שהמשתמש עדיין קיים בבסיס הנתונים
+    const pool = await getPool();
+    const exists = await pool.request()
+      .input('id', sql.UniqueIdentifier, socket.user.id)
+      .query('SELECT 1 FROM users WHERE id = @id');
+    if (!exists.recordset.length) return next(new Error('user_not_found'));
     next();
   } catch {
     next(new Error('unauthorized'));
@@ -574,8 +580,13 @@ io.on('connection', async (socket) => {
         text, replyToId: replyToId || null, createdAt: row.created_at,
         fileUrl, fileName, fileType,
       });
+      // שליפת שם הנמען לרישום קריא בפעילות
+      const recip = await pool.request()
+        .input('id', sql.UniqueIdentifier, toUserId)
+        .query('SELECT name FROM users WHERE id=@id');
+      const toName = recip.recordset[0]?.name || toUserId;
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_message',
-        { toUserId, messageId: row.id, type: fileType || 'text' });
+        { to: toName, toUserId, messageId: row.id, type: fileType || 'text', fileName: fileName || null });
       // Push only if recipient is offline
       if (!onlineUsers.has(toUserId)) {
         const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
