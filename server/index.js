@@ -2112,18 +2112,6 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
                fileUrl: d.fileUrl, reason: d.reason,
                safeSearch: d.safeSearch || null, labels: d.labels || null };
     });
-    // For images without saved Vision results — re-scan on demand (up to 5)
-    const toScan = rows.filter(r => r.fileType === 'image' && !r.safeSearch && r.fileUrl).slice(0, 5);
-    await Promise.all(toScan.map(async r => {
-      try {
-        const imgRes = await fetch(r.fileUrl);
-        if (!imgRes.ok) return;
-        const buf = Buffer.from(await imgRes.arrayBuffer());
-        const sr  = await scanImage(buf);
-        r.safeSearch = sr.safeSearch || null;
-        r.labels     = sr.labels     || null;
-      } catch {}
-    }));
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

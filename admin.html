@@ -742,9 +742,43 @@ async function deleteRow(table, pkVal) {
 
 // ── Vision Panel ──────────────────────────────────────────────────
 const VISION_PAGE = 30;
-const FEMALE_LABELS_JS = ['woman','women','girl','female','lady','ladies','bride','actress','child','baby','infant','kid'];
+const FEMALE_LABELS_JS = ['woman','women','girl','female','lady','ladies','bride','actress','child','baby','infant','kid','toddler','boy','person','human','sketch','drawing','illustration','line art','cartoon','anime'];
 const BAD_SS = ['POSSIBLE','LIKELY','VERY_LIKELY'];
 const SS_HE = { adult:'בוגרים', racy:'מגרה', violence:'אלימות', spoof:'זיוף', medical:'רפואי' };
+
+const LABEL_HE = {
+  // אנשים
+  'woman':'אישה', 'women':'נשים', 'girl':'ילדה', 'female':'נקבה',
+  'lady':'גברת', 'ladies':'גבירות', 'bride':'כלה', 'actress':'שחקנית',
+  'child':'ילד', 'baby':'תינוק', 'infant':'פעוט', 'kid':'ילד',
+  'toddler':'פעוט', 'boy':'ילד', 'person':'אדם', 'human':'בן אדם',
+  'man':'גבר', 'male':'זכר', 'face':'פנים', 'smile':'חיוך',
+  'people':'אנשים', 'crowd':'קהל', 'portrait':'דיוקן',
+  // גוף
+  'shoulder':'כתף', 'neck':'צוואר', 'elbow':'מרפק', 'waist':'מותן',
+  'thorax':'חזה', 'chest':'חזה', 'skin':'עור', 'arm':'זרוע',
+  // בגדים
+  'sleeve':'שרוול', 'fashion':'אופנה', 'textile':'בד', 'clothing':'בגד',
+  'dress':'שמלה', 'shirt':'חולצה', 'hairstyle':'תסרוקת', 'hair':'שיער',
+  'black hair':'שיער שחור', 'one-piece garment':'שמלה חד-חלקית',
+  'pink':'ורוד', 'white':'לבן', 'standing':'עומד',
+  // ציורים
+  'sketch':'סקיצה', 'drawing':'ציור', 'illustration':'איור',
+  'line art':'ציור קווים', 'cartoon':'קריקטורה', 'anime':'אנימה',
+  'gesture':'תנועת גוף',
+  // כלי רכב
+  'van':'ואן', 'minibus':'מיניבוס', 'car':'מכונית', 'vehicle':'רכב',
+  'minivan':'מיניוון', 'compact van':'ואן קטן', 'car door':'דלת רכב',
+  'commercial vehicle':'רכב מסחרי', 'microvan':'מיקרוואן',
+  'car seat':'מושב רכב', 'light commercial vehicle':'רכב מסחרי קל',
+  // כללי
+  'machine':'מכונה', 'home appliance':'מכשיר ביתי',
+  'font':'גופן', 'symbol':'סמל', 'number':'מספר', 'logo':'לוגו', 'sign':'שלט',
+};
+
+function labelHe(name) {
+  return LABEL_HE[name.toLowerCase()] || name;
+}
 
 function ssClass(val) { return BAD_SS.includes(val) ? 'bad' : 'ok'; }
 function ssShort(val) {
@@ -769,8 +803,13 @@ function renderVisionCard(r) {
 
   const labelsHtml = labels.map(l => {
     const isDanger = FEMALE_LABELS_JS.some(f => l.name.toLowerCase().includes(f));
-    return `<span class="vc-label ${isDanger?'danger':''}">${escHtml(l.name)} ${l.score}%</span>`;
+    const he = labelHe(l.name);
+    const display = he !== l.name ? `${he} (${l.name})` : l.name;
+    return `<span class="vc-label ${isDanger?'danger':''}" title="${l.score}%">${escHtml(display)} ${l.score}%</span>`;
   }).join('');
+
+  // תיאור מילולי בעברית
+  const desc = labels.slice(0,3).map(l=>labelHe(l.name)).join(', ');
 
   const size = r.fileSize ? `${(r.fileSize/1024).toFixed(0)}KB` : '';
 
@@ -787,8 +826,9 @@ function renderVisionCard(r) {
         <span class="vc-time">${fmtDate(r.created_at)}</span>
       </div>
       ${r.reason?`<div class="vc-reason">⚠️ ${escHtml(r.reason)}</div>`:''}
+      ${desc?`<div style="font-size:12px;color:var(--text2);font-style:italic">📝 ${escHtml(desc)}</div>`:''}
       ${ssHtml?`<div class="vc-ss">${ssHtml}</div>`:''}
-      ${labelsHtml?`<div class="vc-labels">${labelsHtml}</div>`:'<div style="font-size:11px;color:var(--text2)">אין תוויות</div>'}
+      ${labelsHtml?`<div class="vc-labels">${labelsHtml}</div>`:'<div style="font-size:11px;color:var(--text2)">אין תוויות Vision</div>'}
     </div>
   </div>`;
 }
