@@ -235,7 +235,8 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <div id="activity-panel">
     <div class="main-head">
       <h1>📊 יומן פעילות</h1>
-      <div class="act-live"><span class="act-live-dot"></span> עדכון חי</div>
+      <div class="act-live" id="act-live-ind"><span class="act-live-dot"></span> עדכון חי</div>
+      <button class="btn-outline" id="act-live-btn" onclick="toggleActLive()">⏸ עצור עדכון</button>
       <button class="btn-sm" onclick="loadActivity()">🔄 רענן</button>
     </div>
     <div class="act-filters">
@@ -639,9 +640,25 @@ async function deleteRow(table, pkVal) {
 }
 
 // ── Activity Panel ────────────────────────────────────────────────
-let actOffset = 0;
-let actTimer  = null;
+let actOffset  = 0;
+let actTimer   = null;
+let actLive    = true;
 const ACT_PAGE = 50;
+
+function toggleActLive() {
+  actLive = !actLive;
+  const btn = document.getElementById('act-live-btn');
+  const ind = document.getElementById('act-live-ind');
+  if (actLive) {
+    btn.textContent = '⏸ עצור עדכון';
+    ind.style.opacity = '1';
+    actTimer = setInterval(() => { if (actOffset === 0) loadActivity(0); }, 15000);
+  } else {
+    clearInterval(actTimer);
+    btn.textContent = '▶ הפעל עדכון';
+    ind.style.opacity = '0.3';
+  }
+}
 
 const ACT_META = {
   connect:                { icon:'🔌', label:'חיבור',           cls:'connect' },
