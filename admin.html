@@ -280,9 +280,8 @@ async function handleGoogleCredential(resp) {
     if (!res.ok) { errEl.textContent = data.error || 'שגיאה'; errEl.style.display = 'block'; return; }
     token = data.token;
     localStorage.setItem('bt_admin_token', token);
-    // סגירת ה-UI של Google לפני מעבר לדשבורד
     if (typeof google !== 'undefined') google.accounts.id.cancel();
-    startApp();
+    await startApp();
   } catch { errEl.textContent = 'שגיאת חיבור'; errEl.style.display = 'block'; }
 }
 
@@ -291,12 +290,12 @@ function initGoogle() {
   google.accounts.id.initialize({
     client_id: GOOGLE_CLIENT_ID,
     callback: handleGoogleCredential,
-    use_fedcm_for_prompt: false,
+    ux_mode: 'popup',
   });
-  // Render hidden button for popup fallback
+  // render the real Google button inside our custom button wrapper
   google.accounts.id.renderButton(
     document.getElementById('google-btn-hidden'),
-    {type: 'standard', size: 'large', theme: 'outline'}
+    { type: 'standard', size: 'large', theme: 'outline', text: 'continue_with', locale: 'he' }
   );
 }
 
@@ -306,10 +305,10 @@ function googleLogin() {
   if (typeof google === 'undefined') {
     errEl.textContent = 'Google SDK לא נטען, נסה שוב'; errEl.style.display = 'block'; return;
   }
-  // Click the hidden Google button (most reliable popup approach)
-  const btn = document.querySelector('#google-btn-hidden [role="button"]');
-  if (btn) { btn.click(); return; }
-  // Fallback: One Tap
+  // לחץ על כפתור Google האמיתי שמרונדר בתוך ה-div הנסתר
+  const realBtn = document.querySelector('#google-btn-hidden div[role="button"]');
+  if (realBtn) { realBtn.click(); return; }
+  // fallback
   google.accounts.id.prompt();
 }
 
@@ -344,7 +343,12 @@ async function startApp() {
     const res  = await fetch(`${API}/api/admin/db`,{headers:{Authorization:`Bearer ${token}`}});
     if (res.status === 401 || res.status === 403) {
       const d = await res.json();
-      document.getElementById('lc-err').textContent = d.error || 'אין הרשאה';
+      // וודא שמסך הכניסה מוצג לפני הצגת השגיאה
+      token = null;
+      localStorage.removeItem('bt_admin_token');
+      document.getElementById('app').style.display       = 'none';
+      document.getElementById('login-wrap').style.display = 'flex';
+      document.getElementById('lc-err').textContent = d.error || 'אין הרשאת גישה לדשבורד';
       document.getElementById('lc-err').style.display = 'block';
       return;
     }
