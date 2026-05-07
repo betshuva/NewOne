@@ -140,6 +140,11 @@ tr:hover td{background:rgba(33,38,45,.8)}
 .vc-label{font-size:11px;background:rgba(58,143,204,.15);color:var(--blue-light);padding:2px 7px;border-radius:5px}
 .vc-label.danger{background:rgba(248,81,73,.15);color:var(--red);font-weight:700}
 .vc-reason{font-size:12px;color:var(--red);font-weight:600}
+#vision-detail-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:60;align-items:center;justify-content:center}
+.vd-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:580px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column}
+.vd-head{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.vd-head h2{font-size:14px;font-weight:700;color:var(--blue-light);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.vd-body{padding:18px 20px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:0}
 
 /* New Group Modal */
 #newgroup-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:50;align-items:center;justify-content:center}
@@ -283,6 +288,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <div id="vision-panel">
     <div class="main-head">
       <h1>🔬 תוצאות Google Vision</h1>
+      <button class="btn-outline" id="rescan-btn" onclick="rescanAll()">🔬 סרוק מחדש הכל</button>
       <button class="btn-sm" onclick="loadVision()">🔄 רענן</button>
     </div>
     <div class="vision-grid" id="vision-grid"><div class="loader">טוען...</div></div>
@@ -415,6 +421,17 @@ tr:hover td{background:rgba(33,38,45,.8)}
       <button class="btn-outline" onclick="closeNewGroupModal()">ביטול</button>
       <button class="btn-sm" onclick="createGroup()" id="ng-submit">צור קבוצה</button>
     </div>
+  </div>
+</div>
+
+<!-- Vision Detail Modal -->
+<div id="vision-detail-modal" onclick="if(event.target===this)document.getElementById('vision-detail-modal').style.display='none'">
+  <div class="vd-card">
+    <div class="vd-head">
+      <h2 id="vd-title"></h2>
+      <button class="em-close" onclick="document.getElementById('vision-detail-modal').style.display='none'">✕</button>
+    </div>
+    <div class="vd-body" id="vd-body"></div>
   </div>
 </div>
 
@@ -786,51 +803,96 @@ function ssShort(val) {
            LIKELY:'סביר', VERY_LIKELY:'סביר מאוד' }[val] || val || '—';
 }
 
-function renderVisionCard(r) {
-  const blocked  = r.action === 'blocked_upload' || r.action === 'blocked_upload_delayed';
-  const isImg    = r.fileType === 'image';
-  const ss       = r.safeSearch || {};
-  const labels   = r.labels    || [];
+let visionRows = [];
+
+function renderVisionCard(r, idx) {
+  const blocked = r.action === 'blocked_upload' || r.action === 'blocked_upload_delayed';
+  const isImg   = r.fileType === 'image';
+  const labels  = r.labels || [];
+  const topLabels = labels.slice(0,3).map(l=>l.name).join(', ');
+  const size    = r.fileSize ? `${(r.fileSize/1024).toFixed(0)}KB` : '';
 
   const thumbHtml = isImg && r.fileUrl
     ? `<img class="vc-img" src="${escHtml(r.fileUrl)}" loading="lazy"
-        onclick="openLightbox('${escHtml(r.fileUrl)}','${escHtml(r.fileName||'')}')"
         onerror="this.outerHTML='<div class=\\'vc-nothumb\\'>🖼️</div>'">`
     : `<div class="vc-nothumb">${r.fileType==='document'?'📄':r.fileType==='audio'?'🎵':'📎'}</div>`;
 
-  const ssHtml = Object.entries(ss).filter(([k])=>SS_HE[k]).map(([k,v])=>
-    `<span class="vc-ss-item ${ssClass(v)}">${SS_HE[k]}: ${ssShort(v)}</span>`).join('');
-
-  const labelsHtml = labels.map(l => {
-    const isDanger = FEMALE_LABELS_JS.some(f => l.name.toLowerCase().includes(f));
-    const he = labelHe(l.name);
-    const display = he !== l.name ? `${he} (${l.name})` : l.name;
-    return `<span class="vc-label ${isDanger?'danger':''}" title="${l.score}%">${escHtml(display)} ${l.score}%</span>`;
-  }).join('');
-
-  // תיאור מילולי בעברית
-  const desc = labels.slice(0,3).map(l=>labelHe(l.name)).join(', ');
-
-  const size = r.fileSize ? `${(r.fileSize/1024).toFixed(0)}KB` : '';
-
-  return `<div class="vision-card ${blocked?'blocked':'approved'}">
+  return `<div class="vision-card ${blocked?'blocked':'approved'}" onclick="openVisionDetail(${idx})" style="cursor:pointer">
     ${thumbHtml}
     <div class="vc-body">
       <div class="vc-top">
         <span class="vc-status ${blocked?'blocked':'approved'}">${blocked?'⛔ נחסם':'✅ אושר'}</span>
         <span class="vc-filename" title="${escHtml(r.fileName||'')}">${escHtml(r.fileName||'—')}</span>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <span class="vc-user">👤 ${escHtml(r.user_name||'—')}</span>
-        ${size?`<span class="vc-user">📦 ${size}</span>`:''}
-        <span class="vc-time">${fmtDate(r.created_at)}</span>
-      </div>
+      <span class="vc-user">👤 ${escHtml(r.user_name||'—')} · ${size} · ${fmtDate(r.created_at)}</span>
       ${r.reason?`<div class="vc-reason">⚠️ ${escHtml(r.reason)}</div>`:''}
-      ${desc?`<div style="font-size:12px;color:var(--text2);font-style:italic">📝 ${escHtml(desc)}</div>`:''}
-      ${ssHtml?`<div class="vc-ss">${ssHtml}</div>`:''}
-      ${labelsHtml?`<div class="vc-labels">${labelsHtml}</div>`:'<div style="font-size:11px;color:var(--text2)">אין תוויות Vision</div>'}
+      ${topLabels?`<div style="font-size:11px;color:var(--text2);font-style:italic">${escHtml(topLabels)}</div>`:''}
+      <div style="font-size:10px;color:var(--text2);margin-top:2px">לחץ לפרטים מלאים ▾</div>
     </div>
   </div>`;
+}
+
+function openVisionDetail(idx) {
+  const r = visionRows[idx];
+  if (!r) return;
+  const blocked = r.action === 'blocked_upload' || r.action === 'blocked_upload_delayed';
+  const ss      = r.safeSearch || {};
+  const labels  = r.labels    || [];
+  const isImg   = r.fileType === 'image';
+
+  const ssRows = Object.entries(ss).filter(([k])=>SS_HE[k]).map(([k,v])=>`
+    <tr>
+      <td style="padding:6px 10px;color:var(--text2)">${SS_HE[k]}</td>
+      <td style="padding:6px 10px;font-weight:600" class="${BAD_SS.includes(v)?'':''}">
+        <span style="color:${BAD_SS.includes(v)?'var(--red)':'var(--green)'}">${ssShort(v)}</span>
+      </td>
+    </tr>`).join('');
+
+  const labelRows = labels.map(l=>{
+    const isDanger = FEMALE_LABELS_JS.some(f=>l.name.toLowerCase().includes(f));
+    return `<tr>
+      <td style="padding:5px 10px;color:${isDanger?'var(--red)':'var(--text)'};font-weight:${isDanger?700:400}">${escHtml(l.name)}</td>
+      <td style="padding:5px 10px">
+        <div style="background:var(--bg3);border-radius:4px;height:8px;width:100%;overflow:hidden">
+          <div style="background:${isDanger?'var(--red)':'var(--blue)'};height:8px;width:${l.score}%"></div>
+        </div>
+      </td>
+      <td style="padding:5px 10px;color:var(--text2);font-size:12px">${l.score}%</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('vd-title').textContent = r.fileName || '—';
+  document.getElementById('vd-body').innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      ${isImg && r.fileUrl ? `<img src="${escHtml(r.fileUrl)}" style="max-width:220px;max-height:180px;border-radius:8px;object-fit:cover;cursor:pointer;border:1px solid var(--border)"
+        onclick="openLightbox('${escHtml(r.fileUrl)}','${escHtml(r.fileName||'')}')">` : ''}
+      <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:6px">
+        <div><span style="color:var(--text2);font-size:12px">סטטוס:</span>
+          <strong style="color:${blocked?'var(--red)':'var(--green)'};margin-right:6px">${blocked?'⛔ נחסם':'✅ אושר'}</strong></div>
+        <div><span style="color:var(--text2);font-size:12px">משתמש:</span> <span style="margin-right:6px">${escHtml(r.user_name||'—')}</span></div>
+        <div><span style="color:var(--text2);font-size:12px">תאריך:</span> <span style="margin-right:6px">${fmtDate(r.created_at)}</span></div>
+        <div><span style="color:var(--text2);font-size:12px">גודל:</span> <span style="margin-right:6px">${r.fileSize?(r.fileSize/1024).toFixed(1)+' KB':'—'}</span></div>
+        <div><span style="color:var(--text2);font-size:12px">סוג:</span> <span style="margin-right:6px">${r.fileType||'—'}</span></div>
+        ${r.reason?`<div style="color:var(--red);font-size:12px;margin-top:4px">⚠️ ${escHtml(r.reason)}</div>`:''}
+        ${r.fileUrl?`<a href="${escHtml(r.fileUrl)}" target="_blank" style="color:var(--blue-light);font-size:12px">🔗 פתח קובץ</a>`:''}
+      </div>
+    </div>
+    ${ssRows?`
+    <div style="margin-top:14px">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:6px;font-weight:600">SafeSearch Detection</div>
+      <table style="width:100%;border-collapse:collapse;background:var(--bg3);border-radius:8px;overflow:hidden">
+        ${ssRows}
+      </table>
+    </div>`:''}
+    ${labelRows?`
+    <div style="margin-top:14px">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:6px;font-weight:600">Label Detection</div>
+      <table style="width:100%;border-collapse:collapse">
+        ${labelRows}
+      </table>
+    </div>`:'<div style="margin-top:14px;color:var(--text2);font-size:13px">אין תוצאות Vision שמורות לקובץ זה</div>'}`;
+
+  document.getElementById('vision-detail-modal').style.display = 'flex';
 }
 
 let visionOffset = 0;
@@ -844,12 +906,27 @@ async function loadVision(offset=0) {
       { headers: { Authorization: `Bearer ${token}` } });
     const rows = await res.json();
     if (!rows.length) { grid.innerHTML='<div class="empty">אין נתונים</div>'; pag.innerHTML=''; return; }
-    grid.innerHTML = rows.map(renderVisionCard).join('');
+    visionRows = rows;
+    grid.innerHTML = rows.map((r,i)=>renderVisionCard(r,i)).join('');
     pag.innerHTML = `
       <button class="pag-btn" onclick="loadVision(${Math.max(0,offset-VISION_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
       <span>רשומות ${offset+1}–${offset+rows.length}</span>
       <button class="pag-btn" onclick="loadVision(${offset+VISION_PAGE})" ${rows.length<VISION_PAGE?'disabled':''}>הבא ▶</button>`;
   } catch(e) { grid.innerHTML=`<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`; }
+}
+
+async function rescanAll() {
+  const btn = document.getElementById('rescan-btn');
+  btn.disabled = true; btn.textContent = '⏳ סורק...';
+  try {
+    const res  = await fetch(`${API}/api/admin/vision/rescan`,
+      { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'שגיאה'); return; }
+    alert(`✅ סריקה הושלמה\nסה"כ: ${data.total} | עודכנו: ${data.updated} | נכשלו: ${data.failed}`);
+    loadVision(visionOffset);
+  } catch(e) { alert(e.message); }
+  finally { btn.disabled=false; btn.textContent='🔬 סרוק מחדש הכל'; }
 }
 
 function showVisionPanel() {

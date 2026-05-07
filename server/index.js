@@ -2116,6 +2116,43 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Admin: re-scan all files and save Vision results ─────────────
+app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  try {
+    const pool = await getPool();
+    // Get all image uploads without Vision results saved
+    const result = await pool.request().query(`
+      SELECT id, details FROM activity_log
+      WHERE action IN ('upload_file','blocked_upload')
+        AND details LIKE '%"fileType":"image"%'
+      ORDER BY created_at DESC
+    `);
+    let scanned = 0, updated = 0, failed = 0;
+    for (const row of result.recordset) {
+      let d = {};
+      try { d = JSON.parse(row.details); } catch { continue; }
+      if (!d.fileUrl) { failed++; continue; }
+      if (d.safeSearch) { scanned++; continue; } // already has results
+      try {
+        const imgRes = await fetch(d.fileUrl, { signal: AbortSignal.timeout(10000) });
+        if (!imgRes.ok) { failed++; continue; }
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        const sr  = await scanImage(buf);
+        if (sr.pending) { failed++; continue; }
+        d.safeSearch = sr.safeSearch;
+        d.labels     = sr.labels;
+        await pool.request()
+          .input('id',      sql.UniqueIdentifier, row.id)
+          .input('details', sql.NVarChar,         JSON.stringify(d))
+          .query('UPDATE activity_log SET details=@details WHERE id=@id');
+        updated++;
+      } catch { failed++; }
+    }
+    res.json({ total: result.recordset.length, scanned, updated, failed });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Storage diagnostic ───────────────────────────────────────────
 app.get('/api/test-storage', async (req, res) => {
   const rawKey = process.env.B2_APP_KEY || '';
