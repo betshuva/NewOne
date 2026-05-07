@@ -280,6 +280,8 @@ async function handleGoogleCredential(resp) {
     if (!res.ok) { errEl.textContent = data.error || 'שגיאה'; errEl.style.display = 'block'; return; }
     token = data.token;
     localStorage.setItem('bt_admin_token', token);
+    // סגירת ה-UI של Google לפני מעבר לדשבורד
+    if (typeof google !== 'undefined') google.accounts.id.cancel();
     startApp();
   } catch { errEl.textContent = 'שגיאת חיבור'; errEl.style.display = 'block'; }
 }
