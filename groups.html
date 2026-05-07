@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>בתשובה — קבוצות</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Heebo',sans-serif;background:#0D1117;color:#E6EDF3;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+:root{
+  --blue:#1B6CA8;--blue-dark:#0D4F82;--blue-light:#3A8FCC;
+  --bg:#0D1117;--bg2:#161B22;--bg3:#21262D;
+  --border:#30363D;--text:#E6EDF3;--text2:#8B949E;
+  --green:#3FB950;--red:#F85149;--accent:#58A6FF;
+}
+
+/* ── LOGIN ── */
+#login-wrap{display:flex;align-items:center;justify-content:center;flex:1}
+.login-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:36px 32px;width:360px}
+.login-card h1{font-size:22px;font-weight:700;color:var(--blue-light);margin-bottom:4px}
+.login-card p{font-size:13px;color:var(--text2);margin-bottom:24px}
+.lc-field{margin-bottom:14px}
+.lc-field label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px}
+.lc-field input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);outline:none}
+.lc-field input:focus{border-color:var(--blue)}
+.lc-btn{width:100%;background:var(--blue);color:#fff;border:none;border-radius:8px;padding:11px;font-family:'Heebo',sans-serif;font-size:15px;font-weight:600;cursor:pointer;margin-top:4px}
+.lc-btn:hover{background:var(--blue-dark)}
+.lc-err{background:rgba(248,81,73,.12);color:var(--red);border-radius:6px;padding:8px 12px;font-size:13px;margin-bottom:12px;display:none}
+.lc-divider{display:flex;align-items:center;gap:10px;margin:16px 0;color:var(--text2);font-size:12px}
+.lc-divider::before,.lc-divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.google-btn{width:100%;background:#fff;color:#3c4043;border:1px solid #dadce0;border-radius:8px;padding:10px;font-family:'Heebo',sans-serif;font-size:14px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px}
+.google-btn:hover{background:#f8f9fa;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+
+/* ── APP ── */
+#app{display:none;flex:1;overflow:hidden;flex-direction:row}
+
+/* Sidebar — groups list */
+.sidebar{width:280px;background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.sb-head{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.sb-head h2{font-size:15px;font-weight:700;flex:1;color:var(--blue-light)}
+.sb-head button{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 12px;font-family:'Heebo',sans-serif;font-size:13px;cursor:pointer;white-space:nowrap}
+.sb-head button:hover{background:var(--blue-dark)}
+.sb-user{padding:10px 16px;font-size:12px;color:var(--text2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.sb-logout{font-size:12px;color:var(--red);cursor:pointer}
+.sb-logout:hover{text-decoration:underline}
+.group-list{flex:1;overflow-y:auto}
+.group-item{padding:12px 16px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .15s;display:flex;align-items:center;gap:10px}
+.group-item:hover{background:var(--bg3)}
+.group-item.active{background:var(--bg3);border-right:3px solid var(--blue)}
+.gi-avatar{width:40px;height:40px;border-radius:12px;background:var(--blue-dark);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.gi-info{flex:1;min-width:0}
+.gi-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gi-meta{font-size:11px;color:var(--text2);margin-top:2px}
+.gi-badge{background:var(--blue);color:#fff;font-size:10px;padding:2px 7px;border-radius:10px;flex-shrink:0}
+
+/* Main chat area */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.main-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:14px;flex-direction:column;gap:12px}
+.main-empty span{font-size:40px}
+.chat-head{padding:12px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0}
+.chat-head h2{font-size:15px;font-weight:700;flex:1}
+.chat-head .meta{font-size:12px;color:var(--text2)}
+.btn-sm{background:var(--blue);color:#fff;border:none;border-radius:8px;padding:6px 14px;font-family:'Heebo',sans-serif;font-size:13px;cursor:pointer}
+.btn-sm:hover{background:var(--blue-dark)}
+.btn-outline{background:transparent;color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:6px 14px;font-family:'Heebo',sans-serif;font-size:13px;cursor:pointer}
+.btn-outline:hover{border-color:var(--blue);color:var(--blue-light)}
+
+/* Messages */
+.messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:72%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.5;word-break:break-word}
+.msg.mine{align-self:flex-start;background:var(--blue-dark);color:#fff;border-bottom-left-radius:4px}
+.msg.other{align-self:flex-end;background:var(--bg3);border-bottom-right-radius:4px}
+.msg-sender{font-size:11px;font-weight:700;color:var(--blue-light);margin-bottom:3px}
+.msg-time{font-size:10px;color:rgba(255,255,255,.4);margin-top:4px;text-align:left}
+.msg.other .msg-time{color:var(--text2)}
+.msg-img{max-width:220px;border-radius:8px;cursor:pointer;display:block;margin-top:4px}
+.msg-img:hover{opacity:.85}
+
+/* Input */
+.chat-input{padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-shrink:0}
+.chat-input textarea{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-family:'Heebo',sans-serif;font-size:14px;color:var(--text);outline:none;resize:none;max-height:120px;line-height:1.4}
+.chat-input textarea:focus{border-color:var(--blue)}
+.send-btn{background:var(--blue);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-size:20px;cursor:pointer;flex-shrink:0}
+.send-btn:hover{background:var(--blue-dark)}
+.send-btn:disabled{opacity:.4;cursor:default}
+
+/* Modal */
+#modal-wrap{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:50;align-items:center;justify-content:center}
+.modal-card{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:480px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column}
+.modal-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.modal-head h2{font-size:15px;font-weight:700;color:var(--blue-light)}
+.modal-close{background:none;border:none;color:var(--text2);font-size:20px;cursor:pointer}
+.modal-body{padding:18px 20px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:12px}
+.m-field label{display:block;font-size:12px;color:var(--text2);margin-bottom:5px;font-weight:600}
+.m-field input,.m-field textarea,.m-field select{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-family:'Heebo',sans-serif;font-size:13px;color:var(--text);outline:none}
+.m-field input:focus,.m-field textarea:focus{border-color:var(--blue)}
+.m-field textarea{resize:vertical;min-height:60px}
+.members-list{max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg3)}
+.member-row{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer}
+.member-row:hover{background:var(--bg)}
+.member-row input[type=checkbox]{accent-color:var(--blue);width:14px;height:14px}
+.modal-foot{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;align-items:center}
+.modal-err{color:var(--red);font-size:12px;flex:1}
+
+/* Lightbox */
+#lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:100;align-items:center;justify-content:center}
+#lightbox img{max-width:90vw;max-height:88vh;border-radius:8px}
+#lightbox-close{position:absolute;top:16px;left:20px;background:none;border:none;color:#fff;font-size:28px;cursor:pointer;opacity:.8}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-wrap">
+  <div class="login-card">
+    <h1>💬 בתשובה — קבוצות</h1>
+    <p>כניסה לניהול וצפייה בקבוצות</p>
+    <div id="lc-err" class="lc-err"></div>
+    <div class="lc-field"><label>אימייל</label><input id="lc-email" type="email" dir="ltr" placeholder="user@example.com"/></div>
+    <div class="lc-field"><label>סיסמה</label><input id="lc-pass" type="password" dir="ltr" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"/></div>
+    <button class="lc-btn" onclick="doLogin()">כניסה</button>
+    <div class="lc-divider">או</div>
+    <button class="google-btn" onclick="googleLogin()">
+      <svg width="18" height="18" viewBox="0 0 48 48">
+        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+      </svg>
+      המשך עם Google
+    </button>
+    <div id="google-btn-hidden" style="position:absolute;opacity:0;pointer-events:none;height:0;overflow:hidden"></div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app">
+  <div class="sidebar">
+    <div class="sb-user">
+      <span id="sb-username"></span>
+      <span class="sb-logout" onclick="logout()">התנתק</span>
+    </div>
+    <div class="sb-head">
+      <h2>📋 הקבוצות שלי</h2>
+      <button onclick="openCreateModal()">➕ חדשה</button>
+    </div>
+    <div class="group-list" id="group-list"><div style="padding:20px;color:var(--text2);font-size:13px">טוען...</div></div>
+  </div>
+  <div class="main" id="main">
+    <div class="main-empty" id="main-empty">
+      <span>💬</span>
+      <div>בחר קבוצה מהרשימה</div>
+    </div>
+    <div id="chat-view" style="display:none;flex:1;flex-direction:column;overflow:hidden">
+      <div class="chat-head">
+        <div>
+          <h2 id="chat-title"></h2>
+          <div class="meta" id="chat-meta"></div>
+        </div>
+        <button class="btn-outline" onclick="openAddMemberModal()">➕ הוסף חבר</button>
+      </div>
+      <div class="messages" id="messages"></div>
+      <div class="chat-input" id="chat-input-area">
+        <textarea id="msg-input" rows="1" placeholder="כתוב הודעה..." onkeydown="onMsgKey(event)" oninput="autoResize(this)"></textarea>
+        <button class="send-btn" onclick="sendMessage()" id="send-btn">➤</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Create Group Modal -->
+<div id="modal-wrap" onclick="if(event.target===this)closeModal()">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="modal-title">➕ קבוצה חדשה</h2>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot">
+      <span class="modal-err" id="modal-err"></span>
+      <button class="btn-outline" onclick="closeModal()">ביטול</button>
+      <button class="btn-sm" id="modal-submit" onclick="submitModal()">צור</button>
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" onclick="document.getElementById('lightbox').style.display='none'">
+  <button id="lightbox-close" onclick="document.getElementById('lightbox').style.display='none'">✕</button>
+  <img id="lightbox-img" src="" alt=""/>
+</div>
+
+<script>
+const API    = 'https://xo-app-betshuva.azurewebsites.net';
+const GOOGLE_CLIENT_ID = '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
+let token      = localStorage.getItem('bt_token') || '';
+let me         = null;
+let socket     = null;
+let currentGroup = null;
+let allUsers   = [];
+let modalMode  = 'create'; // 'create' | 'addMember'
+
+// ── Auth ──────────────────────────────────────────────────────────
+function decodeToken(t) {
+  try {
+    const p = t.split('.')[1];
+    return JSON.parse(atob(p.replace(/-/g,'+').replace(/_/g,'/')));
+  } catch { return null; }
+}
+
+async function doLogin() {
+  const email = document.getElementById('lc-email').value.trim();
+  const pass  = document.getElementById('lc-pass').value;
+  const errEl = document.getElementById('lc-err');
+  errEl.style.display = 'none';
+  if (!email || !pass) { errEl.textContent='מלא אימייל וסיסמה'; errEl.style.display='block'; return; }
+  try {
+    const res  = await fetch(`${API}/api/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pass})});
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent=data.error||'שגיאה'; errEl.style.display='block'; return; }
+    token = data.token;
+    localStorage.setItem('bt_token', token);
+    startApp();
+  } catch { errEl.textContent='שגיאת חיבור'; errEl.style.display='block'; }
+}
+
+function logout() {
+  if (socket) socket.disconnect();
+  localStorage.removeItem('bt_token');
+  token = null; me = null; currentGroup = null;
+  document.getElementById('app').style.display        = 'none';
+  document.getElementById('login-wrap').style.display = 'flex';
+}
+
+// ── Google ────────────────────────────────────────────────────────
+function initGoogle() {
+  if (typeof google === 'undefined') return;
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: async (resp) => {
+      const errEl = document.getElementById('lc-err');
+      errEl.style.display = 'none';
+      try {
+        const res  = await fetch(`${API}/api/auth/google`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idToken:resp.credential})});
+        const data = await res.json();
+        if (!res.ok) { errEl.textContent=data.error||'שגיאה'; errEl.style.display='block'; return; }
+        token = data.token;
+        localStorage.setItem('bt_token', token);
+        google.accounts.id.cancel();
+        startApp();
+      } catch { errEl.textContent='שגיאת חיבור'; errEl.style.display='block'; }
+    },
+    ux_mode: 'popup',
+  });
+  google.accounts.id.renderButton(document.getElementById('google-btn-hidden'),
+    {type:'standard',size:'large'});
+}
+
+function googleLogin() {
+  if (typeof google === 'undefined') return;
+  const btn = document.querySelector('#google-btn-hidden div[role="button"]');
+  if (btn) btn.click(); else google.accounts.id.prompt();
+}
+
+// ── App Init ──────────────────────────────────────────────────────
+function startApp() {
+  me = decodeToken(token);
+  if (!me) { logout(); return; }
+  document.getElementById('sb-username').textContent = me.name || me.email || '';
+  document.getElementById('login-wrap').style.display = 'none';
+  document.getElementById('app').style.display        = 'flex';
+  connectSocket();
+  loadGroups();
+  loadUsers();
+}
+
+function connectSocket() {
+  if (socket) socket.disconnect();
+  socket = io(API, { auth: { token }, transports: ['websocket'] });
+  socket.on('group:message', (msg) => {
+    if (currentGroup && msg.groupId === currentGroup.id) appendMsg(msg);
+  });
+}
+
+// ── Groups ────────────────────────────────────────────────────────
+async function loadGroups() {
+  try {
+    const res  = await fetch(`${API}/api/groups`,{headers:{Authorization:`Bearer ${token}`}});
+    const data = await res.json();
+    renderGroupList(Array.isArray(data) ? data : []);
+  } catch { document.getElementById('group-list').innerHTML='<div style="padding:16px;color:var(--red);font-size:13px">שגיאה בטעינה</div>'; }
+}
+
+function renderGroupList(groups) {
+  const el = document.getElementById('group-list');
+  if (!groups.length) { el.innerHTML='<div style="padding:20px;color:var(--text2);font-size:13px;text-align:center">אין קבוצות עדיין</div>'; return; }
+  el.innerHTML = groups.map(g => `
+    <div class="group-item ${currentGroup?.id===g.id?'active':''}" onclick="openGroup(${JSON.stringify(JSON.stringify(g))})">
+      <div class="gi-avatar">${g.is_broadcast?'📢':'👥'}</div>
+      <div class="gi-info">
+        <div class="gi-name">${escHtml(g.name)}</div>
+        <div class="gi-meta">${g.member_count||0} חברים${g.role==='admin'?' · מנהל':''}</div>
+      </div>
+      ${g.role==='admin'?'<span class="gi-badge">מנהל</span>':''}
+    </div>`).join('');
+}
+
+async function openGroup(gJson) {
+  const g = JSON.parse(gJson);
+  currentGroup = g;
+  document.getElementById('main-empty').style.display  = 'none';
+  const cv = document.getElementById('chat-view');
+  cv.style.display = 'flex';
+  document.getElementById('chat-title').textContent = g.name;
+  document.getElementById('chat-meta').textContent  = `${g.member_count||0} חברים`;
+  // canSend check
+  const canSend = g.send_permission === 'all' || g.role === 'admin';
+  document.getElementById('chat-input-area').style.display = canSend ? 'flex' : 'none';
+  // refresh active state
+  document.querySelectorAll('.group-item').forEach(el => el.classList.remove('active'));
+  event?.currentTarget?.classList.add('active');
+  await loadMessages();
+}
+
+async function loadMessages() {
+  const el = document.getElementById('messages');
+  el.innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px">טוען...</div>';
+  try {
+    const res  = await fetch(`${API}/api/groups/${currentGroup.id}/messages`,
+      {headers:{Authorization:`Bearer ${token}`}});
+    const msgs = await res.json();
+    el.innerHTML = '';
+    (Array.isArray(msgs)?msgs:[]).forEach(m => appendMsg(m, true));
+    el.scrollTop = el.scrollHeight;
+  } catch { el.innerHTML='<div style="color:var(--red);font-size:13px;text-align:center;padding:20px">שגיאה</div>'; }
+}
+
+function appendMsg(m, initial=false) {
+  const el   = document.getElementById('messages');
+  const mine = m.sender_id === me?.id || m.fromUserId === me?.id;
+  const name = m.sender_name || m.fromName || '';
+  const text = m.body || m.text || '';
+  const fileUrl  = m.file_url  || m.fileUrl  || '';
+  const fileName = m.file_name || m.fileName || '';
+  const fileType = m.type      || m.fileType || '';
+  const time = fmtTime(m.created_at || m.createdAt);
+
+  let content = '';
+  if (text)    content += `<div>${escHtml(text)}</div>`;
+  if (fileUrl && fileType === 'image')
+    content += `<img class="msg-img" src="${escHtml(fileUrl)}" loading="lazy"
+      onclick="document.getElementById('lightbox-img').src='${escHtml(fileUrl)}';document.getElementById('lightbox').style.display='flex'"
+      onerror="this.style.display='none'"/>`;
+  else if (fileUrl)
+    content += `<div>📎 <a href="${escHtml(fileUrl)}" target="_blank" style="color:var(--blue-light)">${escHtml(fileName||'קובץ')}</a></div>`;
+
+  const div = document.createElement('div');
+  div.className = `msg ${mine?'mine':'other'}`;
+  div.innerHTML = `
+    ${!mine?`<div class="msg-sender">${escHtml(name)}</div>`:''}
+    ${content}
+    <div class="msg-time">${time}</div>`;
+  el.appendChild(div);
+  if (!initial) el.scrollTop = el.scrollHeight;
+}
+
+function sendMessage() {
+  const inp  = document.getElementById('msg-input');
+  const text = inp.value.trim();
+  if (!text || !currentGroup || !socket) return;
+  socket.emit('group:message', { groupId: currentGroup.id, text });
+  inp.value = '';
+  inp.style.height = 'auto';
+}
+
+function onMsgKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// ── Users ─────────────────────────────────────────────────────────
+async function loadUsers() {
+  try {
+    const res = await fetch(`${API}/api/users`,{headers:{Authorization:`Bearer ${token}`}});
+    allUsers  = await res.json();
+  } catch {}
+}
+
+// ── Create Group Modal ────────────────────────────────────────────
+function openCreateModal() {
+  modalMode = 'create';
+  document.getElementById('modal-title').textContent  = '➕ קבוצה חדשה';
+  document.getElementById('modal-submit').textContent = 'צור';
+  document.getElementById('modal-err').textContent    = '';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="m-field"><label>שם הקבוצה *</label><input id="m-name" placeholder="שם הקבוצה" dir="rtl"/></div>
+    <div class="m-field"><label>תיאור</label><textarea id="m-desc" placeholder="אופציונלי" dir="rtl"></textarea></div>
+    <div class="m-field"><label>הרשאת שליחה</label>
+      <select id="m-perm"><option value="all">כולם יכולים לשלוח</option><option value="admin">מנהלים בלבד</option></select>
+    </div>
+    <div class="m-field" style="display:flex;align-items:center;gap:10px">
+      <input type="checkbox" id="m-broadcast" style="width:16px;height:16px;accent-color:var(--blue)"/>
+      <label for="m-broadcast" style="cursor:pointer;font-size:13px">קבוצת שידור — שליחה חד-כיוונית</label>
+    </div>
+    <div class="m-field">
+      <label>הוסף חברים <span id="m-cnt" style="color:var(--blue-light)"></span></label>
+      <input placeholder="סנן..." oninput="filterUsers(this.value)" style="margin-bottom:8px"/>
+      <div class="members-list" id="m-users">
+        ${allUsers.map(u=>`<label class="member-row">
+          <input type="checkbox" class="u-cb" value="${u.id}" onchange="updateCnt()"/>
+          <span>${escHtml(u.name||'')} <span style="color:var(--text2);font-size:11px">${escHtml(u.email||'')}</span></span>
+        </label>`).join('')}
+      </div>
+    </div>`;
+  document.getElementById('modal-wrap').style.display = 'flex';
+}
+
+function filterUsers(q) {
+  document.querySelectorAll('.u-cb').forEach(cb => {
+    const row = cb.closest('.member-row');
+    row.style.display = !q || row.textContent.toLowerCase().includes(q.toLowerCase()) ? '' : 'none';
+  });
+}
+
+function updateCnt() {
+  const n = document.querySelectorAll('.u-cb:checked').length;
+  const el = document.getElementById('m-cnt');
+  if (el) el.textContent = n ? `(${n} נבחרו)` : '';
+}
+
+function openAddMemberModal() {
+  if (!currentGroup) return;
+  modalMode = 'addMember';
+  document.getElementById('modal-title').textContent  = '➕ הוסף חבר לקבוצה';
+  document.getElementById('modal-submit').textContent = 'הוסף';
+  document.getElementById('modal-err').textContent    = '';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="m-field">
+      <label>בחר משתמשים</label>
+      <input placeholder="סנן..." oninput="filterUsers(this.value)" style="margin-bottom:8px"/>
+      <div class="members-list" id="m-users">
+        ${allUsers.map(u=>`<label class="member-row">
+          <input type="checkbox" class="u-cb" value="${u.id}" onchange="updateCnt()"/>
+          <span>${escHtml(u.name||'')} <span style="color:var(--text2);font-size:11px">${escHtml(u.email||'')}</span></span>
+        </label>`).join('')}
+      </div>
+    </div>`;
+  document.getElementById('modal-wrap').style.display = 'flex';
+}
+
+function closeModal() { document.getElementById('modal-wrap').style.display='none'; }
+
+async function submitModal() {
+  const errEl = document.getElementById('modal-err');
+  const btn   = document.getElementById('modal-submit');
+  errEl.textContent = '';
+  btn.disabled = true;
+  try {
+    if (modalMode === 'create') {
+      const name = document.getElementById('m-name')?.value.trim();
+      if (!name) { errEl.textContent='נדרש שם קבוצה'; return; }
+      const desc      = document.getElementById('m-desc')?.value.trim() || '';
+      const perm      = document.getElementById('m-perm')?.value || 'all';
+      const broadcast = document.getElementById('m-broadcast')?.checked || false;
+      const members   = [...document.querySelectorAll('.u-cb:checked')].map(el=>el.value);
+      const res = await fetch(`${API}/api/groups`,{
+        method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
+        body:JSON.stringify({name,description:desc,send_permission:perm,is_broadcast:broadcast?1:0})
+      });
+      const data = await res.json();
+      if (!res.ok) { errEl.textContent=data.error||'שגיאה'; return; }
+      // Add selected members (pending — they'll need to accept)
+      for (const uid of members) {
+        await fetch(`${API}/api/groups/${data.id}/members`,{
+          method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
+          body:JSON.stringify({userId:uid})
+        }).catch(()=>{});
+      }
+      closeModal();
+      await loadGroups();
+    } else {
+      // addMember
+      const members = [...document.querySelectorAll('.u-cb:checked')].map(el=>el.value);
+      if (!members.length) { errEl.textContent='בחר לפחות משתמש אחד'; return; }
+      for (const uid of members) {
+        const res = await fetch(`${API}/api/groups/${currentGroup.id}/members`,{
+          method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
+          body:JSON.stringify({userId:uid})
+        });
+        const data = await res.json();
+        if (!res.ok) { errEl.textContent=data.error||'שגיאה'; return; }
+      }
+      closeModal();
+      document.getElementById('chat-meta').textContent = 'חברים הוזמנו — ממתינים לאישור';
+    }
+  } catch(e) { errEl.textContent=e.message; }
+  finally { btn.disabled=false; }
+}
+
+// ── Utils ─────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
+}
+
+// ── Boot ──────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  const waitGoogle = setInterval(() => {
+    if (typeof google !== 'undefined') { clearInterval(waitGoogle); initGoogle(); }
+  }, 100);
+});
+if (token) startApp();
+</script>
+</body>
+</html>
