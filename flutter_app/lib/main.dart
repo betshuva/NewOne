@@ -1715,6 +1715,52 @@ class ConversationsScreen extends StatefulWidget {
 class _ConversationsScreenState extends State<ConversationsScreen> {
   int _tab = 0;
   static const _tabs = ['כל השיחות', 'לא נקרא', 'קבוצות'];
+  List<Map<String, dynamic>> _groups = [];
+  bool _groupsLoaded = false;
+
+  Future<void> _loadGroups() async {
+    if (_groupsLoaded) return;
+    try {
+      final res = await http.get(Uri.parse('$kApi/groups'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (res.statusCode == 200 && mounted) {
+        setState(() { _groups = (jsonDecode(res.body) as List).cast(); _groupsLoaded = true; });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _createGroup() async {
+    final nameCtrl = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('קבוצה חדשה'),
+        content: TextField(
+          controller: nameCtrl,
+          textDirection: TextDirection.rtl,
+          decoration: const InputDecoration(labelText: 'שם הקבוצה'),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('צור')),
+        ],
+      ),
+    );
+    if (confirmed != true || nameCtrl.text.trim().isEmpty) return;
+    try {
+      final res = await http.post(Uri.parse('$kApi/groups'),
+          headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+          body: jsonEncode({'name': nameCtrl.text.trim()}));
+      if (res.statusCode == 200 && mounted) {
+        final g = jsonDecode(res.body) as Map<String, dynamic>;
+        widget.socket?.emit('group:join', {'groupId': g['id']});
+        setState(() => _groups.insert(0, g));
+        Navigator.push(context, MaterialPageRoute(
+          builder: (_) => GroupChatScreen(group: g, token: widget.token, me: widget.me, socket: widget.socket)));
+      }
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1778,7 +1824,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 final active = _tab == i;
                 return Expanded(
                   child: GestureDetector(
-                    onTap: () => setState(() => _tab = i),
+                    onTap: () {
+                      setState(() => _tab = i);
+                      if (i == 2) _loadGroups();
+                    },
                     child: Container(
                       padding: const EdgeInsets.symmetric(vertical: 9),
                       decoration: BoxDecoration(
@@ -1834,38 +1883,73 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           // Divider below banner
           Container(height: 1, color: const Color(0xFFC5DFF2)),
           // List
-          Expanded(
-            child: widget.users.isEmpty
-                ? const Center(
-                    child: Text('אין משתמשים רשומים עדיין',
-                        style: TextStyle(color: kSubtext, fontSize: 15)),
-                  )
-                : ListView.separated(
-                    itemCount: widget.users.length,
-                    separatorBuilder: (_, __) => const Divider(
-                        height: 1,
-                        color: Color(0xFFD4E9F7),
-                        indent: 76,
-                        endIndent: 0),
-                    itemBuilder: (_, i) {
-                      final user = widget.users[i];
-                      return _ConversationTile(
-                        user: user,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => ChatScreen(
-                              token: widget.token,
-                              me: widget.me,
-                              recipient: user,
-                              socket: widget.socket,
-                            ),
+          if (_tab == 2) ...[
+            // ── קבוצות tab ──
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: ElevatedButton.icon(
+                onPressed: _createGroup,
+                icon: const Icon(Icons.group_add),
+                label: const Text('צור קבוצה חדשה', style: TextStyle(fontSize: 15)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: kPrimary,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(double.infinity, 48),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            Expanded(
+              child: _groups.isEmpty
+                  ? const Center(child: Text('אין קבוצות עדיין', style: TextStyle(color: kSubtext)))
+                  : ListView.separated(
+                      itemCount: _groups.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFFD4E9F7), indent: 76),
+                      itemBuilder: (_, i) {
+                        final g = _groups[i];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: kPrimary,
+                            child: const Icon(Icons.group, color: Colors.white),
                           ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
+                          title: Text(g['name'] as String? ?? ''),
+                          subtitle: Text('${g['member_count'] ?? 0} חברים',
+                              style: const TextStyle(fontSize: 12)),
+                          trailing: g['role'] == 'admin'
+                              ? const Chip(label: Text('מנהל', style: TextStyle(fontSize: 11)))
+                              : null,
+                          onTap: () => Navigator.push(context, MaterialPageRoute(
+                            builder: (_) => GroupChatScreen(
+                                group: g, token: widget.token,
+                                me: widget.me, socket: widget.socket))),
+                        );
+                      },
+                    ),
+            ),
+          ] else ...[
+            Expanded(
+              child: widget.users.isEmpty
+                  ? const Center(
+                      child: Text('אין משתמשים רשומים עדיין',
+                          style: TextStyle(color: kSubtext, fontSize: 15)),
+                    )
+                  : ListView.separated(
+                      itemCount: widget.users.length,
+                      separatorBuilder: (_, __) => const Divider(
+                          height: 1, color: Color(0xFFD4E9F7), indent: 76),
+                      itemBuilder: (_, i) {
+                        final user = widget.users[i];
+                        return _ConversationTile(
+                          user: user,
+                          onTap: () => Navigator.push(context, MaterialPageRoute(
+                            builder: (_) => ChatScreen(
+                              token: widget.token, me: widget.me,
+                              recipient: user, socket: widget.socket))),
+                        );
+                      },
+                    ),
+            ),
+          ]
         ],
       ),
     );
