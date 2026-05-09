@@ -1628,6 +1628,15 @@ class _MainShellState extends State<MainShell> {
   }
 
   Future<void> _loadUsers() async {
+    // Load from cache first for instant offline display
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('cache_users');
+      if (cached != null && _users.isEmpty) {
+        setState(() => _users = (jsonDecode(cached) as List).cast<Map<String, dynamic>>());
+      }
+    } catch (_) {}
+    // Then fetch from server and update cache
     try {
       final res = await http.get(
         Uri.parse('$kApi/users'),
@@ -1636,6 +1645,8 @@ class _MainShellState extends State<MainShell> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         setState(() => _users = data.cast<Map<String, dynamic>>());
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cache_users', res.body);
       }
     } catch (_) {}
   }
@@ -2079,6 +2090,20 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadMessages() async {
+    final cacheKey = 'cache_msgs_${widget.recipient['id']}';
+    // Show cache immediately
+    try {
+      final prefs  = await SharedPreferences.getInstance();
+      final cached = prefs.getString(cacheKey);
+      if (cached != null && mounted) {
+        final list = (jsonDecode(cached) as List).cast<Map<String, dynamic>>();
+        setState(() { _messages
+          ..clear()
+          ..addAll(list); _loading = false; });
+        _scrollToBottom();
+      }
+    } catch (_) {}
+    // Fetch from server and update
     try {
       final res = await http.get(
         Uri.parse('$kApi/messages/${widget.recipient['id']}'),
@@ -2087,21 +2112,24 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
+        final normalized = data.map(_normalizeDbMessage).toList();
         setState(() {
-          // Keep pending (optimistic) messages not yet confirmed by server
           final pending = _messages
               .where((m) => (m['id'] as String? ?? '').startsWith('temp_'))
               .toList();
           _messages.clear();
-          _messages.addAll(data.map(_normalizeDbMessage));
+          _messages.addAll(normalized);
           for (final p in pending) {
-            final alreadyIn = _messages.any((m) => m['text'] == p['text']);
-            if (!alreadyIn) _messages.add(p);
+            if (!_messages.any((m) => m['text'] == p['text'])) _messages.add(p);
           }
           _loading = false;
         });
         _scrollToBottom();
         _markAsRead();
+        // Save to cache (last 50 messages)
+        final prefs = await SharedPreferences.getInstance();
+        final toCache = normalized.length > 50 ? normalized.sublist(normalized.length - 50) : normalized;
+        await prefs.setString(cacheKey, jsonEncode(toCache));
       } else {
         setState(() => _loading = false);
       }
@@ -3875,6 +3903,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _loadMessages() async {
+    final cacheKey = 'cache_group_msgs_$_groupId';
+    // Show cache immediately
+    try {
+      final prefs  = await SharedPreferences.getInstance();
+      final cached = prefs.getString(cacheKey);
+      if (cached != null && mounted) {
+        final list = (jsonDecode(cached) as List).cast<Map<String, dynamic>>();
+        setState(() { _messages..clear()..addAll(list); _loading = false; });
+        _scrollToBottom();
+      }
+    } catch (_) {}
+    // Fetch from server and update
     try {
       final res = await http.get(
         Uri.parse('$kApi/groups/$_groupId/messages'),
@@ -3883,12 +3923,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (!mounted) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
+        final normalized = data.map(_normalize).toList();
         setState(() {
           _messages.clear();
-          _messages.addAll(data.map(_normalize));
+          _messages.addAll(normalized);
           _loading = false;
         });
         _scrollToBottom();
+        // Save to cache
+        final prefs = await SharedPreferences.getInstance();
+        final toCache = normalized.length > 50 ? normalized.sublist(normalized.length - 50) : normalized;
+        await prefs.setString(cacheKey, jsonEncode(toCache));
       } else {
         setState(() => _loading = false);
       }

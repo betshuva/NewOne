@@ -291,11 +291,22 @@ function connectSocket() {
 
 // ── Groups ────────────────────────────────────────────────────────
 async function loadGroups() {
+  // Show cache immediately
+  try {
+    const cached = localStorage.getItem('cache_groups');
+    if (cached) renderGroupList(JSON.parse(cached));
+  } catch {}
+  // Fetch from server
   try {
     const res  = await fetch(`${API}/api/groups`,{headers:{Authorization:`Bearer ${token}`}});
     const data = await res.json();
-    renderGroupList(Array.isArray(data) ? data : []);
-  } catch { document.getElementById('group-list').innerHTML='<div style="padding:16px;color:var(--red);font-size:13px">שגיאה בטעינה</div>'; }
+    const groups = Array.isArray(data) ? data : [];
+    renderGroupList(groups);
+    localStorage.setItem('cache_groups', JSON.stringify(groups));
+  } catch {
+    if (!localStorage.getItem('cache_groups'))
+      document.getElementById('group-list').innerHTML='<div style="padding:16px;color:var(--red);font-size:13px">שגיאה בטעינה</div>';
+  }
 }
 
 function renderGroupList(groups) {
@@ -331,15 +342,34 @@ async function openGroup(gJson) {
 
 async function loadMessages() {
   const el = document.getElementById('messages');
-  el.innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px">טוען...</div>';
+  const cacheKey = `cache_msgs_${currentGroup.id}`;
+  // Show cache immediately
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      el.innerHTML = '';
+      JSON.parse(cached).forEach(m => appendMsg(m, true));
+      el.scrollTop = el.scrollHeight;
+    } else {
+      el.innerHTML = '<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px">טוען...</div>';
+    }
+  } catch {}
+  // Fetch from server
   try {
     const res  = await fetch(`${API}/api/groups/${currentGroup.id}/messages`,
       {headers:{Authorization:`Bearer ${token}`}});
     const msgs = await res.json();
+    if (!Array.isArray(msgs)) return;
     el.innerHTML = '';
-    (Array.isArray(msgs)?msgs:[]).forEach(m => appendMsg(m, true));
+    msgs.forEach(m => appendMsg(m, true));
     el.scrollTop = el.scrollHeight;
-  } catch { el.innerHTML='<div style="color:var(--red);font-size:13px;text-align:center;padding:20px">שגיאה</div>'; }
+    // Cache last 50
+    const toCache = msgs.slice(-50);
+    localStorage.setItem(cacheKey, JSON.stringify(toCache));
+  } catch {
+    if (!el.children.length)
+      el.innerHTML='<div style="color:var(--red);font-size:13px;text-align:center;padding:20px">שגיאה</div>';
+  }
 }
 
 function appendMsg(m, initial=false) {
