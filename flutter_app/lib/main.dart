@@ -3924,14 +3924,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void _setupSocket() {
     widget.socket?.on('group:message', (data) {
       if (data['groupId'] != _groupId || !mounted) return;
+      final fileUrl  = data['fileUrl']  as String?;
+      final fileName = data['fileName'] as String?;
+      final fileType = _normalizeIncomingFileType(
+        data['fileType'] as String?, fileUrl: fileUrl, fileName: fileName);
       setState(() {
         _messages.add({
           'id':         data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
-          'text':       data['text'] as String? ?? '',
+          'text':       data['text'] as String? ?? fileName ?? '',
           'senderName': data['fromName'] as String? ?? '',
           'time':       data['createdAt'] != null ? _formatTime(data['createdAt']) : _nowTime(),
           'isMe':       data['fromUserId'] == widget.me?['id'],
           'isTyping':   false,
+          'fileUrl':    fileUrl,
+          'fileName':   fileName,
+          'fileType':   fileType,
         });
         _isTyping = false;
       });
@@ -3986,6 +3993,139 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     });
     widget.socket?.emit('group:message', {'groupId': _groupId, 'text': text});
     _scrollToBottom();
+  }
+
+  void _showAttachMenu() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('שיתוף קובץ בקבוצה',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _AttachOption(
+                  icon: Icons.image_outlined, label: 'גלריה', color: kPrimary,
+                  onTap: () { Navigator.pop(context); _pickFile(ImageSource.gallery); },
+                ),
+                _AttachOption(
+                  icon: Icons.camera_alt_outlined, label: 'מצלמה', color: kPrimaryMid,
+                  onTap: () { Navigator.pop(context); _pickFile(ImageSource.camera); },
+                ),
+                _AttachOption(
+                  icon: Icons.picture_as_pdf_outlined, label: 'מסמך', color: Colors.orange,
+                  onTap: () { Navigator.pop(context); _pickDocument(); },
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.red.shade200),
+              ),
+              child: Row(children: [
+                Icon(Icons.block, color: Colors.red.shade600, size: 18),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('שליחת סרטוני וידאו אינה נתמכת',
+                      style: TextStyle(fontSize: 12, color: Colors.red)),
+                ),
+              ]),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickFile(ImageSource source) async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(
+        source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
+    if (picked == null) return;
+    await _uploadGroupFile(File(picked.path), picked.name, 'image');
+  }
+
+  Future<void> _pickDocument() async {
+    final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom, allowedExtensions: ['pdf', 'docx']);
+    if (result == null || result.files.single.path == null) return;
+    final f = result.files.single;
+    await _uploadGroupFile(File(f.path!), f.name, 'document');
+  }
+
+  Future<void> _uploadGroupFile(File file, String fileName, String fileType) async {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.security, color: kPrimary),
+          SizedBox(width: 8),
+          Text('סריקה והעלאה'),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircularProgressIndicator(color: kPrimary),
+          const SizedBox(height: 16),
+          Text('$fileName\nעובר סריקת צניעות והעלאה...'),
+        ]),
+      ),
+    );
+    try {
+      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+        ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..fields['groupId'] = _groupId
+        ..files.add(await http.MultipartFile.fromPath('file', file.path,
+            filename: fileName, contentType: _mimeFromFileName(fileName)));
+      final streamed = await request.send();
+      final body     = await streamed.stream.bytesToString();
+      if (!mounted) return;
+      Navigator.pop(context);
+      if (streamed.statusCode != 200) {
+        final err = jsonDecode(body)['error'] ?? 'שגיאה בהעלאה';
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(err), backgroundColor: Colors.red));
+        return;
+      }
+      final data    = jsonDecode(body) as Map<String, dynamic>;
+      final fileUrl = data['url'] as String;
+      widget.socket?.emit('group:message', {
+        'groupId': _groupId,
+        'text':    null,
+        'fileUrl': fileUrl,
+        'fileName': fileName,
+        'fileType': fileType,
+      });
+      setState(() {
+        _messages.add({
+          'id':         'temp_${DateTime.now().millisecondsSinceEpoch}',
+          'text':       fileName,
+          'senderName': widget.me?['name'] as String? ?? '',
+          'time':       _nowTime(),
+          'isMe':       true,
+          'fileType':   fileType,
+          'fileUrl':    fileUrl,
+        });
+      });
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('שגיאה: $e'), backgroundColor: Colors.red));
+      }
+    }
   }
 
   Future<void> _leaveGroup() async {
@@ -4181,11 +4321,43 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.end,
                                   children: [
-                                    Text(
-                                      msg['text'] as String? ?? '',
-                                      style: const TextStyle(fontSize: 15, height: 1.4),
-                                      textDirection: TextDirection.rtl,
-                                    ),
+                                    if (msg['fileUrl'] != null &&
+                                        _normalizeIncomingFileType(msg['fileType'] as String?,
+                                            fileUrl: msg['fileUrl'] as String?,
+                                            fileName: msg['fileName'] as String?) == 'image')
+                                      GestureDetector(
+                                        onTap: () => Navigator.push(context, MaterialPageRoute(
+                                          builder: (_) => ImagePreviewScreen(
+                                              url: msg['fileUrl'] as String,
+                                              filename: msg['fileName'] as String?))),
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(8),
+                                          child: Image.network(
+                                            msg['fileUrl'] as String,
+                                            width: 200, fit: BoxFit.cover,
+                                            loadingBuilder: (_, child, p) => p == null ? child
+                                                : Container(width: 200, height: 140,
+                                                    color: kBorder,
+                                                    child: const Center(child: CircularProgressIndicator(color: kPrimary, strokeWidth: 2))),
+                                            errorBuilder: (_, __, ___) => Container(
+                                                width: 200, height: 100, color: kBorder,
+                                                child: const Icon(Icons.broken_image, color: kSubtext)),
+                                          ),
+                                        ),
+                                      )
+                                    else if (msg['fileUrl'] != null)
+                                      Row(mainAxisSize: MainAxisSize.min, children: [
+                                        const Icon(Icons.insert_drive_file, size: 16, color: kSubtext),
+                                        const SizedBox(width: 4),
+                                        Flexible(child: Text(msg['fileName'] as String? ?? msg['text'] as String? ?? '',
+                                            style: const TextStyle(fontSize: 13))),
+                                      ])
+                                    else
+                                      Text(
+                                        msg['text'] as String? ?? '',
+                                        style: const TextStyle(fontSize: 15, height: 1.4),
+                                        textDirection: TextDirection.rtl,
+                                      ),
                                     const SizedBox(height: 4),
                                     Text(msg['time'] as String? ?? '',
                                         style: const TextStyle(fontSize: 11, color: kSubtext)),
@@ -4215,7 +4387,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 children: [
                   IconButton(
                     icon: const Icon(Icons.attach_file, color: kSubtext),
-                    onPressed: () {},
+                    onPressed: _showAttachMenu,
                   ),
                   Expanded(
                     child: TextField(

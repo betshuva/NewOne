@@ -613,8 +613,8 @@ io.on('connection', async (socket) => {
     relay(toUserId, 'chat:typing', { fromUserId: socket.user.id }));
 
   // ── Group messaging ──────────────────────────────────────────────
-  socket.on('group:message', async ({ groupId, text, replyToId }) => {
-    if (!text || !groupId) return;
+  socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType }) => {
+    if ((!text && !fileUrl) || !groupId) return;
     try {
       const pool = await getPool();
       const mem = await pool.request()
@@ -627,14 +627,22 @@ io.on('connection', async (socket) => {
       if (!member) return;
       if (member.send_permission === 'admin' && member.role !== 'admin') return;
 
+      const msgType = fileType && fileType !== 'text'
+        ? fileType
+        : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) ? 'image'
+          : fileUrl ? 'document' : 'text');
+
       const saved = await pool.request()
         .input('senderId',  sql.UniqueIdentifier, socket.user.id)
         .input('groupId',   sql.UniqueIdentifier, groupId)
-        .input('body',      sql.NVarChar,         text)
+        .input('body',      sql.NVarChar,         text     || null)
+        .input('type',      sql.NVarChar,         msgType)
+        .input('fileUrl',   sql.NVarChar,         fileUrl  || null)
+        .input('fileName',  sql.NVarChar,         fileName || null)
         .input('replyToId', sql.UniqueIdentifier, replyToId || null)
-        .query(`INSERT INTO messages (sender_id, group_id, body, reply_to_id)
+        .query(`INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
                 OUTPUT INSERTED.id, INSERTED.created_at
-                VALUES (@senderId, @groupId, @body, @replyToId)`);
+                VALUES (@senderId, @groupId, @body, @type, @fileUrl, @fileName, @replyToId)`);
       const row = saved.recordset[0];
       io.to(`group:${groupId}`).emit('group:message', {
         id:         row.id,
@@ -642,10 +650,12 @@ io.on('connection', async (socket) => {
         fromUserId: socket.user.id,
         fromName:   socket.user.name,
         text,
+        fileUrl, fileName, fileType: msgType,
         replyToId:  replyToId || null,
         createdAt:  row.created_at,
       });
-      logActivity(socket.user.id, 'send_group_message', { groupId, messageId: row.id });
+      logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_group_message',
+        { groupId, messageId: row.id, fileName: fileName || null });
       // Push to offline members
       const grpName = await pool.request()
         .input('id', sql.UniqueIdentifier, groupId)
@@ -654,10 +664,11 @@ io.on('connection', async (socket) => {
       const allMembers = await pool.request()
         .input('groupId', sql.UniqueIdentifier, groupId)
         .query('SELECT user_id FROM group_members WHERE group_id = @groupId');
+      const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
       for (const { user_id } of allMembers.recordset) {
         if (user_id !== socket.user.id && !onlineUsers.has(user_id)) {
           sendPush(user_id, `${groupName} • ${socket.user.name}`,
-            text || '', { type: 'group', groupId });
+            pushBody, { type: 'group', groupId });
         }
       }
     } catch (e) { console.error('group:message:', e.message); }
