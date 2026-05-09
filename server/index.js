@@ -573,7 +573,12 @@ io.on('connection', async (socket) => {
         .input('senderId',    sql.UniqueIdentifier, socket.user.id)
         .input('recipientId', sql.UniqueIdentifier, toUserId)
         .input('body',        sql.NVarChar,         text     || null)
-        .input('type',        sql.NVarChar,         fileType || 'text')
+        .input('type',        sql.NVarChar,         (() => {
+          if (fileType && fileType !== 'text') return fileType;
+          if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
+          if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
+          return 'text';
+        })())
         .input('fileUrl',     sql.NVarChar,         fileUrl  || null)
         .input('fileName',    sql.NVarChar,         fileName || null)
         .input('replyToId',   sql.UniqueIdentifier, replyToId || null)

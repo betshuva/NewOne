@@ -31,6 +31,25 @@ MediaType _mimeFromFileName(String fileName) {
   }
 }
 
+bool _hasImageExtension(String? value) {
+  if (value == null || value.isEmpty) return false;
+  final v = value.toLowerCase();
+  return v.endsWith('.jpg') ||
+      v.endsWith('.jpeg') ||
+      v.endsWith('.png') ||
+      v.endsWith('.gif') ||
+      v.endsWith('.webp');
+}
+
+String? _normalizeIncomingFileType(String? fileType, {String? fileUrl, String? fileName}) {
+  // Extension check takes priority — DB may store 'text' even for image messages
+  if (_hasImageExtension(fileUrl) || _hasImageExtension(fileName)) return 'image';
+  final t = (fileType ?? '').trim().toLowerCase();
+  if (t.isEmpty) return null;
+  if (t == 'image' || t.startsWith('image/')) return 'image';
+  return t;
+}
+
 // ── Local notifications setup ─────────────────────────────────────
 final _localNotif = FlutterLocalNotificationsPlugin();
 
@@ -2093,8 +2112,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Map<String, dynamic> _normalizeDbMessage(dynamic m) {
     final map      = m as Map<String, dynamic>;
-    final msgType  = map['type'] as String? ?? 'text';
-    final isFile   = msgType != 'text' && msgType != 'group_invite';
+    final msgType = _normalizeIncomingFileType(
+      map['type'] as String?,
+      fileUrl: map['file_url'] as String?,
+      fileName: map['file_name'] as String?,
+    ) ?? 'text';
+    final isFile = (map['file_url'] != null) || (msgType != 'text' && msgType != 'group_invite');
     return {
       'id':            map['id'],
       'text':          map['body'] ?? map['file_name'] ?? '',
@@ -2126,10 +2149,14 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.on('chat:message', (data) {
       if (data['fromUserId'] == widget.recipient['id']) {
         if (!mounted) return;
-        final fileType = data['fileType'] as String?;
         final fileUrl  = data['fileUrl']  as String?;
         final fileName = data['fileName'] as String?;
-        final isFile   = fileUrl != null;
+        final fileType = _normalizeIncomingFileType(
+          data['fileType'] as String?,
+          fileUrl: fileUrl,
+          fileName: fileName,
+        );
+        final isFile = fileUrl != null || (fileType != null && fileType != 'text');
         setState(() {
           _messages.add({
             'id':       data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
@@ -2947,6 +2974,14 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isFile = message['isFile'] == true;
+    final fileUrl = message['fileUrl'] as String?;
+    final fileName = message['fileName'] as String?;
+    final fileType = _normalizeIncomingFileType(
+      message['fileType'] as String?,
+      fileUrl: fileUrl,
+      fileName: fileName,
+    );
+    final isImageFile = isFile && fileUrl != null && fileType == 'image';
     final textColor = isMe ? Colors.white : kTextDark;
     final timeColor =
         isMe ? Colors.white.withOpacity(0.7) : kSubtext;
@@ -3009,18 +3044,18 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ),
 
-            if (isFile && message['fileType'] == 'image' && message['fileUrl'] != null)
+            if (isImageFile)
               GestureDetector(
                 onTap: () => Navigator.push(context, MaterialPageRoute(
                   builder: (_) => ImagePreviewScreen(
-                    url: message['fileUrl'] as String,
+                    url: fileUrl!,
                     filename: message['text'] as String?,
                   ),
                 )),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: Image.network(
-                    message['fileUrl'] as String,
+                    fileUrl!,
                     width: 220,
                     fit: BoxFit.cover,
                     loadingBuilder: (_, child, p) => p == null ? child
