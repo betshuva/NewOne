@@ -1575,6 +1575,14 @@ class _MainShellState extends State<MainShell> {
     _loadUsers();
     _registerFcmToken();
     _loadAdminPerm();
+    WidgetsBinding.instance.addObserver(_AppLifecycleObserver(onResume: _loadUsers));
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(_AppLifecycleObserver(onResume: _loadUsers));
+    _socket?.disconnect();
+    super.dispose();
   }
 
   Future<void> _loadAdminPerm() async {
@@ -1659,6 +1667,9 @@ class _MainShellState extends State<MainShell> {
           .setAuth({'token': widget.token})
           .build(),
     );
+    // רענן רשימת משתמשים כשהסוקט מתחבר מחדש
+    _socket!.on('connect', (_) => _loadUsers());
+
     // הוסף משתמש חדש לרשימה ברגע ההרשמה
     _socket!.on('users:new', (data) {
       if (!mounted) return;
@@ -5802,5 +5813,15 @@ class _PermissionsViewState extends State<_PermissionsView> {
           ),
       ],
     );
+  }
+}
+
+class _AppLifecycleObserver extends WidgetsBindingObserver {
+  final VoidCallback onResume;
+  _AppLifecycleObserver({required this.onResume});
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) onResume();
   }
 }
