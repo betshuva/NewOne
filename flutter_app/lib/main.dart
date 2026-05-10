@@ -1045,8 +1045,10 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString('token', widget.token);
                 if (!mounted) return;
-                Navigator.pushReplacement(context,
-                    MaterialPageRoute(builder: (_) => MainShell(token: widget.token)));
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => MainShell(token: widget.token)),
+                  (route) => false,
+                );
               },
               child: const Text('דלג על שלב זה',
                   style: TextStyle(color: kSubtext, fontSize: 13)),
@@ -1566,21 +1568,24 @@ class _MainShellState extends State<MainShell> {
   Map<String, dynamic>? _me;
   List<Map<String, dynamic>> _users = [];
   String? _adminPerm;
+  late final _AppLifecycleObserver _lifecycleObserver;
 
   @override
   void initState() {
     super.initState();
+    _lifecycleObserver = _AppLifecycleObserver(onResume: _loadUsers);
     _decodeMe();
     _connectSocket();
     _loadUsers();
     _registerFcmToken();
     _loadAdminPerm();
-    WidgetsBinding.instance.addObserver(_AppLifecycleObserver(onResume: _loadUsers));
+    WidgetsBinding.instance.addObserver(_lifecycleObserver);
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(_AppLifecycleObserver(onResume: _loadUsers));
+    WidgetsBinding.instance.removeObserver(_lifecycleObserver);
+    _socket?.disconnect();
     super.dispose();
   }
 
@@ -1692,12 +1697,6 @@ class _MainShellState extends State<MainShell> {
       context,
       MaterialPageRoute(builder: (_) => const PhoneAuthScreen()),
     );
-  }
-
-  @override
-  void dispose() {
-    _socket?.disconnect();
-    super.dispose();
   }
 
   @override
