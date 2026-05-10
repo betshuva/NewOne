@@ -1656,9 +1656,12 @@ class _MainShellState extends State<MainShell> {
       );
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
-        setState(() => _users = data.cast<Map<String, dynamic>>());
+        if (mounted) setState(() => _users = data.cast<Map<String, dynamic>>());
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('cache_users', res.body);
+      } else if (res.statusCode == 401) {
+        // משתמש לא קיים ב-DB — ghost session → יציאה אוטומטית
+        _forceLogout();
       }
     } catch (_) {}
   }
@@ -1673,6 +1676,14 @@ class _MainShellState extends State<MainShell> {
     );
     // רענן רשימת משתמשים כשהסוקט מתחבר מחדש
     _socket!.on('connect', (_) => _loadUsers());
+
+    // טיפול בשגיאת חיבור — משתמש לא קיים ב-DB → יציאה אוטומטית
+    _socket!.on('connect_error', (err) {
+      final msg = err?.toString() ?? '';
+      if (msg.contains('user_not_found') || msg.contains('unauthorized')) {
+        _forceLogout();
+      }
+    });
 
     // הוסף משתמש חדש לרשימה ברגע ההרשמה
     _socket!.on('users:new', (data) {
@@ -1696,6 +1707,23 @@ class _MainShellState extends State<MainShell> {
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (_) => const PhoneAuthScreen()),
+    );
+  }
+
+  void _forceLogout() {
+    _socket?.disconnect();
+    SharedPreferences.getInstance().then((prefs) => prefs.remove('token'));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('הפגישה פגה — נא להתחבר מחדש'),
+        backgroundColor: Colors.orange,
+        duration: Duration(seconds: 3),
+      ),
+    );
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const PhoneAuthScreen()),
+      (route) => false,
     );
   }
 

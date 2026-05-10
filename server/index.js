@@ -521,6 +521,26 @@ function auth(req, res, next) {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
+    res.status(401).json({ error: 'טוקן לא תקין — נא להתחבר מחדש' });
+  }
+}
+
+// middleware שבודק שהמשתמש קיים ב-DB (למניעת ghost sessions)
+async function authWithDbCheck(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'לא מחובר' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    const pool = await getPool();
+    const exists = await pool.request()
+      .input('id', sql.UniqueIdentifier, req.user.id)
+      .query('SELECT 1 FROM users WHERE id = @id');
+    if (!exists.recordset.length) {
+      console.warn(`[AUTH] ghost session — id:${req.user.id} email:${req.user.email}`);
+      return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
+    }
+    next();
+  } catch {
     res.status(401).json({ error: 'טוקן לא תקין' });
   }
 }
@@ -868,7 +888,7 @@ app.post('/api/auth/google', async (req, res) => {
 });
 
 // ── Users ─────────────────────────────────────────────────────────
-app.get('/api/users', auth, async (req, res) => {
+app.get('/api/users', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.request()
