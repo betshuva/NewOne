@@ -2290,10 +2290,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scrollToBottom() {
+    // עם reverse:true, הודעות חדשות נמצאות ב-minScrollExtent (ראש הרשימה הויזואלית)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent,
+          _scrollCtrl.position.minScrollExtent,
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
@@ -2663,15 +2664,19 @@ class _ChatScreenState extends State<ChatScreen> {
                             style: TextStyle(color: kSubtext)))
                     : ListView.builder(
                         controller: _scrollCtrl,
+                        reverse: true,
                         padding: const EdgeInsets.symmetric(
                             horizontal: 10, vertical: 8),
                         itemCount: _messages.length,
                         itemBuilder: (_, i) {
-                          final msg  = _messages[i];
+                          final msg  = _messages[_messages.length - 1 - i];
                           final isMe = msg['from'] == widget.me?['id'];
+                          // עם reverse=true, i==0 הוא ההודעה האחרונה (חדשה ביותר)
+                          // ה-date divider מוצג אחרי ההודעה האחרונה = בראש הרשימה הויזואלית
+                          final isLast = i == _messages.length - 1;
                           return Column(
                             children: [
-                              if (i == 0) const _DateDivider(label: 'היום'),
+                              if (isLast) const _DateDivider(label: 'היום'),
                               if (msg['isGroupInvite'] == true && !isMe)
                                 _GroupInviteCard(
                                   message: msg,
@@ -4017,7 +4022,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
+        _scrollCtrl.animateTo(_scrollCtrl.position.minScrollExtent,
             duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
       }
     });
@@ -4329,10 +4334,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     ? const Center(child: Text('אין הודעות עדיין', style: TextStyle(color: kSubtext)))
                     : ListView.builder(
                         controller: _scrollCtrl,
+                        reverse: true,
                         padding: const EdgeInsets.all(10),
                         itemCount: _messages.length,
                         itemBuilder: (_, i) {
-                          final msg  = _messages[i];
+                          final msg  = _messages[_messages.length - 1 - i];
                           final isMe = msg['isMe'] == true;
                           return Column(
                             crossAxisAlignment: isMe

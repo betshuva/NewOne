@@ -69,7 +69,7 @@ body{font-family:'Heebo',sans-serif;background:#0D1117;color:#E6EDF3;height:100v
 .btn-outline:hover{border-color:var(--blue);color:var(--blue-light)}
 
 /* Messages */
-.messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:8px}
+.messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column-reverse;gap:8px}
 .msg{max-width:72%;padding:8px 12px;border-radius:12px;font-size:13px;line-height:1.5;word-break:break-word}
 .msg.mine{align-self:flex-start;background:var(--blue-dark);color:#fff;border-bottom-left-radius:4px}
 .msg.other{align-self:flex-end;background:var(--bg3);border-bottom-right-radius:4px}
@@ -361,8 +361,9 @@ async function loadMessages() {
     const msgs = await res.json();
     if (!Array.isArray(msgs)) return;
     el.innerHTML = '';
+    // הצג מהישנה לחדשה (חדשות למעלה — flex-direction:column-reverse)
     msgs.forEach(m => appendMsg(m, true));
-    el.scrollTop = el.scrollHeight;
+    el.scrollTop = 0;
     // Cache last 50
     const toCache = msgs.slice(-50);
     localStorage.setItem(cacheKey, JSON.stringify(toCache));
