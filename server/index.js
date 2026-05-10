@@ -1978,6 +1978,15 @@ app.delete('/api/admin/db/:table/:id', adminAuth, async (req, res) => {
       .input('pk', sql.NVarChar, req.params.id)
       .query(`DELETE FROM ${req.params.table} WHERE [${cfg.pk}]=@pk`);
     logActivity(req.user.id, 'admin_delete', { table: req.params.table, id: req.params.id }, req.ip);
+    // אם נמחק משתמש — נתק אותו מיד מה-Socket
+    if (req.params.table === 'users') {
+      const sid = onlineUsers.get(req.params.id);
+      if (sid) {
+        req.app.get('io').to(sid).emit('force_logout', { reason: 'החשבון נמחק' });
+        req.app.get('io').sockets.sockets.get(sid)?.disconnect(true);
+        onlineUsers.delete(req.params.id);
+      }
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

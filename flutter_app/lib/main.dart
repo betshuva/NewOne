@@ -1685,6 +1685,9 @@ class _MainShellState extends State<MainShell> {
       }
     });
 
+    // אדמין מחק את המשתמש בזמן שהוא מחובר
+    _socket!.on('force_logout', (_) => _forceLogout());
+
     // הוסף משתמש חדש לרשימה ברגע ההרשמה
     _socket!.on('users:new', (data) {
       if (!mounted) return;
