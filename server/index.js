@@ -529,14 +529,17 @@ function auth(req, res, next) {
 io.use(async (socket, next) => {
   try {
     socket.user = jwt.verify(socket.handshake.auth.token, JWT_SECRET);
-    // וידוא שהמשתמש עדיין קיים בבסיס הנתונים
     const pool = await getPool();
     const exists = await pool.request()
       .input('id', sql.UniqueIdentifier, socket.user.id)
       .query('SELECT 1 FROM users WHERE id = @id');
-    if (!exists.recordset.length) return next(new Error('user_not_found'));
+    if (!exists.recordset.length) {
+      console.warn(`[SOCKET] user_not_found — id:${socket.user.id} email:${socket.user.email} name:${socket.user.name}`);
+      return next(new Error('user_not_found'));
+    }
     next();
-  } catch {
+  } catch (e) {
+    console.warn(`[SOCKET] unauthorized — ${e.message}`);
     next(new Error('unauthorized'));
   }
 });
@@ -792,6 +795,7 @@ app.post('/api/auth/google', async (req, res) => {
   try {
     const tokenRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
     const payload  = await tokenRes.json();
+    console.log(`[GOOGLE] tokeninfo — email:${payload.email} sub:${payload.sub} err:${payload.error_description||'-'}`);
     if (payload.error_description || !payload.sub)
       return res.status(401).json({ error: 'טוקן גוגל לא תקין' });
 
@@ -809,6 +813,7 @@ app.post('/api/auth/google', async (req, res) => {
 
     if (byGoogle.recordset.length) {
       const user  = byGoogle.recordset[0];
+      console.log(`[GOOGLE] login by google_id — user:${user.name} email:${user.email}`);
       const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
       logActivity(user.id, 'google_login', { email: user.email }, req.ip);
       const { password_hash, ...safeUser } = user;
@@ -838,6 +843,7 @@ app.post('/api/auth/google', async (req, res) => {
     }
 
     // 3. Create new user
+    console.log(`[GOOGLE] new user — name:${name} email:${email}`);
     const inserted = await pool.request()
       .input('name',     sql.NVarChar, name || (email ? email.split('@')[0] : 'משתמש'))
       .input('email',    sql.NVarChar, email || null)
@@ -856,6 +862,7 @@ app.post('/api/auth/google', async (req, res) => {
     const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser });
   } catch (e) {
+    console.error(`[GOOGLE] ERROR — ${e.message}`);
     res.status(500).json({ error: e.message });
   }
 });
