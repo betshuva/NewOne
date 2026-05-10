@@ -849,6 +849,10 @@ app.post('/api/auth/google', async (req, res) => {
     const user  = inserted.recordset[0];
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     logActivity(user.id, 'google_register', { email: user.email }, req.ip);
+    // הודע לכל המחוברים על משתמש חדש
+    req.app.get('io').emit('users:new', {
+      id: user.id, name: user.name, email: user.email, profile_pic_url: user.profile_pic_url || null
+    });
     const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser });
   } catch (e) {
@@ -1745,6 +1749,10 @@ app.post('/api/verify-otp', async (req, res) => {
                   OUTPUT INSERTED.id, INSERTED.name, INSERTED.email
                   VALUES (@name, @email, @phone, @hash, 1, 1)`);
         user = result.recordset[0];
+        // הודע לכל המחוברים על משתמש חדש
+        req.app.get('io').emit('users:new', {
+          id: user.id, name: user.name, email: user.email, profile_pic_url: null
+        });
       }
     }
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);

@@ -1659,6 +1659,18 @@ class _MainShellState extends State<MainShell> {
           .setAuth({'token': widget.token})
           .build(),
     );
+    // הוסף משתמש חדש לרשימה ברגע ההרשמה
+    _socket!.on('users:new', (data) {
+      if (!mounted) return;
+      final newUser = Map<String, dynamic>.from(data as Map);
+      final myId = _me?['id'] as String?;
+      if (newUser['id'] == myId) return; // אל תוסיף את עצמך
+      if (_users.any((u) => u['id'] == newUser['id'])) return; // כבר קיים
+      setState(() => _users = [newUser, ..._users]);
+      // עדכן cache
+      SharedPreferences.getInstance().then((prefs) =>
+          prefs.setString('cache_users', jsonEncode(_users)));
+    });
   }
 
   Future<void> _logout() async {
