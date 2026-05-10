@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -1569,6 +1570,7 @@ class _MainShellState extends State<MainShell> {
   List<Map<String, dynamic>> _users = [];
   String? _adminPerm;
   late final _AppLifecycleObserver _lifecycleObserver;
+  Timer? _usersRefreshTimer;
 
   @override
   void initState() {
@@ -1580,10 +1582,14 @@ class _MainShellState extends State<MainShell> {
     _registerFcmToken();
     _loadAdminPerm();
     WidgetsBinding.instance.addObserver(_lifecycleObserver);
+    // רענון רשימת משתמשים כל 60 שניות
+    _usersRefreshTimer = Timer.periodic(
+      const Duration(seconds: 60), (_) => _loadUsers());
   }
 
   @override
   void dispose() {
+    _usersRefreshTimer?.cancel();
     WidgetsBinding.instance.removeObserver(_lifecycleObserver);
     _socket?.disconnect();
     super.dispose();
