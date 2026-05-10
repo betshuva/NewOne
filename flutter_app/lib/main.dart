@@ -1581,7 +1581,6 @@ class _MainShellState extends State<MainShell> {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(_AppLifecycleObserver(onResume: _loadUsers));
-    _socket?.disconnect();
     super.dispose();
   }
 
