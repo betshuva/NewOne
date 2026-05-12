@@ -1246,7 +1246,8 @@ app.get('/api/cities', auth, async (req, res) => {
 // ── Listings ──────────────────────────────────────────────────────
 
 app.post('/api/listings', auth, async (req, res) => {
-  const { type, title, description, price, city, latitude, longitude, image_url, category } = req.body;
+  const { type, title, description, price, city, latitude, longitude, image_url, image_urls, category } = req.body;
+  const allImages = image_urls?.length ? image_urls.slice(0, 4) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const validTypes = ['free', 'sale'];
   const validCats  = ['רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
@@ -1271,12 +1272,22 @@ app.post('/api/listings', auth, async (req, res) => {
       .input('city',        sql.NVarChar,         listCity || null)
       .input('lat',         sql.Float,            lat  || null)
       .input('lng',         sql.Float,            lng  || null)
-      .input('imageUrl',    sql.NVarChar,         image_url || null)
+      .input('imageUrl',    sql.NVarChar,         allImages[0] || null)
       .input('category',    sql.NVarChar,         validCats.includes(category) ? category : 'אחר')
       .query(`INSERT INTO listings (user_id,type,title,description,price,city,latitude,longitude,image_url,category)
               OUTPUT INSERTED.id
               VALUES (@userId,@type,@title,@description,@price,@city,@lat,@lng,@imageUrl,@category)`);
-    res.json({ id: result.recordset[0].id });
+    const listingId = result.recordset[0].id;
+    if (allImages.length) {
+      for (let i = 0; i < allImages.length; i++) {
+        await pool.request()
+          .input('lid',   sql.UniqueIdentifier, listingId)
+          .input('url',   sql.NVarChar,         allImages[i])
+          .input('order', sql.Int,              i)
+          .query(`INSERT INTO listing_images (listing_id, url, sort_order) VALUES (@lid, @url, @order)`);
+      }
+    }
+    res.json({ id: listingId });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1347,7 +1358,14 @@ app.get('/api/listings/:id', auth, async (req, res) => {
       .query(`SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic, u.id AS seller_id
               FROM listings l JOIN users u ON u.id = l.user_id WHERE l.id=@id`);
     if (!result.recordset.length) return res.status(404).json({ error: 'לא נמצא' });
-    res.json(result.recordset[0]);
+    const item = result.recordset[0];
+    const imgs = await pool.request()
+      .input('id', sql.UniqueIdentifier, req.params.id)
+      .query(`SELECT url FROM listing_images WHERE listing_id=@id ORDER BY sort_order`);
+    item.images = imgs.recordset.length
+      ? imgs.recordset.map(r => r.url)
+      : (item.image_url ? [item.image_url] : []);
+    res.json(item);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2645,6 +2663,15 @@ async function initPendingTable() {
         user_id     UNIQUEIDENTIFIER NOT NULL,
         viewed_at   DATETIME         DEFAULT GETDATE(),
         PRIMARY KEY (listing_id, user_id)
+      )
+    `);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='listing_images')
+      CREATE TABLE listing_images (
+        id          UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        listing_id  UNIQUEIDENTIFIER NOT NULL,
+        url         NVARCHAR(500)    NOT NULL,
+        sort_order  INT              NOT NULL DEFAULT 0
       )
     `);
     await pool.request().query(`

@@ -1068,9 +1068,30 @@ async function openListingDetail(item) {
     if (r.ok) item = await r.json();
   } catch(_) {}
 
+  const imgs = item.images?.length ? item.images : (item.image_url ? [item.image_url] : []);
+  let _ci = 0;
+  function renderCarousel() {
+    const c = document.getElementById('lst-carousel');
+    if (!c) return;
+    c.querySelector('img').src = imgs[_ci];
+    const dots = c.querySelectorAll('.lst-dot');
+    dots.forEach((d,i) => { d.style.width = i===_ci?'18px':'7px'; d.style.opacity = i===_ci?'1':'0.5'; });
+  }
+  window._carouselPrev = () => { _ci = (_ci - 1 + imgs.length) % imgs.length; renderCarousel(); };
+  window._carouselNext = () => { _ci = (_ci + 1) % imgs.length; renderCarousel(); };
+
   main.innerHTML = `
     <div style="max-width:600px;margin:0 auto;padding:20px;height:100%;overflow-y:auto">
-      ${item.image_url?`<img src="${item.image_url}" style="width:100%;max-height:280px;object-fit:cover;border-radius:14px;margin-bottom:16px"/>`:''}
+      ${imgs.length ? `
+        <div id="lst-carousel" style="position:relative;margin-bottom:16px;border-radius:14px;overflow:hidden">
+          <img src="${imgs[0]}" style="width:100%;max-height:280px;object-fit:cover;display:block"/>
+          ${imgs.length>1?`
+            <button onclick="_carouselPrev()" style="position:absolute;top:50%;right:8px;transform:translateY(-50%);background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer;line-height:1">›</button>
+            <button onclick="_carouselNext()" style="position:absolute;top:50%;left:8px;transform:translateY(-50%);background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer;line-height:1">‹</button>
+            <div style="position:absolute;bottom:8px;left:0;right:0;display:flex;justify-content:center;gap:5px">
+              ${imgs.map((_,i)=>`<div class="lst-dot" style="height:7px;width:${i===0?'18':'7'}px;background:#fff;border-radius:4px;opacity:${i===0?1:.5};transition:all .2s"></div>`).join('')}
+            </div>`:''}
+        </div>` : ''}
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
         <span class="listing-badge ${isFree?'badge-free':'badge-sale'}" style="font-size:14px;padding:4px 12px">${isFree?'חינם':'₪'+Math.round(item.price||0)}</span>
         ${item.category?`<span style="color:var(--text3);font-size:13px">${item.category}</span>`:''}
@@ -1144,6 +1165,7 @@ async function openChatWithSeller(sellerId, sellerName, listingId) {
 }
 
 function openPostListing() {
+  _ptImages = [null, null, null, null];
   const main = document.getElementById('main');
   main.innerHTML = `
     <div style="max-width:500px;margin:0 auto;padding:20px;height:100%;overflow-y:auto">
@@ -1157,16 +1179,21 @@ function openPostListing() {
       <div id="pt-price-wrap" style="display:none;margin-bottom:10px">
         <input id="pt-price" type="number" placeholder="מחיר (₪)" style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;font-family:inherit;font-size:14px"/>
       </div>
-      <select id="pt-cat" style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;font-family:inherit;font-size:14px;margin-bottom:14px;background:#fff">
+      <select id="pt-cat" style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;font-family:inherit;font-size:14px;margin-bottom:10px;background:#fff">
         <option value="אחר">קטגוריה</option>
         <option>רהיטים</option><option>אלקטרוניקה</option><option>בגדים</option>
         <option>ספרים</option><option>כלי בית</option><option>צעצועים</option><option>אחר</option>
       </select>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:6px">תמונות (עד 4, כולל סינון צניעות)</div>
+      <div id="pt-images-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:14px"></div>
       <button onclick="submitListing()" style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">פרסם מודעה</button>
     </div>`;
+  renderPostImageSlots();
 }
 
-let _postType = 'free';
+let _postType  = 'free';
+let _ptImages  = [null, null, null, null];
+
 function selectPostType(t) {
   _postType = t;
   document.getElementById('pt-free').classList.toggle('lt-active', t==='free');
@@ -1174,14 +1201,57 @@ function selectPostType(t) {
   document.getElementById('pt-price-wrap').style.display = t==='sale' ? '' : 'none';
 }
 
+function renderPostImageSlots() {
+  const grid = document.getElementById('pt-images-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  for (let i = 0; i < 4; i++) {
+    const url = _ptImages[i];
+    const cell = document.createElement('div');
+    cell.style.cssText = 'aspect-ratio:1;border:2px dashed var(--div);border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative;background:var(--blue-pale);cursor:pointer';
+    if (url) {
+      cell.innerHTML = `<img src="${url}" style="width:100%;height:100%;object-fit:cover"/>
+        <button onclick="event.stopPropagation();removePtImage(${i})" style="position:absolute;top:3px;left:3px;background:rgba(0,0,0,.55);color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:11px;cursor:pointer;line-height:1">✕</button>`;
+    } else {
+      cell.innerHTML = `<div style="text-align:center;color:var(--text3);font-size:12px"><div style="font-size:22px">+</div>${i===0?'ראשית':''}</div>`;
+      cell.onclick = () => pickPtImage(i);
+    }
+    grid.appendChild(cell);
+  }
+}
+
+function removePtImage(i) { _ptImages[i] = null; renderPostImageSlots(); }
+
+async function pickPtImage(i) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*';
+  inp.onchange = async () => {
+    if (!inp.files[0]) return;
+    const cell = document.getElementById('pt-images-grid')?.children[i];
+    if (cell) cell.innerHTML = '<div style="font-size:20px">⏳</div>';
+    const fd = new FormData();
+    fd.append('file', inp.files[0]);
+    try {
+      const r = await fetch(`${API}/api/upload`, { method:'POST', headers:{'Authorization':`Bearer ${token}`}, body:fd });
+      const d = await r.json();
+      if (d.url) { _ptImages[i] = d.url; }
+      else       { alert(d.error || 'שגיאה בהעלאה'); }
+    } catch { alert('שגיאה בהעלאה'); }
+    renderPostImageSlots();
+  };
+  inp.click();
+}
+
 async function submitListing() {
   const title = document.getElementById('pt-title').value.trim();
   if (!title) { alert('נדרשת כותרת'); return; }
+  const image_urls = _ptImages.filter(Boolean);
   const body = {
     type: _postType, title,
     description: document.getElementById('pt-desc').value.trim(),
     category: document.getElementById('pt-cat').value,
     price: _postType==='sale' ? parseFloat(document.getElementById('pt-price').value)||0 : null,
+    ...(image_urls.length && { image_urls }),
   };
   try {
     const res = await fetch(`${API}/api/listings`, {

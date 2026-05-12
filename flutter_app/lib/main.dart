@@ -2283,29 +2283,35 @@ class PostListingScreen extends StatefulWidget {
 }
 
 class _PostListingScreenState extends State<PostListingScreen> {
-  final _titleCtrl = TextEditingController();
-  final _descCtrl  = TextEditingController();
-  final _priceCtrl = TextEditingController();
-  String _type     = 'free';
-  String _category = 'אחר';
-  String? _imageUrl;
-  bool   _uploading = false;
-  bool   _saving    = false;
+  final _titleCtrl  = TextEditingController();
+  final _descCtrl   = TextEditingController();
+  final _priceCtrl  = TextEditingController();
+  String _type      = 'free';
+  String _category  = 'אחר';
+  final List<String?> _imageUrls    = [null, null, null, null];
+  final List<bool>    _uploadingSlot = [false, false, false, false];
+  bool _saving = false;
 
-  Future<void> _pickImage() async {
+  Future<void> _pickImage(int slot) async {
     final picker = ImagePicker();
     final f = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
     if (f == null) return;
-    setState(() => _uploading = true);
+    setState(() => _uploadingSlot[slot] = true);
     try {
-      final req = http.MultipartRequest('POST', Uri.parse('$kApi/upload-b2'))
+      final req = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..files.add(await http.MultipartFile.fromPath('file', f.path,
             contentType: _mimeFromFileName(f.path)));
       final res  = await req.send();
       final body = jsonDecode(await res.stream.bytesToString());
-      if (mounted) setState(() => _imageUrl = body['url']);
-    } catch (_) {} finally { if (mounted) setState(() => _uploading = false); }
+      if (!mounted) return;
+      if (body['url'] != null) {
+        setState(() => _imageUrls[slot] = body['url']);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(body['error'] ?? 'שגיאה בהעלאת תמונה')));
+      }
+    } catch (_) {} finally { if (mounted) setState(() => _uploadingSlot[slot] = false); }
   }
 
   Future<void> _submit() async {
@@ -2315,10 +2321,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
     }
     setState(() => _saving = true);
     try {
+      final urls = _imageUrls.where((u) => u != null).toList();
       final body = <String, dynamic>{
         'type': _type, 'title': _titleCtrl.text.trim(),
         'description': _descCtrl.text.trim(), 'category': _category,
-        'image_url': _imageUrl,
+        if (urls.isNotEmpty) 'image_urls': urls,
       };
       if (_type == 'sale') body['price'] = double.tryParse(_priceCtrl.text) ?? 0;
       final res = await http.post(Uri.parse('$kApi/listings'),
@@ -2347,21 +2354,16 @@ class _PostListingScreenState extends State<PostListingScreen> {
             Expanded(child: _typeBtn('sale', 'יד 2 — מכירה', const Color(0xFFEDE9FE), const Color(0xFF5B21B6))),
           ]),
           const SizedBox(height: 16),
-          // Image
-          GestureDetector(
-            onTap: _uploading ? null : _pickImage,
-            child: Container(
-              height: 160, decoration: BoxDecoration(color: const Color(0xFFE8F4FD), borderRadius: BorderRadius.circular(12)),
-              child: _uploading
-                ? const Center(child: CircularProgressIndicator())
-                : _imageUrl != null
-                  ? ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.network(_imageUrl!, fit: BoxFit.cover, width: double.infinity))
-                  : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      Icon(Icons.add_photo_alternate_outlined, size: 48, color: kPrimary),
-                      const SizedBox(height: 8),
-                      Text('הוסף תמונה', style: TextStyle(color: kPrimary, fontWeight: FontWeight.w600)),
-                    ]),
-            ),
+          // Images grid (up to 4)
+          Text('תמונות (עד 4)', style: TextStyle(fontSize: 13, color: kSubtext, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 8),
+          GridView.count(
+            crossAxisCount: 4,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            children: List.generate(4, (i) => _imageSlot(i)),
           ),
           const SizedBox(height: 16),
           // Title
@@ -2396,6 +2398,42 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
+  Widget _imageSlot(int i) {
+    final url       = _imageUrls[i];
+    final uploading = _uploadingSlot[i];
+    return GestureDetector(
+      onTap: uploading || url != null ? null : () => _pickImage(i),
+      onLongPress: url != null ? () => setState(() => _imageUrls[i] = null) : null,
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFFE8F4FD),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: kBorder),
+        ),
+        child: uploading
+          ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          : url != null
+            ? Stack(fit: StackFit.expand, children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(9),
+                  child: Image.network(url, fit: BoxFit.cover)),
+                Positioned(
+                  top: 3, left: 3,
+                  child: GestureDetector(
+                    onTap: () => setState(() => _imageUrls[i] = null),
+                    child: Container(
+                      width: 20, height: 20,
+                      decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                      child: const Icon(Icons.close, size: 13, color: Colors.white)))),
+              ])
+            : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(Icons.add_photo_alternate_outlined, size: 24, color: kPrimary),
+                if (i == 0) Text('תמונה ראשית', style: TextStyle(fontSize: 9, color: kSubtext), textAlign: TextAlign.center),
+              ]),
+      ),
+    );
+  }
+
   Widget _typeBtn(String val, String label, Color bg, Color fg) => GestureDetector(
     onTap: () => setState(() => _type = val),
     child: Container(
@@ -2411,39 +2449,81 @@ class _PostListingScreenState extends State<PostListingScreen> {
 }
 
 // ── Listing Detail Screen ─────────────────────────────────────────
-class ListingDetailScreen extends StatelessWidget {
+class ListingDetailScreen extends StatefulWidget {
   final Map<String, dynamic> item;
   final String token;
   final Map<String, dynamic>? me;
   const ListingDetailScreen({super.key, required this.item, required this.token, required this.me});
+  @override State<ListingDetailScreen> createState() => _ListingDetailScreenState();
+}
 
-  void _openChat(BuildContext context) {
+class _ListingDetailScreenState extends State<ListingDetailScreen> {
+  late final PageController _pageCtrl = PageController();
+  int _pageIdx = 0;
+
+  List<String> get _images {
+    final raw = widget.item['images'];
+    if (raw is List && raw.isNotEmpty) return List<String>.from(raw);
+    final single = widget.item['image_url'] as String?;
+    return single != null ? [single] : [];
+  }
+
+  void _openChat() {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => ChatScreen(
-        token: token,
-        recipient: {'id': item['seller_id'], 'name': item['seller_name'], 'profile_pic_url': item['seller_pic']},
-        me: me,
+        token: widget.token,
+        recipient: {'id': widget.item['seller_id'], 'name': widget.item['seller_name'], 'profile_pic_url': widget.item['seller_pic']},
+        me: widget.me,
         socket: null,
       ),
     ));
   }
 
   @override
+  void dispose() { _pageCtrl.dispose(); super.dispose(); }
+
+  @override
   Widget build(BuildContext context) {
-    final isFree = item['type'] == 'free';
-    final isOwner = me?['id'] == item['seller_id'];
+    final isFree  = widget.item['type'] == 'free';
+    final isOwner = widget.me?['id'] == widget.item['seller_id'];
+    final images  = _images;
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
         backgroundColor: kPrimary,
-        title: Text(item['title'] ?? '', style: const TextStyle(color: Colors.white)),
+        title: Text(widget.item['title'] ?? '', style: const TextStyle(color: Colors.white)),
         leading: BackButton(color: Colors.white),
       ),
       body: SingleChildScrollView(
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (item['image_url'] != null)
-            Image.network(item['image_url'], height: 260, fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(height: 260, color: const Color(0xFFE8F4FD)))
+          if (images.isNotEmpty)
+            Stack(children: [
+              SizedBox(
+                height: 260,
+                child: PageView.builder(
+                  controller: _pageCtrl,
+                  itemCount: images.length,
+                  onPageChanged: (i) => setState(() => _pageIdx = i),
+                  itemBuilder: (_, i) => Image.network(images[i], fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(color: const Color(0xFFE8F4FD))),
+                ),
+              ),
+              if (images.length > 1)
+                Positioned(
+                  bottom: 10, left: 0, right: 0,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(images.length, (i) => Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      width: _pageIdx == i ? 18 : 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        color: _pageIdx == i ? Colors.white : Colors.white54,
+                        borderRadius: BorderRadius.circular(4)),
+                    )),
+                  ),
+                ),
+            ])
           else
             Container(height: 200, color: const Color(0xFFE8F4FD),
               child: Icon(Icons.image_outlined, size: 80, color: kSubtext)),
@@ -2457,22 +2537,22 @@ class ListingDetailScreen extends StatelessWidget {
                     color: isFree ? const Color(0xFFD1FAE5) : const Color(0xFFEDE9FE),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(isFree ? 'חינם' : '₪${item['price']?.toStringAsFixed(0) ?? ''}',
+                  child: Text(isFree ? 'חינם' : '₪${widget.item['price']?.toStringAsFixed(0) ?? ''}',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16,
                       color: isFree ? const Color(0xFF065F46) : const Color(0xFF5B21B6))),
                 ),
                 const Spacer(),
-                if (item['city'] != null)
+                if (widget.item['city'] != null)
                   Row(children: [
                     Icon(Icons.location_on_outlined, size: 16, color: kSubtext),
-                    Text(item['city'], style: TextStyle(color: kSubtext)),
+                    Text(widget.item['city'], style: TextStyle(color: kSubtext)),
                   ]),
               ]),
               const SizedBox(height: 12),
-              Text(item['title'] ?? '', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-              if (item['description'] != null && item['description'].toString().isNotEmpty) ...[
+              Text(widget.item['title'] ?? '', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              if (widget.item['description'] != null && widget.item['description'].toString().isNotEmpty) ...[
                 const SizedBox(height: 8),
-                Text(item['description'], style: TextStyle(fontSize: 15, color: kTextDark, height: 1.6)),
+                Text(widget.item['description'], style: TextStyle(fontSize: 15, color: kTextDark, height: 1.6)),
               ],
               const SizedBox(height: 20),
               // Seller info
@@ -2481,11 +2561,11 @@ class ListingDetailScreen extends StatelessWidget {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
                 child: Row(children: [
                   CircleAvatar(radius: 24, backgroundColor: kBorder,
-                    backgroundImage: item['seller_pic'] != null ? NetworkImage(item['seller_pic']) : null,
-                    child: item['seller_pic'] == null ? Text((item['seller_name'] ?? '?')[0], style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold)) : null),
+                    backgroundImage: widget.item['seller_pic'] != null ? NetworkImage(widget.item['seller_pic']) : null,
+                    child: widget.item['seller_pic'] == null ? Text((widget.item['seller_name'] ?? '?')[0], style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold)) : null),
                   const SizedBox(width: 12),
                   Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(item['seller_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                    Text(widget.item['seller_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
                     Text('המפרסם', style: TextStyle(color: kSubtext, fontSize: 13)),
                   ])),
                 ]),
@@ -2494,7 +2574,7 @@ class ListingDetailScreen extends StatelessWidget {
               if (!isOwner)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: kPrimary, minimumSize: const Size(double.infinity, 50)),
-                  onPressed: () => _openChat(context),
+                  onPressed: _openChat,
                   icon: const Icon(Icons.chat_bubble_outline, color: Colors.white),
                   label: const Text('שלח הודעה למפרסם', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
                 ),
