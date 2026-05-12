@@ -1302,12 +1302,13 @@ app.get('/api/listings', auth, async (req, res) => {
     const result = await r.query(`
       SELECT l.id, l.type, l.title, l.description, l.price, l.city,
              l.image_url, l.category, l.status, l.created_at,
+             l.view_count, l.contact_count,
              u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
              ${distanceCol} AS distance_km
       FROM listings l JOIN users u ON u.id = l.user_id
       WHERE ${where}
       ORDER BY l.created_at DESC
-      OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`);
+      OFFSET ${offset} ROWS FETCH NEXT ${pageSize} ROWS ONLY`);
     res.json(result.recordset);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

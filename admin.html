@@ -1503,6 +1503,7 @@ async function loadAdminListings() {
   try {
     const res  = await fetch(`${API}/api/listings?${params}`, { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
+    if (!Array.isArray(data)) { grid.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${data.error||'תגובה לא צפויה'}</div>`; return; }
 
     // Stats
     const stats = document.getElementById('lst-stats');
