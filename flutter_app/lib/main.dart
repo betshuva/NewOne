@@ -1791,6 +1791,7 @@ class _MainShellState extends State<MainShell> {
         socket: _socket,
       ),
       GroupsScreen(token: widget.token, me: _me, socket: _socket),
+      ListingsScreen(token: widget.token, me: _me),
       SettingsScreen(me: _me, token: widget.token, onLogout: _logout, adminPerm: _adminPerm),
     ];
 
@@ -1816,11 +1817,510 @@ class _MainShellState extends State<MainShell> {
             label: 'קבוצות',
           ),
           BottomNavigationBarItem(
+            icon: Icon(Icons.storefront_outlined),
+            activeIcon: Icon(Icons.storefront),
+            label: 'מודעות',
+          ),
+          BottomNavigationBarItem(
             icon: Icon(Icons.settings_outlined),
             activeIcon: Icon(Icons.settings),
             label: 'הגדרות',
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Listings Screen ───────────────────────────────────────────────
+const _kCategories = ['הכל','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
+
+class ListingsScreen extends StatefulWidget {
+  final String token;
+  final Map<String, dynamic>? me;
+  const ListingsScreen({super.key, required this.token, required this.me});
+  @override State<ListingsScreen> createState() => _ListingsScreenState();
+}
+
+class _ListingsScreenState extends State<ListingsScreen> with SingleTickerProviderStateMixin {
+  late TabController _tab;
+  List<Map<String, dynamic>> _items = [];
+  bool _loading = true;
+  String _typeFilter = 'all'; // all / free / sale
+  String _catFilter  = 'הכל';
+  String _cityFilter = '';
+  double _radius     = 0; // 0 = no radius filter
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = TabController(length: 2, vsync: this);
+    _tab.addListener(() { if (!_tab.indexIsChanging) { _typeFilter = _tab.index == 0 ? 'free' : 'sale'; _load(); } });
+    _load();
+  }
+
+  @override void dispose() { _tab.dispose(); super.dispose(); }
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() => _loading = true);
+    try {
+      final params = <String, String>{'page': '1'};
+      if (_typeFilter != 'all') params['type'] = _typeFilter;
+      if (_catFilter  != 'הכל') params['category'] = _catFilter;
+      if (_cityFilter.isNotEmpty) params['city'] = _cityFilter;
+      if (_radius > 0) params['radius'] = _radius.toStringAsFixed(0);
+      final uri = Uri.parse('$kApi/listings').replace(queryParameters: params);
+      final res = await http.get(uri, headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (!mounted) return;
+      final data = jsonDecode(res.body);
+      setState(() { _items = List<Map<String,dynamic>>.from(data); _loading = false; });
+    } catch (_) { if (mounted) setState(() => _loading = false); }
+  }
+
+  void _openPost() async {
+    final ok = await Navigator.push<bool>(context, MaterialPageRoute(
+      builder: (_) => PostListingScreen(token: widget.token, me: widget.me),
+    ));
+    if (ok == true) _load();
+  }
+
+  void _openDetail(Map<String, dynamic> item) {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => ListingDetailScreen(item: item, token: widget.token, me: widget.me),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
+      appBar: AppBar(
+        backgroundColor: kPrimary,
+        title: const Text('לוח מודעות', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(icon: const Icon(Icons.add, color: Colors.white), onPressed: _openPost),
+        ],
+        bottom: TabBar(
+          controller: _tab,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white70,
+          indicatorColor: Colors.white,
+          tabs: const [Tab(text: 'ונתנו — חינם'), Tab(text: 'יד 2 — מכירה')],
+        ),
+      ),
+      body: Column(children: [
+        // ── Filters ─────────────────────────────────────────────────
+        Container(
+          color: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(children: [
+            Expanded(
+              child: SizedBox(
+                height: 34,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _kCategories.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 6),
+                  itemBuilder: (_, i) {
+                    final c = _kCategories[i];
+                    final sel = c == _catFilter;
+                    return GestureDetector(
+                      onTap: () { setState(() => _catFilter = c); _load(); },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: sel ? kPrimary : const Color(0xFFE8F4FD),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(c, style: TextStyle(fontSize: 13, color: sel ? Colors.white : kPrimary, fontWeight: FontWeight.w600)),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _showFilterSheet,
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: _cityFilter.isNotEmpty || _radius > 0 ? kPrimary : const Color(0xFFE8F4FD),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.tune, size: 20, color: _cityFilter.isNotEmpty || _radius > 0 ? Colors.white : kPrimary),
+              ),
+            ),
+          ]),
+        ),
+        // ── List ────────────────────────────────────────────────────
+        Expanded(
+          child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _items.isEmpty
+              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.storefront_outlined, size: 64, color: kSubtext),
+                  const SizedBox(height: 12),
+                  Text('אין מודעות כרגע', style: TextStyle(color: kSubtext, fontSize: 16)),
+                  const SizedBox(height: 8),
+                  TextButton(onPressed: _openPost, child: const Text('פרסם ראשון!')),
+                ]))
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: _items.length,
+                    itemBuilder: (_, i) => _ListingCard(item: _items[i], onTap: () => _openDetail(_items[i])),
+                  ),
+                ),
+        ),
+      ]),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _openPost,
+        backgroundColor: kPrimary,
+        icon: const Icon(Icons.add, color: Colors.white),
+        label: const Text('פרסם מודעה', style: TextStyle(color: Colors.white)),
+      ),
+    );
+  }
+
+  void _showFilterSheet() {
+    final cityCtrl = TextEditingController(text: _cityFilter);
+    double tmpRadius = _radius;
+    showModalBottomSheet(context: context, isScrollControlled: true, builder: (ctx) {
+      return StatefulBuilder(builder: (ctx, setS) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, left: 20, right: 20, top: 20),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('סינון', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          TextField(
+            controller: cityCtrl,
+            textDirection: TextDirection.rtl,
+            decoration: const InputDecoration(labelText: 'עיר', prefixIcon: Icon(Icons.location_city)),
+          ),
+          const SizedBox(height: 16),
+          Text('רדיוס: ${tmpRadius == 0 ? "ללא" : "${tmpRadius.toInt()} ק״מ"}'),
+          Slider(
+            value: tmpRadius, min: 0, max: 100, divisions: 10,
+            activeColor: kPrimary,
+            onChanged: (v) => setS(() => tmpRadius = v),
+          ),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(child: OutlinedButton(
+              onPressed: () { setState(() { _cityFilter = ''; _radius = 0; }); Navigator.pop(ctx); _load(); },
+              child: const Text('נקה'),
+            )),
+            const SizedBox(width: 12),
+            Expanded(child: ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: kPrimary),
+              onPressed: () { setState(() { _cityFilter = cityCtrl.text.trim(); _radius = tmpRadius; }); Navigator.pop(ctx); _load(); },
+              child: const Text('החל', style: TextStyle(color: Colors.white)),
+            )),
+          ]),
+          const SizedBox(height: 16),
+        ]),
+      ));
+    });
+  }
+}
+
+class _ListingCard extends StatelessWidget {
+  final Map<String, dynamic> item;
+  final VoidCallback onTap;
+  const _ListingCard({required this.item, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final isFree = item['type'] == 'free';
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 8, offset: const Offset(0,2))]),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // Image
+          ClipRRect(
+            borderRadius: const BorderRadius.horizontal(right: Radius.circular(14)),
+            child: item['image_url'] != null
+              ? Image.network(item['image_url'], width: 110, height: 110, fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _placeholder())
+              : _placeholder(),
+          ),
+          // Info
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: isFree ? const Color(0xFFD1FAE5) : const Color(0xFFEDE9FE),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(isFree ? 'חינם' : '₪${item['price']?.toStringAsFixed(0) ?? ''}',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold,
+                        color: isFree ? const Color(0xFF065F46) : const Color(0xFF5B21B6))),
+                  ),
+                  const SizedBox(width: 6),
+                  if (item['category'] != null)
+                    Text(item['category'], style: TextStyle(fontSize: 12, color: kSubtext)),
+                ]),
+                const SizedBox(height: 6),
+                Text(item['title'] ?? '', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600), maxLines: 2, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 4),
+                if (item['city'] != null)
+                  Row(children: [
+                    Icon(Icons.location_on_outlined, size: 14, color: kSubtext),
+                    const SizedBox(width: 2),
+                    Text(item['city'], style: TextStyle(fontSize: 12, color: kSubtext)),
+                    if (item['distance_km'] != null) ...[
+                      Text(' · ', style: TextStyle(color: kSubtext)),
+                      Text('${item['distance_km']} ק״מ', style: TextStyle(fontSize: 12, color: kSubtext)),
+                    ],
+                  ]),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _placeholder() => Container(width: 110, height: 110, color: const Color(0xFFE8F4FD),
+    child: Icon(Icons.image_outlined, size: 36, color: kSubtext));
+}
+
+// ── Post Listing Screen ───────────────────────────────────────────
+class PostListingScreen extends StatefulWidget {
+  final String token;
+  final Map<String, dynamic>? me;
+  const PostListingScreen({super.key, required this.token, required this.me});
+  @override State<PostListingScreen> createState() => _PostListingScreenState();
+}
+
+class _PostListingScreenState extends State<PostListingScreen> {
+  final _titleCtrl = TextEditingController();
+  final _descCtrl  = TextEditingController();
+  final _priceCtrl = TextEditingController();
+  String _type     = 'free';
+  String _category = 'אחר';
+  String? _imageUrl;
+  bool   _uploading = false;
+  bool   _saving    = false;
+
+  Future<void> _pickImage() async {
+    final picker = ImagePicker();
+    final f = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+    if (f == null) return;
+    setState(() => _uploading = true);
+    try {
+      final req = http.MultipartRequest('POST', Uri.parse('$kApi/upload-b2'))
+        ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..files.add(await http.MultipartFile.fromPath('file', f.path,
+            contentType: _mimeFromFileName(f.path)));
+      final res  = await req.send();
+      final body = jsonDecode(await res.stream.bytesToString());
+      if (mounted) setState(() => _imageUrl = body['url']);
+    } catch (_) {} finally { if (mounted) setState(() => _uploading = false); }
+  }
+
+  Future<void> _submit() async {
+    if (_titleCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('נדרשת כותרת')));
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final body = <String, dynamic>{
+        'type': _type, 'title': _titleCtrl.text.trim(),
+        'description': _descCtrl.text.trim(), 'category': _category,
+        'image_url': _imageUrl,
+      };
+      if (_type == 'sale') body['price'] = double.tryParse(_priceCtrl.text) ?? 0;
+      final res = await http.post(Uri.parse('$kApi/listings'),
+        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      );
+      if (res.statusCode == 200 && mounted) Navigator.pop(context, true);
+    } catch (_) {} finally { if (mounted) setState(() => _saving = false); }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: kPrimary,
+        title: const Text('פרסום מודעה', style: TextStyle(color: Colors.white)),
+        leading: BackButton(color: Colors.white),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          // Type toggle
+          Row(children: [
+            Expanded(child: _typeBtn('free', 'ונתנו — חינם', const Color(0xFFD1FAE5), const Color(0xFF065F46))),
+            const SizedBox(width: 10),
+            Expanded(child: _typeBtn('sale', 'יד 2 — מכירה', const Color(0xFFEDE9FE), const Color(0xFF5B21B6))),
+          ]),
+          const SizedBox(height: 16),
+          // Image
+          GestureDetector(
+            onTap: _uploading ? null : _pickImage,
+            child: Container(
+              height: 160, decoration: BoxDecoration(color: const Color(0xFFE8F4FD), borderRadius: BorderRadius.circular(12)),
+              child: _uploading
+                ? const Center(child: CircularProgressIndicator())
+                : _imageUrl != null
+                  ? ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.network(_imageUrl!, fit: BoxFit.cover, width: double.infinity))
+                  : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      Icon(Icons.add_photo_alternate_outlined, size: 48, color: kPrimary),
+                      const SizedBox(height: 8),
+                      Text('הוסף תמונה', style: TextStyle(color: kPrimary, fontWeight: FontWeight.w600)),
+                    ]),
+            ),
+          ),
+          const SizedBox(height: 16),
+          // Title
+          TextField(controller: _titleCtrl, textDirection: TextDirection.rtl,
+            decoration: const InputDecoration(labelText: 'כותרת המודעה *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          // Description
+          TextField(controller: _descCtrl, textDirection: TextDirection.rtl, maxLines: 3,
+            decoration: const InputDecoration(labelText: 'תיאור', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          // Price (sale only)
+          if (_type == 'sale') ...[
+            TextField(controller: _priceCtrl, keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'מחיר (₪)', border: OutlineInputBorder(), prefixText: '₪ ')),
+            const SizedBox(height: 12),
+          ],
+          // Category
+          DropdownButtonFormField<String>(
+            value: _category,
+            decoration: const InputDecoration(labelText: 'קטגוריה', border: OutlineInputBorder()),
+            items: _kCategories.skip(1).map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+            onChanged: (v) => setState(() => _category = v!),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: kPrimary, padding: const EdgeInsets.symmetric(vertical: 14)),
+            onPressed: _saving ? null : _submit,
+            child: _saving ? const CircularProgressIndicator(color: Colors.white) : const Text('פרסם', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _typeBtn(String val, String label, Color bg, Color fg) => GestureDetector(
+    onTap: () => setState(() => _type = val),
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: _type == val ? bg : Colors.white,
+        border: Border.all(color: _type == val ? fg : kBorder, width: 2),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(label, textAlign: TextAlign.center, style: TextStyle(color: fg, fontWeight: FontWeight.bold, fontSize: 13)),
+    ),
+  );
+}
+
+// ── Listing Detail Screen ─────────────────────────────────────────
+class ListingDetailScreen extends StatelessWidget {
+  final Map<String, dynamic> item;
+  final String token;
+  final Map<String, dynamic>? me;
+  const ListingDetailScreen({super.key, required this.item, required this.token, required this.me});
+
+  void _openChat(BuildContext context) {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => ChatScreen(
+        token: token,
+        recipient: {'id': item['seller_id'], 'name': item['seller_name'], 'profile_pic_url': item['seller_pic']},
+        me: me,
+        socket: null,
+      ),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isFree = item['type'] == 'free';
+    final isOwner = me?['id'] == item['seller_id'];
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
+      appBar: AppBar(
+        backgroundColor: kPrimary,
+        title: Text(item['title'] ?? '', style: const TextStyle(color: Colors.white)),
+        leading: BackButton(color: Colors.white),
+      ),
+      body: SingleChildScrollView(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (item['image_url'] != null)
+            Image.network(item['image_url'], height: 260, fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(height: 260, color: const Color(0xFFE8F4FD)))
+          else
+            Container(height: 200, color: const Color(0xFFE8F4FD),
+              child: Icon(Icons.image_outlined, size: 80, color: kSubtext)),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isFree ? const Color(0xFFD1FAE5) : const Color(0xFFEDE9FE),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(isFree ? 'חינם' : '₪${item['price']?.toStringAsFixed(0) ?? ''}',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16,
+                      color: isFree ? const Color(0xFF065F46) : const Color(0xFF5B21B6))),
+                ),
+                const Spacer(),
+                if (item['city'] != null)
+                  Row(children: [
+                    Icon(Icons.location_on_outlined, size: 16, color: kSubtext),
+                    Text(item['city'], style: TextStyle(color: kSubtext)),
+                  ]),
+              ]),
+              const SizedBox(height: 12),
+              Text(item['title'] ?? '', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              if (item['description'] != null && item['description'].toString().isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(item['description'], style: TextStyle(fontSize: 15, color: kTextDark, height: 1.6)),
+              ],
+              const SizedBox(height: 20),
+              // Seller info
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+                child: Row(children: [
+                  CircleAvatar(radius: 24, backgroundColor: kBorder,
+                    backgroundImage: item['seller_pic'] != null ? NetworkImage(item['seller_pic']) : null,
+                    child: item['seller_pic'] == null ? Text((item['seller_name'] ?? '?')[0], style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold)) : null),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(item['seller_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                    Text('המפרסם', style: TextStyle(color: kSubtext, fontSize: 13)),
+                  ])),
+                ]),
+              ),
+              const SizedBox(height: 20),
+              if (!isOwner)
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: kPrimary, minimumSize: const Size(double.infinity, 50)),
+                  onPressed: () => _openChat(context),
+                  icon: const Icon(Icons.chat_bubble_outline, color: Colors.white),
+                  label: const Text('שלח הודעה למפרסם', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                ),
+            ]),
+          ),
+        ]),
       ),
     );
   }

@@ -1230,6 +1230,123 @@ app.get('/api/cities', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Listings ──────────────────────────────────────────────────────
+
+app.post('/api/listings', auth, async (req, res) => {
+  const { type, title, description, price, city, latitude, longitude, image_url, category } = req.body;
+  if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
+  const validTypes = ['free', 'sale'];
+  const validCats  = ['רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
+  try {
+    const pool = await getPool();
+    // use user's stored location if not provided
+    let lat = latitude, lng = longitude, listCity = city;
+    if (!lat || !lng) {
+      const me = await pool.request()
+        .input('id', sql.UniqueIdentifier, req.user.id)
+        .query('SELECT latitude, longitude, city FROM users WHERE id=@id');
+      lat      = me.recordset[0]?.latitude  ?? lat;
+      lng      = me.recordset[0]?.longitude ?? lng;
+      listCity = listCity || me.recordset[0]?.city;
+    }
+    const result = await pool.request()
+      .input('userId',      sql.UniqueIdentifier, req.user.id)
+      .input('type',        sql.NVarChar,         validTypes.includes(type) ? type : 'free')
+      .input('title',       sql.NVarChar,         title.trim())
+      .input('description', sql.NVarChar,         description || null)
+      .input('price',       sql.Float,            type === 'sale' ? (price ?? 0) : null)
+      .input('city',        sql.NVarChar,         listCity || null)
+      .input('lat',         sql.Float,            lat  || null)
+      .input('lng',         sql.Float,            lng  || null)
+      .input('imageUrl',    sql.NVarChar,         image_url || null)
+      .input('category',    sql.NVarChar,         validCats.includes(category) ? category : 'אחר')
+      .query(`INSERT INTO listings (user_id,type,title,description,price,city,latitude,longitude,image_url,category)
+              OUTPUT INSERTED.id
+              VALUES (@userId,@type,@title,@description,@price,@city,@lat,@lng,@imageUrl,@category)`);
+    res.json({ id: result.recordset[0].id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/listings', auth, async (req, res) => {
+  const { type, category, city, radius, page = 1 } = req.query;
+  const pageSize = 20;
+  const offset   = (parseInt(page) - 1) * pageSize;
+  try {
+    const pool = await getPool();
+    let where = `l.status = 'active' AND l.expires_at > GETDATE()`;
+    const r   = pool.request()
+      .input('userId', sql.UniqueIdentifier, req.user.id)
+      .input('offset', sql.Int, offset)
+      .input('pageSize', sql.Int, pageSize);
+
+    if (type)     { where += ` AND l.type=@type`;         r.input('type',     sql.NVarChar, type); }
+    if (category) { where += ` AND l.category=@category`; r.input('category', sql.NVarChar, category); }
+    if (city)     { where += ` AND l.city=@city`;         r.input('city',     sql.NVarChar, city); }
+
+    let distanceCol = 'NULL AS distance_km';
+    if (radius) {
+      const me = await pool.request()
+        .input('id', sql.UniqueIdentifier, req.user.id)
+        .query('SELECT latitude, longitude FROM users WHERE id=@id');
+      const { latitude: myLat, longitude: myLng } = me.recordset[0] || {};
+      if (myLat && myLng) {
+        r.input('myLat', sql.Float, myLat).input('myLng', sql.Float, myLng).input('radius', sql.Float, parseFloat(radius));
+        distanceCol = `ROUND(6371*ACOS(COS(RADIANS(@myLat))*COS(RADIANS(l.latitude))*COS(RADIANS(l.longitude)-RADIANS(@myLng))+SIN(RADIANS(@myLat))*SIN(RADIANS(l.latitude))),1)`;
+        where += ` AND l.latitude IS NOT NULL AND (${distanceCol}) <= @radius`;
+      }
+    }
+
+    const result = await r.query(`
+      SELECT l.id, l.type, l.title, l.description, l.price, l.city,
+             l.image_url, l.category, l.status, l.created_at,
+             u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
+             ${distanceCol} AS distance_km
+      FROM listings l JOIN users u ON u.id = l.user_id
+      WHERE ${where}
+      ORDER BY l.created_at DESC
+      OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`);
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/listings/:id', auth, async (req, res) => {
+  try {
+    const pool   = await getPool();
+    const result = await pool.request()
+      .input('id', sql.UniqueIdentifier, req.params.id)
+      .query(`SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic, u.id AS seller_id
+              FROM listings l JOIN users u ON u.id = l.user_id WHERE l.id=@id`);
+    if (!result.recordset.length) return res.status(404).json({ error: 'לא נמצא' });
+    res.json(result.recordset[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/listings/:id/status', auth, async (req, res) => {
+  const { status } = req.body;
+  const valid = ['active', 'sold', 'expired'];
+  if (!valid.includes(status)) return res.status(400).json({ error: 'סטטוס לא תקין' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('id',     sql.UniqueIdentifier, req.params.id)
+      .input('userId', sql.UniqueIdentifier, req.user.id)
+      .input('status', sql.NVarChar,         status)
+      .query(`UPDATE listings SET status=@status WHERE id=@id AND user_id=@userId`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/listings/:id', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('id',     sql.UniqueIdentifier, req.params.id)
+      .input('userId', sql.UniqueIdentifier, req.user.id)
+      .query(`DELETE FROM listings WHERE id=@id AND user_id=@userId`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── FCM Token: register / refresh ────────────────────────────────
 app.post('/api/fcm-token', auth, async (req, res) => {
   const { token, deviceId } = req.body;
@@ -2456,6 +2573,24 @@ async function initPendingTable() {
     const pool = await getPool();
     await pool.request().query(`
       IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='pending_scans')
+      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='listings')
+      CREATE TABLE listings (
+        id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        user_id      UNIQUEIDENTIFIER NOT NULL,
+        type         NVARCHAR(10)     NOT NULL DEFAULT 'free',
+        title        NVARCHAR(200)    NOT NULL,
+        description  NVARCHAR(1000)   NULL,
+        price        FLOAT            NULL,
+        city         NVARCHAR(100)    NULL,
+        latitude     FLOAT            NULL,
+        longitude    FLOAT            NULL,
+        image_url    NVARCHAR(500)    NULL,
+        category     NVARCHAR(50)     NULL,
+        status       NVARCHAR(20)     NOT NULL DEFAULT 'active',
+        created_at   DATETIME         DEFAULT GETDATE(),
+        expires_at   DATETIME         DEFAULT DATEADD(day, 30, GETDATE())
+      );
+
       CREATE TABLE pending_scans (
         id          INT IDENTITY(1,1) PRIMARY KEY,
         user_id     UNIQUEIDENTIFIER NOT NULL,
