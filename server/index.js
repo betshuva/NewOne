@@ -2572,7 +2572,6 @@ async function initPendingTable() {
   try {
     const pool = await getPool();
     await pool.request().query(`
-      IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='pending_scans')
       IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='listings')
       CREATE TABLE listings (
         id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
@@ -2589,8 +2588,10 @@ async function initPendingTable() {
         status       NVARCHAR(20)     NOT NULL DEFAULT 'active',
         created_at   DATETIME         DEFAULT GETDATE(),
         expires_at   DATETIME         DEFAULT DATEADD(day, 30, GETDATE())
-      );
-
+      )
+    `);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='pending_scans')
       CREATE TABLE pending_scans (
         id          INT IDENTITY(1,1) PRIMARY KEY,
         user_id     UNIQUEIDENTIFIER NOT NULL,
@@ -2605,7 +2606,7 @@ async function initPendingTable() {
         created_at  DATETIME         DEFAULT GETDATE()
       )
     `);
-    console.log('pending_scans table ready');
+    console.log('tables ready');
   } catch (e) { console.error('initPendingTable:', e.message); }
 }
 
