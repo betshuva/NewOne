@@ -1303,9 +1303,7 @@ app.get('/api/listings', auth, async (req, res) => {
         ? (status === 'active' ? `l.status='active' AND l.expires_at > GETDATE()` : `l.status=@statusFilter`)
         : `l.status = 'active' AND l.expires_at > GETDATE()`);
     const r   = pool.request()
-      .input('userId', sql.UniqueIdentifier, req.user.id)
-      .input('offset', sql.Int, offset)
-      .input('pageSize', sql.Int, pageSize);
+      .input('userId', sql.UniqueIdentifier, req.user.id);
 
     if (mine !== 'true' && status && status !== 'active') r.input('statusFilter', sql.NVarChar, status);
     if (type)     { where += ` AND l.type=@type`;         r.input('type',     sql.NVarChar, type); }
@@ -2647,6 +2645,10 @@ async function initPendingTable() {
         created_at   DATETIME         DEFAULT GETDATE(),
         expires_at   DATETIME         DEFAULT DATEADD(day, 30, GETDATE())
       )
+    `);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('listings') AND name='expires_at')
+        ALTER TABLE listings ADD expires_at DATETIME DEFAULT DATEADD(day, 30, GETDATE())
     `);
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('listings') AND name='view_count')
