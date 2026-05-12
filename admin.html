@@ -211,6 +211,21 @@ tr:hover td{background:rgba(33,38,45,.8)}
 
 /* Scan Panel */
 #scan-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+#listings-panel{display:none}
+.lst-card{background:#fff;border-radius:14px;border:1px solid var(--border);overflow:hidden;display:flex;flex-direction:column;transition:box-shadow .2s}
+.lst-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1)}
+.lst-card-img{width:100%;height:160px;object-fit:cover;background:var(--bg2);display:flex;align-items:center;justify-content:center;font-size:48px;color:var(--text2)}
+.lst-card-body{padding:14px}
+.lst-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;margin-bottom:8px}
+.lst-badge-free{background:#d1fae5;color:#065f46}
+.lst-badge-sale{background:#ede9fe;color:#5b21b6}
+.lst-badge-sold{background:#fee2e2;color:#991b1b}
+.lst-title{font-size:15px;font-weight:700;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lst-meta{font-size:12px;color:var(--text2);margin-bottom:3px}
+.lst-actions{display:flex;gap:6px;padding:10px 14px;border-top:1px solid var(--border);background:var(--bg2)}
+.lst-stat-box{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 16px;display:flex;flex-direction:column;gap:2px;min-width:100px}
+.lst-stat-num{font-size:22px;font-weight:700;color:var(--blue)}
+.lst-stat-lbl{font-size:12px;color:var(--text2)}
 .scan-tabs{display:flex;gap:0;padding:14px 20px 0;border-bottom:1px solid var(--border);flex-shrink:0}
 .scan-tab{padding:8px 18px;cursor:pointer;font-size:13px;font-weight:600;color:var(--text2);border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
 .scan-tab:hover{color:var(--text)}
@@ -273,6 +288,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div class="sb-item" id="sb-vision-item" onclick="showVisionPanel()">🔬 תוצאות Vision</div>
     <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
+    <div class="sb-item" id="sb-listings-item" onclick="showListingsPanel()">🛍 מודעות</div>
     <div class="sb-footer">
       <div class="sb-user" id="sb-user"></div>
       <div class="sb-logout" onclick="logout()">התנתק</div>
@@ -348,6 +364,30 @@ tr:hover td{background:rgba(33,38,45,.8)}
     </div>
     <div class="table-wrap" id="scan-table-wrap"><div class="loader">טוען...</div></div>
     <div class="pagination" id="scan-pagination"></div>
+  </div>
+
+  <!-- Listings Panel -->
+  <div id="listings-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden">
+    <div class="main-head">
+      <h1>🛍 מודעות</h1>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="lst-filter-type" onchange="loadAdminListings()" style="border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:13px;background:#fff">
+          <option value="">כל הסוגים</option>
+          <option value="free">ונתנו — חינם</option>
+          <option value="sale">יד 2 — מכירה</option>
+        </select>
+        <select id="lst-filter-status" onchange="loadAdminListings()" style="border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:13px;background:#fff">
+          <option value="active">פעילות</option>
+          <option value="sold">נמכרו/נמסרו</option>
+          <option value="">הכל</option>
+        </select>
+        <button class="btn-sm" onclick="loadAdminListings()">🔄 רענן</button>
+      </div>
+    </div>
+    <div id="lst-stats" style="display:flex;gap:12px;padding:12px 20px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0"></div>
+    <div id="lst-grid" style="flex:1;overflow-y:auto;padding:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;align-content:start">
+      <div class="loader">טוען...</div>
+    </div>
   </div>
 
   <!-- Permissions Panel -->
@@ -1435,6 +1475,96 @@ async function deletePending(id) {
     if (!res.ok) { alert(data.error || 'שגיאה'); return; }
     loadScanPanel('pending', scanOffset);
   } catch (e) { alert(e.message); }
+}
+
+// ── Listings Panel ───────────────────────────────────────────────
+function showListingsPanel() {
+  document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
+  document.getElementById('sb-listings-item').classList.add('active');
+  document.getElementById('main-area').style.display      = 'none';
+  document.getElementById('perm-panel').style.display     = 'none';
+  document.getElementById('activity-panel').style.display = 'none';
+  document.getElementById('scan-panel').style.display     = 'none';
+  document.getElementById('vision-panel').style.display   = 'none';
+  document.getElementById('listings-panel').style.display = 'flex';
+  loadAdminListings();
+}
+
+async function loadAdminListings() {
+  const type   = document.getElementById('lst-filter-type').value;
+  const status = document.getElementById('lst-filter-status').value;
+  const grid   = document.getElementById('lst-grid');
+  grid.innerHTML = '<div class="loader">טוען...</div>';
+
+  const params = new URLSearchParams({ page: 1 });
+  if (type)   params.set('type', type);
+  if (status) params.set('status', status);
+
+  try {
+    const res  = await fetch(`${API}/api/listings?${params}`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+
+    // Stats
+    const stats = document.getElementById('lst-stats');
+    const total = data.length;
+    const free  = data.filter(x=>x.type==='free').length;
+    const sale  = data.filter(x=>x.type==='sale').length;
+    stats.innerHTML = `
+      <div class="lst-stat-box"><span class="lst-stat-num">${total}</span><span class="lst-stat-lbl">סה״כ מודעות</span></div>
+      <div class="lst-stat-box"><span class="lst-stat-num" style="color:#065f46">${free}</span><span class="lst-stat-lbl">ונתנו — חינם</span></div>
+      <div class="lst-stat-box"><span class="lst-stat-num" style="color:#5b21b6">${sale}</span><span class="lst-stat-lbl">יד 2 — מכירה</span></div>`;
+
+    if (!data.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1">אין מודעות</div>'; return; }
+
+    grid.innerHTML = '';
+    data.forEach(item => {
+      const isFree   = item.type === 'free';
+      const isSold   = item.status !== 'active';
+      const price    = isFree ? 'חינם' : '₪' + Math.round(item.price || 0);
+      const badgeCls = isSold ? 'lst-badge-sold' : (isFree ? 'lst-badge-free' : 'lst-badge-sale');
+      const badgeTxt = isSold ? 'נמסר/נמכר' : price;
+      const date     = new Date(item.created_at).toLocaleDateString('he-IL');
+
+      const card = document.createElement('div');
+      card.className = 'lst-card';
+      card.innerHTML = `
+        ${item.image_url
+          ? `<img class="lst-card-img" src="${item.image_url}" alt=""/>`
+          : `<div class="lst-card-img">🛍</div>`}
+        <div class="lst-card-body">
+          <span class="lst-badge ${badgeCls}">${badgeTxt}</span>
+          ${item.category ? `<span style="font-size:11px;color:var(--text2);margin-right:6px">${item.category}</span>` : ''}
+          <div class="lst-title" title="${item.title}">${item.title}</div>
+          ${item.description ? `<div class="lst-meta" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.description}</div>` : ''}
+          <div class="lst-meta" style="margin-top:6px">
+            👤 ${item.seller_name}
+            ${item.city ? ` &nbsp;📍 ${item.city}` : ''}
+          </div>
+          <div class="lst-meta">📅 ${date}</div>
+        </div>
+        <div class="lst-actions">
+          ${!isSold ? `<button class="btn-sm" style="background:#d1fae5;color:#065f46;border:none" onclick="markListingDone('${item.id}')">✓ סגור מודעה</button>` : ''}
+          <button class="btn-sm" style="background:#fee2e2;color:#991b1b;border:none;margin-right:auto" onclick="deleteListing('${item.id}', this)">🗑 מחק</button>
+        </div>`;
+      grid.appendChild(card);
+    });
+  } catch(e) { grid.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`; }
+}
+
+async function markListingDone(id) {
+  if (!confirm('לסמן כנמסר/נמכר?')) return;
+  await fetch(`${API}/api/listings/${id}/status`, {
+    method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'sold' }),
+  });
+  loadAdminListings();
+}
+
+async function deleteListing(id, btn) {
+  if (!confirm('למחוק מודעה זו לצמיתות?')) return;
+  btn.disabled = true;
+  await fetch(`${API}/api/listings/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+  loadAdminListings();
 }
 
 // ── Start ─────────────────────────────────────────────────────────

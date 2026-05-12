@@ -1268,17 +1268,20 @@ app.post('/api/listings', auth, async (req, res) => {
 });
 
 app.get('/api/listings', auth, async (req, res) => {
-  const { type, category, city, radius, page = 1 } = req.query;
+  const { type, category, city, radius, status, page = 1 } = req.query;
   const pageSize = 20;
   const offset   = (parseInt(page) - 1) * pageSize;
   try {
     const pool = await getPool();
-    let where = `l.status = 'active' AND l.expires_at > GETDATE()`;
+    let where = status
+      ? (status === 'active' ? `l.status='active' AND l.expires_at > GETDATE()` : `l.status=@statusFilter`)
+      : `l.status = 'active' AND l.expires_at > GETDATE()`;
     const r   = pool.request()
       .input('userId', sql.UniqueIdentifier, req.user.id)
       .input('offset', sql.Int, offset)
       .input('pageSize', sql.Int, pageSize);
 
+    if (status && status !== 'active') r.input('statusFilter', sql.NVarChar, status);
     if (type)     { where += ` AND l.type=@type`;         r.input('type',     sql.NVarChar, type); }
     if (category) { where += ` AND l.category=@category`; r.input('category', sql.NVarChar, category); }
     if (city)     { where += ` AND l.city=@city`;         r.input('city',     sql.NVarChar, city); }
