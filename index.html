@@ -1184,6 +1184,11 @@ function openPostListing() {
         <option>רהיטים</option><option>אלקטרוניקה</option><option>בגדים</option>
         <option>ספרים</option><option>כלי בית</option><option>צעצועים</option><option>אחר</option>
       </select>
+      <div style="position:relative;margin-bottom:10px">
+        <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:16px;pointer-events:none">📍</span>
+        <input id="pt-city" placeholder="עיר" value="${me?.city||''}"
+          style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px 10px 14px;padding-right:36px;font-family:inherit;font-size:14px;direction:rtl"/>
+      </div>
       <div style="font-size:13px;color:var(--text3);margin-bottom:6px">תמונות (עד 4, כולל סינון צניעות)</div>
       <div id="pt-images-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:14px"></div>
       <button onclick="submitListing()" style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">פרסם מודעה</button>
@@ -1246,11 +1251,13 @@ async function submitListing() {
   const title = document.getElementById('pt-title').value.trim();
   if (!title) { alert('נדרשת כותרת'); return; }
   const image_urls = _ptImages.filter(Boolean);
+  const city = document.getElementById('pt-city')?.value.trim() || null;
   const body = {
     type: _postType, title,
     description: document.getElementById('pt-desc').value.trim(),
     category: document.getElementById('pt-cat').value,
     price: _postType==='sale' ? parseFloat(document.getElementById('pt-price').value)||0 : null,
+    ...(city && { city }),
     ...(image_urls.length && { image_urls }),
   };
   try {

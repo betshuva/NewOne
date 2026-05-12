@@ -2286,6 +2286,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final _titleCtrl  = TextEditingController();
   final _descCtrl   = TextEditingController();
   final _priceCtrl  = TextEditingController();
+  late final _cityCtrl = TextEditingController(text: widget.me?['city'] as String? ?? '');
   String _type      = 'free';
   String _category  = 'אחר';
   final List<String?> _imageUrls    = [null, null, null, null];
@@ -2322,9 +2323,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
     setState(() => _saving = true);
     try {
       final urls = _imageUrls.where((u) => u != null).toList();
+      final city = _cityCtrl.text.trim();
       final body = <String, dynamic>{
         'type': _type, 'title': _titleCtrl.text.trim(),
         'description': _descCtrl.text.trim(), 'category': _category,
+        if (city.isNotEmpty) 'city': city,
         if (urls.isNotEmpty) 'image_urls': urls,
       };
       if (_type == 'sale') body['price'] = double.tryParse(_priceCtrl.text) ?? 0;
@@ -2334,6 +2337,12 @@ class _PostListingScreenState extends State<PostListingScreen> {
       );
       if (res.statusCode == 200 && mounted) Navigator.pop(context, true);
     } catch (_) {} finally { if (mounted) setState(() => _saving = false); }
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose(); _descCtrl.dispose(); _priceCtrl.dispose(); _cityCtrl.dispose();
+    super.dispose();
   }
 
   @override
@@ -2386,6 +2395,17 @@ class _PostListingScreenState extends State<PostListingScreen> {
             decoration: const InputDecoration(labelText: 'קטגוריה', border: OutlineInputBorder()),
             items: _kCategories.skip(1).map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
             onChanged: (v) => setState(() => _category = v!),
+          ),
+          const SizedBox(height: 12),
+          // City
+          TextField(
+            controller: _cityCtrl,
+            textDirection: TextDirection.rtl,
+            decoration: const InputDecoration(
+              labelText: 'עיר',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.location_city_outlined),
+            ),
           ),
           const SizedBox(height: 24),
           ElevatedButton(
