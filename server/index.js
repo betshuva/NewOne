@@ -1140,22 +1140,35 @@ app.put('/api/profile', auth, async (req, res) => {
 });
 
 // ── Location: update precise location ────────────────────────────
+async function reverseGeocodeHebrew(lat, lng) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=he`;
+    const res  = await fetch(url, { headers: { 'User-Agent': 'betshuva-app/1.0' } });
+    const data = await res.json();
+    const addr = data.address || {};
+    const city = addr.city || addr.town || addr.village || addr.municipality || addr.suburb || null;
+    const country = addr.country || null;
+    return { city, country };
+  } catch { return { city: null, country: null }; }
+}
+
 app.put('/api/location', auth, async (req, res) => {
-  const { latitude, longitude, city, country } = req.body;
+  const { latitude, longitude } = req.body;
   if (latitude == null || longitude == null) return res.status(400).json({ error: 'נדרש מיקום' });
   if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return res.status(400).json({ error: 'מיקום לא תקין' });
   try {
+    const { city, country } = await reverseGeocodeHebrew(latitude, longitude);
     const pool = await getPool();
     await pool.request()
-      .input('id',        sql.UniqueIdentifier, req.user.id)
-      .input('lat',       sql.Float,            latitude)
-      .input('lng',       sql.Float,            longitude)
-      .input('city',      sql.NVarChar,         city    || null)
-      .input('country',   sql.NVarChar,         country || null)
+      .input('id',      sql.UniqueIdentifier, req.user.id)
+      .input('lat',     sql.Float,            latitude)
+      .input('lng',     sql.Float,            longitude)
+      .input('city',    sql.NVarChar,         city    || null)
+      .input('country', sql.NVarChar,         country || null)
       .query(`UPDATE users SET latitude=@lat, longitude=@lng,
-              city=COALESCE(@city, city), country=COALESCE(@country, country),
+              city=@city, country=@country,
               location_updated_at=GETDATE() WHERE id=@id`);
-    res.json({ ok: true });
+    res.json({ ok: true, city, country });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -16,7 +16,6 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 
 MediaType _mimeFromFileName(String fileName) {
   switch (fileName.split('.').last.toLowerCase()) {
@@ -1655,16 +1654,7 @@ class _MainShellState extends State<MainShell> {
         ),
       );
 
-      String? city;
-      String? country;
-      try {
-        final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
-        if (placemarks.isNotEmpty) {
-          city    = placemarks.first.locality ?? placemarks.first.subAdministrativeArea;
-          country = placemarks.first.country;
-        }
-      } catch (_) {}
-
+      // server does Hebrew reverse geocoding via Nominatim
       await http.put(
         Uri.parse('$kApi/location'),
         headers: {
@@ -1674,8 +1664,6 @@ class _MainShellState extends State<MainShell> {
         body: jsonEncode({
           'latitude':  pos.latitude,
           'longitude': pos.longitude,
-          'city':      city,
-          'country':   country,
         }),
       );
     } catch (_) {}
