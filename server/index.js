@@ -1915,25 +1915,29 @@ app.get('/api/admin/activity', auth, async (req, res) => {
   const userId = req.query.userId || null;
   const action = req.query.action || null;
   const search = req.query.search || null;
+  const rowFrom = offset + 1;
+  const rowTo   = offset + limit;
   try {
     const pool = await getPool();
-    const req2 = pool.request()
-      .input('limit',  sql.Int, limit)
-      .input('offset', sql.Int, offset);
+    const req2 = pool.request();
     if (userId) req2.input('userId', sql.UniqueIdentifier, userId);
     if (action) req2.input('action', sql.NVarChar, action);
     if (search) req2.input('search', sql.NVarChar, `%${search}%`);
     const result = await req2.query(`
-      SELECT a.id, a.action, a.details, a.ip, a.created_at,
-             u.name AS user_name, u.email AS user_email
-      FROM activity_log a
-      LEFT JOIN users u ON u.id = a.user_id
-      WHERE 1=1
-        ${userId ? 'AND a.user_id = @userId' : ''}
-        ${action ? 'AND a.action  = @action'  : ''}
-        ${search ? 'AND (u.name LIKE @search OR u.email LIKE @search)' : ''}
-      ORDER BY a.created_at DESC
-      OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
+      SELECT id, action, details, ip, created_at, user_name, user_email
+      FROM (
+        SELECT a.id, a.action, a.details, a.ip, a.created_at,
+               u.name AS user_name, u.email AS user_email,
+               ROW_NUMBER() OVER (ORDER BY a.created_at DESC) AS _rn
+        FROM activity_log a
+        LEFT JOIN users u ON u.id = a.user_id
+        WHERE 1=1
+          ${userId ? 'AND a.user_id = @userId' : ''}
+          ${action ? 'AND a.action  = @action'  : ''}
+          ${search ? 'AND (u.name LIKE @search OR u.email LIKE @search)' : ''}
+      ) AS _q
+      WHERE _q._rn >= ${rowFrom} AND _q._rn <= ${rowTo}
+      ORDER BY _q._rn
     `);
     res.json(result.recordset);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2153,16 +2157,16 @@ app.get('/verify-email', async (req, res) => {
 // ── Admin DB Dashboard ────────────────────────────────────────────
 
 const ADMIN_TABLES = {
-  users:             { label: 'משתמשים',     pk: 'id',        hide: ['password_hash'] },
-  groups:            { label: 'קבוצות',       pk: 'id',        hide: [] },
-  group_members:     { label: 'חברי קבוצות', pk: null,        hide: [] },
-  messages:          { label: 'הודעות',       pk: 'id',        hide: [] },
-  message_status:    { label: 'סטטוס הודעות', pk: null,       hide: [] },
-  blocked_users:     { label: 'חסומים',       pk: null,        hide: [] },
-  fcm_tokens:        { label: 'FCM Tokens',  pk: 'id',        hide: ['token'] },
-  activity_log:      { label: 'פעילות',       pk: 'id',        hide: [] },
-  audit_log:         { label: 'אודיט',        pk: 'id',        hide: [] },
-  admin_permissions: { label: 'הרשאות מנהל', pk: 'user_id',  hide: [] },
+  users:             { label: 'משתמשים',     pk: 'id',        hide: ['password_hash'], sort: 'created_at DESC' },
+  groups:            { label: 'קבוצות',       pk: 'id',        hide: [],                sort: 'created_at DESC' },
+  group_members:     { label: 'חברי קבוצות', pk: null,        hide: [],                sort: null },
+  messages:          { label: 'הודעות',       pk: 'id',        hide: [],                sort: 'created_at DESC' },
+  message_status:    { label: 'סטטוס הודעות', pk: null,       hide: [],                sort: null },
+  blocked_users:     { label: 'חסומים',       pk: null,        hide: [],                sort: null },
+  fcm_tokens:        { label: 'FCM Tokens',  pk: 'id',        hide: ['token'],          sort: null },
+  activity_log:      { label: 'פעילות',       pk: 'id',        hide: [],                sort: 'created_at DESC' },
+  audit_log:         { label: 'אודיט',        pk: 'id',        hide: [],                sort: 'created_at DESC' },
+  admin_permissions: { label: 'הרשאות מנהל', pk: 'user_id',  hide: [],                sort: 'granted_at DESC' },
 };
 
 async function adminAuth(req, res, next) {
@@ -2212,9 +2216,10 @@ app.get('/api/admin/db/:table', adminAuth, async (req, res) => {
     const filter = search
       ? `WHERE CAST((SELECT * FROM ${tbl} FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS NVARCHAR(MAX)) LIKE @s`
       : '';
+    const orderBy = cfg.sort ? `ORDER BY ${cfg.sort}` : 'ORDER BY (SELECT NULL)';
     const request = pool.request().input('s', sql.NVarChar, `%${search}%`);
     const result  = await request.query(
-      `SELECT * FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) rn FROM ${tbl}) t
+      `SELECT * FROM (SELECT *, ROW_NUMBER() OVER (${orderBy}) rn FROM ${tbl} ${filter}) t
        WHERE rn > ${offset} AND rn <= ${offset + limit}`);
     const countR  = await pool.request().query(`SELECT COUNT(*) AS n FROM ${tbl}`);
     const rows    = result.recordset.map(r => {
