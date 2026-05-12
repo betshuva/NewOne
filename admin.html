@@ -1541,6 +1541,10 @@ async function loadAdminListings() {
             ${item.city ? ` &nbsp;📍 ${item.city}` : ''}
           </div>
           <div class="lst-meta">📅 ${date}</div>
+          <div style="display:flex;gap:10px;margin-top:8px">
+            <span style="background:#eff6ff;border-radius:8px;padding:3px 10px;font-size:12px;color:#1d4ed8">👁 ${item.view_count||0} צפיות</span>
+            <span style="background:#f0fdf4;border-radius:8px;padding:3px 10px;font-size:12px;color:#15803d">💬 ${item.contact_count||0} פניות</span>
+          </div>
         </div>
         <div class="lst-actions">
           ${!isSold ? `<button class="btn-sm" style="background:#d1fae5;color:#065f46;border:none" onclick="markListingDone('${item.id}')">✓ סגור מודעה</button>` : ''}

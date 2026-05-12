@@ -1314,13 +1314,34 @@ app.get('/api/listings', auth, async (req, res) => {
 
 app.get('/api/listings/:id', auth, async (req, res) => {
   try {
-    const pool   = await getPool();
+    const pool = await getPool();
+    // register unique view (ignore if already viewed)
+    try {
+      await pool.request()
+        .input('lid', sql.UniqueIdentifier, req.params.id)
+        .input('uid', sql.UniqueIdentifier, req.user.id)
+        .query(`IF NOT EXISTS (SELECT 1 FROM listing_views WHERE listing_id=@lid AND user_id=@uid)
+                BEGIN
+                  INSERT INTO listing_views (listing_id, user_id) VALUES (@lid, @uid);
+                  UPDATE listings SET view_count = view_count + 1 WHERE id=@lid;
+                END`);
+    } catch (_) {}
     const result = await pool.request()
       .input('id', sql.UniqueIdentifier, req.params.id)
       .query(`SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic, u.id AS seller_id
               FROM listings l JOIN users u ON u.id = l.user_id WHERE l.id=@id`);
     if (!result.recordset.length) return res.status(404).json({ error: 'לא נמצא' });
     res.json(result.recordset[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/listings/:id/contact', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('id', sql.UniqueIdentifier, req.params.id)
+      .query(`UPDATE listings SET contact_count = contact_count + 1 WHERE id=@id`);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2591,6 +2612,23 @@ async function initPendingTable() {
         status       NVARCHAR(20)     NOT NULL DEFAULT 'active',
         created_at   DATETIME         DEFAULT GETDATE(),
         expires_at   DATETIME         DEFAULT DATEADD(day, 30, GETDATE())
+      )
+    `);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('listings') AND name='view_count')
+        ALTER TABLE listings ADD view_count INT NOT NULL DEFAULT 0
+    `);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('listings') AND name='contact_count')
+        ALTER TABLE listings ADD contact_count INT NOT NULL DEFAULT 0
+    `);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='listing_views')
+      CREATE TABLE listing_views (
+        listing_id  UNIQUEIDENTIFIER NOT NULL,
+        user_id     UNIQUEIDENTIFIER NOT NULL,
+        viewed_at   DATETIME         DEFAULT GETDATE(),
+        PRIMARY KEY (listing_id, user_id)
       )
     `);
     await pool.request().query(`

@@ -1052,10 +1052,17 @@ async function loadListings() {
   } catch { el.innerHTML = '<div style="text-align:center;padding:20px;color:#dc2626">שגיאה בטעינה</div>'; }
 }
 
-function openListingDetail(item) {
+async function openListingDetail(item) {
   const isFree = item.type === 'free';
   const isOwn  = me && me.id === item.seller_id;
   const main   = document.getElementById('main');
+
+  // fetch full item with updated view_count
+  try {
+    const r = await fetch(`${API}/api/listings/${item.id}`, {headers:{'Authorization':`Bearer ${token}`}});
+    if (r.ok) item = await r.json();
+  } catch(_) {}
+
   main.innerHTML = `
     <div style="max-width:600px;margin:0 auto;padding:20px;height:100%;overflow-y:auto">
       ${item.image_url?`<img src="${item.image_url}" style="width:100%;max-height:280px;object-fit:cover;border-radius:14px;margin-bottom:16px"/>`:''}
@@ -1066,20 +1073,36 @@ function openListingDetail(item) {
       </div>
       <h2 style="font-size:20px;margin-bottom:8px">${item.title}</h2>
       ${item.description?`<p style="color:var(--text2);line-height:1.7;margin-bottom:16px">${item.description}</p>`:''}
+      <!-- Stats -->
+      <div style="display:flex;gap:12px;margin-bottom:16px">
+        <div style="background:var(--blue-pale);border-radius:10px;padding:10px 16px;display:flex;align-items:center;gap:8px;flex:1">
+          <span style="font-size:20px">👁</span>
+          <div><div style="font-size:18px;font-weight:700;color:var(--blue)">${item.view_count||0}</div><div style="font-size:11px;color:var(--text3)">צפיות</div></div>
+        </div>
+        <div style="background:var(--blue-pale);border-radius:10px;padding:10px 16px;display:flex;align-items:center;gap:8px;flex:1">
+          <span style="font-size:20px">💬</span>
+          <div><div style="font-size:18px;font-weight:700;color:var(--blue)">${item.contact_count||0}</div><div style="font-size:11px;color:var(--text3)">פניות</div></div>
+        </div>
+      </div>
       <div style="background:var(--blue-pale);border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px;margin-bottom:20px">
         <div style="width:42px;height:42px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px;flex-shrink:0">
           ${item.seller_name?.[0]||'?'}
         </div>
         <div><div style="font-weight:600">${item.seller_name}</div><div style="font-size:12px;color:var(--text3)">המפרסם</div></div>
       </div>
-      ${!isOwn?`<button onclick="openChatWithSeller('${item.seller_id}','${item.seller_name}')"
+      ${!isOwn?`<button onclick="openChatWithSeller('${item.seller_id}','${item.seller_name}','${item.id}')"
         style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:12px;padding:14px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">
         💬 שלח הודעה למפרסם
       </button>`:'<div style="text-align:center;color:var(--text3);font-size:14px">זו המודעה שלך</div>'}
     </div>`;
 }
 
-function openChatWithSeller(sellerId, sellerName) {
+async function openChatWithSeller(sellerId, sellerName, listingId) {
+  if (listingId) {
+    fetch(`${API}/api/listings/${listingId}/contact`, {
+      method: 'POST', headers: { 'Authorization': `Bearer ${token}` }
+    }).catch(()=>{});
+  }
   const u = users.find(x => x.id === sellerId) || {id: sellerId, name: sellerName};
   setTab(document.querySelector('.tab'), 'all');
   openChat(u);
