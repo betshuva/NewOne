@@ -1845,6 +1845,18 @@ app.post('/api/verify-phone', async (req, res) => {
 });
 
 // ── Verify Email (HTML page) ─────────────────────────────────────
+app.get('/api/admin/reset-demo', async (req, res) => {
+  if (req.query.secret !== (process.env.ADMIN_SECRET || 'betshuva-admin-2026')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('email', sql.NVarChar, 'demo@betshuva.com')
+      .input('hash',  sql.NVarChar, '$2b$10$zPgRZBQevP1XwXD2otUAcO.reCstSY6.3dO2HuTbLzCk44IHx7tFO')
+      .query('UPDATE users SET password_hash=@hash WHERE email=@email');
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/verify-email', async (req, res) => {
   const token = (req.query.token || '').replace(/[^a-f0-9]/g, '');
   const ok = (msg) => res.send(`<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>אימות אימייל – בתשובה</title><style>body{font-family:Arial,sans-serif;background:#F0F4F0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:400px;text-align:center}h2{color:#1B4332}</style></head><body><div class="card">${msg}</div></body></html>`);
