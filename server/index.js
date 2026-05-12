@@ -1295,6 +1295,8 @@ app.get('/api/listings', auth, async (req, res) => {
   const { type, category, city, radius, status, page = 1, mine } = req.query;
   const pageSize = 20;
   const offset   = (parseInt(page) - 1) * pageSize;
+  const rowFrom  = offset + 1;
+  const rowTo    = offset + pageSize;
   try {
     const pool = await getPool();
     let where = mine === 'true'
@@ -1302,7 +1304,7 @@ app.get('/api/listings', auth, async (req, res) => {
       : (status
         ? (status === 'active' ? `l.status='active' AND l.expires_at > GETDATE()` : `l.status=@statusFilter`)
         : `l.status = 'active' AND l.expires_at > GETDATE()`);
-    const r   = pool.request()
+    const r = pool.request()
       .input('userId', sql.UniqueIdentifier, req.user.id);
 
     if (mine !== 'true' && status && status !== 'active') r.input('statusFilter', sql.NVarChar, status);
@@ -1310,7 +1312,7 @@ app.get('/api/listings', auth, async (req, res) => {
     if (category) { where += ` AND l.category=@category`; r.input('category', sql.NVarChar, category); }
     if (city)     { where += ` AND l.city=@city`;         r.input('city',     sql.NVarChar, city); }
 
-    let distanceCol = 'NULL AS distance_km';
+    let distExpr = 'NULL';
     if (radius) {
       const me = await pool.request()
         .input('id', sql.UniqueIdentifier, req.user.id)
@@ -1318,21 +1320,29 @@ app.get('/api/listings', auth, async (req, res) => {
       const { latitude: myLat, longitude: myLng } = me.recordset[0] || {};
       if (myLat && myLng) {
         r.input('myLat', sql.Float, myLat).input('myLng', sql.Float, myLng).input('radius', sql.Float, parseFloat(radius));
-        distanceCol = `ROUND(6371*ACOS(COS(RADIANS(@myLat))*COS(RADIANS(l.latitude))*COS(RADIANS(l.longitude)-RADIANS(@myLng))+SIN(RADIANS(@myLat))*SIN(RADIANS(l.latitude))),1)`;
-        where += ` AND l.latitude IS NOT NULL AND (${distanceCol}) <= @radius`;
+        const distFormula = `ROUND(6371*ACOS(COS(RADIANS(@myLat))*COS(RADIANS(l.latitude))*COS(RADIANS(l.longitude)-RADIANS(@myLng))+SIN(RADIANS(@myLat))*SIN(RADIANS(l.latitude))),1)`;
+        where += ` AND l.latitude IS NOT NULL AND (${distFormula}) <= @radius`;
+        distExpr = distFormula;
       }
     }
 
     const result = await r.query(`
-      SELECT l.id, l.type, l.title, l.description, l.price, l.city,
-             l.image_url, l.category, l.status, l.created_at,
-             l.view_count, l.contact_count,
-             u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
-             ${distanceCol} AS distance_km
-      FROM listings l JOIN users u ON u.id = l.user_id
-      WHERE ${where}
-      ORDER BY l.created_at DESC
-      OFFSET ${offset} ROWS FETCH NEXT ${pageSize} ROWS ONLY`);
+      SELECT id, type, title, description, price, city,
+             image_url, category, status, created_at,
+             view_count, contact_count,
+             seller_id, seller_name, seller_pic, dist AS distance_km
+      FROM (
+        SELECT l.id, l.type, l.title, l.description, l.price, l.city,
+               l.image_url, l.category, l.status, l.created_at,
+               l.view_count, l.contact_count, l.latitude, l.longitude,
+               u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
+               ${distExpr} AS dist,
+               ROW_NUMBER() OVER (ORDER BY l.created_at DESC) AS _rn
+        FROM listings l JOIN users u ON u.id = l.user_id
+        WHERE ${where}
+      ) AS _q
+      WHERE _q._rn >= ${rowFrom} AND _q._rn <= ${rowTo}
+      ORDER BY _q._rn`);
     res.json(result.recordset);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
