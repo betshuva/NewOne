@@ -356,6 +356,7 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
           <button onclick="setListingType('all')"  id="lt-all"  class="lt-btn lt-active">הכל</button>
           <button onclick="setListingType('free')" id="lt-free" class="lt-btn">ונתנו — חינם</button>
           <button onclick="setListingType('sale')" id="lt-sale" class="lt-btn">יד 2</button>
+          <button onclick="setListingType('mine')" id="lt-mine" class="lt-btn" style="margin-right:auto">📋 שלי</button>
         </div>
         <div style="display:flex;gap:6px;">
           <input id="lst-city" placeholder="🏙 עיר..." style="flex:1;border:1px solid var(--div);border-radius:8px;padding:5px 10px;font-family:inherit;font-size:13px;" oninput="loadListings()"/>
@@ -1011,7 +1012,7 @@ function setTab(el, tab) {
 let listingType = 'all';
 function setListingType(t) {
   listingType = t;
-  ['all','free','sale'].forEach(x => document.getElementById('lt-'+x).classList.toggle('lt-active', x===t));
+  ['all','free','sale','mine'].forEach(x => document.getElementById('lt-'+x)?.classList.toggle('lt-active', x===t));
   loadListings();
 }
 
@@ -1019,7 +1020,11 @@ async function loadListings() {
   const city = document.getElementById('lst-city').value.trim();
   const cat  = document.getElementById('lst-cat').value;
   const params = new URLSearchParams();
-  if (listingType !== 'all') params.set('type', listingType);
+  if (listingType === 'mine') {
+    params.set('mine', 'true');
+  } else {
+    if (listingType !== 'all') params.set('type', listingType);
+  }
   if (city) params.set('city', city);
   if (cat)  params.set('category', cat);
   const el = document.getElementById('listings-list');
@@ -1090,11 +1095,41 @@ async function openListingDetail(item) {
         </div>
         <div><div style="font-weight:600">${item.seller_name}</div><div style="font-size:12px;color:var(--text3)">המפרסם</div></div>
       </div>
-      ${!isOwn?`<button onclick="openChatWithSeller('${item.seller_id}','${item.seller_name}','${item.id}')"
-        style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:12px;padding:14px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">
-        💬 שלח הודעה למפרסם
-      </button>`:'<div style="text-align:center;color:var(--text3);font-size:14px">זו המודעה שלך</div>'}
+      ${!isOwn
+        ? `<button onclick="openChatWithSeller('${item.seller_id}','${item.seller_name}','${item.id}')"
+            style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:12px;padding:14px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">
+            💬 שלח הודעה למפרסם
+           </button>`
+        : `<div style="display:flex;gap:8px;flex-direction:column">
+            ${item.status==='active'?`<button onclick="closeListing('${item.id}')"
+              style="width:100%;background:#d1fae5;color:#065f46;border:none;border-radius:12px;padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">
+              ✓ סגור מודעה (נמכר / ניתן)
+            </button>`:''}
+            <button onclick="deleteMyListing('${item.id}')"
+              style="width:100%;background:#fee2e2;color:#991b1b;border:none;border-radius:12px;padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">
+              🗑 מחק מודעה
+            </button>
+           </div>`}
     </div>`;
+}
+
+async function closeListing(id) {
+  await fetch(`${API}/api/listings/${id}/status`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'sold' })
+  });
+  document.getElementById('main').innerHTML = '';
+  loadListings();
+}
+
+async function deleteMyListing(id) {
+  if (!confirm('למחוק את המודעה לצמיתות?')) return;
+  await fetch(`${API}/api/listings/${id}`, {
+    method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` }
+  });
+  document.getElementById('main').innerHTML = '';
+  loadListings();
 }
 
 async function openChatWithSeller(sellerId, sellerName, listingId) {

@@ -1842,8 +1842,13 @@ class _ListingsScreenState extends State<ListingsScreen> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 2, vsync: this);
-    _tab.addListener(() { if (!_tab.indexIsChanging) { _typeFilter = _tab.index == 0 ? 'free' : 'sale'; _load(); } });
+    _tab = TabController(length: 3, vsync: this);
+    _tab.addListener(() {
+      if (!_tab.indexIsChanging) {
+        _typeFilter = _tab.index == 0 ? 'all' : _tab.index == 1 ? 'free' : 'sale';
+        _load();
+      }
+    });
     _load();
   }
 
@@ -1887,6 +1892,13 @@ class _ListingsScreenState extends State<ListingsScreen> with SingleTickerProvid
         backgroundColor: kPrimary,
         title: const Text('לוח מודעות', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.format_list_bulleted, color: Colors.white),
+            tooltip: 'המודעות שלי',
+            onPressed: () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => MyListingsScreen(token: widget.token),
+            )),
+          ),
           IconButton(icon: const Icon(Icons.add, color: Colors.white), onPressed: _openPost),
         ],
         bottom: TabBar(
@@ -1894,7 +1906,7 @@ class _ListingsScreenState extends State<ListingsScreen> with SingleTickerProvid
           labelColor: Colors.white,
           unselectedLabelColor: Colors.white70,
           indicatorColor: Colors.white,
-          tabs: const [Tab(text: 'ונתנו — חינם'), Tab(text: 'יד 2 — מכירה')],
+          tabs: const [Tab(text: 'הכל'), Tab(text: 'ונתנו — חינם'), Tab(text: 'יד 2')],
         ),
       ),
       body: Column(children: [
@@ -2080,6 +2092,186 @@ class _ListingCard extends StatelessWidget {
 
   Widget _placeholder() => Container(width: 110, height: 110, color: const Color(0xFFE8F4FD),
     child: Icon(Icons.image_outlined, size: 36, color: kSubtext));
+}
+
+// ── My Listings Screen ────────────────────────────────────────────
+class MyListingsScreen extends StatefulWidget {
+  final String token;
+  const MyListingsScreen({super.key, required this.token});
+  @override State<MyListingsScreen> createState() => _MyListingsScreenState();
+}
+
+class _MyListingsScreenState extends State<MyListingsScreen> {
+  List<Map<String, dynamic>> _items = [];
+  bool _loading = true;
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() => _loading = true);
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/listings?mine=true'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = List<Map<String, dynamic>>.from(jsonDecode(res.body));
+        _loading = false;
+      });
+    } catch (_) { if (mounted) setState(() => _loading = false); }
+  }
+
+  Future<void> _markSold(String id) async {
+    await http.put(
+      Uri.parse('$kApi/listings/$id/status'),
+      headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+      body: jsonEncode({'status': 'sold'}),
+    );
+    _load();
+  }
+
+  Future<void> _delete(String id) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('מחיקת מודעה'),
+        content: const Text('למחוק את המודעה לצמיתות?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('מחק', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await http.delete(
+      Uri.parse('$kApi/listings/$id'),
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
+      appBar: AppBar(
+        backgroundColor: kPrimary,
+        title: const Text('המודעות שלי', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        leading: BackButton(color: Colors.white),
+      ),
+      body: _loading
+        ? const Center(child: CircularProgressIndicator())
+        : _items.isEmpty
+          ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.storefront_outlined, size: 64, color: kSubtext),
+              const SizedBox(height: 12),
+              Text('עדיין אין לך מודעות', style: TextStyle(color: kSubtext, fontSize: 16)),
+            ]))
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: _items.length,
+                itemBuilder: (_, i) => _MyListingCard(
+                  item: _items[i],
+                  onMarkSold: () => _markSold(_items[i]['id']),
+                  onDelete: () => _delete(_items[i]['id']),
+                ),
+              ),
+            ),
+    );
+  }
+}
+
+class _MyListingCard extends StatelessWidget {
+  final Map<String, dynamic> item;
+  final VoidCallback onMarkSold;
+  final VoidCallback onDelete;
+  const _MyListingCard({required this.item, required this.onMarkSold, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    final isFree   = item['type'] == 'free';
+    final status   = item['status'] as String? ?? 'active';
+    final isActive = status == 'active';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: kBorder),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: item['image_url'] != null
+                ? Image.network(item['image_url'], width: 66, height: 66, fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _imgPlaceholder())
+                : _imgPlaceholder(),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(item['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                maxLines: 2, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 5),
+              Wrap(spacing: 5, children: [
+                _badge(isFree ? 'חינם' : '₪${item['price']?.toStringAsFixed(0) ?? ''}',
+                  isFree ? const Color(0xFFD1FAE5) : const Color(0xFFEDE9FE),
+                  isFree ? const Color(0xFF065F46) : const Color(0xFF5B21B6)),
+                _badge(
+                  status == 'active' ? 'פעיל' : status == 'sold' ? 'נסגר' : 'פג תוקף',
+                  isActive ? const Color(0xFFDCFCE7) : const Color(0xFFF3F4F6),
+                  isActive ? const Color(0xFF166534) : const Color(0xFF6B7280)),
+              ]),
+            ])),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Icon(Icons.visibility_outlined, size: 15, color: kSubtext),
+            const SizedBox(width: 3),
+            Text('${item['view_count'] ?? 0}', style: TextStyle(fontSize: 13, color: kSubtext)),
+            const SizedBox(width: 12),
+            Icon(Icons.chat_bubble_outline, size: 15, color: kSubtext),
+            const SizedBox(width: 3),
+            Text('${item['contact_count'] ?? 0}', style: TextStyle(fontSize: 13, color: kSubtext)),
+            const Spacer(),
+            if (isActive) ...[
+              _actionBtn('סגור מודעה', const Color(0xFFD1FAE5), const Color(0xFF065F46), onMarkSold),
+              const SizedBox(width: 6),
+            ],
+            _actionBtn('מחק', const Color(0xFFFEE2E2), const Color(0xFF991B1B), onDelete),
+          ]),
+        ]),
+      ),
+    );
+  }
+
+  Widget _imgPlaceholder() => Container(
+    width: 66, height: 66,
+    decoration: BoxDecoration(color: const Color(0xFFE8F4FD), borderRadius: BorderRadius.circular(8)),
+    child: Icon(Icons.image_outlined, color: kSubtext, size: 28));
+
+  Widget _badge(String text, Color bg, Color fg) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10)),
+    child: Text(text, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: fg)));
+
+  Widget _actionBtn(String label, Color bg, Color fg, VoidCallback onTap) => GestureDetector(
+    onTap: onTap,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(8)),
+      child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: fg))));
 }
 
 // ── Post Listing Screen ───────────────────────────────────────────
