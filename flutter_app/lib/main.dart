@@ -15,6 +15,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 
 MediaType _mimeFromFileName(String fileName) {
   switch (fileName.split('.').last.toLowerCase()) {
@@ -1581,6 +1583,7 @@ class _MainShellState extends State<MainShell> {
     _loadUsers();
     _registerFcmToken();
     _loadAdminPerm();
+    _updateLocation();
     WidgetsBinding.instance.addObserver(_lifecycleObserver);
     // רענון רשימת משתמשים כל 60 שניות
     _usersRefreshTimer = Timer.periodic(
@@ -1633,6 +1636,48 @@ class _MainShellState extends State<MainShell> {
           body: jsonEncode({'token': newToken, 'deviceId': Platform.operatingSystem}),
         );
       });
+    } catch (_) {}
+  }
+
+  Future<void> _updateLocation() async {
+    try {
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.deniedForever ||
+          perm == LocationPermission.denied) return;
+
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+
+      String? city;
+      String? country;
+      try {
+        final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
+        if (placemarks.isNotEmpty) {
+          city    = placemarks.first.locality ?? placemarks.first.subAdministrativeArea;
+          country = placemarks.first.country;
+        }
+      } catch (_) {}
+
+      await http.put(
+        Uri.parse('$kApi/location'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'latitude':  pos.latitude,
+          'longitude': pos.longitude,
+          'city':      city,
+          'country':   country,
+        }),
+      );
     } catch (_) {}
   }
 

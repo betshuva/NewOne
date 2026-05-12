@@ -348,6 +348,15 @@ function resetPasswordEmail(resetUrl) {
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='apartment')
         ALTER TABLE users ADD apartment NVARCHAR(20)`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='latitude')
+        ALTER TABLE users ADD latitude FLOAT`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='longitude')
+        ALTER TABLE users ADD longitude FLOAT`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='location_updated_at')
+        ALTER TABLE users ADD location_updated_at DATETIME`);
 
     // ── group_members: pending membership columns ──────────────────
     await pool.request().query(`
@@ -1127,6 +1136,97 @@ app.put('/api/profile', auth, async (req, res) => {
               WHERE id=@id`);
     logActivity(req.user.id, 'update_profile', { name: name.trim(), city, country }, req.ip);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Location: update precise location ────────────────────────────
+app.put('/api/location', auth, async (req, res) => {
+  const { latitude, longitude, city, country } = req.body;
+  if (latitude == null || longitude == null) return res.status(400).json({ error: 'נדרש מיקום' });
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return res.status(400).json({ error: 'מיקום לא תקין' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('id',        sql.UniqueIdentifier, req.user.id)
+      .input('lat',       sql.Float,            latitude)
+      .input('lng',       sql.Float,            longitude)
+      .input('city',      sql.NVarChar,         city    || null)
+      .input('country',   sql.NVarChar,         country || null)
+      .query(`UPDATE users SET latitude=@lat, longitude=@lng,
+              city=COALESCE(@city, city), country=COALESCE(@country, country),
+              location_updated_at=GETDATE() WHERE id=@id`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Location: get nearby users (by radius and/or city) ───────────
+app.get('/api/users/nearby', auth, async (req, res) => {
+  const { city, radius } = req.query;
+  if (!city && !radius) return res.status(400).json({ error: 'נדרש עיר או רדיוס' });
+  try {
+    const pool = await getPool();
+
+    // city-only search
+    if (city && !radius) {
+      const result = await pool.request()
+        .input('city',   sql.NVarChar,         city)
+        .input('userId', sql.UniqueIdentifier, req.user.id)
+        .query(`SELECT id, name, profile_pic_url, city, country
+                FROM users
+                WHERE id != @userId AND city = @city
+                ORDER BY name ASC`);
+      return res.json(result.recordset);
+    }
+
+    // radius search — use caller's stored coordinates
+    const me = await pool.request()
+      .input('userId', sql.UniqueIdentifier, req.user.id)
+      .query('SELECT latitude, longitude FROM users WHERE id=@userId');
+    const { latitude: myLat, longitude: myLng } = me.recordset[0] || {};
+    if (myLat == null || myLng == null)
+      return res.status(400).json({ error: 'המיקום שלך אינו מוגדר' });
+
+    const req2 = pool.request()
+      .input('lat',    sql.Float,            myLat)
+      .input('lng',    sql.Float,            myLng)
+      .input('radius', sql.Float,            parseFloat(radius))
+      .input('userId', sql.UniqueIdentifier, req.user.id);
+
+    // optionally also filter by city
+    const cityFilter = city ? 'AND city = @city' : '';
+    if (city) req2.input('city', sql.NVarChar, city);
+
+    const result = await req2.query(`
+      SELECT id, name, profile_pic_url, city, country,
+        ROUND(6371 * ACOS(
+          COS(RADIANS(@lat)) * COS(RADIANS(latitude)) *
+          COS(RADIANS(longitude) - RADIANS(@lng)) +
+          SIN(RADIANS(@lat)) * SIN(RADIANS(latitude))
+        ), 1) AS distance_km
+      FROM users
+      WHERE id != @userId
+        AND latitude IS NOT NULL AND longitude IS NOT NULL
+        ${cityFilter}
+        AND (6371 * ACOS(
+          COS(RADIANS(@lat)) * COS(RADIANS(latitude)) *
+          COS(RADIANS(longitude) - RADIANS(@lng)) +
+          SIN(RADIANS(@lat)) * SIN(RADIANS(latitude))
+        )) <= @radius
+      ORDER BY distance_km ASC`);
+
+    res.json(result.recordset);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Location: list cities with users ─────────────────────────────
+app.get('/api/cities', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .query(`SELECT DISTINCT city, COUNT(*) AS user_count
+              FROM users WHERE city IS NOT NULL
+              GROUP BY city ORDER BY user_count DESC`);
+    res.json(result.recordset);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

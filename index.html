@@ -752,6 +752,20 @@ async function startApp() {
   await Promise.all([loadUsers(), loadGroups()]);
   connectSocket();
   renderList();
+  updateLocation();
+}
+
+async function updateLocation() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    try {
+      await fetch(`${API}/api/location`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+      });
+    } catch (_) {}
+  }, () => {}, { enableHighAccuracy: true, timeout: 10000 });
 }
 
 function renderAvatar(el, picUrl, name, size=64) {
