@@ -85,7 +85,7 @@ jobs:
           git commit -m "build: release v${VERSION} [skip ci]"
 
           for attempt in 1 2 3; do
-            git pull --rebase origin main
+            git pull --rebase --autostash origin main
             if git push origin main; then
               echo "Push succeeded on attempt ${attempt}"
               exit 0
