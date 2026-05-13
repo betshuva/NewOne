@@ -421,6 +421,14 @@ function resetPasswordEmail(resetUrl) {
         created_at           DATETIME DEFAULT GETDATE()
       )`);
 
+    // ── Messages: edit columns ─────────────────────────────────────
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('messages') AND name='is_edited')
+        ALTER TABLE messages ADD is_edited BIT NOT NULL DEFAULT 0`);
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('messages') AND name='edited_at')
+        ALTER TABLE messages ADD edited_at DATETIME NULL`);
+
     // ── Message Status ─────────────────────────────────────────────
     await pool.request().query(`
       IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='message_status' AND xtype='U')
@@ -1047,6 +1055,43 @@ app.delete('/api/messages/:id', auth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Edit message ─────────────────────────────────────────────────
+app.patch('/api/messages/:id', auth, async (req, res) => {
+  const newBody = (req.body.body || '').trim();
+  if (!newBody) return res.status(400).json({ error: 'תוכן ההודעה ריק' });
+  try {
+    const pool = await getPool();
+    const found = await pool.request()
+      .input('id', sql.UniqueIdentifier, req.params.id)
+      .query('SELECT sender_id, recipient_id, group_id, type FROM messages WHERE id=@id AND deleted_for_everyone=0');
+    const msg = found.recordset[0];
+    if (!msg) return res.status(404).json({ error: 'הודעה לא נמצאה' });
+    if (msg.sender_id !== req.user.id) return res.status(403).json({ error: 'אין הרשאה לערוך' });
+    if (msg.type !== 'text') return res.status(400).json({ error: 'ניתן לערוך הודעות טקסט בלבד' });
+    await pool.request()
+      .input('id',   sql.UniqueIdentifier, req.params.id)
+      .input('body', sql.NVarChar,         newBody)
+      .query('UPDATE messages SET body=@body, is_edited=1, edited_at=GETDATE() WHERE id=@id');
+    // Notify recipient (private chat)
+    if (msg.recipient_id) {
+      const sid = onlineUsers.get(msg.recipient_id);
+      if (sid) io.to(sid).emit('message:edited', { id: req.params.id, body: newBody });
+    }
+    // Notify group members
+    if (msg.group_id) {
+      const members = await pool.request()
+        .input('gid', sql.UniqueIdentifier, msg.group_id)
+        .query('SELECT user_id FROM group_members WHERE group_id=@gid');
+      for (const { user_id } of members.recordset) {
+        if (user_id === req.user.id) continue;
+        const sid = onlineUsers.get(user_id);
+        if (sid) io.to(sid).emit('message:edited', { id: req.params.id, body: newBody, groupId: msg.group_id });
+      }
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Block: block user ─────────────────────────────────────────────

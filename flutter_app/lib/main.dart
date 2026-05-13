@@ -3260,6 +3260,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _msgCtrl    = TextEditingController();
   final _scrollCtrl = ScrollController();
   Map<String, dynamic>? _replyTo;
+  Map<String, dynamic>? _editingMsg;
   bool _loading = true;
   bool _isTyping = false;
 
@@ -3343,6 +3344,7 @@ class _ChatScreenState extends State<ChatScreen> {
       'fileName':      map['file_name'],
       'isGroupInvite': msgType == 'group_invite',
       'meta':          map['file_name'],
+      'isEdited':      map['is_edited'] == true || map['is_edited'] == 1,
     };
   }
 
@@ -3411,6 +3413,17 @@ class _ChatScreenState extends State<ChatScreen> {
         if (idx != -1) _messages[idx]['text'] = '🚫 הודעה נמחקה';
       });
     });
+
+    widget.socket?.on('message:edited', (data) {
+      if (!mounted) return;
+      setState(() {
+        final idx = _messages.indexWhere((m) => m['id'] == data['id']);
+        if (idx != -1) {
+          _messages[idx]['text']     = data['body'] as String;
+          _messages[idx]['isEdited'] = true;
+        }
+      });
+    });
   }
 
   Future<void> _markAsRead() async {
@@ -3432,6 +3445,7 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.off('chat:typing');
     widget.socket?.off('messages:read');
     widget.socket?.off('message:deleted');
+    widget.socket?.off('message:edited');
     _msgCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -3442,9 +3456,37 @@ class _ChatScreenState extends State<ChatScreen> {
     return '${n.hour.toString().padLeft(2, '0')}:${n.minute.toString().padLeft(2, '0')}';
   }
 
-  void _send() {
+  Future<void> _send() async {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
+
+    // Edit mode
+    if (_editingMsg != null) {
+      final msgId   = _editingMsg!['id'] as String;
+      final oldText = _editingMsg!['text'] as String;
+      setState(() {
+        final idx = _messages.indexWhere((m) => m['id'] == msgId);
+        if (idx != -1) { _messages[idx]['text'] = text; _messages[idx]['isEdited'] = true; }
+        _editingMsg = null;
+        _msgCtrl.clear();
+      });
+      try {
+        final res = await http.patch(
+          Uri.parse('$kApi/messages/$msgId'),
+          headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+          body: jsonEncode({'body': text}),
+        );
+        if (res.statusCode != 200 && mounted) {
+          setState(() {
+            final idx = _messages.indexWhere((m) => m['id'] == msgId);
+            if (idx != -1) { _messages[idx]['text'] = oldText; _messages[idx]['isEdited'] = false; }
+          });
+        }
+      } catch (_) {}
+      return;
+    }
+
+    // Normal send
     final replySnapshot = _replyTo;
     setState(() {
       _messages.add({
@@ -3464,6 +3506,37 @@ class _ChatScreenState extends State<ChatScreen> {
       if (replySnapshot != null) 'replyToId': replySnapshot['id'],
     });
     _scrollToBottom();
+  }
+
+  void _showMessageOptions(Map<String, dynamic> msg, bool isMe) {
+    final isText = msg['isFile'] != true && msg['isGroupInvite'] != true;
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.reply, color: kPrimary),
+              title: const Text('ענה'),
+              onTap: () { Navigator.pop(context); setState(() => _replyTo = msg); },
+            ),
+            if (isMe && isText)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined, color: kPrimary),
+                title: const Text('ערוך הודעה'),
+                onTap: () {
+                  Navigator.pop(context);
+                  setState(() { _editingMsg = msg; _msgCtrl.text = msg['text'] as String? ?? ''; });
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _onTyping() {
@@ -3835,6 +3908,41 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
 
+          // Edit mode bar
+          if (_editingMsg != null)
+            Container(
+              color: const Color(0xFFFFF8E1),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Container(
+                    width: 3, height: 36, color: Colors.orange,
+                    margin: const EdgeInsets.only(left: 8),
+                  ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('עריכת הודעה',
+                            style: TextStyle(color: Colors.orange, fontSize: 12,
+                                fontWeight: FontWeight.bold)),
+                        Text(
+                          _editingMsg!['text'] as String? ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13, color: kSubtext),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => setState(() { _editingMsg = null; _msgCtrl.clear(); }),
+                  ),
+                ],
+              ),
+            ),
+
           // Messages list
           Expanded(
             child: _loading
@@ -3866,8 +3974,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 )
                               else
                                 GestureDetector(
-                                  onLongPress: () =>
-                                      setState(() => _replyTo = msg),
+                                  onLongPress: () => _showMessageOptions(msg, isMe),
                                   child: _MessageBubble(message: msg, isMe: isMe),
                                 ),
                             ],
@@ -4319,6 +4426,10 @@ class _MessageBubble extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (message['isEdited'] == true)
+                  Text('נערך · ',
+                      style: TextStyle(fontSize: 10, color: timeColor,
+                          fontStyle: FontStyle.italic)),
                 Text(
                   message['time'] as String? ?? '',
                   style: TextStyle(fontSize: 10, color: timeColor),
@@ -4633,6 +4744,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   String _typingName = '';
   List<Map<String, dynamic>> _members = [];
   String _myStatus = 'member'; // 'member' or 'pending'
+  Map<String, dynamic>? _editingMsg;
 
   String get _groupId => widget.group['id'] as String;
 
@@ -5137,6 +5249,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'senderName': map['sender_name'] ?? '',
       'time':       _formatTime(map['created_at']),
       'isMe':       isMe,
+      'isEdited':   map['is_edited'] == true || map['is_edited'] == 1,
       if (map['reply_to_id'] != null) 'replyTo': {
         'id':   map['reply_to_id'],
         'text': map['reply_body'] ?? '',
@@ -5184,12 +5297,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
       }
     });
+
+    widget.socket?.on('message:edited', (data) {
+      if (!mounted) return;
+      final gid = data['groupId'] as String?;
+      if (gid != null && gid != _groupId) return;
+      setState(() {
+        final idx = _messages.indexWhere((m) => m['id'] == data['id']);
+        if (idx != -1) {
+          _messages[idx]['text']     = data['body'] as String;
+          _messages[idx]['isEdited'] = true;
+        }
+      });
+    });
   }
 
   @override
   void dispose() {
     widget.socket?.off('group:message');
     widget.socket?.off('group:typing');
+    widget.socket?.off('message:edited');
     _msgCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -5209,9 +5336,37 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     });
   }
 
-  void _send() {
+  Future<void> _send() async {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
+
+    // Edit mode
+    if (_editingMsg != null) {
+      final msgId   = _editingMsg!['id'] as String;
+      final oldText = _editingMsg!['text'] as String;
+      setState(() {
+        final idx = _messages.indexWhere((m) => m['id'] == msgId);
+        if (idx != -1) { _messages[idx]['text'] = text; _messages[idx]['isEdited'] = true; }
+        _editingMsg = null;
+        _msgCtrl.clear();
+      });
+      try {
+        final res = await http.patch(
+          Uri.parse('$kApi/messages/$msgId'),
+          headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+          body: jsonEncode({'body': text}),
+        );
+        if (res.statusCode != 200 && mounted) {
+          setState(() {
+            final idx = _messages.indexWhere((m) => m['id'] == msgId);
+            if (idx != -1) { _messages[idx]['text'] = oldText; _messages[idx]['isEdited'] = false; }
+          });
+        }
+      } catch (_) {}
+      return;
+    }
+
+    // Normal send
     setState(() {
       _messages.add({
         'id':         'temp_${DateTime.now().millisecondsSinceEpoch}',
@@ -5224,6 +5379,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     });
     widget.socket?.emit('group:message', {'groupId': _groupId, 'text': text});
     _scrollToBottom();
+  }
+
+  void _showMessageOptions(Map<String, dynamic> msg) {
+    final isMe   = msg['isMe'] == true;
+    final isText = msg['fileUrl'] == null;
+    if (!isMe || !isText) return;
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined, color: kPrimary),
+              title: const Text('ערוך הודעה'),
+              onTap: () {
+                Navigator.pop(context);
+                setState(() { _editingMsg = msg; _msgCtrl.text = msg['text'] as String? ?? ''; });
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showAttachMenu() {
@@ -5536,7 +5718,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         fontWeight: FontWeight.bold),
                                   ),
                                 ),
-                              Container(
+                              GestureDetector(
+                                onLongPress: () => _showMessageOptions(msg),
+                                child: Container(
                                 margin: const EdgeInsets.only(bottom: 6),
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 12, vertical: 8),
@@ -5591,16 +5775,53 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         textDirection: TextDirection.rtl,
                                       ),
                                     const SizedBox(height: 4),
-                                    Text(msg['time'] as String? ?? '',
-                                        style: const TextStyle(fontSize: 11, color: kSubtext)),
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (msg['isEdited'] == true)
+                                          const Text('נערך · ', style: TextStyle(fontSize: 10, color: kSubtext, fontStyle: FontStyle.italic)),
+                                        Text(msg['time'] as String? ?? '',
+                                            style: const TextStyle(fontSize: 11, color: kSubtext)),
+                                      ],
+                                    ),
                                   ],
                                 ),
                               ),
+                              ), // GestureDetector
                             ],
                           );
                         },
                       ),
           ),
+          // Edit mode bar (group)
+          if (_editingMsg != null)
+            Container(
+              color: const Color(0xFFFFF8E1),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Container(width: 3, height: 36, color: Colors.orange,
+                      margin: const EdgeInsets.only(left: 8)),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('עריכת הודעה',
+                            style: TextStyle(color: Colors.orange, fontSize: 12,
+                                fontWeight: FontWeight.bold)),
+                        Text(_editingMsg!['text'] as String? ?? '',
+                            maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13, color: kSubtext)),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => setState(() { _editingMsg = null; _msgCtrl.clear(); }),
+                  ),
+                ],
+              ),
+            ),
           if (_isTyping && _myStatus == 'member')
             Container(
               width: double.infinity,
