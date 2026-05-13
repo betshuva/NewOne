@@ -2133,6 +2133,13 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
     _load();
   }
 
+  Future<void> _edit(String id) async {
+    final updated = await Navigator.push<bool>(context, MaterialPageRoute(
+      builder: (_) => EditListingScreen(listingId: id, token: widget.token),
+    ));
+    if (updated == true) _load();
+  }
+
   Future<void> _delete(String id) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -2183,6 +2190,7 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
                   item: _items[i],
                   onMarkSold: () => _markSold(_items[i]['id']),
                   onDelete: () => _delete(_items[i]['id']),
+                  onEdit: () => _edit(_items[i]['id']),
                 ),
               ),
             ),
@@ -2194,7 +2202,8 @@ class _MyListingCard extends StatelessWidget {
   final Map<String, dynamic> item;
   final VoidCallback onMarkSold;
   final VoidCallback onDelete;
-  const _MyListingCard({required this.item, required this.onMarkSold, required this.onDelete});
+  final VoidCallback onEdit;
+  const _MyListingCard({required this.item, required this.onMarkSold, required this.onDelete, required this.onEdit});
 
   @override
   Widget build(BuildContext context) {
@@ -2245,8 +2254,10 @@ class _MyListingCard extends StatelessWidget {
             const SizedBox(width: 3),
             Text('${item['contact_count'] ?? 0}', style: TextStyle(fontSize: 13, color: kSubtext)),
             const Spacer(),
+            _actionBtn('ערוך', const Color(0xFFE0F2FE), const Color(0xFF0369A1), onEdit),
+            const SizedBox(width: 6),
             if (isActive) ...[
-              _actionBtn('סגור מודעה', const Color(0xFFD1FAE5), const Color(0xFF065F46), onMarkSold),
+              _actionBtn('סגור', const Color(0xFFD1FAE5), const Color(0xFF065F46), onMarkSold),
               const SizedBox(width: 6),
             ],
             _actionBtn('מחק', const Color(0xFFFEE2E2), const Color(0xFF991B1B), onDelete),
@@ -2468,6 +2479,224 @@ class _PostListingScreenState extends State<PostListingScreen> {
   );
 }
 
+// ── Edit Listing Screen ───────────────────────────────────────────
+class EditListingScreen extends StatefulWidget {
+  final String listingId;
+  final String token;
+  const EditListingScreen({super.key, required this.listingId, required this.token});
+  @override State<EditListingScreen> createState() => _EditListingScreenState();
+}
+
+class _EditListingScreenState extends State<EditListingScreen> {
+  final _titleCtrl = TextEditingController();
+  final _descCtrl  = TextEditingController();
+  final _priceCtrl = TextEditingController();
+  final _cityCtrl  = TextEditingController();
+  String _type     = 'free';
+  String _category = 'אחר';
+  final List<String?> _imageUrls     = [null, null, null, null];
+  final List<bool>    _uploadingSlot = [false, false, false, false];
+  bool _loading = true;
+  bool _saving  = false;
+
+  @override
+  void initState() { super.initState(); _loadDetail(); }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose(); _descCtrl.dispose(); _priceCtrl.dispose(); _cityCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadDetail() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/listings/${widget.listingId}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return;
+      final item = jsonDecode(res.body) as Map<String, dynamic>;
+      final imgs = List<String>.from(item['images'] ?? (item['image_url'] != null ? [item['image_url']] : []));
+      setState(() {
+        _type     = item['type'] as String? ?? 'free';
+        _category = item['category'] as String? ?? 'אחר';
+        _titleCtrl.text = item['title'] as String? ?? '';
+        _descCtrl.text  = item['description'] as String? ?? '';
+        _priceCtrl.text = item['price'] != null ? item['price'].toString() : '';
+        _cityCtrl.text  = item['city'] as String? ?? '';
+        for (int i = 0; i < 4; i++) {
+          _imageUrls[i] = i < imgs.length ? imgs[i] : null;
+        }
+        _loading = false;
+      });
+    } catch (_) { if (mounted) setState(() => _loading = false); }
+  }
+
+  Future<void> _pickImage(int slot) async {
+    final picker = ImagePicker();
+    final f = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+    if (f == null) return;
+    setState(() => _uploadingSlot[slot] = true);
+    try {
+      final req = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+        ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..files.add(await http.MultipartFile.fromPath('file', f.path,
+            contentType: _mimeFromFileName(f.path)));
+      final res  = await req.send();
+      final body = jsonDecode(await res.stream.bytesToString());
+      if (!mounted) return;
+      if (body['url'] != null) {
+        setState(() => _imageUrls[slot] = body['url']);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(body['error'] ?? 'שגיאה בהעלאת תמונה')));
+      }
+    } catch (_) {} finally { if (mounted) setState(() => _uploadingSlot[slot] = false); }
+  }
+
+  Future<void> _submit() async {
+    if (_titleCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('נדרשת כותרת')));
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final urls = _imageUrls.where((u) => u != null).toList();
+      final city = _cityCtrl.text.trim();
+      final body = <String, dynamic>{
+        'type': _type, 'title': _titleCtrl.text.trim(),
+        'description': _descCtrl.text.trim(), 'category': _category,
+        if (city.isNotEmpty) 'city': city,
+        'image_urls': urls,
+      };
+      if (_type == 'sale') body['price'] = double.tryParse(_priceCtrl.text) ?? 0;
+      final res = await http.put(
+        Uri.parse('$kApi/listings/${widget.listingId}'),
+        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      );
+      if (res.statusCode == 200 && mounted) Navigator.pop(context, true);
+      else if (mounted) {
+        final err = jsonDecode(res.body)['error'] ?? 'שגיאה';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      }
+    } catch (_) {} finally { if (mounted) setState(() => _saving = false); }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: kPrimary,
+        title: const Text('עריכת מודעה', style: TextStyle(color: Colors.white)),
+        leading: BackButton(color: Colors.white),
+      ),
+      body: _loading
+        ? const Center(child: CircularProgressIndicator())
+        : SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              Expanded(child: _typeBtn('free', 'ונתנו — חינם', const Color(0xFFD1FAE5), const Color(0xFF065F46))),
+              const SizedBox(width: 10),
+              Expanded(child: _typeBtn('sale', 'יד 2 — מכירה', const Color(0xFFEDE9FE), const Color(0xFF5B21B6))),
+            ]),
+            const SizedBox(height: 16),
+            Text('תמונות (עד 4)', style: TextStyle(fontSize: 13, color: kSubtext, fontWeight: FontWeight.w500)),
+            const SizedBox(height: 8),
+            GridView.count(
+              crossAxisCount: 4, crossAxisSpacing: 8, mainAxisSpacing: 8,
+              shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+              children: List.generate(4, (i) => _imageSlot(i)),
+            ),
+            const SizedBox(height: 16),
+            TextField(controller: _titleCtrl, textDirection: TextDirection.rtl,
+              decoration: const InputDecoration(labelText: 'כותרת המודעה *', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            TextField(controller: _descCtrl, textDirection: TextDirection.rtl, maxLines: 3,
+              decoration: const InputDecoration(labelText: 'תיאור', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            if (_type == 'sale') ...[
+              TextField(controller: _priceCtrl, keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'מחיר (₪)', border: OutlineInputBorder(), prefixText: '₪ ')),
+              const SizedBox(height: 12),
+            ],
+            DropdownButtonFormField<String>(
+              value: _category,
+              decoration: const InputDecoration(labelText: 'קטגוריה', border: OutlineInputBorder()),
+              items: _kCategories.skip(1).map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+              onChanged: (v) => setState(() => _category = v!),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _cityCtrl, textDirection: TextDirection.rtl,
+              decoration: const InputDecoration(
+                labelText: 'עיר', border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.location_city_outlined),
+              ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: kPrimary, padding: const EdgeInsets.symmetric(vertical: 14)),
+              onPressed: _saving ? null : _submit,
+              child: _saving
+                ? const CircularProgressIndicator(color: Colors.white)
+                : const Text('שמור שינויים', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          ]),
+        ),
+    );
+  }
+
+  Widget _imageSlot(int i) {
+    final url       = _imageUrls[i];
+    final uploading = _uploadingSlot[i];
+    return GestureDetector(
+      onTap: uploading || url != null ? null : () => _pickImage(i),
+      onLongPress: url != null ? () => setState(() => _imageUrls[i] = null) : null,
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFFE8F4FD),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: kBorder),
+        ),
+        child: uploading
+          ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          : url != null
+            ? Stack(fit: StackFit.expand, children: [
+                ClipRRect(borderRadius: BorderRadius.circular(9),
+                  child: Image.network(url, fit: BoxFit.cover)),
+                Positioned(top: 3, left: 3,
+                  child: GestureDetector(
+                    onTap: () => setState(() => _imageUrls[i] = null),
+                    child: Container(
+                      width: 20, height: 20,
+                      decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                      child: const Icon(Icons.close, size: 13, color: Colors.white)))),
+              ])
+            : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(Icons.add_photo_alternate_outlined, size: 24, color: kPrimary),
+                if (i == 0) Text('תמונה ראשית', style: TextStyle(fontSize: 9, color: kSubtext), textAlign: TextAlign.center),
+              ]),
+      ),
+    );
+  }
+
+  Widget _typeBtn(String val, String label, Color bg, Color fg) => GestureDetector(
+    onTap: () => setState(() => _type = val),
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: _type == val ? bg : Colors.white,
+        border: Border.all(color: _type == val ? fg : kBorder, width: 2),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(label, textAlign: TextAlign.center,
+        style: TextStyle(color: fg, fontWeight: FontWeight.bold, fontSize: 13)),
+    ),
+  );
+}
+
 // ── Listing Detail Screen ─────────────────────────────────────────
 class ListingDetailScreen extends StatefulWidget {
   final Map<String, dynamic> item;
@@ -2480,6 +2709,13 @@ class ListingDetailScreen extends StatefulWidget {
 class _ListingDetailScreenState extends State<ListingDetailScreen> {
   late final PageController _pageCtrl = PageController();
   int _pageIdx = 0;
+  late String _status;
+
+  @override
+  void initState() {
+    super.initState();
+    _status = widget.item['status'] as String? ?? 'active';
+  }
 
   List<String> get _images {
     final raw = widget.item['images'];
@@ -2497,6 +2733,35 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         socket: null,
       ),
     ));
+  }
+
+  Future<void> _setStatus(String newStatus) async {
+    final label = newStatus == 'sold' ? 'נמכר' : 'נמסר';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('סמן כ$label?'),
+        content: Text('לשנות את סטטוס המודעה ל"$label"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ביטול')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: kPrimary),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('כן, $label', style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final res = await http.put(
+      Uri.parse('$kApi/listings/${widget.item['id']}/status'),
+      headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+      body: jsonEncode({'status': newStatus}),
+    );
+    if (res.statusCode == 200 && mounted) {
+      setState(() => _status = newStatus);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('המודעה סומנה כ$label')));
+    }
   }
 
   @override
@@ -2591,7 +2856,40 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                 ]),
               ),
               const SizedBox(height: 20),
-              if (!isOwner)
+              if (isOwner) ...[
+                if (_status != 'active')
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _status == 'sold' ? const Color(0xFFEDE9FE) : const Color(0xFFD1FAE5),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      _status == 'sold' ? 'נמכר / נמסר' : 'פג תוקף',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 15,
+                        color: _status == 'sold' ? const Color(0xFF5B21B6) : const Color(0xFF065F46)),
+                    ),
+                  )
+                else
+                  Row(children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFD1FAE5),
+                          foregroundColor: const Color(0xFF065F46),
+                          minimumSize: const Size(0, 46),
+                          elevation: 0,
+                        ),
+                        onPressed: () => _setStatus('sold'),
+                        icon: const Icon(Icons.check_circle_outline, size: 18),
+                        label: const Text('נמסר / נמכר', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ]),
+              ] else
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: kPrimary, minimumSize: const Size(double.infinity, 50)),
                   onPressed: _openChat,

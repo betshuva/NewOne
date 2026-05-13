@@ -1402,6 +1402,46 @@ app.put('/api/listings/:id/status', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.put('/api/listings/:id', auth, async (req, res) => {
+  const { type, title, description, price, city, category, image_urls } = req.body;
+  if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
+  const validTypes = ['free', 'sale'];
+  const validCats  = ['רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
+  const safeType   = validTypes.includes(type) ? type : 'free';
+  const safeCat    = validCats.includes(category) ? category : 'אחר';
+  const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 4) : [];
+  try {
+    const pool = await getPool();
+    const upd = await pool.request()
+      .input('id',          sql.UniqueIdentifier, req.params.id)
+      .input('userId',      sql.UniqueIdentifier, req.user.id)
+      .input('type',        sql.NVarChar,         safeType)
+      .input('title',       sql.NVarChar,         title.trim())
+      .input('description', sql.NVarChar,         description || null)
+      .input('price',       sql.Float,            safeType === 'sale' ? (price ?? 0) : null)
+      .input('city',        sql.NVarChar,         city || null)
+      .input('category',    sql.NVarChar,         safeCat)
+      .input('imageUrl',    sql.NVarChar,         allImages[0] || null)
+      .query(`UPDATE listings SET type=@type, title=@title, description=@description,
+              price=@price, city=@city, category=@category, image_url=@imageUrl,
+              updated_at=GETDATE()
+              WHERE id=@id AND user_id=@userId`);
+    if (upd.rowsAffected[0] === 0) return res.status(404).json({ error: 'לא נמצא' });
+    await pool.request()
+      .input('id', sql.UniqueIdentifier, req.params.id)
+      .query(`DELETE FROM listing_images WHERE listing_id=@id`);
+    for (let i = 0; i < allImages.length; i++) {
+      await pool.request()
+        .input('lid',   sql.UniqueIdentifier, req.params.id)
+        .input('url',   sql.NVarChar,         allImages[i])
+        .input('order', sql.Int,              i)
+        .query(`INSERT INTO listing_images (listing_id, url, sort_order) VALUES (@lid, @url, @order)`);
+    }
+    logActivity(req.user.id, 'edit_listing', { id: req.params.id }, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/listings/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
