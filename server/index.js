@@ -957,6 +957,30 @@ app.post('/api/contacts/match', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Messages: unread counts per sender ───────────────────────────
+app.get('/api/messages/unread', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('myId', sql.UniqueIdentifier, req.user.id)
+      .query(`
+        SELECT m.sender_id AS senderId, COUNT(*) AS cnt
+        FROM messages m
+        LEFT JOIN message_status ms
+          ON ms.message_id = m.id AND ms.user_id = @myId
+        WHERE m.recipient_id = @myId
+          AND m.deleted_for_everyone = 0
+          AND (ms.status IS NULL OR ms.status != 'read')
+        GROUP BY m.sender_id
+      `);
+    const counts = {};
+    for (const row of result.recordset) counts[row.senderId] = row.cnt;
+    res.json(counts);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Messages: load history ─────────────────────────────────────────
 app.get('/api/messages/:userId', auth, async (req, res) => {
   const otherId = req.params.userId;

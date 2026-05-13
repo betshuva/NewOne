@@ -1572,6 +1572,7 @@ class _MainShellState extends State<MainShell> {
   String? _adminPerm;
   late final _AppLifecycleObserver _lifecycleObserver;
   Timer? _usersRefreshTimer;
+  Map<String, int> _unreadCounts = {}; // userId → count of unread incoming msgs
 
   @override
   void initState() {
@@ -1580,6 +1581,7 @@ class _MainShellState extends State<MainShell> {
     _decodeMe();
     _connectSocket();
     _loadUsers();
+    _loadUnreadCounts();
     _registerFcmToken();
     _loadAdminPerm();
     _updateLocation();
@@ -1587,6 +1589,12 @@ class _MainShellState extends State<MainShell> {
     // רענון רשימת משתמשים כל 60 שניות
     _usersRefreshTimer = Timer.periodic(
       const Duration(seconds: 60), (_) => _loadUsers());
+    // Push notification: אפליקציה נפתחה מהודעה (כשהייתה סגורה)
+    FirebaseMessaging.instance
+        .getInitialMessage()
+        .then(_handleNotificationOpen);
+    // Push notification: אפליקציה בפוקוס/רקע — המשתמש לחץ
+    FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationOpen);
   }
 
   @override
@@ -1678,6 +1686,47 @@ class _MainShellState extends State<MainShell> {
     }
   }
 
+  Future<void> _loadUnreadCounts() async {
+    try {
+      final res = await http.get(
+        Uri.parse('$kApi/messages/unread'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200 && mounted) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        setState(() => _unreadCounts =
+            data.map((k, v) => MapEntry(k, (v as num).toInt())));
+      }
+    } catch (_) {}
+  }
+
+  void _handleNotificationOpen(RemoteMessage? msg) {
+    if (msg == null || !mounted) return;
+    final fromUserId = msg.data['fromUserId'] as String?;
+    final type = msg.data['type'] as String?;
+    if (type == 'chat' && fromUserId != null) {
+      final user = _users.firstWhere(
+        (u) => u['id'] == fromUserId,
+        orElse: () => {
+          'id': fromUserId,
+          'name': msg.notification?.title ?? 'משתמש',
+        },
+      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() => _unreadCounts.remove(fromUserId));
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            token: widget.token,
+            me: _me,
+            recipient: user,
+            socket: _socket,
+          ),
+        ));
+      });
+    }
+  }
+
   Future<void> _loadUsers() async {
     // Load from cache first for instant offline display
     try {
@@ -1714,7 +1763,7 @@ class _MainShellState extends State<MainShell> {
           .build(),
     );
     // רענן רשימת משתמשים כשהסוקט מתחבר מחדש
-    _socket!.on('connect', (_) => _loadUsers());
+    _socket!.on('connect', (_) { _loadUsers(); _loadUnreadCounts(); });
 
     // טיפול בשגיאת חיבור — משתמש לא קיים ב-DB → יציאה אוטומטית
     _socket!.on('connect_error', (err) {
@@ -1735,9 +1784,18 @@ class _MainShellState extends State<MainShell> {
       if (newUser['id'] == myId) return; // אל תוסיף את עצמך
       if (_users.any((u) => u['id'] == newUser['id'])) return; // כבר קיים
       setState(() => _users = [newUser, ..._users]);
-      // עדכן cache
       SharedPreferences.getInstance().then((prefs) =>
           prefs.setString('cache_users', jsonEncode(_users)));
+    });
+
+    // הודעה חדשה בזמן שהאפליקציה פתוחה — עדכן badge
+    _socket!.on('chat:message', (data) {
+      if (!mounted) return;
+      final fromId  = data['fromUserId'] as String?;
+      final myId    = _me?['id'] as String?;
+      if (fromId == null || fromId == myId) return;
+      setState(() =>
+          _unreadCounts[fromId] = (_unreadCounts[fromId] ?? 0) + 1);
     });
   }
 
@@ -1777,9 +1835,15 @@ class _MainShellState extends State<MainShell> {
         token: widget.token,
         me: _me,
         socket: _socket,
+        unreadCounts: _unreadCounts,
+        onChatOpened: (userId) {
+          if (_unreadCounts.containsKey(userId)) {
+            setState(() => _unreadCounts.remove(userId));
+          }
+        },
       ),
       GroupsScreen(token: widget.token, me: _me, socket: _socket),
-      ListingsScreen(token: widget.token, me: _me),
+      ListingsScreen(token: widget.token, me: _me, socket: _socket),
       SettingsScreen(me: _me, token: widget.token, onLogout: _logout, adminPerm: _adminPerm),
     ];
 
@@ -1826,7 +1890,8 @@ const _kCategories = ['הכל','רהיטים','אלקטרוניקה','בגדים
 class ListingsScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
-  const ListingsScreen({super.key, required this.token, required this.me});
+  final IO.Socket? socket;
+  const ListingsScreen({super.key, required this.token, required this.me, required this.socket});
   @override State<ListingsScreen> createState() => _ListingsScreenState();
 }
 
@@ -1880,7 +1945,7 @@ class _ListingsScreenState extends State<ListingsScreen> with SingleTickerProvid
 
   void _openDetail(Map<String, dynamic> item) {
     Navigator.push(context, MaterialPageRoute(
-      builder: (_) => ListingDetailScreen(item: item, token: widget.token, me: widget.me),
+      builder: (_) => ListingDetailScreen(item: item, token: widget.token, me: widget.me, socket: widget.socket),
     ));
   }
 
@@ -2702,7 +2767,8 @@ class ListingDetailScreen extends StatefulWidget {
   final Map<String, dynamic> item;
   final String token;
   final Map<String, dynamic>? me;
-  const ListingDetailScreen({super.key, required this.item, required this.token, required this.me});
+  final IO.Socket? socket;
+  const ListingDetailScreen({super.key, required this.item, required this.token, required this.me, required this.socket});
   @override State<ListingDetailScreen> createState() => _ListingDetailScreenState();
 }
 
@@ -2740,7 +2806,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         token: widget.token,
         recipient: {'id': widget.item['seller_id'], 'name': widget.item['seller_name'], 'profile_pic_url': widget.item['seller_pic']},
         me: widget.me,
-        socket: null,
+        socket: widget.socket,
         initialText: _listingDefaultMessage(),
       ),
     ));
@@ -2921,6 +2987,8 @@ class ConversationsScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
   final IO.Socket? socket;
+  final Map<String, int> unreadCounts;
+  final void Function(String userId) onChatOpened;
 
   const ConversationsScreen({
     super.key,
@@ -2928,6 +2996,8 @@ class ConversationsScreen extends StatefulWidget {
     required this.token,
     required this.me,
     required this.socket,
+    required this.unreadCounts,
+    required this.onChatOpened,
   });
 
   @override
@@ -3155,21 +3225,38 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       child: Text('אין משתמשים רשומים עדיין',
                           style: TextStyle(color: kSubtext, fontSize: 15)),
                     )
-                  : ListView.separated(
-                      itemCount: widget.users.length,
-                      separatorBuilder: (_, __) => const Divider(
-                          height: 1, color: Color(0xFFD4E9F7), indent: 76),
-                      itemBuilder: (_, i) {
-                        final user = widget.users[i];
-                        return _ConversationTile(
-                          user: user,
-                          onTap: () => Navigator.push(context, MaterialPageRoute(
-                            builder: (_) => ChatScreen(
-                              token: widget.token, me: widget.me,
-                              recipient: user, socket: widget.socket))),
+                  : Builder(builder: (context) {
+                      final visibleUsers = _tab == 1
+                          ? widget.users.where(
+                              (u) => (widget.unreadCounts[u['id']] ?? 0) > 0
+                            ).toList()
+                          : widget.users;
+                      if (visibleUsers.isEmpty) {
+                        return const Center(
+                          child: Text('אין הודעות שלא נקראו',
+                              style: TextStyle(color: kSubtext, fontSize: 15)),
                         );
-                      },
-                    ),
+                      }
+                      return ListView.separated(
+                        itemCount: visibleUsers.length,
+                        separatorBuilder: (_, __) => const Divider(
+                            height: 1, color: Color(0xFFD4E9F7), indent: 76),
+                        itemBuilder: (_, i) {
+                          final user = visibleUsers[i];
+                          return _ConversationTile(
+                            user: user,
+                            unreadCount: widget.unreadCounts[user['id']] ?? 0,
+                            onTap: () {
+                              widget.onChatOpened(user['id'] as String);
+                              Navigator.push(context, MaterialPageRoute(
+                                builder: (_) => ChatScreen(
+                                  token: widget.token, me: widget.me,
+                                  recipient: user, socket: widget.socket)));
+                            },
+                          );
+                        },
+                      );
+                    }),
             ),
           ]
         ],
@@ -3181,8 +3268,13 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 class _ConversationTile extends StatelessWidget {
   final Map<String, dynamic> user;
   final VoidCallback onTap;
+  final int unreadCount;
 
-  const _ConversationTile({required this.user, required this.onTap});
+  const _ConversationTile({
+    required this.user,
+    required this.onTap,
+    this.unreadCount = 0,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -3191,27 +3283,54 @@ class _ConversationTile extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Container(
-        color: Colors.white,
+        color: unreadCount > 0 ? const Color(0xFFF0F7FF) : Colors.white,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
         child: Row(
           children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: const BoxDecoration(
-                color: Color(0xFFC5DFF2),
-                shape: BoxShape.circle,
-              ),
-              child: Center(
-                child: Text(
-                  initials,
-                  style: const TextStyle(
-                    color: kHeader,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 20,
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: unreadCount > 0 ? kPrimary : const Color(0xFFC5DFF2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Text(
+                      initials,
+                      style: TextStyle(
+                        color: unreadCount > 0 ? Colors.white : kHeader,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 20,
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                if (unreadCount > 0)
+                  Positioned(
+                    top: -4,
+                    left: -4,
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text(
+                        unreadCount > 99 ? '99+' : '$unreadCount',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -3222,18 +3341,39 @@ class _ConversationTile extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(name,
-                          style: const TextStyle(
+                          style: TextStyle(
                               color: kTextDark,
                               fontSize: 14,
-                              fontWeight: FontWeight.w600)),
-                      const Text('עכשיו',
-                          style: TextStyle(fontSize: 11, color: kSubtext)),
+                              fontWeight: unreadCount > 0
+                                  ? FontWeight.w700
+                                  : FontWeight.w600)),
+                      if (unreadCount > 0)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '$unreadCount הודעות',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold),
+                          ),
+                        ),
                     ],
                   ),
                   const SizedBox(height: 3),
-                  const Text(
-                    'לחץ לפתיחת שיחה',
-                    style: TextStyle(fontSize: 12, color: kSubtext),
+                  Text(
+                    unreadCount > 0 ? 'יש הודעות חדשות!' : 'לחץ לפתיחת שיחה',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: unreadCount > 0 ? kPrimary : kSubtext,
+                        fontWeight: unreadCount > 0
+                            ? FontWeight.w600
+                            : FontWeight.normal),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
