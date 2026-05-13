@@ -1423,8 +1423,7 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       .input('category',    sql.NVarChar,         safeCat)
       .input('imageUrl',    sql.NVarChar,         allImages[0] || null)
       .query(`UPDATE listings SET type=@type, title=@title, description=@description,
-              price=@price, city=@city, category=@category, image_url=@imageUrl,
-              updated_at=GETDATE()
+              price=@price, city=@city, category=@category, image_url=@imageUrl
               WHERE id=@id AND user_id=@userId`);
     if (upd.rowsAffected[0] === 0) return res.status(404).json({ error: 'לא נמצא' });
     await pool.request()
