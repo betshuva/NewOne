@@ -679,7 +679,10 @@ async function loadTable(name, offset=0) {
               ${cols.map(c=>`<td title="${escHtml(String(row[c]??''))}">${renderCell(c,row[c])}</td>`).join('')}
               ${canEdit?`<td class="td-actions">
                 <button class="btn-edit" onclick="openEdit('${name}','${escHtml(String(row[pk]??''))}')">✏️</button>
-                <button class="btn-del" onclick="deleteRow('${name}','${escHtml(String(row[pk]??''))}')">🗑️</button>
+                ${name==='users'
+                  ?`<button class="btn-del" title="מחק משתמש" onclick="openUserDeleteModal('${escHtml(String(row[pk]??''))}','${escHtml(String(row.name??''))}','${escHtml(String(row.email??''))}')">🗑 מחק</button>`
+                  :`<button class="btn-del" onclick="deleteRow('${name}','${escHtml(String(row[pk]??''))}')">🗑️</button>`
+                }
               </td>`:''}
             </tr>`).join('')}
           </tbody>
@@ -710,7 +713,10 @@ async function searchTable(q, name) {
       ${cols.map(c=>`<td title="${escHtml(String(row[c]??''))}">${renderCell(c,row[c])}</td>`).join('')}
       ${canEdit?`<td class="td-actions">
         <button class="btn-edit" onclick="openEdit('${name}','${escHtml(String(row[pk]??''))}')">✏️</button>
-        <button class="btn-del" onclick="deleteRow('${name}','${escHtml(String(row[pk]??''))}')">🗑️</button>
+        ${name==='users'
+          ?`<button class="btn-del" title="מחק משתמש" onclick="openUserDeleteModal('${escHtml(String(row[pk]??''))}','${escHtml(String(row.name??''))}','${escHtml(String(row.email??''))}')">🗑 מחק</button>`
+          :`<button class="btn-del" onclick="deleteRow('${name}','${escHtml(String(row[pk]??''))}')">🗑️</button>`
+        }
       </td>`:''}
     </tr>`).join('');
 }
@@ -1655,6 +1661,118 @@ window.addEventListener('load', () => {
   }, 100);
 });
 startApp();
+
+// ── User Delete Modal ─────────────────────────────────────────────
+let _udmUserId = null;
+
+function openUserDeleteModal(userId, name, email) {
+  _udmUserId = userId;
+  document.getElementById('udm-info').textContent = (name || '—') + ' · ' + (email || '—');
+  document.getElementById('udm-err').style.display = 'none';
+  const btn = document.getElementById('udm-confirm');
+  btn.disabled = false; btn.textContent = 'מחק';
+  document.querySelectorAll('.udm-cb').forEach(cb => cb.checked = false);
+  document.getElementById('udm-all').checked = false;
+  document.getElementById('user-delete-modal').style.display = 'flex';
+}
+
+function closeUserDeleteModal() {
+  document.getElementById('user-delete-modal').style.display = 'none';
+  _udmUserId = null;
+}
+
+function toggleAllUdm(checked) {
+  document.querySelectorAll('.udm-cb').forEach(cb => cb.checked = checked);
+}
+
+async function executeUserDelete() {
+  if (!_udmUserId) return;
+  const messages   = document.getElementById('udm-messages').checked;
+  const files      = document.getElementById('udm-files').checked;
+  const listings   = document.getElementById('udm-listings').checked;
+  const profilePic = document.getElementById('udm-pic').checked;
+  const fcm        = document.getElementById('udm-fcm').checked;
+  const account    = document.getElementById('udm-account').checked;
+  const errEl      = document.getElementById('udm-err');
+  const btn        = document.getElementById('udm-confirm');
+
+  if (!messages && !files && !listings && !profilePic && !fcm && !account) {
+    errEl.textContent = 'יש לבחור לפחות אפשרות אחת';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'מוחק...';
+
+  try {
+    const res = await fetch(`${API}/api/admin/users/${encodeURIComponent(_udmUserId)}/full`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ messages, files, listings, profilePic, fcm, account }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errEl.textContent = data.error || 'שגיאה';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'מחק';
+      return;
+    }
+    closeUserDeleteModal();
+    const extra = data.filesDeleted ? ` · ${data.filesDeleted} קבצים נמחקו מ-B2` : '';
+    alert(`✅ "${data.name}" נמחק בהצלחה${extra}`);
+    loadTable('users', currentOffset);
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'מחק';
+  }
+}
 </script>
+
+<!-- User Delete Modal -->
+<div id="user-delete-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3000;align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border-radius:16px;padding:28px;width:420px;max-width:94vw;box-shadow:0 8px 40px rgba(0,0,0,.3)">
+    <h2 style="margin:0 0 4px;font-size:17px;font-weight:700">🗑 מחיקת משתמש</h2>
+    <div id="udm-info" style="color:var(--text2);font-size:13px;margin-bottom:18px;direction:ltr;text-align:right"></div>
+    <div style="margin-bottom:16px">
+      <label style="display:flex;gap:10px;align-items:center;margin-bottom:10px;font-weight:700;font-size:14px">
+        <input type="checkbox" id="udm-all" onchange="toggleAllUdm(this.checked)" style="width:16px;height:16px">
+        בחר הכל
+      </label>
+      <div style="background:var(--bg1);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px;font-size:14px">
+        <label style="display:flex;gap:10px;align-items:center">
+          <input type="checkbox" class="udm-cb" id="udm-messages" style="width:15px;height:15px">
+          💬 הודעות (נשלחו ונתקבלו)
+        </label>
+        <label style="display:flex;gap:10px;align-items:center">
+          <input type="checkbox" class="udm-cb" id="udm-files" style="width:15px;height:15px">
+          📁 קבצים ותמונות מ-B2
+        </label>
+        <label style="display:flex;gap:10px;align-items:center">
+          <input type="checkbox" class="udm-cb" id="udm-listings" style="width:15px;height:15px">
+          🛍 מודעות שוק
+        </label>
+        <label style="display:flex;gap:10px;align-items:center">
+          <input type="checkbox" class="udm-cb" id="udm-pic" style="width:15px;height:15px">
+          🖼️ תמונת פרופיל מ-B2
+        </label>
+        <label style="display:flex;gap:10px;align-items:center">
+          <input type="checkbox" class="udm-cb" id="udm-fcm" style="width:15px;height:15px">
+          🔔 הגדרות התראות (FCM)
+        </label>
+        <label style="display:flex;gap:10px;align-items:center;border-top:1px solid var(--border);padding-top:10px;margin-top:2px;font-weight:600;color:#b91c1c">
+          <input type="checkbox" class="udm-cb" id="udm-account" style="width:15px;height:15px">
+          👤 מחק את החשבון עצמו (כולל כל הנתונים הנותרים)
+        </label>
+      </div>
+    </div>
+    <div id="udm-err" style="display:none;color:var(--red);font-size:13px;margin-bottom:10px;padding:8px 12px;background:#fef2f2;border-radius:8px"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button onclick="closeUserDeleteModal()" style="padding:8px 18px;border:1px solid var(--border);background:none;border-radius:8px;cursor:pointer;font-size:14px">ביטול</button>
+      <button id="udm-confirm" onclick="executeUserDelete()" style="padding:8px 20px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:700">מחק</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

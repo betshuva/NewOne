@@ -2366,6 +2366,129 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Admin: Full User Delete ──────────────────────────────────────
+function urlToB2Key(url) {
+  const cdnBase = (process.env.CDN_BASE_URL || '').replace(/\/$/, '');
+  if (cdnBase && url.startsWith(cdnBase + '/')) return url.slice(cdnBase.length + 1);
+  const m = url.match(/\/file\/[^/]+\/(.+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+async function deleteB2File(url) {
+  try {
+    const key = urlToB2Key(url);
+    if (!key) return;
+    const auth     = await b2Auth();
+    const bucketId = await b2BucketId(auth);
+    const listRes  = await fetch(
+      `${auth.apiUrl}/b2api/v2/b2_list_file_names?bucketId=${encodeURIComponent(bucketId)}&startFileName=${encodeURIComponent(key)}&maxFileCount=1`,
+      { headers: { Authorization: auth.token } }
+    );
+    const listData = await listRes.json();
+    const file = listData.files?.find(f => f.fileName === key);
+    if (!file) return;
+    await fetch(`${auth.apiUrl}/b2api/v2/b2_delete_file_version`, {
+      method: 'POST',
+      headers: { Authorization: auth.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileId: file.fileId, fileName: key }),
+    });
+  } catch (e) {
+    console.error('deleteB2File:', url, e.message);
+  }
+}
+
+app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const uid = req.params.userId;
+  const { messages: delMsg, files: delFiles, listings: delListings,
+          profilePic: delPic, fcm: delFcm, account: delAccount } = req.body;
+
+  try {
+    const pool = await getPool();
+    const userRes = await pool.request()
+      .input('uid', sql.UniqueIdentifier, uid)
+      .query('SELECT id, name, email, profile_pic_url FROM users WHERE id=@uid');
+    if (!userRes.recordset.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
+    const user = userRes.recordset[0];
+
+    const b2Urls = [];
+
+    // Collect B2 URLs before deletion
+    if (delPic && user.profile_pic_url) b2Urls.push(user.profile_pic_url);
+    if (delFiles || (delAccount && delFiles)) {
+      const rows = await pool.request().input('uid', sql.UniqueIdentifier, uid)
+        .query(`SELECT file_url FROM messages WHERE sender_id=@uid AND file_url IS NOT NULL`);
+      rows.recordset.forEach(r => b2Urls.push(r.file_url));
+    }
+    if (delListings && delFiles) {
+      const imgs = await pool.request().input('uid', sql.UniqueIdentifier, uid)
+        .query(`SELECT li.url FROM listing_images li
+                JOIN listings l ON l.id=li.listing_id WHERE l.user_id=@uid`);
+      imgs.recordset.forEach(r => b2Urls.push(r.url));
+      const main = await pool.request().input('uid', sql.UniqueIdentifier, uid)
+        .query(`SELECT image_url FROM listings WHERE user_id=@uid AND image_url IS NOT NULL`);
+      main.recordset.forEach(r => b2Urls.push(r.image_url));
+    }
+
+    // Helper to run a query safely
+    const run = q => pool.request().input('uid', sql.UniqueIdentifier, uid).query(q);
+
+    if (delMsg || delAccount) {
+      // Clear reply references to messages being deleted
+      await run(`UPDATE messages SET reply_to_id=NULL
+                 WHERE reply_to_id IN (SELECT id FROM messages WHERE sender_id=@uid OR recipient_id=@uid)`);
+      await run(`DELETE FROM message_status
+                 WHERE message_id IN (SELECT id FROM messages WHERE sender_id=@uid OR recipient_id=@uid)`);
+      await run(`DELETE FROM pending_scans WHERE user_id=@uid`);
+      await run(`DELETE FROM messages WHERE sender_id=@uid OR recipient_id=@uid`);
+    }
+
+    if (delListings || delAccount) {
+      await run(`DELETE FROM listing_views WHERE listing_id IN (SELECT id FROM listings WHERE user_id=@uid)`);
+      await run(`DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id=@uid)`);
+      await run(`DELETE FROM listings WHERE user_id=@uid`);
+    }
+
+    if (delFcm || delAccount) {
+      await run(`DELETE FROM fcm_tokens WHERE user_id=@uid`);
+    }
+
+    if (delAccount) {
+      await run(`DELETE FROM group_members WHERE user_id=@uid`);
+      await run(`DELETE FROM blocked_users WHERE blocker_id=@uid OR blocked_id=@uid`);
+      // Null nullable FKs for audit trail
+      await run(`UPDATE activity_log SET user_id=NULL WHERE user_id=@uid`);
+      await run(`UPDATE audit_log SET user_id=NULL WHERE user_id=@uid`);
+      // Games: null references (no FK enforced)
+      try { await run(`UPDATE games SET winner_id=NULL WHERE winner_id=@uid`); } catch (_) {}
+      try {
+        await run(`DELETE FROM games WHERE player1_id=@uid OR player2_id=@uid`);
+      } catch (_) {}
+      // Delete user (admin_permissions cascades)
+      await run(`DELETE FROM users WHERE id=@uid`);
+      // Disconnect socket
+      const sid = onlineUsers.get(uid);
+      if (sid) {
+        req.app.get('io').to(sid).emit('force_logout', { reason: 'החשבון נמחק' });
+        req.app.get('io').sockets.sockets.get(sid)?.disconnect(true);
+        onlineUsers.delete(uid);
+      }
+    }
+
+    // Delete B2 files in background (fire-and-forget)
+    const uniqueUrls = [...new Set(b2Urls.filter(Boolean))];
+    uniqueUrls.forEach(url => deleteB2File(url).catch(() => {}));
+
+    logActivity(req.user.id, 'admin_delete_user', {
+      targetUserId: uid, name: user.name, email: user.email,
+      options: { delMsg, delFiles, delListings, delPic, delFcm, delAccount },
+      b2FilesQueued: uniqueUrls.length,
+    }, req.ip);
+
+    res.json({ ok: true, name: user.name, filesDeleted: uniqueUrls.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Admin: Scan results (blocked + pending) ──────────────────────
 app.get('/api/admin/scans', adminAuth, async (req, res) => {
   const type   = ['pending','approved'].includes(req.query.type) ? req.query.type : 'blocked';
