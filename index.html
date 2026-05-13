@@ -244,6 +244,10 @@ body{font-family:'Heebo',sans-serif;background:var(--off);color:var(--text);heig
 .listing-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
 .badge-free{background:#d1fae5;color:#065f46}
 .badge-sale{background:#ede9fe;color:#5b21b6}
+/* Responsive listing detail: single column on narrow main area */
+@media (max-width: 860px) {
+  .lst-detail-grid { grid-template-columns: 1fr !important; }
+}
 </style>
 </head>
 <body>
@@ -1080,57 +1084,76 @@ async function openListingDetail(item) {
   window._carouselPrev = () => { _ci = (_ci - 1 + imgs.length) % imgs.length; renderCarousel(); };
   window._carouselNext = () => { _ci = (_ci + 1) % imgs.length; renderCarousel(); };
 
-  main.innerHTML = `
-    <div style="max-width:600px;margin:0 auto;padding:20px;height:100%;overflow-y:auto">
-      ${imgs.length ? `
-        <div id="lst-carousel" style="position:relative;margin-bottom:16px;border-radius:14px;overflow:hidden">
-          <img src="${imgs[0]}" style="width:100%;max-height:280px;object-fit:cover;display:block"/>
-          ${imgs.length>1?`
-            <button onclick="_carouselPrev()" style="position:absolute;top:50%;right:8px;transform:translateY(-50%);background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer;line-height:1">›</button>
-            <button onclick="_carouselNext()" style="position:absolute;top:50%;left:8px;transform:translateY(-50%);background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer;line-height:1">‹</button>
-            <div style="position:absolute;bottom:8px;left:0;right:0;display:flex;justify-content:center;gap:5px">
-              ${imgs.map((_,i)=>`<div class="lst-dot" style="height:7px;width:${i===0?'18':'7'}px;background:#fff;border-radius:4px;opacity:${i===0?1:.5};transition:all .2s"></div>`).join('')}
-            </div>`:''}
-        </div>` : ''}
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-        <span class="listing-badge ${isFree?'badge-free':'badge-sale'}" style="font-size:14px;padding:4px 12px">${isFree?'חינם':'₪'+Math.round(item.price||0)}</span>
-        ${item.category?`<span style="color:var(--text3);font-size:13px">${item.category}</span>`:''}
+  const carouselHtml = imgs.length ? `
+    <div id="lst-carousel" style="position:relative;border-radius:16px;overflow:hidden;background:#000">
+      <img src="${imgs[0]}" style="width:100%;max-height:420px;min-height:220px;object-fit:cover;display:block"/>
+      ${imgs.length>1?`
+        <button onclick="_carouselPrev()" style="position:absolute;top:50%;right:10px;transform:translateY(-50%);background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:20px;cursor:pointer;line-height:1">›</button>
+        <button onclick="_carouselNext()" style="position:absolute;top:50%;left:10px;transform:translateY(-50%);background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:20px;cursor:pointer;line-height:1">‹</button>
+        <div style="position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:5px">
+          ${imgs.map((_,i)=>`<div class="lst-dot" style="height:7px;width:${i===0?'18':'7'}px;background:#fff;border-radius:4px;opacity:${i===0?1:.5};transition:all .2s"></div>`).join('')}
+        </div>`:''}
+    </div>
+    ${imgs.length>1?`<div style="display:flex;gap:6px;margin-top:8px;overflow-x:auto;padding-bottom:4px">
+      ${imgs.map((u,i)=>`<img src="${u}" onclick="_ci=${i};renderCarousel()" style="width:60px;height:60px;object-fit:cover;border-radius:8px;cursor:pointer;border:2px solid ${i===0?'var(--blue)':'transparent'};flex-shrink:0;transition:border .2s">`).join('')}
+    </div>`:''}` : `
+    <div style="width:100%;height:220px;background:var(--blue-pale);border-radius:16px;display:flex;align-items:center;justify-content:center">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="#8AAFC9" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" fill="#8AAFC9"/><path d="M21 15l-5-5L5 21" stroke="#8AAFC9" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </div>`;
+
+  const infoHtml = `
+    <div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <span class="listing-badge ${isFree?'badge-free':'badge-sale'}" style="font-size:15px;padding:5px 14px">${isFree?'חינם':'₪'+Math.round(item.price||0)}</span>
+        ${item.category?`<span style="background:var(--blue-pale);color:var(--blue-dark);border-radius:20px;padding:4px 12px;font-size:13px;font-weight:500">${item.category}</span>`:''}
         ${item.city?`<span style="color:var(--text3);font-size:13px;margin-right:auto">📍 ${item.city}</span>`:''}
+        ${item.status&&item.status!=='active'?`<span style="background:${item.status==='sold'?'#ede9fe':'#f3f4f6'};color:${item.status==='sold'?'#5b21b6':'#6b7280'};border-radius:20px;padding:4px 12px;font-size:12px;font-weight:700">${item.status==='sold'?'נמכר / נמסר':'פג תוקף'}</span>`:''}
       </div>
-      <h2 style="font-size:20px;margin-bottom:8px">${item.title}</h2>
-      ${item.description?`<p style="color:var(--text2);line-height:1.7;margin-bottom:16px">${item.description}</p>`:''}
-      <!-- Stats -->
-      <div style="display:flex;gap:12px;margin-bottom:16px">
-        <div style="background:var(--blue-pale);border-radius:10px;padding:10px 16px;display:flex;align-items:center;gap:8px;flex:1">
-          <span style="font-size:20px">👁</span>
-          <div><div style="font-size:18px;font-weight:700;color:var(--blue)">${item.view_count||0}</div><div style="font-size:11px;color:var(--text3)">צפיות</div></div>
+      <h2 style="font-size:24px;font-weight:700;margin-bottom:10px;line-height:1.3">${item.title}</h2>
+      ${item.description?`<p style="color:var(--text2);line-height:1.8;margin-bottom:20px;font-size:15px">${item.description}</p>`:''}
+      <div style="display:flex;gap:10px;margin-bottom:20px">
+        <div style="background:var(--blue-pale);border-radius:12px;padding:12px 18px;display:flex;align-items:center;gap:10px;flex:1">
+          <span style="font-size:22px">👁</span>
+          <div><div style="font-size:20px;font-weight:700;color:var(--blue)">${item.view_count||0}</div><div style="font-size:11px;color:var(--text3)">צפיות</div></div>
         </div>
-        <div style="background:var(--blue-pale);border-radius:10px;padding:10px 16px;display:flex;align-items:center;gap:8px;flex:1">
-          <span style="font-size:20px">💬</span>
-          <div><div style="font-size:18px;font-weight:700;color:var(--blue)">${item.contact_count||0}</div><div style="font-size:11px;color:var(--text3)">פניות</div></div>
+        <div style="background:var(--blue-pale);border-radius:12px;padding:12px 18px;display:flex;align-items:center;gap:10px;flex:1">
+          <span style="font-size:22px">💬</span>
+          <div><div style="font-size:20px;font-weight:700;color:var(--blue)">${item.contact_count||0}</div><div style="font-size:11px;color:var(--text3)">פניות</div></div>
         </div>
       </div>
-      <div style="background:var(--blue-pale);border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px;margin-bottom:20px">
-        <div style="width:42px;height:42px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:18px;flex-shrink:0">
-          ${item.seller_name?.[0]||'?'}
+      <div style="background:var(--blue-pale);border-radius:14px;padding:16px;display:flex;align-items:center;gap:14px;margin-bottom:20px">
+        <div style="width:48px;height:48px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:20px;flex-shrink:0;overflow:hidden">
+          ${item.seller_pic?`<img src="${item.seller_pic}" style="width:100%;height:100%;object-fit:cover">`:(item.seller_name?.[0]||'?')}
         </div>
-        <div><div style="font-weight:600">${item.seller_name}</div><div style="font-size:12px;color:var(--text3)">המפרסם</div></div>
+        <div><div style="font-weight:600;font-size:15px">${item.seller_name||''}</div><div style="font-size:12px;color:var(--text3)">המפרסם</div></div>
       </div>
       ${!isOwn
         ? `<button onclick="openChatWithSeller('${item.seller_id}','${item.seller_name}','${item.id}')"
-            style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:12px;padding:14px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">
+            style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:12px;padding:15px;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">
             💬 שלח הודעה למפרסם
            </button>`
         : `<div style="display:flex;gap:8px;flex-direction:column">
+            <button onclick="openEditListing(${JSON.stringify(item).replace(/"/g,'&quot;')})"
+              style="width:100%;background:var(--blue-pale);color:var(--blue-dark);border:1.5px solid var(--blue-mid);border-radius:12px;padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">
+              ✏️ ערוך מודעה
+            </button>
             ${item.status==='active'?`<button onclick="closeListing('${item.id}')"
               style="width:100%;background:#d1fae5;color:#065f46;border:none;border-radius:12px;padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">
-              ✓ סגור מודעה (נמכר / ניתן)
+              ✓ נמסר / נמכר
             </button>`:''}
             <button onclick="deleteMyListing('${item.id}')"
               style="width:100%;background:#fee2e2;color:#991b1b;border:none;border-radius:12px;padding:13px;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer">
               🗑 מחק מודעה
             </button>
            </div>`}
+    </div>`;
+
+  main.innerHTML = `
+    <div style="padding:24px;height:100%;overflow-y:auto;box-sizing:border-box">
+      <div class="lst-detail-grid" style="display:grid;grid-template-columns:minmax(280px,45%) 1fr;gap:28px;max-width:1200px;margin:0 auto;align-items:start">
+        <div>${carouselHtml}</div>
+        ${infoHtml}
+      </div>
     </div>`;
 }
 
@@ -1266,6 +1289,71 @@ async function submitListing() {
       body: JSON.stringify(body),
     });
     if (res.ok) { setTab(document.querySelectorAll('.tab')[3], 'listings'); }
+    else { const d=await res.json(); alert(d.error||'שגיאה'); }
+  } catch { alert('שגיאת חיבור'); }
+}
+
+let _editListingId = null;
+
+function openEditListing(item) {
+  _editListingId = item.id;
+  _postType = item.type || 'free';
+  _ptImages = (item.images?.length ? item.images : (item.image_url ? [item.image_url] : [])).concat([null,null,null,null]).slice(0,4);
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div style="max-width:600px;margin:0 auto;padding:20px;height:100%;overflow-y:auto">
+      <h2 style="margin-bottom:4px;color:var(--blue)">עריכת מודעה</h2>
+      <p style="color:var(--text3);font-size:13px;margin-bottom:16px">${item.title}</p>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <button id="pt-free" onclick="selectPostType('free')" class="lt-btn ${_postType==='free'?'lt-active':''}" style="padding:10px">ונתנו — חינם</button>
+        <button id="pt-sale" onclick="selectPostType('sale')" class="lt-btn ${_postType==='sale'?'lt-active':''}" style="padding:10px">יד 2 — מכירה</button>
+      </div>
+      <input id="pt-title" placeholder="כותרת המודעה *" value="${(item.title||'').replace(/"/g,'&quot;')}"
+        style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;font-family:inherit;font-size:14px;margin-bottom:10px;direction:rtl"/>
+      <textarea id="pt-desc" placeholder="תיאור (אופציונלי)"
+        style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;font-family:inherit;font-size:14px;margin-bottom:10px;min-height:80px;direction:rtl;resize:vertical">${item.description||''}</textarea>
+      <div id="pt-price-wrap" style="display:${_postType==='sale'?'':'none'};margin-bottom:10px">
+        <input id="pt-price" type="number" placeholder="מחיר (₪)" value="${item.price||''}"
+          style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;font-family:inherit;font-size:14px"/>
+      </div>
+      <select id="pt-cat" style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;font-family:inherit;font-size:14px;margin-bottom:10px;background:#fff">
+        ${['אחר','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים'].map(c=>`<option${c===(item.category||'אחר')?' selected':''}>${c}</option>`).join('')}
+      </select>
+      <div style="position:relative;margin-bottom:10px">
+        <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:16px;pointer-events:none">📍</span>
+        <input id="pt-city" placeholder="עיר" value="${item.city||''}"
+          style="width:100%;border:1.5px solid var(--div);border-radius:10px;padding:10px 14px;padding-right:36px;font-family:inherit;font-size:14px;direction:rtl"/>
+      </div>
+      <div style="font-size:13px;color:var(--text3);margin-bottom:6px">תמונות (עד 4)</div>
+      <div id="pt-images-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:14px"></div>
+      <div style="display:flex;gap:8px">
+        <button onclick="openListingDetail(${JSON.stringify(item).replace(/"/g,'&quot;')})"
+          style="flex:1;background:var(--off);color:var(--text2);border:1.5px solid var(--div);border-radius:10px;padding:13px;font-family:inherit;font-size:14px;cursor:pointer">ביטול</button>
+        <button onclick="submitEditListing()" style="flex:2;background:var(--blue);color:#fff;border:none;border-radius:10px;padding:13px;font-family:inherit;font-size:15px;font-weight:700;cursor:pointer">שמור שינויים</button>
+      </div>
+    </div>`;
+  renderPostImageSlots();
+}
+
+async function submitEditListing() {
+  const title = document.getElementById('pt-title').value.trim();
+  if (!title) { alert('נדרשת כותרת'); return; }
+  const image_urls = _ptImages.filter(Boolean);
+  const city = document.getElementById('pt-city')?.value.trim() || null;
+  const body = {
+    type: _postType, title,
+    description: document.getElementById('pt-desc').value.trim(),
+    category: document.getElementById('pt-cat').value,
+    price: _postType==='sale' ? parseFloat(document.getElementById('pt-price').value)||0 : null,
+    city: city || null,
+    image_urls,
+  };
+  try {
+    const res = await fetch(`${API}/api/listings/${_editListingId}`, {
+      method:'PUT', headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (res.ok) { loadListings(); document.getElementById('main').innerHTML = ''; }
     else { const d=await res.json(); alert(d.error||'שגיאה'); }
   } catch { alert('שגיאת חיבור'); }
 }
