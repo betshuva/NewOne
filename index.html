@@ -1128,7 +1128,7 @@ async function openListingDetail(item) {
         <div><div style="font-weight:600;font-size:15px">${item.seller_name||''}</div><div style="font-size:12px;color:var(--text3)">המפרסם</div></div>
       </div>
       ${!isOwn
-        ? `<button onclick="openChatWithSeller('${item.seller_id}','${item.seller_name}','${item.id}')"
+        ? `<button onclick="openChatWithSeller('${item.seller_id}','${item.seller_name}','${item.id}','${encodeURIComponent(item.title||'')}')"
             style="width:100%;background:var(--blue);color:#fff;border:none;border-radius:12px;padding:15px;font-family:inherit;font-size:16px;font-weight:700;cursor:pointer">
             💬 שלח הודעה למפרסם
            </button>`
@@ -1176,7 +1176,13 @@ async function deleteMyListing(id) {
   loadListings();
 }
 
-async function openChatWithSeller(sellerId, sellerName, listingId) {
+function listingDefaultMessage(listingTitle) {
+  const title = (listingTitle || '').trim();
+  if (title) return `שלום, ראיתי את המודעה שלך על "${title}". זה עדיין זמין?`;
+  return 'שלום, המודעה עדיין זמינה?';
+}
+
+async function openChatWithSeller(sellerId, sellerName, listingId, listingTitleEnc = '') {
   if (listingId) {
     fetch(`${API}/api/listings/${listingId}/contact`, {
       method: 'POST', headers: { 'Authorization': `Bearer ${token}` }
@@ -1184,7 +1190,14 @@ async function openChatWithSeller(sellerId, sellerName, listingId) {
   }
   const u = users.find(x => x.id === sellerId) || {id: sellerId, name: sellerName};
   setTab(document.querySelector('.tab'), 'all');
-  openChat(u);
+  await openChat(u);
+
+  const inp = document.getElementById('msg-inp');
+  if (!inp || inp.value.trim()) return;
+  const listingTitle = listingTitleEnc ? decodeURIComponent(listingTitleEnc) : '';
+  inp.value = listingDefaultMessage(listingTitle);
+  grow(inp);
+  inp.focus();
 }
 
 function openPostListing() {

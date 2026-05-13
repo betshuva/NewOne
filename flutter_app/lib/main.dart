@@ -2724,6 +2724,14 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     return single != null ? [single] : [];
   }
 
+  String _listingDefaultMessage() {
+    final title = (widget.item['title'] ?? '').toString().trim();
+    if (title.isNotEmpty) {
+      return 'שלום, ראיתי את המודעה שלך על "$title". זה עדיין זמין?';
+    }
+    return 'שלום, המודעה עדיין זמינה?';
+  }
+
   void _openChat() {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => ChatScreen(
@@ -2731,6 +2739,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         recipient: {'id': widget.item['seller_id'], 'name': widget.item['seller_name'], 'profile_pic_url': widget.item['seller_pic']},
         me: widget.me,
         socket: null,
+        initialText: _listingDefaultMessage(),
       ),
     ));
   }
@@ -3242,6 +3251,7 @@ class ChatScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
   final Map<String, dynamic> recipient;
   final IO.Socket? socket;
+  final String? initialText;
 
   const ChatScreen({
     super.key,
@@ -3249,6 +3259,7 @@ class ChatScreen extends StatefulWidget {
     required this.me,
     required this.recipient,
     required this.socket,
+    this.initialText,
   });
 
   @override
@@ -3267,6 +3278,13 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    final prefill = (widget.initialText ?? '').trim();
+    if (prefill.isNotEmpty) {
+      _msgCtrl.text = prefill;
+      _msgCtrl.selection = TextSelection.fromPosition(
+        TextPosition(offset: _msgCtrl.text.length),
+      );
+    }
     _loadMessages();
     _setupSocket();
   }
