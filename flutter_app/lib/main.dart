@@ -3506,9 +3506,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Normal send
     final replySnapshot = _replyTo;
+    final tempId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
     setState(() {
       _messages.add({
-        'id':     'temp_${DateTime.now().millisecondsSinceEpoch}',
+        'id':     tempId,
         'text':   text,
         'from':   widget.me?['id'],
         'time':   _nowTime(),
@@ -3518,11 +3519,51 @@ class _ChatScreenState extends State<ChatScreen> {
       _replyTo = null;
       _msgCtrl.clear();
     });
-    widget.socket?.emit('chat:message', {
-      'toUserId':  widget.recipient['id'],
-      'text':      text,
-      if (replySnapshot != null) 'replyToId': replySnapshot['id'],
-    });
+    // שליחה דרך HTTP — שומרת את ההודעה ב-DB ומעבירה ל-socket של הנמען
+    // אם הוא מחובר, או שולחת push notification אחרת.
+    // (בעבר השליחה הייתה רק דרך widget.socket?.emit — מה שגרם לאיבוד
+    // הודעות כאשר המסך נפתח עם socket=null, למשל ממסך מודעה.)
+    () async {
+      try {
+        final res = await http.post(
+          Uri.parse('$kApi/messages'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'toUserId': widget.recipient['id'],
+            'text': text,
+            if (replySnapshot != null) 'replyToId': replySnapshot['id'],
+          }),
+        );
+        if (!mounted) return;
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          setState(() {
+            final idx = _messages.indexWhere((m) => m['id'] == tempId);
+            if (idx != -1) _messages[idx]['id'] = data['id'];
+          });
+        } else {
+          setState(() {
+            final idx = _messages.indexWhere((m) => m['id'] == tempId);
+            if (idx != -1) _messages[idx]['status'] = 'failed';
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('שליחת ההודעה נכשלה')),
+          );
+        }
+      } catch (_) {
+        if (!mounted) return;
+        setState(() {
+          final idx = _messages.indexWhere((m) => m['id'] == tempId);
+          if (idx != -1) _messages[idx]['status'] = 'failed';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('אין חיבור לשרת — ההודעה לא נשלחה')),
+        );
+      }
+    }();
     _scrollToBottom();
   }
 

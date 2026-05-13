@@ -996,6 +996,69 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
   }
 });
 
+// ── Messages: send (HTTP fallback / always-on path) ───────────────
+// משכפל את הלוגיקה של ה-socket handler 'chat:message', כדי שהודעות
+// יישמרו גם כש-socket לא מחובר (למשל כשפותחים צ'אט ממסך מודעה).
+app.post('/api/messages', auth, async (req, res) => {
+  const senderId = req.user.id;
+  const { toUserId, text, replyToId, fileUrl, fileName, fileType } = req.body || {};
+  if (!toUserId || (!text && !fileUrl)) {
+    return res.status(400).json({ error: 'חסר נמען או תוכן' });
+  }
+  try {
+    const pool = await getPool();
+    const blocked = await pool.request()
+      .input('blocker', sql.UniqueIdentifier, toUserId)
+      .input('blocked', sql.UniqueIdentifier, senderId)
+      .query('SELECT 1 FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked');
+    if (blocked.recordset.length) return res.status(403).json({ error: 'נחסמת על ידי הנמען' });
+
+    const type = (() => {
+      if (fileType && fileType !== 'text') return fileType;
+      if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
+      if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
+      return 'text';
+    })();
+
+    const saved = await pool.request()
+      .input('senderId',    sql.UniqueIdentifier, senderId)
+      .input('recipientId', sql.UniqueIdentifier, toUserId)
+      .input('body',        sql.NVarChar,         text     || null)
+      .input('type',        sql.NVarChar,         type)
+      .input('fileUrl',     sql.NVarChar,         fileUrl  || null)
+      .input('fileName',    sql.NVarChar,         fileName || null)
+      .input('replyToId',   sql.UniqueIdentifier, replyToId || null)
+      .query(`INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
+              OUTPUT INSERTED.id, INSERTED.created_at
+              VALUES (@senderId, @recipientId, @body, @type, @fileUrl, @fileName, @replyToId)`);
+    const row = saved.recordset[0];
+
+    const sid = onlineUsers.get(toUserId);
+    if (sid) io.to(sid).emit('chat:message', {
+      id: row.id, fromUserId: senderId, fromName: req.user.name,
+      text, replyToId: replyToId || null, createdAt: row.created_at,
+      fileUrl, fileName, fileType: type,
+    });
+
+    const recip = await pool.request()
+      .input('id', sql.UniqueIdentifier, toUserId)
+      .query('SELECT name FROM users WHERE id=@id');
+    const toName = recip.recordset[0]?.name || toUserId;
+    logActivity(senderId, fileUrl ? 'send_file' : 'send_message',
+      { to: toName, toUserId, messageId: row.id, type, fileName: fileName || null });
+
+    if (!onlineUsers.has(toUserId)) {
+      const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
+      sendPush(toUserId, req.user.name, pushBody, { type: 'chat', fromUserId: senderId });
+    }
+
+    res.json({ id: row.id, createdAt: row.created_at });
+  } catch (e) {
+    console.error('POST /api/messages:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Messages: mark as read ─────────────────────────────────────────
 app.put('/api/messages/read', auth, async (req, res) => {
   const { senderId } = req.body;
