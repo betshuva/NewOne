@@ -2726,10 +2726,12 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 
   String _listingDefaultMessage() {
     final title = (widget.item['title'] ?? '').toString().trim();
+    final id    = (widget.item['id'] ?? '').toString().trim();
+    final link  = id.isNotEmpty ? '\nbetshuva://listing/$id' : '';
     if (title.isNotEmpty) {
-      return 'שלום, ראיתי את המודעה שלך על "$title". זה עדיין זמין?';
+      return 'שלום, ראיתי את המודעה שלך על "$title". זה עדיין זמין?$link';
     }
-    return 'שלום, המודעה עדיין זמינה?';
+    return 'שלום, המודעה עדיין זמינה?$link';
   }
 
   void _openChat() {
@@ -4034,7 +4036,12 @@ class _ChatScreenState extends State<ChatScreen> {
                               else
                                 GestureDetector(
                                   onLongPress: () => _showMessageOptions(msg, isMe),
-                                  child: _MessageBubble(message: msg, isMe: isMe),
+                                  child: _MessageBubble(
+                                    message: msg,
+                                    isMe: isMe,
+                                    token: widget.token,
+                                    me: widget.me,
+                                  ),
                                 ),
                             ],
                           );
@@ -4326,11 +4333,35 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
   }
 }
 
+// Opens a listing by its id fetched from the server.
+Future<void> _openListingLink(
+    BuildContext context, String listingId, String token, Map<String, dynamic>? me) async {
+  try {
+    final res = await http.get(
+      Uri.parse('$kApi/listings/$listingId'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (res.statusCode == 200 && context.mounted) {
+      final item = jsonDecode(res.body) as Map<String, dynamic>;
+      Navigator.push(context, MaterialPageRoute(
+        builder: (_) => ListingDetailScreen(item: item, token: token, me: me),
+      ));
+    }
+  } catch (_) {}
+}
+
 class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic> message;
   final bool isMe;
+  final String token;
+  final Map<String, dynamic>? me;
 
-  const _MessageBubble({required this.message, required this.isMe});
+  const _MessageBubble({
+    required this.message,
+    required this.isMe,
+    required this.token,
+    required this.me,
+  });
 
   Widget _statusIcon() {
     if (!isMe) return const SizedBox.shrink();
@@ -4362,6 +4393,19 @@ class _MessageBubble extends StatelessWidget {
       fileName: fileName,
     );
     final isImageFile = isFile && fileUrl != null && fileType == 'image';
+
+    // זיהוי קישור מודעה פנימי: betshuva://listing/{id}
+    final rawText   = message['text'] as String? ?? '';
+    final linkRegex = RegExp(r'betshuva://listing/([\w\-]+)');
+    final linkMatch = !isFile ? linkRegex.firstMatch(rawText) : null;
+    final listingId = linkMatch?.group(1);
+    // טקסט נקי ללא שורת הקישור
+    final displayText = linkMatch != null
+        ? rawText.replaceAll('\nbetshuva://listing/$listingId', '')
+              .replaceAll('betshuva://listing/$listingId', '')
+              .trim()
+        : rawText;
+
     final textColor = isMe ? Colors.white : kTextDark;
     final timeColor =
         isMe ? Colors.white.withOpacity(0.7) : kSubtext;
@@ -4475,11 +4519,54 @@ class _MessageBubble extends StatelessWidget {
               )
             else
               Text(
-                message['text'] as String,
+                displayText,
                 style: TextStyle(
                     fontSize: 14, height: 1.45, color: textColor),
                 textDirection: TextDirection.rtl,
               ),
+
+            // כרטיסיית קישור למודעה
+            if (listingId != null) ...[  
+              const SizedBox(height: 6),
+              GestureDetector(
+                onTap: () => _openListingLink(context, listingId, token, me),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: isMe
+                        ? Colors.white.withOpacity(0.15)
+                        : kPrimary.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isMe
+                          ? Colors.white.withOpacity(0.4)
+                          : kPrimary.withOpacity(0.35),
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.storefront_outlined,
+                          size: 16,
+                          color: isMe ? Colors.white70 : kPrimary),
+                      const SizedBox(width: 6),
+                      Text(
+                        'צפה במודעה',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: isMe ? Colors.white : kPrimary,
+                          decoration: TextDecoration.underline,
+                          decorationColor: isMe ? Colors.white70 : kPrimary,
+                        ),
+                        textDirection: TextDirection.rtl,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
 
             const SizedBox(height: 3),
             Row(
