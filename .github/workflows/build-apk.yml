@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'flutter_app/**'
-      - '.github/workflows/build-apk.yml'
+      - flutter_app/**
+      - .github/workflows/build-apk.yml
   workflow_dispatch:
 
 permissions:
@@ -24,12 +24,12 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.x'
+          flutter-version: 3.22.x
           channel: stable
           cache: true
 
@@ -65,18 +65,17 @@ jobs:
           path: flutter_app/build/app/outputs/flutter-apk/betshuva-*.apk
           retention-days: 30
 
-      - name: Update app-release.apk and version on website
+      - name: Update app-release.apk and version.json
+        run: |
+          VERSION=$(grep "^version:" flutter_app/pubspec.yaml | awk '{print $2}')
+          cp flutter_app/build/app/outputs/flutter-apk/app-release.apk app-release.apk
+          echo "{\"app_name\":\"betshuva\",\"version\":\"${VERSION}\",\"package_name\":\"betshuva\"}" > version.json
+
+      - name: Commit and push if changed
         run: |
           VERSION=$(grep "^version:" flutter_app/pubspec.yaml | awk '{print $2}')
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Fetch latest remote state
-          git fetch origin main
-          git reset --hard origin/main
-          # Overwrite files with fresh build output
-          cp flutter_app/build/app/outputs/flutter-apk/app-release.apk app-release.apk
-          echo "{\"app_name\":\"betshuva\",\"version\":\"${VERSION}\",\"package_name\":\"betshuva\"}" > version.json
-          sed -i "s/version: '[^']*'/version: '${VERSION}'/" server/index.js
-          git add app-release.apk version.json server/index.js
+          git add app-release.apk version.json
           git commit -m "build: release v${VERSION} [skip ci]" || echo "No changes"
           git push

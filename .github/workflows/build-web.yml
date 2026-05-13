@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'flutter_app/**'
-      - '.github/workflows/build-web.yml'
+      - flutter_app/**
+      - .github/workflows/build-web.yml
   workflow_dispatch:
 
 permissions:
@@ -23,7 +23,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.x'
+          flutter-version: 3.22.x
           channel: stable
           cache: true
 
@@ -35,13 +35,23 @@ jobs:
         working-directory: flutter_app
         run: flutter build web --release --base-href "/"
 
-      - name: Deploy web build to repo root
+      - name: Sync web build to repo root
         run: |
-          cp -r flutter_app/build/web/. .
+          rm -rf assets canvaskit icons
+          rm -f flutter.js flutter_bootstrap.js flutter_service_worker.js main.dart.js manifest.json
+          cp -r flutter_app/build/web/assets flutter_app/build/web/canvaskit flutter_app/build/web/icons .
+          cp flutter_app/build/web/flutter.js \
+             flutter_app/build/web/flutter_bootstrap.js \
+             flutter_app/build/web/flutter_service_worker.js \
+             flutter_app/build/web/main.dart.js \
+             flutter_app/build/web/manifest.json \
+             .
+
+      - name: Commit and push if changed
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add flutter.js flutter_bootstrap.js flutter_service_worker.js \
-                  main.dart.js manifest.json assets/ canvaskit/ icons/ favicon.png
+          git add -A flutter.js flutter_bootstrap.js flutter_service_worker.js main.dart.js manifest.json assets/ canvaskit/ icons/
           git diff --cached --quiet && echo "No changes" || \
             git commit -m "build: update web v$(grep '^version:' flutter_app/pubspec.yaml | awk '{print $2}') [skip ci]"
           git push
