@@ -3539,7 +3539,7 @@ class _ChatScreenState extends State<ChatScreen> {
             'fileType': fileType,
             'fileUrl':  fileUrl,
             'fileName': fileName,
-            if (data['replyToId'] != null) 'replyTo': {'id': data['replyToId'], 'text': ''},
+            if (data['replyToId'] != null) 'replyTo': {'id': data['replyToId'], 'text': data['replyBody'] ?? ''},
           });
           _isTyping = false;
         });
@@ -4484,7 +4484,7 @@ Future<void> _openListingLink(
     if (res.statusCode == 200 && context.mounted) {
       final item = jsonDecode(res.body) as Map<String, dynamic>;
       Navigator.push(context, MaterialPageRoute(
-        builder: (_) => ListingDetailScreen(item: item, token: token, me: me),
+        builder: (_) => ListingDetailScreen(item: item, token: token, me: me, socket: null),
       ));
     }
   } catch (_) {}
