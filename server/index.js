@@ -162,6 +162,7 @@ async function scanImage(buffer) {
             features: [
               { type: 'SAFE_SEARCH_DETECTION' },
               { type: 'LABEL_DETECTION', maxResults: 20 },
+              { type: 'FACE_DETECTION', maxResults: 5 },
             ],
           }],
         }),
@@ -179,14 +180,18 @@ async function scanImage(buffer) {
   const BAD = ['POSSIBLE', 'LIKELY', 'VERY_LIKELY'];
   const labelsRaw = (ann.labelAnnotations || []).map(l => ({ name: l.description, score: Math.round(l.score * 100) }));
   const labelNames = labelsRaw.map(l => l.name.toLowerCase());
+  const faces = ann.faceAnnotations || [];
 
   if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
-    return { blocked: true, reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw };
+    return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces };
 
   if (labelNames.some(l => FEMALE_LABELS.some(f => l.includes(f))))
-    return { blocked: true, reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw };
+    return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces };
 
-  return { blocked: false, safeSearch: ss, labels: labelsRaw };
+  if (faces.length > 0)
+    return { blocked: true, blockedBy: 'faces', reason: 'התמונה נחסמה — זוהו פנים בתמונה', safeSearch: ss, labels: labelsRaw, faces };
+
+  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces };
 }
 
 async function scanDocument(buffer, mimetype) {
@@ -1057,10 +1062,19 @@ app.post('/api/messages', auth, async (req, res) => {
               VALUES (@senderId, @recipientId, @body, @type, @fileUrl, @fileName, @replyToId)`);
     const row = saved.recordset[0];
 
+    // אם יש תגובה, נשלח גם את טקסט ההודעה הקודמת
+    let replyBody = null;
+    if (replyToId) {
+      const replyMsg = await pool.request()
+        .input('id', sql.UniqueIdentifier, replyToId)
+        .query('SELECT body FROM messages WHERE id = @id');
+      replyBody = replyMsg.recordset[0]?.body || '';
+    }
+
     const sid = onlineUsers.get(toUserId);
     if (sid) io.to(sid).emit('chat:message', {
       id: row.id, fromUserId: senderId, fromName: req.user.name,
-      text, replyToId: replyToId || null, createdAt: row.created_at,
+      text, replyToId: replyToId || null, replyBody, createdAt: row.created_at,
       fileUrl, fileName, fileType: type,
     });
 
@@ -1632,11 +1646,17 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     else if (allowed.dbType === 'document')
       scanResult = await scanDocument(file.buffer, file.mimetype);
 
+    if (scanResult) {
+      const ss = scanResult.safeSearch || {};
+      console.log(`[Vision] ${file.originalname} | ${scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
+    }
+
     if (scanResult?.blocked) {
       logActivity(req.user.id, 'blocked_upload',
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
-          fileUrl: url, reason: scanResult.reason,
-          safeSearch: scanResult.safeSearch, labels: scanResult.labels }, req.ip);
+          fileUrl: url, reason: scanResult.reason, blockedBy: scanResult.blockedBy,
+          safeSearch: scanResult.safeSearch, labels: scanResult.labels,
+          faces: scanResult.faces || [] }, req.ip);
       return res.status(400).json({ error: scanResult.reason });
     }
 
@@ -1668,7 +1688,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
         fileUrl: url, toUserId: req.body.toUserId || null,
         safeSearch: scanResult?.safeSearch || null,
-        labels: scanResult?.labels || null }, req.ip);
+        labels: scanResult?.labels || null,
+        faces: scanResult?.faces || [],
+        blockedBy: null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType });
   } catch (e) {
     console.error('upload:', e.message);
@@ -2760,8 +2782,9 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
       return { id: r.id, action: r.action, created_at: r.created_at,
                user_name: r.user_name, user_email: r.user_email,
                fileName: d.fileName, fileType: d.fileType, fileSize: d.fileSize,
-               fileUrl: d.fileUrl, reason: d.reason,
-               safeSearch: d.safeSearch || null, labels: d.labels || null };
+               fileUrl: d.fileUrl, reason: d.reason, blockedBy: d.blockedBy || null,
+               safeSearch: d.safeSearch || null, labels: d.labels || null,
+               faces: d.faces || [] };
     });
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
