@@ -136,9 +136,7 @@ async function uploadToBlob(buffer, key, contentType) {
 
 const FEMALE_LABELS = [
   'woman','women','girl','female','lady','ladies','bride','actress',
-  'child','baby','infant','kid','toddler','boy','person','human',
   'child model','child modeling','child actor','child actress',
-  'sketch','drawing','illustration','line art','cartoon','anime',
 ];
 const BLOCKED_WORDS = [
   'עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות',
@@ -185,7 +183,7 @@ async function scanImage(buffer) {
   if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
     return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces };
 
-  if (labelNames.some(l => FEMALE_LABELS.some(f => l.includes(f))))
+  if (labelNames.some(l => FEMALE_LABELS.some(f => l === f || l.startsWith(f + ' ') || l.endsWith(' ' + f) || l.includes(' ' + f + ' '))))
     return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces };
 
   return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces };
