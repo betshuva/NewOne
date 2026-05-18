@@ -188,9 +188,6 @@ async function scanImage(buffer) {
   if (labelNames.some(l => FEMALE_LABELS.some(f => l.includes(f))))
     return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces };
 
-  if (faces.length > 0)
-    return { blocked: true, blockedBy: 'faces', reason: 'התמונה נחסמה — זוהו פנים בתמונה', safeSearch: ss, labels: labelsRaw, faces };
-
   return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces };
 }
 
