@@ -138,6 +138,8 @@ async function uploadToBlob(buffer, key, contentType) {
 const DEFAULT_FEMALE_LABELS = [
   'woman','women','girl','female','lady','ladies','bride','actress',
   'child model','child modeling','child actor','child actress',
+  'dress','skirt','gown','miniskirt','one-piece garment',
+  'blouse','bridal clothing','wedding dress','ball gown',
 ];
 const DEFAULT_BLOCKED_WORDS = [
   'עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות',
@@ -190,10 +192,6 @@ async function scanImage(buffer) {
 
   if (labelNames.some(l => FEMALE_LABELS.some(f => l === f || l.startsWith(f + ' ') || l.endsWith(' ' + f) || l.includes(' ' + f + ' '))))
     return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
-
-  // ── Check 3: חסום כל פנים ────────────────────────────────────────
-  if (faces.length > 0)
-    return { blocked: true, blockedBy: 'faces', reason: 'התמונה נחסמה — תמונות של אנשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
 
   return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
 }
