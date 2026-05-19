@@ -1,4 +1,7 @@
 require('dotenv').config();
+// patch: util.isNullOrUndefined הוסר ב-Node.js 24 אבל tfjs-node עדיין משתמש בו
+const util = require('util');
+if (!util.isNullOrUndefined) util.isNullOrUndefined = (v) => v == null;
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
