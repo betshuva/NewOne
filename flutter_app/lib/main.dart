@@ -3993,10 +3993,72 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _showError(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg, textDirection: TextDirection.rtl),
-        backgroundColor: Colors.red.shade700,
+    if (msg.contains('נחסמה')) {
+      _showBlockedDialog(msg);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg, textDirection: TextDirection.rtl),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    }
+  }
+
+  void _showBlockedDialog(String reason) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72, height: 72,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE8E8),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.shield, size: 38, color: Color(0xFFB91C1C)),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'התמונה נחסמה',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0D2137)),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                reason,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 14, color: Color(0xFF4B5563), height: 1.5),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'אנא בחר תמונה אחרת',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: Color(0xFF8AAFC9)),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(_),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: kPrimary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('הבנתי', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -5793,8 +5855,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       Navigator.pop(context);
       if (streamed.statusCode != 200) {
         final err = jsonDecode(body)['error'] ?? 'שגיאה בהעלאה';
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(err), backgroundColor: Colors.red));
+        if (err.contains('נחסמה')) {
+          _showGroupBlockedDialog(err);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(err), backgroundColor: Colors.red));
+        }
         return;
       }
       final data    = jsonDecode(body) as Map<String, dynamic>;
@@ -5825,6 +5891,55 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             SnackBar(content: Text('שגיאה: $e'), backgroundColor: Colors.red));
       }
     }
+  }
+
+  void _showGroupBlockedDialog(String reason) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72, height: 72,
+                decoration: const BoxDecoration(color: Color(0xFFFFE8E8), shape: BoxShape.circle),
+                child: const Icon(Icons.shield, size: 38, color: Color(0xFFB91C1C)),
+              ),
+              const SizedBox(height: 16),
+              const Text('התמונה נחסמה',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0D2137))),
+              const SizedBox(height: 10),
+              Text(reason,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 14, color: Color(0xFF4B5563), height: 1.5)),
+              const SizedBox(height: 8),
+              const Text('אנא בחר תמונה אחרת',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, color: Color(0xFF8AAFC9))),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(_),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: kPrimary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('הבנתי', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _leaveGroup() async {
