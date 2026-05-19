@@ -1,7 +1,4 @@
 require('dotenv').config();
-// patch: util.isNullOrUndefined הוסר ב-Node.js 24 אבל tfjs-node עדיין משתמש בו
-const util = require('util');
-if (!util.isNullOrUndefined) util.isNullOrUndefined = (v) => v == null;
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -12,8 +9,6 @@ const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const multer     = require('multer');
 const path       = require('path');
-const tf         = require('@tensorflow/tfjs-node');
-const faceapi    = require('@vladmandic/face-api');
 const { getPool, sql } = require('./db');
 
 // ── FCM via HTTP Legacy API (no service account key needed) ───────
@@ -152,35 +147,6 @@ const DEFAULT_BLOCKED_WORDS = [
 let FEMALE_LABELS = [...DEFAULT_FEMALE_LABELS];
 let BLOCKED_WORDS = [...DEFAULT_BLOCKED_WORDS];
 
-// ── face-api.js gender detection ─────────────────────────────────
-let _faceModelsReady = false;
-async function ensureFaceModels() {
-  if (_faceModelsReady) return;
-  const dir = path.join(__dirname, 'models');
-  await faceapi.nets.ssdMobilenetv1.loadFromDisk(dir);
-  await faceapi.nets.faceLandmark68Net.loadFromDisk(dir);
-  await faceapi.nets.ageGenderNet.loadFromDisk(dir);
-  _faceModelsReady = true;
-  console.log('[FaceAPI] models loaded');
-}
-
-async function detectGender(buffer) {
-  try {
-    await ensureFaceModels();
-    const tensor     = tf.node.decodeImage(buffer, 3);
-    const detections = await faceapi.detectAllFaces(tensor)
-      .withFaceLandmarks()
-      .withAgeAndGender();
-    tensor.dispose();
-    return detections.map(d => ({
-      gender:            d.gender,            // 'female' | 'male'
-      genderProbability: d.genderProbability, // 0-1
-    }));
-  } catch (e) {
-    console.warn('[FaceAPI] detectGender error:', e.message);
-    return null; // fail open
-  }
-}
 
 async function scanImage(buffer) {
   const key = process.env.GOOGLE_VISION_API_KEY;
@@ -225,17 +191,11 @@ async function scanImage(buffer) {
   if (labelNames.some(l => FEMALE_LABELS.some(f => l === f || l.startsWith(f + ' ') || l.endsWith(' ' + f) || l.includes(' ' + f + ' '))))
     return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
 
-  // ── Check 3: face-api.js gender detection ───────────────────────
-  const genderResults = await detectGender(buffer);
-  if (genderResults) {
-    const womanFace = genderResults.find(
-      f => f.gender === 'female' && f.genderProbability >= 0.75
-    );
-    if (womanFace)
-      return { blocked: true, blockedBy: 'gender', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults };
-  }
+  // ── Check 3: חסום כל פנים ────────────────────────────────────────
+  if (faces.length > 0)
+    return { blocked: true, blockedBy: 'faces', reason: 'התמונה נחסמה — תמונות של אנשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
 
-  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: genderResults || null };
+  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
 }
 
 async function scanDocument(buffer, mimetype) {
