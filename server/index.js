@@ -134,14 +134,17 @@ async function uploadToBlob(buffer, key, contentType) {
 
 // ── Content Moderation ────────────────────────────────────────────
 
-const FEMALE_LABELS = [
+const DEFAULT_FEMALE_LABELS = [
   'woman','women','girl','female','lady','ladies','bride','actress',
   'child model','child modeling','child actor','child actress',
 ];
-const BLOCKED_WORDS = [
+const DEFAULT_BLOCKED_WORDS = [
   'עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות',
   'porn','nude','naked','xxx','sex','erotic','adult content',
 ];
+
+let FEMALE_LABELS = [...DEFAULT_FEMALE_LABELS];
+let BLOCKED_WORDS = [...DEFAULT_BLOCKED_WORDS];
 
 async function scanImage(buffer) {
   const key = process.env.GOOGLE_VISION_API_KEY;
@@ -498,7 +501,35 @@ function resetPasswordEmail(resetUrl) {
         created_at DATETIME         DEFAULT GETDATE()
       )`);
 
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='app_settings' AND xtype='U')
+      CREATE TABLE app_settings (
+        key_name   NVARCHAR(100) PRIMARY KEY,
+        value      NVARCHAR(MAX) NOT NULL,
+        updated_at DATETIME DEFAULT GETDATE()
+      )`);
+
     console.log('Migration: all tables ready');
+
+    // Load moderation lists from DB (if saved), else seed defaults
+    try {
+      const r = await pool.request().query(
+        `SELECT key_name, value FROM app_settings WHERE key_name IN ('female_labels','blocked_words')`
+      );
+      const map = {};
+      for (const row of r.recordset) map[row.key_name] = JSON.parse(row.value);
+      if (map.female_labels) FEMALE_LABELS = map.female_labels;
+      if (map.blocked_words) BLOCKED_WORDS = map.blocked_words;
+      if (!map.female_labels) await pool.request()
+        .input('k', sql.NVarChar, 'female_labels')
+        .input('v', sql.NVarChar, JSON.stringify(DEFAULT_FEMALE_LABELS))
+        .query(`INSERT INTO app_settings (key_name,value) VALUES (@k,@v)`);
+      if (!map.blocked_words) await pool.request()
+        .input('k', sql.NVarChar, 'blocked_words')
+        .input('v', sql.NVarChar, JSON.stringify(DEFAULT_BLOCKED_WORDS))
+        .query(`INSERT INTO app_settings (key_name,value) VALUES (@k,@v)`);
+    } catch (e) { console.error('Moderation list load error:', e.message); }
+
   } catch (e) { console.error('Migration error:', e.message); }
 })();
 
@@ -2819,6 +2850,30 @@ app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
       } catch { failed++; }
     }
     res.json({ total: result.recordset.length, scanned, updated, failed });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Moderation Lists ─────────────────────────────────────────────
+app.get('/api/admin/moderation', adminAuth, (req, res) => {
+  res.json({ female_labels: FEMALE_LABELS, blocked_words: BLOCKED_WORDS });
+});
+
+app.post('/api/admin/moderation', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const { female_labels, blocked_words } = req.body;
+  if (!Array.isArray(female_labels) || !Array.isArray(blocked_words))
+    return res.status(400).json({ error: 'נתונים לא תקינים' });
+  try {
+    const pool = await getPool();
+    await pool.request()
+      .input('v', sql.NVarChar, JSON.stringify(female_labels))
+      .query(`UPDATE app_settings SET value=@v, updated_at=GETDATE() WHERE key_name='female_labels'`);
+    await pool.request()
+      .input('v', sql.NVarChar, JSON.stringify(blocked_words))
+      .query(`UPDATE app_settings SET value=@v, updated_at=GETDATE() WHERE key_name='blocked_words'`);
+    FEMALE_LABELS = female_labels;
+    BLOCKED_WORDS = blocked_words;
+    res.json({ ok: true, female_labels, blocked_words });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

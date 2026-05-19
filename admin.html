@@ -213,6 +213,15 @@ tr:hover td{background:rgba(33,38,45,.8)}
 /* Scan Panel */
 #scan-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
 #listings-panel{display:none}
+#moderation-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+.mod-body{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px}
+.mod-section{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:10px}
+.mod-section h3{margin:0;font-size:15px;font-weight:700}
+.mod-desc{font-size:12px;color:var(--text2);margin:0}
+.mod-textarea{width:100%;min-height:140px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;font-family:inherit;resize:vertical;background:#fff;direction:ltr;line-height:1.6}
+.mod-textarea:focus{outline:none;border-color:var(--blue-light)}
+.mod-defaults{font-size:12px;color:var(--blue-light);cursor:pointer;text-decoration:underline;align-self:flex-start}
+.mod-defaults:hover{color:var(--blue)}
 .lst-card{background:#fff;border-radius:14px;border:1px solid var(--border);overflow:hidden;display:flex;flex-direction:column;transition:box-shadow .2s}
 .lst-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1)}
 .lst-card-img{width:100%;height:160px;object-fit:cover;background:var(--bg2);display:flex;align-items:center;justify-content:center;font-size:48px;color:var(--text2)}
@@ -288,6 +297,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
     <div class="sb-item" id="sb-vision-item" onclick="showVisionPanel()">🔬 תוצאות Vision</div>
     <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
+    <div class="sb-item" id="sb-moderation-item" onclick="showModerationPanel()">🛡 רשימות חסימה</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
     <div class="sb-item" id="sb-listings-item" onclick="showListingsPanel()">🛍 מודעות</div>
     <div class="sb-footer">
@@ -365,6 +375,32 @@ tr:hover td{background:rgba(33,38,45,.8)}
     </div>
     <div class="table-wrap" id="scan-table-wrap"><div class="loader">טוען...</div></div>
     <div class="pagination" id="scan-pagination"></div>
+  </div>
+
+  <!-- Moderation Lists Panel -->
+  <div id="moderation-panel">
+    <div class="main-head">
+      <h1>🛡 רשימות חסימה</h1>
+      <button class="btn-sm" onclick="loadModerationPanel()">🔄 רענן</button>
+    </div>
+    <div class="mod-body">
+      <div class="mod-section">
+        <h3>תוויות Vision — חסימת תמונות</h3>
+        <p class="mod-desc">תוויות שה-API של Google Vision מזהה בתמונה — תמונה שמכילה אחת מהן תיחסם. תווית אחת בכל שורה, באנגלית.</p>
+        <textarea id="mod-female" class="mod-textarea" dir="ltr" placeholder="woman&#10;women&#10;girl"></textarea>
+        <span class="mod-defaults" onclick="resetFemaleLabels()">איפוס לברירת מחדל</span>
+      </div>
+      <div class="mod-section">
+        <h3>מילות חסימה — מסמכים</h3>
+        <p class="mod-desc">מילים שמופיעות בשם הקובץ או בתוכן מסמך — מסמך שמכיל אחת מהן ייחסם. מילה אחת בכל שורה.</p>
+        <textarea id="mod-words" class="mod-textarea" dir="rtl" placeholder="עירום&#10;פורנו&#10;porn"></textarea>
+        <span class="mod-defaults" onclick="resetBlockedWords()">איפוס לברירת מחדל</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="btn-sm" id="mod-save-btn" onclick="saveModerationPanel()">💾 שמור שינויים</button>
+        <span id="mod-msg" style="font-size:13px;color:var(--text2)"></span>
+      </div>
+    </div>
   </div>
 
   <!-- Listings Panel -->
@@ -639,9 +675,12 @@ async function loadTable(name, offset=0) {
   if (sbEl) sbEl.classList.add('active');
 
   clearInterval(actTimer);
-  document.getElementById('perm-panel').style.display     = 'none';
-  document.getElementById('activity-panel').style.display = 'none';
-  document.getElementById('scan-panel').style.display     = 'none';
+  document.getElementById('perm-panel').style.display       = 'none';
+  document.getElementById('activity-panel').style.display   = 'none';
+  document.getElementById('scan-panel').style.display       = 'none';
+  document.getElementById('vision-panel').style.display     = 'none';
+  document.getElementById('listings-panel').style.display   = 'none';
+  document.getElementById('moderation-panel').style.display = 'none';
   const main = document.getElementById('main-area');
   main.style.display = 'flex';
   main.innerHTML = '<div class="loader">טוען...</div>';
@@ -1066,11 +1105,13 @@ function showVisionPanel() {
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-vision-item').classList.add('active');
-  document.getElementById('main-area').style.display     = 'none';
-  document.getElementById('perm-panel').style.display    = 'none';
-  document.getElementById('scan-panel').style.display    = 'none';
-  document.getElementById('activity-panel').style.display = 'none';
-  document.getElementById('vision-panel').style.display  = 'flex';
+  document.getElementById('main-area').style.display        = 'none';
+  document.getElementById('perm-panel').style.display       = 'none';
+  document.getElementById('scan-panel').style.display       = 'none';
+  document.getElementById('activity-panel').style.display   = 'none';
+  document.getElementById('listings-panel').style.display   = 'none';
+  document.getElementById('moderation-panel').style.display = 'none';
+  document.getElementById('vision-panel').style.display     = 'flex';
   loadVision(0);
 }
 
@@ -1286,10 +1327,13 @@ async function loadActivity(offset = 0) {
 function showActivityPanel() {
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-activity-item').classList.add('active');
-  document.getElementById('main-area').style.display   = 'none';
-  document.getElementById('perm-panel').style.display  = 'none';
-  document.getElementById('scan-panel').style.display  = 'none';
-  document.getElementById('activity-panel').style.display = 'flex';
+  document.getElementById('main-area').style.display        = 'none';
+  document.getElementById('perm-panel').style.display       = 'none';
+  document.getElementById('scan-panel').style.display       = 'none';
+  document.getElementById('vision-panel').style.display     = 'none';
+  document.getElementById('listings-panel').style.display   = 'none';
+  document.getElementById('moderation-panel').style.display = 'none';
+  document.getElementById('activity-panel').style.display   = 'flex';
   loadActivity(0);
   // עדכון אוטומטי כל 15 שניות
   clearInterval(actTimer);
@@ -1301,9 +1345,13 @@ function showPermPanel() {
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-perm-item').classList.add('active');
-  document.getElementById('main-area').style.display     = 'none';
-  document.getElementById('activity-panel').style.display = 'none';
-  document.getElementById('perm-panel').style.display    = 'flex';
+  document.getElementById('main-area').style.display        = 'none';
+  document.getElementById('activity-panel').style.display   = 'none';
+  document.getElementById('scan-panel').style.display       = 'none';
+  document.getElementById('vision-panel').style.display     = 'none';
+  document.getElementById('listings-panel').style.display   = 'none';
+  document.getElementById('moderation-panel').style.display = 'none';
+  document.getElementById('perm-panel').style.display       = 'flex';
   loadPermPanel();
 }
 
@@ -1367,10 +1415,13 @@ function showScanPanel() {
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-scan-item').classList.add('active');
-  document.getElementById('main-area').style.display     = 'none';
-  document.getElementById('perm-panel').style.display    = 'none';
-  document.getElementById('activity-panel').style.display = 'none';
-  document.getElementById('scan-panel').style.display    = 'flex';
+  document.getElementById('main-area').style.display        = 'none';
+  document.getElementById('perm-panel').style.display       = 'none';
+  document.getElementById('activity-panel').style.display   = 'none';
+  document.getElementById('vision-panel').style.display     = 'none';
+  document.getElementById('listings-panel').style.display   = 'none';
+  document.getElementById('moderation-panel').style.display = 'none';
+  document.getElementById('scan-panel').style.display       = 'flex';
   loadScanPanel(activeScanTab, 0);
 }
 
@@ -1509,13 +1560,74 @@ async function deletePending(id) {
 function showListingsPanel() {
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-listings-item').classList.add('active');
-  document.getElementById('main-area').style.display      = 'none';
-  document.getElementById('perm-panel').style.display     = 'none';
-  document.getElementById('activity-panel').style.display = 'none';
-  document.getElementById('scan-panel').style.display     = 'none';
-  document.getElementById('vision-panel').style.display   = 'none';
-  document.getElementById('listings-panel').style.display = 'flex';
+  document.getElementById('main-area').style.display       = 'none';
+  document.getElementById('perm-panel').style.display      = 'none';
+  document.getElementById('activity-panel').style.display  = 'none';
+  document.getElementById('scan-panel').style.display      = 'none';
+  document.getElementById('vision-panel').style.display    = 'none';
+  document.getElementById('moderation-panel').style.display= 'none';
+  document.getElementById('listings-panel').style.display  = 'flex';
   loadAdminListings();
+}
+
+// ── Moderation Panel ─────────────────────────────────────────────
+const DEFAULT_FEMALE_LABELS_ADMIN = ['woman','women','girl','female','lady','ladies','bride','actress','child model','child modeling','child actor','child actress'];
+const DEFAULT_BLOCKED_WORDS_ADMIN = ['עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות','porn','nude','naked','xxx','sex','erotic','adult content'];
+
+function showModerationPanel() {
+  clearInterval(actTimer);
+  document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
+  document.getElementById('sb-moderation-item').classList.add('active');
+  document.getElementById('main-area').style.display       = 'none';
+  document.getElementById('perm-panel').style.display      = 'none';
+  document.getElementById('activity-panel').style.display  = 'none';
+  document.getElementById('scan-panel').style.display      = 'none';
+  document.getElementById('vision-panel').style.display    = 'none';
+  document.getElementById('listings-panel').style.display  = 'none';
+  document.getElementById('moderation-panel').style.display= 'flex';
+  loadModerationPanel();
+}
+
+async function loadModerationPanel() {
+  try {
+    const res  = await fetch(`${API}/api/admin/moderation`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error); return; }
+    document.getElementById('mod-female').value = data.female_labels.join('\n');
+    document.getElementById('mod-words').value  = data.blocked_words.join('\n');
+  } catch(e) { alert(e.message); }
+}
+
+async function saveModerationPanel() {
+  const female_labels = document.getElementById('mod-female').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const blocked_words = document.getElementById('mod-words').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const btn = document.getElementById('mod-save-btn');
+  const msg = document.getElementById('mod-msg');
+  btn.disabled = true;
+  msg.textContent = 'שומר...';
+  msg.style.color = 'var(--text2)';
+  try {
+    const res = await fetch(`${API}/api/admin/moderation`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ female_labels, blocked_words }),
+    });
+    const data = await res.json();
+    if (!res.ok) { msg.textContent = data.error; msg.style.color = 'var(--red)'; return; }
+    msg.textContent = `נשמר בהצלחה (${female_labels.length} תוויות, ${blocked_words.length} מילים)`;
+    msg.style.color = '#16a34a';
+  } catch(e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+  finally { btn.disabled = false; setTimeout(()=>{msg.textContent='';},4000); }
+}
+
+function resetFemaleLabels() {
+  if (!confirm('לאפס את תוויות ה-Vision לברירת המחדל?')) return;
+  document.getElementById('mod-female').value = DEFAULT_FEMALE_LABELS_ADMIN.join('\n');
+}
+
+function resetBlockedWords() {
+  if (!confirm('לאפס את מילות החסימה לברירת המחדל?')) return;
+  document.getElementById('mod-words').value = DEFAULT_BLOCKED_WORDS_ADMIN.join('\n');
 }
 
 async function loadAdminListings() {
