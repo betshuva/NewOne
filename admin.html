@@ -911,7 +911,7 @@ function labelHe(name) {
 }
 
 function blockedByLabel(b) {
-  return { safeSearch:'🔞 SafeSearch', labels:'🏷️ Labels', faces:'👤 פנים' }[b] || b;
+  return { safeSearch:'🔞 SafeSearch', labels:'🏷️ Labels', faces:'👤 פנים', gender:'🧬 זיהוי מין' }[b] || b;
 }
 
 function ssClass(val) { return BAD_SS.includes(val) ? 'bad' : 'ok'; }
@@ -970,11 +970,12 @@ function renderVisionCard(r, idx) {
 function openVisionDetail(idx) {
   const r = visionRows[idx];
   if (!r) return;
-  const blocked = r.action === 'blocked_upload' || r.action === 'blocked_upload_delayed';
-  const ss      = r.safeSearch || {};
-  const labels  = r.labels    || [];
-  const faces   = r.faces     || [];
-  const isImg   = r.fileType === 'image';
+  const blocked      = r.action === 'blocked_upload' || r.action === 'blocked_upload_delayed';
+  const ss           = r.safeSearch    || {};
+  const labels       = r.labels        || [];
+  const faces        = r.faces         || [];
+  const genderResults= r.genderResults || [];
+  const isImg        = r.fileType === 'image';
 
   const ssRows = Object.entries(ss).filter(([k])=>SS_HE[k]).map(([k,v])=>`
     <tr>
@@ -1043,7 +1044,41 @@ function openVisionDetail(idx) {
           ביטחון: ${f.detectionConfidence!=null?Math.round(f.detectionConfidence*100)+'%':'—'}
         </div>`).join('')}
       </div>
-    </div>` : ''}`;
+    </div>` : ''}
+    <div style="margin-top:14px">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:6px;font-weight:600">🧬 זיהוי מין (face-api.js)${r.blockedBy==='gender'?' — <span style="color:var(--red)">סיבת חסימה</span>':''}</div>
+      ${genderResults.length > 0 ? `
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${genderResults.map((g,i)=>{
+          const isFemale   = g.gender === 'female';
+          const femalePct  = isFemale ? Math.round(g.genderProbability*100) : Math.round((1-g.genderProbability)*100);
+          const malePct    = 100 - femalePct;
+          const isBlocking = isFemale && g.genderProbability >= 0.75;
+          return `<div style="background:${isBlocking?'rgba(248,81,73,.08)':'var(--bg3)'};border:1px solid ${isBlocking?'rgba(248,81,73,.3)':'var(--border)'};border-radius:8px;padding:10px 14px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <strong style="font-size:13px;color:var(--text)">פנים ${i+1}</strong>
+              <span style="font-size:12px;font-weight:700;padding:2px 10px;border-radius:12px;background:${isFemale?'rgba(248,81,73,.15)':'rgba(27,108,168,.12)'};color:${isFemale?'var(--red)':'var(--blue)'}">${isFemale?'👩 אישה':'👨 גבר'}</span>
+              <span style="font-size:11px;color:var(--text2)">ביטחון: <strong>${Math.round(g.genderProbability*100)}%</strong></span>
+              ${isBlocking?'<span style="font-size:11px;color:var(--red);font-weight:700">⛔ חסימה</span>':''}
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;font-size:11px;color:var(--text2)">
+              <span style="width:32px">👩</span>
+              <div style="flex:1;background:var(--bg1);border-radius:4px;height:10px;overflow:hidden">
+                <div style="background:var(--red);height:10px;width:${femalePct}%;transition:width .3s"></div>
+              </div>
+              <span style="width:36px;font-weight:600;color:var(--red)">${femalePct}%</span>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;font-size:11px;color:var(--text2);margin-top:4px">
+              <span style="width:32px">👨</span>
+              <div style="flex:1;background:var(--bg1);border-radius:4px;height:10px;overflow:hidden">
+                <div style="background:var(--blue);height:10px;width:${malePct}%;transition:width .3s"></div>
+              </div>
+              <span style="width:36px;font-weight:600;color:var(--blue)">${malePct}%</span>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>` : `<div style="font-size:12px;color:var(--text2);background:var(--bg3);border-radius:8px;padding:10px 14px">${r.genderResults===null?'לא נסרק (שגיאה או לא זמין)':'לא זוהו פנים בתמונה'}</div>`}
+    </div>`;
 
   document.getElementById('vision-detail-modal').style.display = 'flex';
 }

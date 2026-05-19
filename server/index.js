@@ -217,10 +217,10 @@ async function scanImage(buffer) {
   const faces = ann.faceAnnotations || [];
 
   if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
-    return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces };
+    return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
 
   if (labelNames.some(l => FEMALE_LABELS.some(f => l === f || l.startsWith(f + ' ') || l.endsWith(' ' + f) || l.includes(' ' + f + ' '))))
-    return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces };
+    return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
 
   // ── Check 3: face-api.js gender detection ───────────────────────
   const genderResults = await detectGender(buffer);
@@ -229,10 +229,10 @@ async function scanImage(buffer) {
       f => f.gender === 'female' && f.genderProbability >= 0.75
     );
     if (womanFace)
-      return { blocked: true, blockedBy: 'gender', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces };
+      return { blocked: true, blockedBy: 'gender', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults };
   }
 
-  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces };
+  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: genderResults || null };
 }
 
 async function scanDocument(buffer, mimetype) {
@@ -1725,7 +1725,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
           fileUrl: url, reason: scanResult.reason, blockedBy: scanResult.blockedBy,
           safeSearch: scanResult.safeSearch, labels: scanResult.labels,
-          faces: scanResult.faces || [] }, req.ip);
+          faces: scanResult.faces || [], genderResults: scanResult.genderResults || null }, req.ip);
       return res.status(400).json({ error: scanResult.reason });
     }
 
@@ -1759,6 +1759,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         safeSearch: scanResult?.safeSearch || null,
         labels: scanResult?.labels || null,
         faces: scanResult?.faces || [],
+        genderResults: scanResult?.genderResults || null,
         blockedBy: null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType });
   } catch (e) {
