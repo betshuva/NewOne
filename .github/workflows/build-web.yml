@@ -54,5 +54,4 @@ jobs:
           git add -A flutter.js flutter_bootstrap.js flutter_service_worker.js main.dart.js manifest.json assets/ canvaskit/ icons/
           git diff --cached --quiet && echo "No changes" || \
             git commit -m "build: update web v$(grep '^version:' flutter_app/pubspec.yaml | awk '{print $2}') [skip ci]"
-          git pull --rebase origin main
           git push origin HEAD:main
