@@ -1596,12 +1596,22 @@ class _MainShellState extends State<MainShell> {
     // רענון רשימת משתמשים כל 60 שניות
     _usersRefreshTimer = Timer.periodic(
       const Duration(seconds: 60), (_) => _loadUsers());
-    // Push notification: אפליקציה נפתחה מהודעה (כשהייתה סגורה)
-    FirebaseMessaging.instance
-        .getInitialMessage()
-        .then(_handleNotificationOpen);
-    // Push notification: אפליקציה בפוקוס/רקע — המשתמש לחץ
-    FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationOpen);
+    _initNotificationOpenHandlers();
+  }
+
+  // Firebase is optional on web. Accessing FirebaseMessaging.instance when
+  // Firebase initialization failed throws synchronously during initState and
+  // leaves Flutter rendering a blank screen, so keep all notification setup
+  // behind a guarded async boundary.
+  Future<void> _initNotificationOpenHandlers() async {
+    try {
+      if (Firebase.apps.isEmpty) return;
+      final initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+      _handleNotificationOpen(initialMessage);
+      FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationOpen);
+    } catch (error) {
+      debugPrint('Push notification initialization skipped: $error');
+    }
   }
 
   @override
