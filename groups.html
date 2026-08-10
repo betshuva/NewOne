@@ -198,7 +198,7 @@ body{font-family:'Heebo',sans-serif;background:#0D1117;color:#E6EDF3;height:100v
 </div>
 
 <script>
-const API    = 'https://xo-app-betshuva.azurewebsites.net';
+const API    = 'https://betshuva.com/betshuva-app';
 const GOOGLE_CLIENT_ID = '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
 let token      = localStorage.getItem('bt_token') || '';
 let me         = null;
@@ -283,7 +283,15 @@ function startApp() {
 
 function connectSocket() {
   if (socket) socket.disconnect();
-  socket = io(API, { auth: { token }, transports: ['websocket'] });
+  // io() treats a path in the URL as a namespace, not a prefix — pass the bare
+  // origin and set `path` explicitly so the handshake goes through the
+  // /betshuva-app/ nginx sub-path proxy instead of the domain root.
+  const apiUrl = new URL(API);
+  socket = io(apiUrl.origin, {
+    path: `${apiUrl.pathname}/socket.io/`,
+    auth: { token },
+    transports: ['websocket'],
+  });
   socket.on('group:message', (msg) => {
     if (currentGroup && msg.groupId === currentGroup.id) appendMsg(msg);
   });

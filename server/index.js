@@ -9,7 +9,7 @@ const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const multer     = require('multer');
 const path       = require('path');
-const { getPool, sql } = require('./db');
+const { getPool } = require('./db');
 
 // ── FCM via HTTP Legacy API (no service account key needed) ───────
 async function sendPush(userId, title, body, data = {}) {
@@ -17,10 +17,8 @@ async function sendPush(userId, title, body, data = {}) {
   if (!serverKey) return;
   try {
     const pool   = await getPool();
-    const result = await pool.request()
-      .input('userId', sql.UniqueIdentifier, userId)
-      .query('SELECT token FROM fcm_tokens WHERE user_id = @userId');
-    for (const { token } of result.recordset) {
+    const result = await pool.query('SELECT token FROM fcm_tokens WHERE user_id = $1', [userId]);
+    for (const { token } of result.rows) {
       const res = await fetch('https://fcm.googleapis.com/fcm/send', {
         method:  'POST',
         headers: {
@@ -38,8 +36,7 @@ async function sendPush(userId, title, body, data = {}) {
       });
       const json = await res.json();
       if (json.failure && json.results?.[0]?.error === 'NotRegistered') {
-        pool.request().input('token', sql.NVarChar, token)
-          .query('DELETE FROM fcm_tokens WHERE token=@token').catch(() => {});
+        pool.query('DELETE FROM fcm_tokens WHERE token=$1', [token]).catch(() => {});
       }
     }
   } catch (e) { console.error('sendPush:', e.message); }
@@ -217,8 +214,8 @@ async function scanDocument(buffer, mimetype) {
 
 const mailer = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 465,
-  secure: true,
+  port: 587,
+  secure: false, // STARTTLS — port 465 (implicit TLS) is firewalled on this host
   auth: {
     user: process.env.EMAIL_FROM,
     pass: process.env.EMAIL_APP_PASSWORD,
@@ -283,271 +280,244 @@ function resetPasswordEmail(resetUrl) {
   </div>`;
 }
 
-// Auto-migrate: create all messenger tables
-(async () => {
-  try {
+// Auto-migrate: create all messenger tables. Startup awaits this function so
+// the API can never accept traffic against a partially initialized database.
+async function migrateDatabase() {
     const pool = await getPool();
 
-    // ── Auth tokens ────────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='password_reset_tokens' AND xtype='U')
-      CREATE TABLE password_reset_tokens (
-        token      NVARCHAR(64)     PRIMARY KEY,
-        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        expires_at DATETIME         NOT NULL,
-        used       BIT              DEFAULT 0
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+
+    // ── Users (the root table referenced by most of the schema) ────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name                TEXT NOT NULL,
+        email               TEXT UNIQUE,
+        password_hash       TEXT,
+        phone               TEXT,
+        email_verified      BOOLEAN NOT NULL DEFAULT FALSE,
+        phone_verified      BOOLEAN NOT NULL DEFAULT FALSE,
+        city                TEXT,
+        community           TEXT,
+        country             TEXT,
+        street              TEXT,
+        house_number        TEXT,
+        apartment           TEXT,
+        profile_pic_url     TEXT,
+        privacy_pic         TEXT NOT NULL DEFAULT 'all',
+        filter_level        TEXT NOT NULL DEFAULT 'standard',
+        google_id           TEXT,
+        latitude            DOUBLE PRECISION,
+        longitude           DOUBLE PRECISION,
+        location_updated_at TIMESTAMPTZ,
+        wins                INTEGER NOT NULL DEFAULT 0,
+        games_played        INTEGER NOT NULL DEFAULT 0,
+        created_at          TIMESTAMPTZ DEFAULT now()
       )`);
 
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='email_verification_tokens' AND xtype='U')
-      CREATE TABLE email_verification_tokens (
-        token      NVARCHAR(64)     PRIMARY KEY,
-        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        expires_at DATETIME         NOT NULL,
-        used       BIT              DEFAULT 0
+    // ── Auth tokens ────────────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        token      TEXT PRIMARY KEY,
+        user_id    UUID NOT NULL REFERENCES users(id),
+        expires_at TIMESTAMPTZ NOT NULL,
+        used       BOOLEAN DEFAULT FALSE
+      )`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS email_verification_tokens (
+        token      TEXT PRIMARY KEY,
+        user_id    UUID NOT NULL REFERENCES users(id),
+        expires_at TIMESTAMPTZ NOT NULL,
+        used       BOOLEAN DEFAULT FALSE
       )`);
 
     // ── Users – new columns ────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='email_verified')
-        ALTER TABLE users ADD email_verified BIT NOT NULL DEFAULT 0`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='phone')
-        ALTER TABLE users ADD phone NVARCHAR(20)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='phone_verified')
-        ALTER TABLE users ADD phone_verified BIT NOT NULL DEFAULT 0`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='city')
-        ALTER TABLE users ADD city NVARCHAR(100)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='community')
-        ALTER TABLE users ADD community NVARCHAR(100)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='profile_pic_url')
-        ALTER TABLE users ADD profile_pic_url NVARCHAR(500)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='privacy_pic')
-        ALTER TABLE users ADD privacy_pic NVARCHAR(20) NOT NULL DEFAULT 'all'`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='filter_level')
-        ALTER TABLE users ADD filter_level NVARCHAR(20) NOT NULL DEFAULT 'standard'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS community TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_pic TEXT NOT NULL DEFAULT 'all'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
 
     // ── Allow phone-only / email-only accounts ─────────────────────
-    await pool.request().query(`
-      IF COLUMNPROPERTY(OBJECT_ID('users'), 'email', 'AllowsNull') = 0
-        ALTER TABLE users ALTER COLUMN email NVARCHAR(255) NULL`);
-    await pool.request().query(`
-      IF COLUMNPROPERTY(OBJECT_ID('users'), 'password_hash', 'AllowsNull') = 0
-        ALTER TABLE users ALTER COLUMN password_hash NVARCHAR(255) NULL`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='google_id')
-        ALTER TABLE users ADD google_id NVARCHAR(128)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='country')
-        ALTER TABLE users ADD country NVARCHAR(100)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='street')
-        ALTER TABLE users ADD street NVARCHAR(200)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='house_number')
-        ALTER TABLE users ADD house_number NVARCHAR(20)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='apartment')
-        ALTER TABLE users ADD apartment NVARCHAR(20)`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='latitude')
-        ALTER TABLE users ADD latitude FLOAT`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='longitude')
-        ALTER TABLE users ADD longitude FLOAT`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('users') AND name='location_updated_at')
-        ALTER TABLE users ADD location_updated_at DATETIME`);
-
-    // ── group_members: pending membership columns ──────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('group_members') AND name='status')
-        ALTER TABLE group_members ADD status NVARCHAR(20) NOT NULL DEFAULT 'member'`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('group_members') AND name='added_by')
-        ALTER TABLE group_members ADD added_by UNIQUEIDENTIFIER`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('group_members') AND name='pending_since')
-        ALTER TABLE group_members ADD pending_since DATETIME`);
+    await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
+    await pool.query(`ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS country TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS street TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS house_number TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS apartment TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
 
     // ── Admin permissions ──────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='admin_permissions' AND xtype='U')
-      CREATE TABLE admin_permissions (
-        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        permission NVARCHAR(10) NOT NULL DEFAULT 'view',
-        granted_at DATETIME DEFAULT GETDATE(),
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS admin_permissions (
+        user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        permission TEXT NOT NULL DEFAULT 'view',
+        granted_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (user_id)
       )`);
     // Seed betshuva@betshuva.com as edit admin
-    await pool.request().query(`
-      IF NOT EXISTS (
-        SELECT 1 FROM admin_permissions ap
-        JOIN users u ON u.id = ap.user_id
-        WHERE u.email = 'betshuva@betshuva.com'
-      )
+    await pool.query(`
       INSERT INTO admin_permissions (user_id, permission)
-      SELECT id, 'edit' FROM users WHERE email = 'betshuva@betshuva.com'`);
+      SELECT id, 'edit' FROM users WHERE email = 'betshuva@betshuva.com'
+      ON CONFLICT (user_id) DO NOTHING`);
 
     // ── Groups ─────────────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='groups' AND xtype='U')
-      CREATE TABLE groups (
-        id              UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-        name            NVARCHAR(100) NOT NULL,
-        description     NVARCHAR(500),
-        creator_id      UNIQUEIDENTIFIER REFERENCES users(id),
-        is_broadcast    BIT          NOT NULL DEFAULT 0,
-        send_permission NVARCHAR(20) NOT NULL DEFAULT 'all',
-        filter_level    NVARCHAR(20) NOT NULL DEFAULT 'standard',
-        created_at      DATETIME     DEFAULT GETDATE()
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS groups (
+        id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        name            TEXT NOT NULL,
+        description     TEXT,
+        creator_id      UUID REFERENCES users(id),
+        is_broadcast    BOOLEAN NOT NULL DEFAULT FALSE,
+        send_permission TEXT NOT NULL DEFAULT 'all',
+        filter_level    TEXT NOT NULL DEFAULT 'standard',
+        created_at      TIMESTAMPTZ DEFAULT now()
       )`);
 
     // ── Messages ───────────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='messages' AND xtype='U')
-      CREATE TABLE messages (
-        id                   UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-        sender_id            UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        recipient_id         UNIQUEIDENTIFIER REFERENCES users(id),
-        group_id             UNIQUEIDENTIFIER REFERENCES groups(id),
-        type                 NVARCHAR(20)  NOT NULL DEFAULT 'text',
-        body                 NVARCHAR(MAX),
-        file_url             NVARCHAR(500),
-        file_name            NVARCHAR(255),
-        file_size            INT,
-        reply_to_id          UNIQUEIDENTIFIER REFERENCES messages(id),
-        deleted_for_sender   BIT NOT NULL DEFAULT 0,
-        deleted_for_everyone BIT NOT NULL DEFAULT 0,
-        created_at           DATETIME DEFAULT GETDATE()
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id                   UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        sender_id            UUID NOT NULL REFERENCES users(id),
+        recipient_id         UUID REFERENCES users(id),
+        group_id             UUID REFERENCES groups(id),
+        type                 TEXT NOT NULL DEFAULT 'text',
+        body                 TEXT,
+        file_url             TEXT,
+        file_name            TEXT,
+        file_size            INTEGER,
+        reply_to_id          UUID REFERENCES messages(id),
+        deleted_for_sender   BOOLEAN NOT NULL DEFAULT FALSE,
+        deleted_for_everyone BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at           TIMESTAMPTZ DEFAULT now()
       )`);
 
     // ── Messages: edit columns ─────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('messages') AND name='is_edited')
-        ALTER TABLE messages ADD is_edited BIT NOT NULL DEFAULT 0`);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('messages') AND name='edited_at')
-        ALTER TABLE messages ADD edited_at DATETIME NULL`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_edited BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
 
     // ── Message Status ─────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='message_status' AND xtype='U')
-      CREATE TABLE message_status (
-        message_id UNIQUEIDENTIFIER NOT NULL REFERENCES messages(id),
-        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        status     NVARCHAR(20)     NOT NULL DEFAULT 'delivered',
-        updated_at DATETIME         DEFAULT GETDATE(),
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS message_status (
+        message_id UUID NOT NULL REFERENCES messages(id),
+        user_id    UUID NOT NULL REFERENCES users(id),
+        status     TEXT NOT NULL DEFAULT 'delivered',
+        updated_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (message_id, user_id)
       )`);
 
     // ── Group Members ──────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='group_members' AND xtype='U')
-      CREATE TABLE group_members (
-        group_id  UNIQUEIDENTIFIER NOT NULL REFERENCES groups(id),
-        user_id   UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        role      NVARCHAR(20)     NOT NULL DEFAULT 'member',
-        joined_at DATETIME         DEFAULT GETDATE(),
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS group_members (
+        group_id  UUID NOT NULL REFERENCES groups(id),
+        user_id   UUID NOT NULL REFERENCES users(id),
+        role      TEXT NOT NULL DEFAULT 'member',
+        joined_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (group_id, user_id)
       )`);
+    await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'member'`);
+    await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS added_by UUID`);
+    await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ`);
 
     // ── Blocked Users ──────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='blocked_users' AND xtype='U')
-      CREATE TABLE blocked_users (
-        blocker_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        blocked_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        created_at DATETIME         DEFAULT GETDATE(),
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS blocked_users (
+        blocker_id UUID NOT NULL REFERENCES users(id),
+        blocked_id UUID NOT NULL REFERENCES users(id),
+        created_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (blocker_id, blocked_id)
       )`);
 
     // ── Audit Log ──────────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='audit_log' AND xtype='U')
-      CREATE TABLE audit_log (
-        id         UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-        user_id    UNIQUEIDENTIFIER REFERENCES users(id),
-        file_name  NVARCHAR(255),
-        file_type  NVARCHAR(50),
-        file_size  INT,
-        reason     NVARCHAR(500),
-        appealed   BIT NOT NULL DEFAULT 0,
-        created_at DATETIME DEFAULT GETDATE()
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        user_id    UUID REFERENCES users(id),
+        file_name  TEXT,
+        file_type  TEXT,
+        file_size  INTEGER,
+        reason     TEXT,
+        appealed   BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT now()
       )`);
 
     // ── FCM Tokens ─────────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='fcm_tokens' AND xtype='U')
-      CREATE TABLE fcm_tokens (
-        user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-        token      NVARCHAR(500)    NOT NULL,
-        device_id  NVARCHAR(255)    NOT NULL DEFAULT 'default',
-        updated_at DATETIME         DEFAULT GETDATE(),
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fcm_tokens (
+        user_id    UUID NOT NULL REFERENCES users(id),
+        token      TEXT NOT NULL,
+        device_id  TEXT NOT NULL DEFAULT 'default',
+        updated_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (user_id, device_id)
       )`);
 
     // ── Activity Log ───────────────────────────────────────────────
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='activity_log' AND xtype='U')
-      CREATE TABLE activity_log (
-        id         UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-        user_id    UNIQUEIDENTIFIER REFERENCES users(id),
-        action     NVARCHAR(50)     NOT NULL,
-        details    NVARCHAR(MAX),
-        ip         NVARCHAR(50),
-        created_at DATETIME         DEFAULT GETDATE()
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS activity_log (
+        id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        user_id    UUID REFERENCES users(id),
+        action     TEXT NOT NULL,
+        details    JSONB,
+        ip         TEXT,
+        created_at TIMESTAMPTZ DEFAULT now()
       )`);
 
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='app_settings' AND xtype='U')
-      CREATE TABLE app_settings (
-        key_name   NVARCHAR(100) PRIMARY KEY,
-        value      NVARCHAR(MAX) NOT NULL,
-        updated_at DATETIME DEFAULT GETDATE()
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key_name   TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      )`);
+
+    // ── Games ──────────────────────────────────────────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS games (
+        id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        player1_id UUID NOT NULL REFERENCES users(id),
+        player2_id UUID NOT NULL REFERENCES users(id),
+        winner_id  UUID REFERENCES users(id),
+        result     TEXT NOT NULL,
+        board      TEXT NOT NULL,
+        played_at  TIMESTAMPTZ DEFAULT now()
       )`);
 
     console.log('Migration: all tables ready');
 
     // Load moderation lists from DB (if saved), else seed defaults
     try {
-      const r = await pool.request().query(
+      const r = await pool.query(
         `SELECT key_name, value FROM app_settings WHERE key_name IN ('female_labels','blocked_words')`
       );
       const map = {};
-      for (const row of r.recordset) map[row.key_name] = JSON.parse(row.value);
+      for (const row of r.rows) map[row.key_name] = JSON.parse(row.value);
       if (map.female_labels) FEMALE_LABELS = map.female_labels;
       if (map.blocked_words) BLOCKED_WORDS = map.blocked_words;
-      if (!map.female_labels) await pool.request()
-        .input('k', sql.NVarChar, 'female_labels')
-        .input('v', sql.NVarChar, JSON.stringify(DEFAULT_FEMALE_LABELS))
-        .query(`INSERT INTO app_settings (key_name,value) VALUES (@k,@v)`);
-      if (!map.blocked_words) await pool.request()
-        .input('k', sql.NVarChar, 'blocked_words')
-        .input('v', sql.NVarChar, JSON.stringify(DEFAULT_BLOCKED_WORDS))
-        .query(`INSERT INTO app_settings (key_name,value) VALUES (@k,@v)`);
+      if (!map.female_labels) await pool.query(
+        `INSERT INTO app_settings (key_name,value) VALUES ($1,$2)`,
+        ['female_labels', JSON.stringify(DEFAULT_FEMALE_LABELS)]);
+      if (!map.blocked_words) await pool.query(
+        `INSERT INTO app_settings (key_name,value) VALUES ($1,$2)`,
+        ['blocked_words', JSON.stringify(DEFAULT_BLOCKED_WORDS)]);
     } catch (e) { console.error('Moderation list load error:', e.message); }
 
-  } catch (e) { console.error('Migration error:', e.message); }
-})();
+}
 
 // ── Activity logger ───────────────────────────────────────────────
 async function logActivity(userId, action, details = {}, ip = null) {
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('userId',  sql.UniqueIdentifier, userId || null)
-      .input('action',  sql.NVarChar,         action)
-      .input('details', sql.NVarChar,         JSON.stringify(details))
-      .input('ip',      sql.NVarChar,         ip || null)
-      .query(`INSERT INTO activity_log (user_id, action, details, ip)
-              VALUES (@userId, @action, @details, @ip)`);
+    await pool.query(
+      `INSERT INTO activity_log (user_id, action, details, ip) VALUES ($1, $2, $3, $4)`,
+      [userId || null, action, JSON.stringify(details), ip || null]);
   } catch (_) {}
 }
 
@@ -564,7 +534,10 @@ app.get('/app', (req, res) => res.redirect('/app/'));
 app.get('/privacy', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'privacy.html')));
 app.get('/delete-account', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'delete-account.html')));
 
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is required; refusing to start with an insecure default');
+}
 const onlineUsers = new Map(); // userId → socketId
 const otpStore    = new Map(); // phone → { code, expires, name }
 
@@ -586,10 +559,8 @@ async function authWithDbCheck(req, res, next) {
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     const pool = await getPool();
-    const exists = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.user.id)
-      .query('SELECT 1 FROM users WHERE id = @id');
-    if (!exists.recordset.length) {
+    const exists = await pool.query('SELECT 1 FROM users WHERE id = $1', [req.user.id]);
+    if (!exists.rows.length) {
       console.warn(`[AUTH] ghost session — id:${req.user.id} email:${req.user.email}`);
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
     }
@@ -604,10 +575,8 @@ io.use(async (socket, next) => {
   try {
     socket.user = jwt.verify(socket.handshake.auth.token, JWT_SECRET);
     const pool = await getPool();
-    const exists = await pool.request()
-      .input('id', sql.UniqueIdentifier, socket.user.id)
-      .query('SELECT 1 FROM users WHERE id = @id');
-    if (!exists.recordset.length) {
+    const exists = await pool.query('SELECT 1 FROM users WHERE id = $1', [socket.user.id]);
+    if (!exists.rows.length) {
       console.warn(`[SOCKET] user_not_found — id:${socket.user.id} email:${socket.user.email} name:${socket.user.name}`);
       return next(new Error('user_not_found'));
     }
@@ -625,10 +594,9 @@ io.on('connection', async (socket) => {
   // Join all group rooms this user belongs to
   try {
     const pool = await getPool();
-    const grps = await pool.request()
-      .input('userId', sql.UniqueIdentifier, socket.user.id)
-      .query("SELECT group_id FROM group_members WHERE user_id = @userId AND status = 'member'");
-    for (const { group_id } of grps.recordset) socket.join(`group:${group_id}`);
+    const grps = await pool.query(
+      "SELECT group_id FROM group_members WHERE user_id = $1 AND status = 'member'", [socket.user.id]);
+    for (const { group_id } of grps.rows) socket.join(`group:${group_id}`);
   } catch (_) {}
 
   function relay(toUserId, event, data) {
@@ -641,38 +609,29 @@ io.on('connection', async (socket) => {
     try {
       const pool = await getPool();
       // Check if blocked
-      const blocked = await pool.request()
-        .input('blocker', sql.UniqueIdentifier, toUserId)
-        .input('blocked', sql.UniqueIdentifier, socket.user.id)
-        .query('SELECT 1 FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked');
-      if (blocked.recordset.length) return;
-      const saved = await pool.request()
-        .input('senderId',    sql.UniqueIdentifier, socket.user.id)
-        .input('recipientId', sql.UniqueIdentifier, toUserId)
-        .input('body',        sql.NVarChar,         text     || null)
-        .input('type',        sql.NVarChar,         (() => {
-          if (fileType && fileType !== 'text') return fileType;
-          if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
-          if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
-          return 'text';
-        })())
-        .input('fileUrl',     sql.NVarChar,         fileUrl  || null)
-        .input('fileName',    sql.NVarChar,         fileName || null)
-        .input('replyToId',   sql.UniqueIdentifier, replyToId || null)
-        .query(`INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
-                OUTPUT INSERTED.id, INSERTED.created_at
-                VALUES (@senderId, @recipientId, @body, @type, @fileUrl, @fileName, @replyToId)`);
-      const row = saved.recordset[0];
+      const blocked = await pool.query(
+        'SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [toUserId, socket.user.id]);
+      if (blocked.rows.length) return;
+      const msgType = (() => {
+        if (fileType && fileType !== 'text') return fileType;
+        if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
+        if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
+        return 'text';
+      })();
+      const saved = await pool.query(
+        `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, created_at`,
+        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
+      const row = saved.rows[0];
       relay(toUserId, 'chat:message', {
         id: row.id, fromUserId: socket.user.id, fromName: socket.user.name,
         text, replyToId: replyToId || null, createdAt: row.created_at,
         fileUrl, fileName, fileType,
       });
       // שליפת שם הנמען לרישום קריא בפעילות
-      const recip = await pool.request()
-        .input('id', sql.UniqueIdentifier, toUserId)
-        .query('SELECT name FROM users WHERE id=@id');
-      const toName = recip.recordset[0]?.name || toUserId;
+      const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
+      const toName = recip.rows[0]?.name || toUserId;
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_message',
         { to: toName, toUserId, messageId: row.id, type: fileType || 'text', fileName: fileName || null });
       // Push only if recipient is offline
@@ -694,13 +653,11 @@ io.on('connection', async (socket) => {
     if ((!text && !fileUrl) || !groupId) return;
     try {
       const pool = await getPool();
-      const mem = await pool.request()
-        .input('groupId', sql.UniqueIdentifier, groupId)
-        .input('userId',  sql.UniqueIdentifier, socket.user.id)
-        .query(`SELECT gm.role, g.send_permission FROM group_members gm
-                JOIN groups g ON g.id = gm.group_id
-                WHERE gm.group_id = @groupId AND gm.user_id = @userId`);
-      const member = mem.recordset[0];
+      const mem = await pool.query(
+        `SELECT gm.role, g.send_permission FROM group_members gm
+         JOIN groups g ON g.id = gm.group_id
+         WHERE gm.group_id = $1 AND gm.user_id = $2`, [groupId, socket.user.id]);
+      const member = mem.rows[0];
       if (!member) return;
       if (member.send_permission === 'admin' && member.role !== 'admin') return;
 
@@ -709,18 +666,12 @@ io.on('connection', async (socket) => {
         : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) ? 'image'
           : fileUrl ? 'document' : 'text');
 
-      const saved = await pool.request()
-        .input('senderId',  sql.UniqueIdentifier, socket.user.id)
-        .input('groupId',   sql.UniqueIdentifier, groupId)
-        .input('body',      sql.NVarChar,         text     || null)
-        .input('type',      sql.NVarChar,         msgType)
-        .input('fileUrl',   sql.NVarChar,         fileUrl  || null)
-        .input('fileName',  sql.NVarChar,         fileName || null)
-        .input('replyToId', sql.UniqueIdentifier, replyToId || null)
-        .query(`INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
-                OUTPUT INSERTED.id, INSERTED.created_at
-                VALUES (@senderId, @groupId, @body, @type, @fileUrl, @fileName, @replyToId)`);
-      const row = saved.recordset[0];
+      const saved = await pool.query(
+        `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, created_at`,
+        [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
+      const row = saved.rows[0];
       io.to(`group:${groupId}`).emit('group:message', {
         id:         row.id,
         groupId,
@@ -734,15 +685,11 @@ io.on('connection', async (socket) => {
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_group_message',
         { groupId, messageId: row.id, fileName: fileName || null });
       // Push to offline members
-      const grpName = await pool.request()
-        .input('id', sql.UniqueIdentifier, groupId)
-        .query('SELECT name FROM groups WHERE id = @id');
-      const groupName = grpName.recordset[0]?.name || 'קבוצה';
-      const allMembers = await pool.request()
-        .input('groupId', sql.UniqueIdentifier, groupId)
-        .query('SELECT user_id FROM group_members WHERE group_id = @groupId');
+      const grpName = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
+      const groupName = grpName.rows[0]?.name || 'קבוצה';
+      const allMembers = await pool.query('SELECT user_id FROM group_members WHERE group_id = $1', [groupId]);
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-      for (const { user_id } of allMembers.recordset) {
+      for (const { user_id } of allMembers.rows) {
         if (user_id !== socket.user.id && !onlineUsers.has(user_id)) {
           sendPush(user_id, `${groupName} • ${socket.user.name}`,
             pushBody, { type: 'group', groupId });
@@ -783,37 +730,28 @@ app.post('/api/register', async (req, res) => {
   try {
     const pool = await getPool();
     if (hasEmail) {
-      const emailExists = await pool.request()
-        .input('email', sql.NVarChar, email)
-        .query('SELECT id FROM users WHERE email = @email');
-      if (emailExists.recordset.length) return res.status(400).json({ error: 'האימייל כבר רשום' });
+      const emailExists = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+      if (emailExists.rows.length) return res.status(400).json({ error: 'האימייל כבר רשום' });
     }
     if (hasPhone) {
-      const phoneExists = await pool.request()
-        .input('phone', sql.NVarChar, cleanPhone)
-        .query('SELECT id FROM users WHERE phone = @phone');
-      if (phoneExists.recordset.length) return res.status(400).json({ error: 'מספר הטלפון כבר רשום' });
+      const phoneExists = await pool.query('SELECT id FROM users WHERE phone = $1', [cleanPhone]);
+      if (phoneExists.rows.length) return res.status(400).json({ error: 'מספר הטלפון כבר רשום' });
     }
 
     const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
-    const result = await pool.request()
-      .input('name',  sql.NVarChar, name)
-      .input('email', sql.NVarChar, hasEmail ? email : null)
-      .input('phone', sql.NVarChar, hasPhone ? cleanPhone : null)
-      .input('hash',  sql.NVarChar, hash)
-      .query(`INSERT INTO users (name, email, phone, password_hash)
-              OUTPUT INSERTED.id, INSERTED.name, INSERTED.email
-              VALUES (@name, @email, @phone, @hash)`);
-    const user = result.recordset[0];
+    const result = await pool.query(
+      `INSERT INTO users (name, email, phone, password_hash)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, email`,
+      [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash]);
+    const user = result.rows[0];
 
     if (hasEmail) {
       const emailToken = crypto.randomBytes(32).toString('hex');
       const expires24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      await pool.request()
-        .input('token',   sql.NVarChar,        emailToken)
-        .input('userId',  sql.UniqueIdentifier, user.id)
-        .input('expires', sql.DateTime,         expires24h)
-        .query('INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES (@token, @userId, @expires)');
+      await pool.query(
+        'INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)',
+        [emailToken, user.id, expires24h]);
       const base = process.env.APP_URL || 'https://xo-app-betshuva.azurewebsites.net';
       sendEmail({
         to: user.email,
@@ -844,10 +782,8 @@ app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('email', sql.NVarChar, email)
-      .query('SELECT * FROM users WHERE email = @email');
-    const user = result.recordset[0];
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const user = result.rows[0];
     if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash)))
       return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
     if (!user.email_verified)
@@ -881,12 +817,10 @@ app.post('/api/auth/google', async (req, res) => {
     const pool = await getPool();
 
     // 1. Find by google_id
-    let byGoogle = await pool.request()
-      .input('googleId', sql.NVarChar, googleId)
-      .query('SELECT * FROM users WHERE google_id = @googleId');
+    let byGoogle = await pool.query('SELECT * FROM users WHERE google_id = $1', [googleId]);
 
-    if (byGoogle.recordset.length) {
-      const user  = byGoogle.recordset[0];
+    if (byGoogle.rows.length) {
+      const user  = byGoogle.rows[0];
       console.log(`[GOOGLE] login by google_id — user:${user.name} email:${user.email}`);
       const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
       logActivity(user.id, 'google_login', { email: user.email }, req.ip);
@@ -896,19 +830,15 @@ app.post('/api/auth/google', async (req, res) => {
 
     // 2. Find by email — link google_id
     if (email) {
-      const byEmail = await pool.request()
-        .input('email', sql.NVarChar, email)
-        .query('SELECT * FROM users WHERE email = @email');
-      if (byEmail.recordset.length) {
-        const user = byEmail.recordset[0];
-        await pool.request()
-          .input('id',       sql.UniqueIdentifier, user.id)
-          .input('googleId', sql.NVarChar,         googleId)
-          .input('picture',  sql.NVarChar,         picture || null)
-          .query(`UPDATE users
-                  SET google_id=@googleId, email_verified=1,
-                      profile_pic_url=COALESCE(profile_pic_url, @picture)
-                  WHERE id=@id`);
+      const byEmail = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+      if (byEmail.rows.length) {
+        const user = byEmail.rows[0];
+        await pool.query(
+          `UPDATE users
+           SET google_id=$1, email_verified=TRUE,
+               profile_pic_url=COALESCE(profile_pic_url, $2)
+           WHERE id=$3`,
+          [googleId, picture || null, user.id]);
         const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
         logActivity(user.id, 'google_login', { email: user.email }, req.ip);
         const { password_hash, ...safeUser } = user;
@@ -918,15 +848,12 @@ app.post('/api/auth/google', async (req, res) => {
 
     // 3. Create new user
     console.log(`[GOOGLE] new user — name:${name} email:${email}`);
-    const inserted = await pool.request()
-      .input('name',     sql.NVarChar, name || (email ? email.split('@')[0] : 'משתמש'))
-      .input('email',    sql.NVarChar, email || null)
-      .input('googleId', sql.NVarChar, googleId)
-      .input('picture',  sql.NVarChar, picture || null)
-      .query(`INSERT INTO users (name, email, email_verified, google_id, profile_pic_url)
-              OUTPUT INSERTED.*
-              VALUES (@name, @email, 1, @googleId, @picture)`);
-    const user  = inserted.recordset[0];
+    const inserted = await pool.query(
+      `INSERT INTO users (name, email, email_verified, google_id, profile_pic_url)
+       VALUES ($1, $2, TRUE, $3, $4)
+       RETURNING *`,
+      [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null]);
+    const user  = inserted.rows[0];
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     logActivity(user.id, 'google_register', { email: user.email }, req.ip);
     // הודע לכל המחוברים על משתמש חדש
@@ -945,16 +872,15 @@ app.post('/api/auth/google', async (req, res) => {
 app.get('/api/users', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('myId', sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT id, name, profile_pic_url, city, community, phone
-              FROM users
-              WHERE id != @myId
-              AND id NOT IN (
-                SELECT blocked_id FROM blocked_users WHERE blocker_id = @myId
-              )
-              ORDER BY name`);
-    res.json(result.recordset);
+    const result = await pool.query(
+      `SELECT id, name, profile_pic_url, city, community, phone
+       FROM users
+       WHERE id != $1
+       AND id NOT IN (
+         SELECT blocked_id FROM blocked_users WHERE blocker_id = $1
+       )
+       ORDER BY name`, [req.user.id]);
+    res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -977,18 +903,17 @@ app.post('/api/contacts/match', auth, async (req, res) => {
 
   try {
     const pool = await getPool();
-    // Build a values list for IN clause using parameterized inputs
-    const inputs = normalized.map((p, i) => `@p${i}`).join(',');
-    const req2 = pool.request().input('myId', sql.UniqueIdentifier, req.user.id);
-    normalized.forEach((p, i) => req2.input(`p${i}`, sql.NVarChar, p));
-    const result = await req2.query(
+    // Build a values list for IN clause using parameterized placeholders
+    const placeholders = normalized.map((_, i) => `$${i + 2}`).join(',');
+    const result = await pool.query(
       `SELECT id, name, profile_pic_url, phone
        FROM users
-       WHERE phone IN (${inputs})
-         AND id != @myId
-         AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = @myId)`
+       WHERE phone IN (${placeholders})
+         AND id != $1
+         AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = $1)`,
+      [req.user.id, ...normalized]
     );
-    res.json(result.recordset);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -996,20 +921,18 @@ app.post('/api/contacts/match', auth, async (req, res) => {
 app.get('/api/messages/unread', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('myId', sql.UniqueIdentifier, req.user.id)
-      .query(`
-        SELECT m.sender_id AS senderId, COUNT(*) AS cnt
-        FROM messages m
-        LEFT JOIN message_status ms
-          ON ms.message_id = m.id AND ms.user_id = @myId
-        WHERE m.recipient_id = @myId
-          AND m.deleted_for_everyone = 0
-          AND (ms.status IS NULL OR ms.status != 'read')
-        GROUP BY m.sender_id
-      `);
+    const result = await pool.query(`
+      SELECT m.sender_id AS "senderId", COUNT(*) AS cnt
+      FROM messages m
+      LEFT JOIN message_status ms
+        ON ms.message_id = m.id AND ms.user_id = $1
+      WHERE m.recipient_id = $1
+        AND m.deleted_for_everyone = FALSE
+        AND (ms.status IS NULL OR ms.status != 'read')
+      GROUP BY m.sender_id
+    `, [req.user.id]);
     const counts = {};
-    for (const row of result.recordset) counts[row.senderId] = row.cnt;
+    for (const row of result.rows) counts[row.senderId] = row.cnt;
     res.json(counts);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1023,13 +946,11 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
   const before  = req.query.before; // ISO date for pagination
   try {
     const pool = await getPool();
-    const req2 = pool.request()
-      .input('myId',    sql.UniqueIdentifier, myId)
-      .input('otherId', sql.UniqueIdentifier, otherId);
-    if (before) req2.input('before', sql.DateTime, new Date(before));
+    const params = [myId, otherId];
+    if (before) params.push(new Date(before));
 
-    const result = await req2.query(`
-      SELECT TOP 50
+    const result = await pool.query(`
+      SELECT
         m.id, m.sender_id, m.recipient_id, m.type,
         m.body, m.file_url, m.file_name, m.file_size,
         m.reply_to_id, m.created_at,
@@ -1039,17 +960,18 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       FROM messages m
       LEFT JOIN messages r  ON m.reply_to_id = r.id
       LEFT JOIN users ru    ON r.sender_id = ru.id
-      LEFT JOIN message_status ms ON ms.message_id = m.id AND ms.user_id = @myId
-      WHERE m.deleted_for_everyone = 0
+      LEFT JOIN message_status ms ON ms.message_id = m.id AND ms.user_id = $1
+      WHERE m.deleted_for_everyone = FALSE
         AND (
-          (m.sender_id = @myId    AND m.recipient_id = @otherId AND m.deleted_for_sender = 0)
+          (m.sender_id = $1 AND m.recipient_id = $2 AND m.deleted_for_sender = FALSE)
           OR
-          (m.sender_id = @otherId AND m.recipient_id = @myId)
+          (m.sender_id = $2 AND m.recipient_id = $1)
         )
-        ${before ? 'AND m.created_at < @before' : ''}
+        ${before ? 'AND m.created_at < $3' : ''}
       ORDER BY m.created_at DESC
-    `);
-    res.json(result.recordset.reverse());
+      LIMIT 50
+    `, params);
+    res.json(result.rows.reverse());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1066,11 +988,9 @@ app.post('/api/messages', auth, async (req, res) => {
   }
   try {
     const pool = await getPool();
-    const blocked = await pool.request()
-      .input('blocker', sql.UniqueIdentifier, toUserId)
-      .input('blocked', sql.UniqueIdentifier, senderId)
-      .query('SELECT 1 FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked');
-    if (blocked.recordset.length) return res.status(403).json({ error: 'נחסמת על ידי הנמען' });
+    const blocked = await pool.query(
+      'SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [toUserId, senderId]);
+    if (blocked.rows.length) return res.status(403).json({ error: 'נחסמת על ידי הנמען' });
 
     const type = (() => {
       if (fileType && fileType !== 'text') return fileType;
@@ -1079,26 +999,18 @@ app.post('/api/messages', auth, async (req, res) => {
       return 'text';
     })();
 
-    const saved = await pool.request()
-      .input('senderId',    sql.UniqueIdentifier, senderId)
-      .input('recipientId', sql.UniqueIdentifier, toUserId)
-      .input('body',        sql.NVarChar,         text     || null)
-      .input('type',        sql.NVarChar,         type)
-      .input('fileUrl',     sql.NVarChar,         fileUrl  || null)
-      .input('fileName',    sql.NVarChar,         fileName || null)
-      .input('replyToId',   sql.UniqueIdentifier, replyToId || null)
-      .query(`INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
-              OUTPUT INSERTED.id, INSERTED.created_at
-              VALUES (@senderId, @recipientId, @body, @type, @fileUrl, @fileName, @replyToId)`);
-    const row = saved.recordset[0];
+    const saved = await pool.query(
+      `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, created_at`,
+      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null]);
+    const row = saved.rows[0];
 
     // אם יש תגובה, נשלח גם את טקסט ההודעה הקודמת
     let replyBody = null;
     if (replyToId) {
-      const replyMsg = await pool.request()
-        .input('id', sql.UniqueIdentifier, replyToId)
-        .query('SELECT body FROM messages WHERE id = @id');
-      replyBody = replyMsg.recordset[0]?.body || '';
+      const replyMsg = await pool.query('SELECT body FROM messages WHERE id = $1', [replyToId]);
+      replyBody = replyMsg.rows[0]?.body || '';
     }
 
     const sid = onlineUsers.get(toUserId);
@@ -1108,10 +1020,8 @@ app.post('/api/messages', auth, async (req, res) => {
       fileUrl, fileName, fileType: type,
     });
 
-    const recip = await pool.request()
-      .input('id', sql.UniqueIdentifier, toUserId)
-      .query('SELECT name FROM users WHERE id=@id');
-    const toName = recip.recordset[0]?.name || toUserId;
+    const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
+    const toName = recip.rows[0]?.name || toUserId;
     logActivity(senderId, fileUrl ? 'send_file' : 'send_message',
       { to: toName, toUserId, messageId: row.id, type, fileName: fileName || null });
 
@@ -1133,22 +1043,16 @@ app.put('/api/messages/read', auth, async (req, res) => {
   if (!senderId) return res.status(400).json({ error: 'חסר senderId' });
   try {
     const pool = await getPool();
-    const msgs = await pool.request()
-      .input('recipientId', sql.UniqueIdentifier, req.user.id)
-      .input('senderId',    sql.UniqueIdentifier, senderId)
-      .query(`SELECT id FROM messages
-              WHERE recipient_id = @recipientId AND sender_id = @senderId
-              AND deleted_for_everyone = 0`);
+    const msgs = await pool.query(
+      `SELECT id FROM messages
+       WHERE recipient_id = $1 AND sender_id = $2
+       AND deleted_for_everyone = FALSE`, [req.user.id, senderId]);
 
-    for (const { id } of msgs.recordset) {
-      await pool.request()
-        .input('msgId',  sql.UniqueIdentifier, id)
-        .input('userId', sql.UniqueIdentifier, req.user.id)
-        .query(`IF NOT EXISTS (SELECT 1 FROM message_status WHERE message_id=@msgId AND user_id=@userId)
-                  INSERT INTO message_status (message_id, user_id, status) VALUES (@msgId, @userId, 'read')
-                ELSE
-                  UPDATE message_status SET status='read', updated_at=GETDATE()
-                  WHERE message_id=@msgId AND user_id=@userId`);
+    for (const { id } of msgs.rows) {
+      await pool.query(
+        `INSERT INTO message_status (message_id, user_id, status) VALUES ($1, $2, 'read')
+         ON CONFLICT (message_id, user_id) DO UPDATE SET status='read', updated_at=now()`,
+        [id, req.user.id]);
     }
 
     const sid = onlineUsers.get(senderId);
@@ -1164,23 +1068,18 @@ app.delete('/api/messages/:id', auth, async (req, res) => {
   const { forEveryone } = req.body;
   try {
     const pool = await getPool();
-    const found = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query('SELECT sender_id, recipient_id FROM messages WHERE id = @id');
-    const msg = found.recordset[0];
+    const found = await pool.query('SELECT sender_id, recipient_id FROM messages WHERE id = $1', [req.params.id]);
+    const msg = found.rows[0];
     if (!msg) return res.status(404).json({ error: 'הודעה לא נמצאה' });
 
     if (forEveryone && msg.sender_id === req.user.id) {
-      await pool.request()
-        .input('id', sql.UniqueIdentifier, req.params.id)
-        .query('UPDATE messages SET deleted_for_everyone=1, body=NULL WHERE id=@id');
+      await pool.query('UPDATE messages SET deleted_for_everyone=TRUE, body=NULL WHERE id=$1', [req.params.id]);
       const sid = onlineUsers.get(msg.recipient_id);
       if (sid) io.to(sid).emit('message:deleted', { id: req.params.id });
     } else {
-      await pool.request()
-        .input('id',     sql.UniqueIdentifier, req.params.id)
-        .input('userId', sql.UniqueIdentifier, req.user.id)
-        .query('UPDATE messages SET deleted_for_sender=1 WHERE id=@id AND sender_id=@userId');
+      await pool.query(
+        'UPDATE messages SET deleted_for_sender=TRUE WHERE id=$1 AND sender_id=$2',
+        [req.params.id, req.user.id]);
     }
     res.json({ ok: true });
   } catch (e) {
@@ -1194,17 +1093,16 @@ app.patch('/api/messages/:id', auth, async (req, res) => {
   if (!newBody) return res.status(400).json({ error: 'תוכן ההודעה ריק' });
   try {
     const pool = await getPool();
-    const found = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query('SELECT sender_id, recipient_id, group_id, type FROM messages WHERE id=@id AND deleted_for_everyone=0');
-    const msg = found.recordset[0];
+    const found = await pool.query(
+      'SELECT sender_id, recipient_id, group_id, type FROM messages WHERE id=$1 AND deleted_for_everyone=FALSE',
+      [req.params.id]);
+    const msg = found.rows[0];
     if (!msg) return res.status(404).json({ error: 'הודעה לא נמצאה' });
     if (msg.sender_id !== req.user.id) return res.status(403).json({ error: 'אין הרשאה לערוך' });
     if (msg.type !== 'text') return res.status(400).json({ error: 'ניתן לערוך הודעות טקסט בלבד' });
-    await pool.request()
-      .input('id',   sql.UniqueIdentifier, req.params.id)
-      .input('body', sql.NVarChar,         newBody)
-      .query('UPDATE messages SET body=@body, is_edited=1, edited_at=GETDATE() WHERE id=@id');
+    await pool.query(
+      'UPDATE messages SET body=$1, is_edited=TRUE, edited_at=now() WHERE id=$2',
+      [newBody, req.params.id]);
     // Notify recipient (private chat)
     if (msg.recipient_id) {
       const sid = onlineUsers.get(msg.recipient_id);
@@ -1212,10 +1110,8 @@ app.patch('/api/messages/:id', auth, async (req, res) => {
     }
     // Notify group members
     if (msg.group_id) {
-      const members = await pool.request()
-        .input('gid', sql.UniqueIdentifier, msg.group_id)
-        .query('SELECT user_id FROM group_members WHERE group_id=@gid');
-      for (const { user_id } of members.recordset) {
+      const members = await pool.query('SELECT user_id FROM group_members WHERE group_id=$1', [msg.group_id]);
+      for (const { user_id } of members.rows) {
         if (user_id === req.user.id) continue;
         const sid = onlineUsers.get(user_id);
         if (sid) io.to(sid).emit('message:edited', { id: req.params.id, body: newBody, groupId: msg.group_id });
@@ -1230,11 +1126,10 @@ app.post('/api/block/:userId', auth, async (req, res) => {
   if (req.params.userId === req.user.id) return res.status(400).json({ error: 'לא ניתן לחסום את עצמך' });
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('blocker', sql.UniqueIdentifier, req.user.id)
-      .input('blocked', sql.UniqueIdentifier, req.params.userId)
-      .query(`IF NOT EXISTS (SELECT 1 FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked)
-              INSERT INTO blocked_users (blocker_id, blocked_id) VALUES (@blocker, @blocked)`);
+    await pool.query(
+      `INSERT INTO blocked_users (blocker_id, blocked_id) VALUES ($1, $2)
+       ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
+      [req.user.id, req.params.userId]);
     logActivity(req.user.id, 'block_user', { blockedUserId: req.params.userId }, req.ip);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1244,10 +1139,8 @@ app.post('/api/block/:userId', auth, async (req, res) => {
 app.delete('/api/block/:userId', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('blocker', sql.UniqueIdentifier, req.user.id)
-      .input('blocked', sql.UniqueIdentifier, req.params.userId)
-      .query('DELETE FROM blocked_users WHERE blocker_id=@blocker AND blocked_id=@blocked');
+    await pool.query(
+      'DELETE FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [req.user.id, req.params.userId]);
     logActivity(req.user.id, 'unblock_user', { unblockedUserId: req.params.userId }, req.ip);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1257,14 +1150,13 @@ app.delete('/api/block/:userId', auth, async (req, res) => {
 app.get('/api/blocked', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('blocker', sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT u.id, u.name, u.profile_pic_url
-              FROM blocked_users b
-              JOIN users u ON u.id = b.blocked_id
-              WHERE b.blocker_id = @blocker
-              ORDER BY u.name`);
-    res.json(result.recordset);
+    const result = await pool.query(
+      `SELECT u.id, u.name, u.profile_pic_url
+       FROM blocked_users b
+       JOIN users u ON u.id = b.blocked_id
+       WHERE b.blocker_id = $1
+       ORDER BY u.name`, [req.user.id]);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1272,14 +1164,13 @@ app.get('/api/blocked', auth, async (req, res) => {
 app.get('/api/profile', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT id, name, email, phone, email_verified, phone_verified,
-                     city, community, country, street, house_number, apartment,
-                     profile_pic_url, privacy_pic, filter_level
-              FROM users WHERE id = @id`);
-    if (!result.recordset.length) return res.status(404).json({ error: 'לא נמצא' });
-    res.json(result.recordset[0]);
+    const result = await pool.query(
+      `SELECT id, name, email, phone, email_verified, phone_verified,
+              city, community, country, street, house_number, apartment,
+              profile_pic_url, privacy_pic, filter_level
+       FROM users WHERE id = $1`, [req.user.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
+    res.json(result.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1292,24 +1183,18 @@ app.put('/api/profile', auth, async (req, res) => {
   const validFilter  = ['standard', 'strict'];
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('id',          sql.UniqueIdentifier, req.user.id)
-      .input('name',        sql.NVarChar,         name.trim())
-      .input('city',        sql.NVarChar,         city         || null)
-      .input('community',   sql.NVarChar,         community    || null)
-      .input('country',     sql.NVarChar,         country      || 'ישראל')
-      .input('street',      sql.NVarChar,         street       || null)
-      .input('houseNum',    sql.NVarChar,         house_number || null)
-      .input('apartment',   sql.NVarChar,         apartment    || null)
-      .input('privacyPic',  sql.NVarChar,         validPrivacy.includes(privacy_pic) ? privacy_pic  : 'all')
-      .input('filterLevel', sql.NVarChar,         validFilter.includes(filter_level) ? filter_level : 'standard')
-      .input('picUrl',      sql.NVarChar,         profile_pic_url || null)
-      .query(`UPDATE users
-              SET name=@name, city=@city, community=@community,
-                  country=@country, street=@street, house_number=@houseNum, apartment=@apartment,
-                  privacy_pic=@privacyPic, filter_level=@filterLevel,
-                  profile_pic_url=@picUrl
-              WHERE id=@id`);
+    await pool.query(
+      `UPDATE users
+       SET name=$1, city=$2, community=$3,
+           country=$4, street=$5, house_number=$6, apartment=$7,
+           privacy_pic=$8, filter_level=$9,
+           profile_pic_url=$10
+       WHERE id=$11`,
+      [name.trim(), city || null, community || null, country || 'ישראל', street || null,
+       house_number || null, apartment || null,
+       validPrivacy.includes(privacy_pic) ? privacy_pic : 'all',
+       validFilter.includes(filter_level) ? filter_level : 'standard',
+       profile_pic_url || null, req.user.id]);
     logActivity(req.user.id, 'update_profile', { name: name.trim(), city, country }, req.ip);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1335,15 +1220,11 @@ app.put('/api/location', auth, async (req, res) => {
   try {
     const { city, country } = await reverseGeocodeHebrew(latitude, longitude);
     const pool = await getPool();
-    await pool.request()
-      .input('id',      sql.UniqueIdentifier, req.user.id)
-      .input('lat',     sql.Float,            latitude)
-      .input('lng',     sql.Float,            longitude)
-      .input('city',    sql.NVarChar,         city    || null)
-      .input('country', sql.NVarChar,         country || null)
-      .query(`UPDATE users SET latitude=@lat, longitude=@lng,
-              city=@city, country=@country,
-              location_updated_at=GETDATE() WHERE id=@id`);
+    await pool.query(
+      `UPDATE users SET latitude=$1, longitude=$2,
+       city=$3, country=$4,
+       location_updated_at=now() WHERE id=$5`,
+      [latitude, longitude, city || null, country || null, req.user.id]);
     res.json({ ok: true, city, country });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1357,53 +1238,44 @@ app.get('/api/users/nearby', auth, async (req, res) => {
 
     // city-only search
     if (city && !radius) {
-      const result = await pool.request()
-        .input('city',   sql.NVarChar,         city)
-        .input('userId', sql.UniqueIdentifier, req.user.id)
-        .query(`SELECT id, name, profile_pic_url, city, country
-                FROM users
-                WHERE id != @userId AND city = @city
-                ORDER BY name ASC`);
-      return res.json(result.recordset);
+      const result = await pool.query(
+        `SELECT id, name, profile_pic_url, city, country
+         FROM users
+         WHERE id != $1 AND city = $2
+         ORDER BY name ASC`, [req.user.id, city]);
+      return res.json(result.rows);
     }
 
     // radius search — use caller's stored coordinates
-    const me = await pool.request()
-      .input('userId', sql.UniqueIdentifier, req.user.id)
-      .query('SELECT latitude, longitude FROM users WHERE id=@userId');
-    const { latitude: myLat, longitude: myLng } = me.recordset[0] || {};
+    const me = await pool.query('SELECT latitude, longitude FROM users WHERE id=$1', [req.user.id]);
+    const { latitude: myLat, longitude: myLng } = me.rows[0] || {};
     if (myLat == null || myLng == null)
       return res.status(400).json({ error: 'המיקום שלך אינו מוגדר' });
 
-    const req2 = pool.request()
-      .input('lat',    sql.Float,            myLat)
-      .input('lng',    sql.Float,            myLng)
-      .input('radius', sql.Float,            parseFloat(radius))
-      .input('userId', sql.UniqueIdentifier, req.user.id);
-
     // optionally also filter by city
-    const cityFilter = city ? 'AND city = @city' : '';
-    if (city) req2.input('city', sql.NVarChar, city);
+    const cityFilter = city ? 'AND city = $5' : '';
+    const params = [myLat, myLng, req.user.id, parseFloat(radius)];
+    if (city) params.push(city);
 
-    const result = await req2.query(`
+    const result = await pool.query(`
       SELECT id, name, profile_pic_url, city, country,
-        ROUND(6371 * ACOS(
-          COS(RADIANS(@lat)) * COS(RADIANS(latitude)) *
-          COS(RADIANS(longitude) - RADIANS(@lng)) +
-          SIN(RADIANS(@lat)) * SIN(RADIANS(latitude))
-        ), 1) AS distance_km
+        ROUND((6371 * ACOS(
+          COS(RADIANS($1)) * COS(RADIANS(latitude)) *
+          COS(RADIANS(longitude) - RADIANS($2)) +
+          SIN(RADIANS($1)) * SIN(RADIANS(latitude))
+        ))::numeric, 1) AS distance_km
       FROM users
-      WHERE id != @userId
+      WHERE id != $3
         AND latitude IS NOT NULL AND longitude IS NOT NULL
         ${cityFilter}
         AND (6371 * ACOS(
-          COS(RADIANS(@lat)) * COS(RADIANS(latitude)) *
-          COS(RADIANS(longitude) - RADIANS(@lng)) +
-          SIN(RADIANS(@lat)) * SIN(RADIANS(latitude))
-        )) <= @radius
-      ORDER BY distance_km ASC`);
+          COS(RADIANS($1)) * COS(RADIANS(latitude)) *
+          COS(RADIANS(longitude) - RADIANS($2)) +
+          SIN(RADIANS($1)) * SIN(RADIANS(latitude))
+        )) <= $4
+      ORDER BY distance_km ASC`, params);
 
-    res.json(result.recordset);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1411,11 +1283,11 @@ app.get('/api/users/nearby', auth, async (req, res) => {
 app.get('/api/cities', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .query(`SELECT DISTINCT city, COUNT(*) AS user_count
-              FROM users WHERE city IS NOT NULL
-              GROUP BY city ORDER BY user_count DESC`);
-    res.json(result.recordset);
+    const result = await pool.query(
+      `SELECT DISTINCT city, COUNT(*) AS user_count
+       FROM users WHERE city IS NOT NULL
+       GROUP BY city ORDER BY user_count DESC`);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1432,35 +1304,24 @@ app.post('/api/listings', auth, async (req, res) => {
     // use user's stored location if not provided
     let lat = latitude, lng = longitude, listCity = city;
     if (!lat || !lng) {
-      const me = await pool.request()
-        .input('id', sql.UniqueIdentifier, req.user.id)
-        .query('SELECT latitude, longitude, city FROM users WHERE id=@id');
-      lat      = me.recordset[0]?.latitude  ?? lat;
-      lng      = me.recordset[0]?.longitude ?? lng;
-      listCity = listCity || me.recordset[0]?.city;
+      const me = await pool.query('SELECT latitude, longitude, city FROM users WHERE id=$1', [req.user.id]);
+      lat      = me.rows[0]?.latitude  ?? lat;
+      lng      = me.rows[0]?.longitude ?? lng;
+      listCity = listCity || me.rows[0]?.city;
     }
-    const result = await pool.request()
-      .input('userId',      sql.UniqueIdentifier, req.user.id)
-      .input('type',        sql.NVarChar,         validTypes.includes(type) ? type : 'free')
-      .input('title',       sql.NVarChar,         title.trim())
-      .input('description', sql.NVarChar,         description || null)
-      .input('price',       sql.Float,            type === 'sale' ? (price ?? 0) : null)
-      .input('city',        sql.NVarChar,         listCity || null)
-      .input('lat',         sql.Float,            lat  || null)
-      .input('lng',         sql.Float,            lng  || null)
-      .input('imageUrl',    sql.NVarChar,         allImages[0] || null)
-      .input('category',    sql.NVarChar,         validCats.includes(category) ? category : 'אחר')
-      .query(`INSERT INTO listings (user_id,type,title,description,price,city,latitude,longitude,image_url,category)
-              OUTPUT INSERTED.id
-              VALUES (@userId,@type,@title,@description,@price,@city,@lat,@lng,@imageUrl,@category)`);
-    const listingId = result.recordset[0].id;
+    const result = await pool.query(
+      `INSERT INTO listings (user_id,type,title,description,price,city,latitude,longitude,image_url,category)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id`,
+      [req.user.id, validTypes.includes(type) ? type : 'free', title.trim(), description || null,
+       type === 'sale' ? (price ?? 0) : null, listCity || null, lat || null, lng || null,
+       allImages[0] || null, validCats.includes(category) ? category : 'אחר']);
+    const listingId = result.rows[0].id;
     if (allImages.length) {
       for (let i = 0; i < allImages.length; i++) {
-        await pool.request()
-          .input('lid',   sql.UniqueIdentifier, listingId)
-          .input('url',   sql.NVarChar,         allImages[i])
-          .input('order', sql.Int,              i)
-          .query(`INSERT INTO listing_images (listing_id, url, sort_order) VALUES (@lid, @url, @order)`);
+        await pool.query(
+          `INSERT INTO listing_images (listing_id, url, sort_order) VALUES ($1, $2, $3)`,
+          [listingId, allImages[i], i]);
       }
     }
     res.json({ id: listingId });
@@ -1475,34 +1336,32 @@ app.get('/api/listings', auth, async (req, res) => {
   const rowTo    = offset + pageSize;
   try {
     const pool = await getPool();
-    let where = mine === 'true'
-      ? `l.user_id = @userId`
-      : (status
-        ? (status === 'active' ? `l.status='active' AND l.expires_at > GETDATE()` : `l.status=@statusFilter`)
-        : `l.status = 'active' AND l.expires_at > GETDATE()`);
-    const r = pool.request()
-      .input('userId', sql.UniqueIdentifier, req.user.id);
+    const params = [];
+    const addParam = (v) => { params.push(v); return `$${params.length}`; };
 
-    if (mine !== 'true' && status && status !== 'active') r.input('statusFilter', sql.NVarChar, status);
-    if (type)     { where += ` AND l.type=@type`;         r.input('type',     sql.NVarChar, type); }
-    if (category) { where += ` AND l.category=@category`; r.input('category', sql.NVarChar, category); }
-    if (city)     { where += ` AND l.city=@city`;         r.input('city',     sql.NVarChar, city); }
+    let where = mine === 'true'
+      ? `l.user_id = ${addParam(req.user.id)}`
+      : (status
+        ? (status === 'active' ? `l.status='active' AND l.expires_at > now()` : `l.status=${addParam(status)}`)
+        : `l.status = 'active' AND l.expires_at > now()`);
+
+    if (type)     where += ` AND l.type=${addParam(type)}`;
+    if (category) where += ` AND l.category=${addParam(category)}`;
+    if (city)     where += ` AND l.city=${addParam(city)}`;
 
     let distExpr = 'NULL';
     if (radius) {
-      const me = await pool.request()
-        .input('id', sql.UniqueIdentifier, req.user.id)
-        .query('SELECT latitude, longitude FROM users WHERE id=@id');
-      const { latitude: myLat, longitude: myLng } = me.recordset[0] || {};
+      const me = await pool.query('SELECT latitude, longitude FROM users WHERE id=$1', [req.user.id]);
+      const { latitude: myLat, longitude: myLng } = me.rows[0] || {};
       if (myLat && myLng) {
-        r.input('myLat', sql.Float, myLat).input('myLng', sql.Float, myLng).input('radius', sql.Float, parseFloat(radius));
-        const distFormula = `ROUND(6371*ACOS(COS(RADIANS(@myLat))*COS(RADIANS(l.latitude))*COS(RADIANS(l.longitude)-RADIANS(@myLng))+SIN(RADIANS(@myLat))*SIN(RADIANS(l.latitude))),1)`;
-        where += ` AND l.latitude IS NOT NULL AND (${distFormula}) <= @radius`;
+        const pLat = addParam(myLat), pLng = addParam(myLng), pRadius = addParam(parseFloat(radius));
+        const distFormula = `ROUND((6371*ACOS(COS(RADIANS(${pLat}))*COS(RADIANS(l.latitude))*COS(RADIANS(l.longitude)-RADIANS(${pLng}))+SIN(RADIANS(${pLat}))*SIN(RADIANS(l.latitude))))::numeric,1)`;
+        where += ` AND l.latitude IS NOT NULL AND (${distFormula}) <= ${pRadius}`;
         distExpr = distFormula;
       }
     }
 
-    const result = await r.query(`
+    const result = await pool.query(`
       SELECT id, type, title, description, price, city,
              image_url, category, status, created_at,
              view_count, contact_count,
@@ -1518,36 +1377,34 @@ app.get('/api/listings', auth, async (req, res) => {
         WHERE ${where}
       ) AS _q
       WHERE _q._rn >= ${rowFrom} AND _q._rn <= ${rowTo}
-      ORDER BY _q._rn`);
-    res.json(result.recordset);
+      ORDER BY _q._rn`, params);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/listings/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    // register unique view (ignore if already viewed)
+    // register unique view (ignore if already viewed) — only bump the counter when the insert actually happened
     try {
-      await pool.request()
-        .input('lid', sql.UniqueIdentifier, req.params.id)
-        .input('uid', sql.UniqueIdentifier, req.user.id)
-        .query(`IF NOT EXISTS (SELECT 1 FROM listing_views WHERE listing_id=@lid AND user_id=@uid)
-                BEGIN
-                  INSERT INTO listing_views (listing_id, user_id) VALUES (@lid, @uid);
-                  UPDATE listings SET view_count = view_count + 1 WHERE id=@lid;
-                END`);
+      await pool.query(`
+        WITH ins AS (
+          INSERT INTO listing_views (listing_id, user_id) VALUES ($1, $2)
+          ON CONFLICT (listing_id, user_id) DO NOTHING
+          RETURNING 1
+        )
+        UPDATE listings SET view_count = view_count + 1
+        WHERE id = $1 AND EXISTS (SELECT 1 FROM ins)`,
+        [req.params.id, req.user.id]);
     } catch (_) {}
-    const result = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query(`SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic, u.id AS seller_id
-              FROM listings l JOIN users u ON u.id = l.user_id WHERE l.id=@id`);
-    if (!result.recordset.length) return res.status(404).json({ error: 'לא נמצא' });
-    const item = result.recordset[0];
-    const imgs = await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query(`SELECT url FROM listing_images WHERE listing_id=@id ORDER BY sort_order`);
-    item.images = imgs.recordset.length
-      ? imgs.recordset.map(r => r.url)
+    const result = await pool.query(
+      `SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic, u.id AS seller_id
+       FROM listings l JOIN users u ON u.id = l.user_id WHERE l.id=$1`, [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
+    const item = result.rows[0];
+    const imgs = await pool.query('SELECT url FROM listing_images WHERE listing_id=$1 ORDER BY sort_order', [req.params.id]);
+    item.images = imgs.rows.length
+      ? imgs.rows.map(r => r.url)
       : (item.image_url ? [item.image_url] : []);
     res.json(item);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1556,9 +1413,7 @@ app.get('/api/listings/:id', auth, async (req, res) => {
 app.post('/api/listings/:id/contact', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query(`UPDATE listings SET contact_count = contact_count + 1 WHERE id=@id`);
+    await pool.query('UPDATE listings SET contact_count = contact_count + 1 WHERE id=$1', [req.params.id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1569,11 +1424,8 @@ app.put('/api/listings/:id/status', auth, async (req, res) => {
   if (!valid.includes(status)) return res.status(400).json({ error: 'סטטוס לא תקין' });
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('id',     sql.UniqueIdentifier, req.params.id)
-      .input('userId', sql.UniqueIdentifier, req.user.id)
-      .input('status', sql.NVarChar,         status)
-      .query(`UPDATE listings SET status=@status WHERE id=@id AND user_id=@userId`);
+    await pool.query(
+      'UPDATE listings SET status=$1 WHERE id=$2 AND user_id=$3', [status, req.params.id, req.user.id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1588,29 +1440,18 @@ app.put('/api/listings/:id', auth, async (req, res) => {
   const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 4) : [];
   try {
     const pool = await getPool();
-    const upd = await pool.request()
-      .input('id',          sql.UniqueIdentifier, req.params.id)
-      .input('userId',      sql.UniqueIdentifier, req.user.id)
-      .input('type',        sql.NVarChar,         safeType)
-      .input('title',       sql.NVarChar,         title.trim())
-      .input('description', sql.NVarChar,         description || null)
-      .input('price',       sql.Float,            safeType === 'sale' ? (price ?? 0) : null)
-      .input('city',        sql.NVarChar,         city || null)
-      .input('category',    sql.NVarChar,         safeCat)
-      .input('imageUrl',    sql.NVarChar,         allImages[0] || null)
-      .query(`UPDATE listings SET type=@type, title=@title, description=@description,
-              price=@price, city=@city, category=@category, image_url=@imageUrl
-              WHERE id=@id AND user_id=@userId`);
-    if (upd.rowsAffected[0] === 0) return res.status(404).json({ error: 'לא נמצא' });
-    await pool.request()
-      .input('id', sql.UniqueIdentifier, req.params.id)
-      .query(`DELETE FROM listing_images WHERE listing_id=@id`);
+    const upd = await pool.query(
+      `UPDATE listings SET type=$1, title=$2, description=$3,
+       price=$4, city=$5, category=$6, image_url=$7
+       WHERE id=$8 AND user_id=$9`,
+      [safeType, title.trim(), description || null, safeType === 'sale' ? (price ?? 0) : null,
+       city || null, safeCat, allImages[0] || null, req.params.id, req.user.id]);
+    if (upd.rowCount === 0) return res.status(404).json({ error: 'לא נמצא' });
+    await pool.query('DELETE FROM listing_images WHERE listing_id=$1', [req.params.id]);
     for (let i = 0; i < allImages.length; i++) {
-      await pool.request()
-        .input('lid',   sql.UniqueIdentifier, req.params.id)
-        .input('url',   sql.NVarChar,         allImages[i])
-        .input('order', sql.Int,              i)
-        .query(`INSERT INTO listing_images (listing_id, url, sort_order) VALUES (@lid, @url, @order)`);
+      await pool.query(
+        'INSERT INTO listing_images (listing_id, url, sort_order) VALUES ($1, $2, $3)',
+        [req.params.id, allImages[i], i]);
     }
     logActivity(req.user.id, 'edit_listing', { id: req.params.id }, req.ip);
     res.json({ ok: true });
@@ -1620,10 +1461,7 @@ app.put('/api/listings/:id', auth, async (req, res) => {
 app.delete('/api/listings/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('id',     sql.UniqueIdentifier, req.params.id)
-      .input('userId', sql.UniqueIdentifier, req.user.id)
-      .query(`DELETE FROM listings WHERE id=@id AND user_id=@userId`);
+    await pool.query('DELETE FROM listings WHERE id=$1 AND user_id=$2', [req.params.id, req.user.id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1634,15 +1472,10 @@ app.post('/api/fcm-token', auth, async (req, res) => {
   if (!token) return res.status(400).json({ error: 'נדרש token' });
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('userId',   sql.UniqueIdentifier, req.user.id)
-      .input('token',    sql.NVarChar,         token)
-      .input('deviceId', sql.NVarChar,         deviceId || 'default')
-      .query(`IF EXISTS (SELECT 1 FROM fcm_tokens WHERE user_id=@userId AND device_id=@deviceId)
-                UPDATE fcm_tokens SET token=@token, updated_at=GETDATE()
-                WHERE user_id=@userId AND device_id=@deviceId
-              ELSE
-                INSERT INTO fcm_tokens (user_id, token, device_id) VALUES (@userId, @token, @deviceId)`);
+    await pool.query(
+      `INSERT INTO fcm_tokens (user_id, token, device_id) VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, device_id) DO UPDATE SET token=$2, updated_at=now()`,
+      [req.user.id, token, deviceId || 'default']);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1695,22 +1528,16 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       const toUserId = req.body.toUserId || null;
       const groupId  = req.body.groupId  || null;
       const pool = await getPool();
-      const ins = await pool.request()
-        .input('userId',   sql.UniqueIdentifier, req.user.id)
-        .input('toUserId', sql.UniqueIdentifier, toUserId)
-        .input('groupId',  sql.UniqueIdentifier, groupId)
-        .input('fileUrl',  sql.NVarChar,         url)
-        .input('fileName', sql.NVarChar,         file.originalname)
-        .input('fileType', sql.NVarChar,         allowed.dbType)
-        .input('mimeType', sql.NVarChar,         file.mimetype)
-        .query(`INSERT INTO pending_scans (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
-                OUTPUT INSERTED.id
-                VALUES (@userId, @toUserId, @groupId, @fileUrl, @fileName, @fileType, @mimeType)`);
+      const ins = await pool.query(
+        `INSERT INTO pending_scans (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id`,
+        [req.user.id, toUserId, groupId, url, file.originalname, allowed.dbType, file.mimetype]);
       logActivity(req.user.id, 'upload_pending',
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
       return res.json({
         url, fileName: file.originalname, fileSize: file.size,
-        fileType: allowed.dbType, status: 'pending', pendingId: ins.recordset[0].id,
+        fileType: allowed.dbType, status: 'pending', pendingId: ins.rows[0].id,
       });
     }
 
@@ -1733,17 +1560,15 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
 app.get('/api/groups', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('userId', sql.UniqueIdentifier, req.user.id)
-      .query(`
-        SELECT g.id, g.name, g.description, g.is_broadcast, g.send_permission, g.filter_level,
-               gm.role, gm.status,
-               (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count
-        FROM groups g
-        JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = @userId
-        ORDER BY g.created_at DESC
-      `);
-    res.json(result.recordset);
+    const result = await pool.query(`
+      SELECT g.id, g.name, g.description, g.is_broadcast, g.send_permission, g.filter_level,
+             gm.role, gm.status,
+             (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count
+      FROM groups g
+      JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $1
+      ORDER BY g.created_at DESC
+    `, [req.user.id]);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1753,18 +1578,15 @@ app.post('/api/groups', auth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'נדרש שם קבוצה' });
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('name',    sql.NVarChar,        name)
-      .input('desc',    sql.NVarChar,        description || '')
-      .input('creator', sql.UniqueIdentifier, req.user.id)
-      .query(`INSERT INTO groups (name, description, creator_id)
-              OUTPUT INSERTED.id, INSERTED.name, INSERTED.description
-              VALUES (@name, @desc, @creator)`);
-    const group = result.recordset[0];
-    await pool.request()
-      .input('groupId', sql.UniqueIdentifier, group.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query(`INSERT INTO group_members (group_id, user_id, role) VALUES (@groupId, @userId, 'admin')`);
+    const result = await pool.query(
+      `INSERT INTO groups (name, description, creator_id)
+       VALUES ($1, $2, $3)
+       RETURNING id, name, description`,
+      [name, description || '', req.user.id]);
+    const group = result.rows[0];
+    await pool.query(
+      `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')`,
+      [group.id, req.user.id]);
     logActivity(req.user.id, 'create_group', { groupId: group.id, name }, req.ip);
     res.json({ ...group, role: 'admin', member_count: 1, is_broadcast: false, send_permission: 'all' });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1774,21 +1596,18 @@ app.post('/api/groups', auth, async (req, res) => {
 app.get('/api/groups/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const mem = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query('SELECT role FROM group_members WHERE group_id=@groupId AND user_id=@userId');
-    if (!mem.recordset.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
+    const mem = await pool.query(
+      'SELECT role FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.user.id]);
+    if (!mem.rows.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
 
     const [grp, members] = await Promise.all([
-      pool.request().input('id', sql.UniqueIdentifier, req.params.id)
-        .query('SELECT * FROM groups WHERE id=@id'),
-      pool.request().input('groupId', sql.UniqueIdentifier, req.params.id)
-        .query(`SELECT u.id, u.name, u.profile_pic_url, gm.role, gm.joined_at
-                FROM group_members gm JOIN users u ON u.id=gm.user_id
-                WHERE gm.group_id=@groupId ORDER BY gm.role DESC, u.name`),
+      pool.query('SELECT * FROM groups WHERE id=$1', [req.params.id]),
+      pool.query(
+        `SELECT u.id, u.name, u.profile_pic_url, gm.role, gm.joined_at
+         FROM group_members gm JOIN users u ON u.id=gm.user_id
+         WHERE gm.group_id=$1 ORDER BY gm.role DESC, u.name`, [req.params.id]),
     ]);
-    res.json({ ...grp.recordset[0], members: members.recordset, myRole: mem.recordset[0].role });
+    res.json({ ...grp.rows[0], members: members.rows, myRole: mem.rows[0].role });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1797,27 +1616,26 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
   const before = req.query.before;
   try {
     const pool = await getPool();
-    const check = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query('SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId');
-    if (!check.recordset.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
+    const check = await pool.query(
+      'SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.user.id]);
+    if (!check.rows.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
 
-    const req2 = pool.request().input('groupId', sql.UniqueIdentifier, req.params.id);
-    if (before) req2.input('before', sql.DateTime, new Date(before));
-    const result = await req2.query(`
-      SELECT TOP 50
+    const params = [req.params.id];
+    if (before) params.push(new Date(before));
+    const result = await pool.query(`
+      SELECT
         m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name, m.reply_to_id, m.created_at,
         u.name AS sender_name,
         r.body AS reply_body
       FROM messages m
       JOIN users u ON m.sender_id = u.id
       LEFT JOIN messages r ON m.reply_to_id = r.id
-      WHERE m.group_id = @groupId AND m.deleted_for_everyone = 0
-      ${before ? 'AND m.created_at < @before' : ''}
+      WHERE m.group_id = $1 AND m.deleted_for_everyone = FALSE
+      ${before ? 'AND m.created_at < $2' : ''}
       ORDER BY m.created_at DESC
-    `);
-    res.json(result.recordset.reverse());
+      LIMIT 50
+    `, params);
+    res.json(result.rows.reverse());
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1828,44 +1646,34 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
   try {
     const pool = await getPool();
     // Check caller is admin
-    const isAdmin = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('myId',    sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`);
-    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+    const isAdmin = await pool.query(
+      `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
+      [req.params.id, req.user.id]);
+    if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
 
     // Check existing membership
-    const existing = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, userId)
-      .query(`SELECT status FROM group_members WHERE group_id=@groupId AND user_id=@userId`);
-    if (existing.recordset.length) {
-      const st = existing.recordset[0].status;
+    const existing = await pool.query(
+      `SELECT status FROM group_members WHERE group_id=$1 AND user_id=$2`, [req.params.id, userId]);
+    if (existing.rows.length) {
+      const st = existing.rows[0].status;
       if (st === 'member')  return res.json({ ok: true, alreadyMember: true });
       if (st === 'pending') return res.json({ ok: true, alreadyPending: true });
     }
 
     // Insert/update as pending
-    await pool.request()
-      .input('groupId',  sql.UniqueIdentifier, req.params.id)
-      .input('userId',   sql.UniqueIdentifier, userId)
-      .input('addedBy',  sql.UniqueIdentifier, req.user.id)
-      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
-                INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
-                VALUES (@groupId, @userId, 'pending', @addedBy, GETDATE())
-              ELSE
-                UPDATE group_members SET status='pending', added_by=@addedBy, pending_since=GETDATE()
-                WHERE group_id=@groupId AND user_id=@userId`);
+    await pool.query(
+      `INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
+       VALUES ($1, $2, 'pending', $3, now())
+       ON CONFLICT (group_id, user_id) DO UPDATE SET status='pending', added_by=$3, pending_since=now()`,
+      [req.params.id, userId, req.user.id]);
 
     // Fetch group name and adder name
     const [grpRes, adderRes] = await Promise.all([
-      pool.request().input('id', sql.UniqueIdentifier, req.params.id)
-        .query('SELECT name FROM groups WHERE id=@id'),
-      pool.request().input('id', sql.UniqueIdentifier, req.user.id)
-        .query('SELECT name FROM users WHERE id=@id'),
+      pool.query('SELECT name FROM groups WHERE id=$1', [req.params.id]),
+      pool.query('SELECT name FROM users WHERE id=$1', [req.user.id]),
     ]);
-    const groupName   = grpRes.recordset[0]?.name   || 'קבוצה';
-    const addedByName = adderRes.recordset[0]?.name || 'מנהל';
+    const groupName   = grpRes.rows[0]?.name   || 'קבוצה';
+    const addedByName = adderRes.rows[0]?.name || 'מנהל';
 
     // Emit socket event to invited user
     const ioInst = req.app.get('io');
@@ -1888,15 +1696,12 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
 app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const isAdmin = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('myId',    sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`);
-    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
-    await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.params.userId)
-      .query('DELETE FROM group_members WHERE group_id=@groupId AND user_id=@userId');
+    const isAdmin = await pool.query(
+      `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
+      [req.params.id, req.user.id]);
+    if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
+    await pool.query(
+      'DELETE FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.params.userId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1910,41 +1715,31 @@ app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
   if (!userId) return res.status(400).json({ error: 'נדרש userId' });
   try {
     const pool = await getPool();
-    const isAdmin = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('myId',    sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`);
-    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+    const isAdmin = await pool.query(
+      `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
+      [req.params.id, req.user.id]);
+    if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
 
-    const existing = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, userId)
-      .query(`SELECT status FROM group_members WHERE group_id=@groupId AND user_id=@userId`);
-    if (existing.recordset.length) {
-      const st = existing.recordset[0].status;
+    const existing = await pool.query(
+      `SELECT status FROM group_members WHERE group_id=$1 AND user_id=$2`, [req.params.id, userId]);
+    if (existing.rows.length) {
+      const st = existing.rows[0].status;
       if (st === 'member')  return res.json({ ok: true, alreadyMember: true });
       if (st === 'pending') return res.json({ ok: true, alreadyPending: true });
     }
 
-    await pool.request()
-      .input('groupId',  sql.UniqueIdentifier, req.params.id)
-      .input('userId',   sql.UniqueIdentifier, userId)
-      .input('addedBy',  sql.UniqueIdentifier, req.user.id)
-      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
-                INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
-                VALUES (@groupId, @userId, 'pending', @addedBy, GETDATE())
-              ELSE
-                UPDATE group_members SET status='pending', added_by=@addedBy, pending_since=GETDATE()
-                WHERE group_id=@groupId AND user_id=@userId`);
+    await pool.query(
+      `INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
+       VALUES ($1, $2, 'pending', $3, now())
+       ON CONFLICT (group_id, user_id) DO UPDATE SET status='pending', added_by=$3, pending_since=now()`,
+      [req.params.id, userId, req.user.id]);
 
     const [grpRes, adderRes] = await Promise.all([
-      pool.request().input('id', sql.UniqueIdentifier, req.params.id)
-        .query('SELECT name FROM groups WHERE id=@id'),
-      pool.request().input('id', sql.UniqueIdentifier, req.user.id)
-        .query('SELECT name FROM users WHERE id=@id'),
+      pool.query('SELECT name FROM groups WHERE id=$1', [req.params.id]),
+      pool.query('SELECT name FROM users WHERE id=$1', [req.user.id]),
     ]);
-    const groupName   = grpRes.recordset[0]?.name   || 'קבוצה';
-    const addedByName = adderRes.recordset[0]?.name || 'מנהל';
+    const groupName   = grpRes.rows[0]?.name   || 'קבוצה';
+    const addedByName = adderRes.rows[0]?.name || 'מנהל';
 
     const ioInst = req.app.get('io');
     const invitedSid = onlineUsers.get(userId);
@@ -1965,42 +1760,34 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
     const pool = await getPool();
 
     // Get pending_since timestamp before updating
-    const pendingRow = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT status, pending_since FROM group_members
-              WHERE group_id=@groupId AND user_id=@userId`);
+    const pendingRow = await pool.query(
+      `SELECT status, pending_since FROM group_members
+       WHERE group_id=$1 AND user_id=$2`, [req.params.id, req.user.id]);
 
-    const wasPending = pendingRow.recordset[0]?.status === 'pending';
-    const pendingSince = pendingRow.recordset[0]?.pending_since || null;
+    const wasPending = pendingRow.rows[0]?.status === 'pending';
+    const pendingSince = pendingRow.rows[0]?.pending_since || null;
 
     // Update status to member (or insert if not exists)
-    await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query(`IF NOT EXISTS (SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId)
-                INSERT INTO group_members (group_id, user_id, status) VALUES (@groupId, @userId, 'member')
-              ELSE
-                UPDATE group_members SET status='member'
-                WHERE group_id=@groupId AND user_id=@userId`);
+    await pool.query(
+      `INSERT INTO group_members (group_id, user_id, status) VALUES ($1, $2, 'member')
+       ON CONFLICT (group_id, user_id) DO UPDATE SET status='member'`,
+      [req.params.id, req.user.id]);
 
     // Fetch missed messages since pending_since
     let missedMessages = [];
     if (wasPending && pendingSince) {
-      const missedRes = await pool.request()
-        .input('groupId', sql.UniqueIdentifier, req.params.id)
-        .input('since',   sql.DateTime,         new Date(pendingSince))
-        .query(`SELECT m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name,
-                       m.reply_to_id, m.created_at,
-                       u.name AS sender_name,
-                       r.body AS reply_body
-                FROM messages m
-                JOIN users u ON m.sender_id = u.id
-                LEFT JOIN messages r ON m.reply_to_id = r.id
-                WHERE m.group_id = @groupId AND m.deleted_for_everyone = 0
-                  AND m.created_at >= @since
-                ORDER BY m.created_at ASC`);
-      missedMessages = missedRes.recordset;
+      const missedRes = await pool.query(
+        `SELECT m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name,
+                m.reply_to_id, m.created_at,
+                u.name AS sender_name,
+                r.body AS reply_body
+         FROM messages m
+         JOIN users u ON m.sender_id = u.id
+         LEFT JOIN messages r ON m.reply_to_id = r.id
+         WHERE m.group_id = $1 AND m.deleted_for_everyone = FALSE
+           AND m.created_at >= $2
+         ORDER BY m.created_at ASC`, [req.params.id, new Date(pendingSince)]);
+      missedMessages = missedRes.rows;
     }
 
     // Emit group:member_joined to the group room
@@ -2017,10 +1804,9 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
 app.delete('/api/groups/:id/decline', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query(`DELETE FROM group_members WHERE group_id=@groupId AND user_id=@userId AND status='pending'`);
+    await pool.query(
+      `DELETE FROM group_members WHERE group_id=$1 AND user_id=$2 AND status='pending'`,
+      [req.params.id, req.user.id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2032,17 +1818,14 @@ app.post('/api/groups/:id/invite-sms', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const [adminCheck, grp] = await Promise.all([
-      pool.request()
-        .input('groupId', sql.UniqueIdentifier, req.params.id)
-        .input('myId',    sql.UniqueIdentifier, req.user.id)
-        .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@myId AND role='admin'`),
-      pool.request()
-        .input('id', sql.UniqueIdentifier, req.params.id)
-        .query('SELECT name FROM groups WHERE id=@id'),
+      pool.query(
+        `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
+        [req.params.id, req.user.id]),
+      pool.query('SELECT name FROM groups WHERE id=$1', [req.params.id]),
     ]);
-    if (!adminCheck.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
+    if (!adminCheck.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
 
-    const groupName  = grp.recordset[0]?.name || 'הקבוצה';
+    const groupName  = grp.rows[0]?.name || 'הקבוצה';
     const senderName = req.user.name || 'חבר';
     const greeting   = contactName ? `שלום ${contactName}!` : 'שלום!';
     const msg = `${greeting} ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" באפליקציית בתשובה. הורד את האפליקציה: https://betshuva.com`;
@@ -2063,10 +1846,7 @@ app.post('/api/groups/:id/invite-sms', auth, async (req, res) => {
 app.delete('/api/groups/:id/leave', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query('DELETE FROM group_members WHERE group_id=@groupId AND user_id=@userId');
+    await pool.query('DELETE FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.user.id]);
     logActivity(req.user.id, 'leave_group', { groupId: req.params.id }, req.ip);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2078,21 +1858,16 @@ app.put('/api/groups/:id', auth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'נדרש שם' });
   try {
     const pool = await getPool();
-    const isAdmin = await pool.request()
-      .input('groupId', sql.UniqueIdentifier, req.params.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query(`SELECT 1 FROM group_members WHERE group_id=@groupId AND user_id=@userId AND role='admin'`);
-    if (!isAdmin.recordset.length) return res.status(403).json({ error: 'אין הרשאה' });
-    await pool.request()
-      .input('id',        sql.UniqueIdentifier, req.params.id)
-      .input('name',      sql.NVarChar,         name)
-      .input('desc',      sql.NVarChar,         description || '')
-      .input('perm',      sql.NVarChar,         send_permission || 'all')
-      .input('filter',    sql.NVarChar,         filter_level || 'standard')
-      .input('broadcast', sql.Bit,              is_broadcast ? 1 : 0)
-      .query(`UPDATE groups SET name=@name, description=@desc,
-              send_permission=@perm, filter_level=@filter, is_broadcast=@broadcast
-              WHERE id=@id`);
+    const isAdmin = await pool.query(
+      `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
+      [req.params.id, req.user.id]);
+    if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
+    await pool.query(
+      `UPDATE groups SET name=$1, description=$2,
+       send_permission=$3, filter_level=$4, is_broadcast=$5
+       WHERE id=$6`,
+      [name, description || '', send_permission || 'all', filter_level || 'standard',
+       !!is_broadcast, req.params.id]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2102,28 +1877,17 @@ app.post('/api/games', auth, async (req, res) => {
   const { player1_id, player2_id, winner_id, result, board } = req.body;
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('p1', sql.UniqueIdentifier, player1_id)
-      .input('p2', sql.UniqueIdentifier, player2_id)
-      .input('winner', sql.UniqueIdentifier, winner_id || null)
-      .input('result', sql.NVarChar, result)
-      .input('board', sql.NVarChar, board.join(','))
-      .query(`INSERT INTO games (player1_id, player2_id, winner_id, result, board)
-              VALUES (@p1, @p2, @winner, @result, @board)`);
+    await pool.query(
+      `INSERT INTO games (player1_id, player2_id, winner_id, result, board)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [player1_id, player2_id, winner_id || null, result, board.join(',')]);
 
     if (result === 'win' && winner_id) {
-      await pool.request()
-        .input('id', sql.UniqueIdentifier, winner_id)
-        .query('UPDATE users SET wins = wins + 1, games_played = games_played + 1 WHERE id = @id');
+      await pool.query('UPDATE users SET wins = wins + 1, games_played = games_played + 1 WHERE id = $1', [winner_id]);
       const loserId = winner_id === player1_id ? player2_id : player1_id;
-      await pool.request()
-        .input('id', sql.UniqueIdentifier, loserId)
-        .query('UPDATE users SET games_played = games_played + 1 WHERE id = @id');
+      await pool.query('UPDATE users SET games_played = games_played + 1 WHERE id = $1', [loserId]);
     } else if (result === 'tie') {
-      await pool.request()
-        .input('p1', sql.UniqueIdentifier, player1_id)
-        .input('p2', sql.UniqueIdentifier, player2_id)
-        .query('UPDATE users SET games_played = games_played + 1 WHERE id IN (@p1, @p2)');
+      await pool.query('UPDATE users SET games_played = games_played + 1 WHERE id IN ($1, $2)', [player1_id, player2_id]);
     }
 
     res.json({ ok: true });
@@ -2143,11 +1907,12 @@ app.get('/api/admin/activity', auth, async (req, res) => {
   const rowTo   = offset + limit;
   try {
     const pool = await getPool();
-    const req2 = pool.request();
-    if (userId) req2.input('userId', sql.UniqueIdentifier, userId);
-    if (action) req2.input('action', sql.NVarChar, action);
-    if (search) req2.input('search', sql.NVarChar, `%${search}%`);
-    const result = await req2.query(`
+    const params = [];
+    const addParam = (v) => { params.push(v); return `$${params.length}`; };
+    const userIdFilter = userId ? `AND a.user_id = ${addParam(userId)}` : '';
+    const actionFilter = action ? `AND a.action  = ${addParam(action)}` : '';
+    const searchFilter = search ? `AND (u.name ILIKE ${addParam(`%${search}%`)} OR u.email ILIKE $${params.length})` : '';
+    const result = await pool.query(`
       SELECT id, action, details, ip, created_at, user_name, user_email
       FROM (
         SELECT a.id, a.action, a.details, a.ip, a.created_at,
@@ -2155,15 +1920,12 @@ app.get('/api/admin/activity', auth, async (req, res) => {
                ROW_NUMBER() OVER (ORDER BY a.created_at DESC) AS _rn
         FROM activity_log a
         LEFT JOIN users u ON u.id = a.user_id
-        WHERE 1=1
-          ${userId ? 'AND a.user_id = @userId' : ''}
-          ${action ? 'AND a.action  = @action'  : ''}
-          ${search ? 'AND (u.name LIKE @search OR u.email LIKE @search)' : ''}
+        WHERE 1=1 ${userIdFilter} ${actionFilter} ${searchFilter}
       ) AS _q
       WHERE _q._rn >= ${rowFrom} AND _q._rn <= ${rowTo}
       ORDER BY _q._rn
-    `);
-    res.json(result.recordset);
+    `, params);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2171,12 +1933,12 @@ app.get('/api/admin/activity', auth, async (req, res) => {
 app.get('/api/admin/users', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .query(`SELECT id, name, email, phone, email_verified, phone_verified,
-                     google_id, profile_pic_url, city, community,
-                     filter_level, created_at
-              FROM users ORDER BY created_at DESC`);
-    res.json(result.recordset);
+    const result = await pool.query(
+      `SELECT id, name, email, phone, email_verified, phone_verified,
+              google_id, profile_pic_url, city, community,
+              filter_level, created_at
+       FROM users ORDER BY created_at DESC`);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2184,7 +1946,7 @@ app.get('/api/admin/users', auth, async (req, res) => {
 app.get('/api/admin/games', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request().query(`
+    const result = await pool.query(`
       SELECT g.id, g.result, g.board, g.played_at,
              p1.name AS player1, p2.name AS player2,
              w.name AS winner
@@ -2194,7 +1956,7 @@ app.get('/api/admin/games', auth, async (req, res) => {
       LEFT JOIN users w ON g.winner_id = w.id
       ORDER BY g.played_at DESC
     `);
-    res.json(result.recordset);
+    res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2202,9 +1964,8 @@ app.get('/api/admin/games', auth, async (req, res) => {
 app.get('/api/leaderboard', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .query('SELECT name, email, wins, games_played FROM users ORDER BY wins DESC');
-    res.json(result.recordset);
+    const result = await pool.query('SELECT name, email, wins, games_played FROM users ORDER BY wins DESC');
+    res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2220,11 +1981,9 @@ app.post('/api/send-otp', async (req, res) => {
   if (cleanEmail.includes('@')) {
     try {
       const pool = await getPool();
-      const emailExists = await pool.request()
-        .input('email', sql.NVarChar, cleanEmail)
-        .input('phone', sql.NVarChar, clean)
-        .query('SELECT id FROM users WHERE email=@email AND phone != @phone');
-      if (emailExists.recordset.length)
+      const emailExists = await pool.query(
+        'SELECT id FROM users WHERE email=$1 AND phone != $2', [cleanEmail, clean]);
+      if (emailExists.rows.length)
         return res.status(400).json({ error: 'כתובת האימייל כבר רשומה' });
     } catch (_) {}
   }
@@ -2257,38 +2016,27 @@ app.post('/api/verify-otp', async (req, res) => {
   try {
     const pool = await getPool();
     // Check existing user by phone
-    const byPhone = await pool.request()
-      .input('phone', sql.NVarChar, clean)
-      .query('SELECT id, name, email FROM users WHERE phone=@phone');
+    const byPhone = await pool.query('SELECT id, name, email FROM users WHERE phone=$1', [clean]);
     let user;
-    if (byPhone.recordset.length) {
-      user = byPhone.recordset[0];
-      await pool.request()
-        .input('id', sql.UniqueIdentifier, user.id)
-        .query('UPDATE users SET phone_verified=1, email_verified=1 WHERE id=@id');
+    if (byPhone.rows.length) {
+      user = byPhone.rows[0];
+      await pool.query('UPDATE users SET phone_verified=TRUE, email_verified=TRUE WHERE id=$1', [user.id]);
     } else {
       // Check by email
-      const byEmail = await pool.request()
-        .input('email', sql.NVarChar, userEmail)
-        .query('SELECT id, name, email FROM users WHERE email=@email');
-      if (byEmail.recordset.length) {
-        user = byEmail.recordset[0];
-        await pool.request()
-          .input('id',    sql.UniqueIdentifier, user.id)
-          .input('phone', sql.NVarChar,         clean)
-          .query('UPDATE users SET phone_verified=1, email_verified=1, phone=@phone WHERE id=@id');
+      const byEmail = await pool.query('SELECT id, name, email FROM users WHERE email=$1', [userEmail]);
+      if (byEmail.rows.length) {
+        user = byEmail.rows[0];
+        await pool.query(
+          'UPDATE users SET phone_verified=TRUE, email_verified=TRUE, phone=$1 WHERE id=$2', [clean, user.id]);
       } else {
         // New user — verified by OTP
         const hash   = await bcrypt.hash(`otp_${clean}`, 10);
-        const result = await pool.request()
-          .input('name',  sql.NVarChar, userName)
-          .input('email', sql.NVarChar, userEmail)
-          .input('phone', sql.NVarChar, clean)
-          .input('hash',  sql.NVarChar, hash)
-          .query(`INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified)
-                  OUTPUT INSERTED.id, INSERTED.name, INSERTED.email
-                  VALUES (@name, @email, @phone, @hash, 1, 1)`);
-        user = result.recordset[0];
+        const result = await pool.query(
+          `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified)
+           VALUES ($1, $2, $3, $4, TRUE, TRUE)
+           RETURNING id, name, email`,
+          [userName, userEmail, clean, hash]);
+        user = result.rows[0];
         // הודע לכל המחוברים על משתמש חדש
         req.app.get('io').emit('users:new', {
           id: user.id, name: user.name, email: user.email, profile_pic_url: null
@@ -2315,16 +2063,10 @@ app.post('/api/link-phone', auth, async (req, res) => {
   otpStore.delete(clean);
   try {
     const pool = await getPool();
-    const taken = await pool.request()
-      .input('phone', sql.NVarChar, clean)
-      .input('id',    sql.UniqueIdentifier, req.user.id)
-      .query('SELECT id FROM users WHERE phone=@phone AND id != @id');
-    if (taken.recordset.length)
+    const taken = await pool.query('SELECT id FROM users WHERE phone=$1 AND id != $2', [clean, req.user.id]);
+    if (taken.rows.length)
       return res.status(400).json({ error: 'מספר הטלפון כבר רשום למשתמש אחר' });
-    await pool.request()
-      .input('id',    sql.UniqueIdentifier, req.user.id)
-      .input('phone', sql.NVarChar,         clean)
-      .query('UPDATE users SET phone=@phone, phone_verified=1 WHERE id=@id');
+    await pool.query('UPDATE users SET phone=$1, phone_verified=TRUE WHERE id=$2', [clean, req.user.id]);
     logActivity(req.user.id, 'link_phone', { phone: clean }, req.ip);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2340,13 +2082,10 @@ app.post('/api/verify-phone', async (req, res) => {
   otpStore.delete(cleanPhone);
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('phone', sql.NVarChar, cleanPhone)
-      .query('UPDATE users SET phone_verified = 1 WHERE phone = @phone');
-    const result = await pool.request()
-      .input('phone', sql.NVarChar, cleanPhone)
-      .query('SELECT id, name, email, email_verified FROM users WHERE phone = @phone');
-    const user = result.recordset[0];
+    await pool.query('UPDATE users SET phone_verified = TRUE WHERE phone = $1', [cleanPhone]);
+    const result = await pool.query(
+      'SELECT id, name, email, email_verified FROM users WHERE phone = $1', [cleanPhone]);
+    const user = result.rows[0];
     if (!user) return res.status(400).json({ error: 'משתמש לא נמצא' });
     if (!user.email || user.email_verified) {
       const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
@@ -2362,18 +2101,14 @@ app.get('/verify-email', async (req, res) => {
   const ok = (msg) => res.send(`<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>אימות אימייל – בתשובה</title><style>body{font-family:Arial,sans-serif;background:#F0F4F0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:400px;text-align:center}h2{color:#1B4332}</style></head><body><div class="card">${msg}</div></body></html>`);
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('token', sql.NVarChar, token)
-      .query('SELECT user_id FROM email_verification_tokens WHERE token = @token AND used = 0 AND expires_at > GETDATE()');
-    if (!result.recordset.length)
+    const result = await pool.query(
+      'SELECT user_id FROM email_verification_tokens WHERE token = $1 AND used = FALSE AND expires_at > now()',
+      [token]);
+    if (!result.rows.length)
       return ok('<h2>❌ הקישור לא תקין או פג תוקף</h2><p>נסה להירשם מחדש.</p>');
-    const { user_id } = result.recordset[0];
-    await pool.request()
-      .input('id', sql.UniqueIdentifier, user_id)
-      .query('UPDATE users SET email_verified = 1 WHERE id = @id');
-    await pool.request()
-      .input('token', sql.NVarChar, token)
-      .query('UPDATE email_verification_tokens SET used = 1 WHERE token = @token');
+    const { user_id } = result.rows[0];
+    await pool.query('UPDATE users SET email_verified = TRUE WHERE id = $1', [user_id]);
+    await pool.query('UPDATE email_verification_tokens SET used = TRUE WHERE token = $1', [token]);
     ok('<h2>✅ האימייל אומת בהצלחה!</h2><p>כעת תוכל להתחבר לאפליקציה.</p>');
   } catch (e) { ok('<h2>❌ שגיאה</h2><p>' + e.message + '</p>'); }
 });
@@ -2400,12 +2135,10 @@ async function adminAuth(req, res, next) {
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     const pool   = await getPool();
-    const result = await pool.request()
-      .input('userId', sql.UniqueIdentifier, req.user.id)
-      .query('SELECT permission FROM admin_permissions WHERE user_id = @userId');
-    if (!result.recordset.length)
+    const result = await pool.query('SELECT permission FROM admin_permissions WHERE user_id = $1', [req.user.id]);
+    if (!result.rows.length)
       return res.status(403).json({ error: 'אין הרשאת גישה לדשבורד' });
-    req.adminPerm = result.recordset[0].permission; // 'view' or 'edit'
+    req.adminPerm = result.rows[0].permission; // 'view' or 'edit'
     next();
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין' });
@@ -2419,39 +2152,36 @@ app.get('/api/admin/db', adminAuth, async (req, res) => {
     const names = Object.keys(ADMIN_TABLES);
     const counts = await Promise.all(names.map(async t => {
       try {
-        const r = await pool.request().query(`SELECT COUNT(*) AS n FROM ${t}`);
-        return { table: t, label: ADMIN_TABLES[t].label, count: r.recordset[0].n };
+        const r = await pool.query(`SELECT COUNT(*)::int AS n FROM ${t}`);
+        return { table: t, label: ADMIN_TABLES[t].label, count: r.rows[0].n };
       } catch { return { table: t, label: ADMIN_TABLES[t].label, count: 0 }; }
     }));
     res.json({ tables: counts, permission: req.adminPerm });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Get table data (paginated)
+// Get table data (paginated) — search is done in JS since there's no cheap Postgres
+// equivalent to T-SQL's FOR JSON PATH row-to-text search across an arbitrary table.
 app.get('/api/admin/db/:table', adminAuth, async (req, res) => {
   const cfg = ADMIN_TABLES[req.params.table];
   if (!cfg) return res.status(400).json({ error: 'טבלה לא מורשית' });
   const limit  = Math.min(parseInt(req.query.limit)  || 200, 500);
   const offset = parseInt(req.query.offset) || 0;
-  const search = (req.query.search || '').trim();
+  const search = (req.query.search || '').trim().toLowerCase();
   try {
-    const pool   = await getPool();
-    const tbl    = req.params.table;
-    const filter = search
-      ? `WHERE CAST((SELECT * FROM ${tbl} FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS NVARCHAR(MAX)) LIKE @s`
-      : '';
-    const orderBy = cfg.sort ? `ORDER BY ${cfg.sort}` : 'ORDER BY (SELECT NULL)';
-    const request = pool.request().input('s', sql.NVarChar, `%${search}%`);
-    const result  = await request.query(
-      `SELECT * FROM (SELECT *, ROW_NUMBER() OVER (${orderBy}) rn FROM ${tbl} ${filter}) t
-       WHERE rn > ${offset} AND rn <= ${offset + limit}`);
-    const countR  = await pool.request().query(`SELECT COUNT(*) AS n FROM ${tbl}`);
-    const rows    = result.recordset.map(r => {
-      const row = { ...r }; delete row.rn;
+    const pool    = await getPool();
+    const tbl     = req.params.table;
+    const orderBy = cfg.sort ? `ORDER BY ${cfg.sort}` : '';
+    const all = await pool.query(`SELECT * FROM ${tbl} ${orderBy}`);
+    const filtered = search
+      ? all.rows.filter(r => JSON.stringify(r).toLowerCase().includes(search))
+      : all.rows;
+    const rows = filtered.slice(offset, offset + limit).map(r => {
+      const row = { ...r };
       cfg.hide.forEach(h => delete row[h]);
       return row;
     });
-    res.json({ rows, total: countR.recordset[0].n, permission: req.adminPerm });
+    res.json({ rows, total: filtered.length, permission: req.adminPerm });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2466,16 +2196,15 @@ app.put('/api/admin/db/:table/:id', adminAuth, async (req, res) => {
   // Validate column names against DB schema
   try {
     const pool = await getPool();
-    const schema = await pool.request()
-      .input('tbl', sql.NVarChar, req.params.table)
-      .query(`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = @tbl`);
-    const validCols = new Set(schema.recordset.map(r => r.COLUMN_NAME));
+    const schema = await pool.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = $1`, [req.params.table]);
+    const validCols = new Set(schema.rows.map(r => r.column_name));
     const filtered  = safe.filter(k => validCols.has(k));
     if (!filtered.length) return res.status(400).json({ error: 'עמודות לא תקינות' });
-    const setClause = filtered.map(k => `[${k}]=@${k}`).join(',');
-    const req2 = pool.request().input('pk', sql.NVarChar, req.params.id);
-    filtered.forEach(k => req2.input(k, sql.NVarChar, updates[k] == null ? null : String(updates[k])));
-    await req2.query(`UPDATE ${req.params.table} SET ${setClause} WHERE [${cfg.pk}]=@pk`);
+    const params = filtered.map(k => updates[k] == null ? null : String(updates[k]));
+    const setClause = filtered.map((k, i) => `${k}=$${i + 1}`).join(',');
+    params.push(req.params.id);
+    await pool.query(`UPDATE ${req.params.table} SET ${setClause} WHERE ${cfg.pk}=$${params.length}`, params);
     logActivity(req.user.id, 'admin_edit', { table: req.params.table, id: req.params.id }, req.ip);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2488,9 +2217,7 @@ app.delete('/api/admin/db/:table/:id', adminAuth, async (req, res) => {
   if (!cfg || !cfg.pk) return res.status(400).json({ error: 'לא ניתן למחוק מטבלה זו' });
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('pk', sql.NVarChar, req.params.id)
-      .query(`DELETE FROM ${req.params.table} WHERE [${cfg.pk}]=@pk`);
+    await pool.query(`DELETE FROM ${req.params.table} WHERE ${cfg.pk}=$1`, [req.params.id]);
     logActivity(req.user.id, 'admin_delete', { table: req.params.table, id: req.params.id }, req.ip);
     // אם נמחק משתמש — נתק אותו מיד מה-Socket
     if (req.params.table === 'users') {
@@ -2509,11 +2236,11 @@ app.delete('/api/admin/db/:table/:id', adminAuth, async (req, res) => {
 app.get('/api/admin/permissions', adminAuth, async (req, res) => {
   try {
     const pool = await getPool();
-    const r = await pool.request().query(
+    const r = await pool.query(
       `SELECT ap.user_id, u.name, u.email, ap.permission, ap.granted_at
        FROM admin_permissions ap JOIN users u ON u.id = ap.user_id
        ORDER BY ap.granted_at`);
-    res.json(r.recordset);
+    res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2523,18 +2250,13 @@ app.post('/api/admin/permissions', adminAuth, async (req, res) => {
   if (!['view','edit'].includes(permission)) return res.status(400).json({ error: 'הרשאה לא תקינה' });
   try {
     const pool = await getPool();
-    const user = await pool.request()
-      .input('email', sql.NVarChar, email)
-      .query('SELECT id FROM users WHERE email = @email');
-    if (!user.recordset.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
-    const userId = user.recordset[0].id;
-    await pool.request()
-      .input('userId', sql.UniqueIdentifier, userId)
-      .input('perm',   sql.NVarChar,         permission)
-      .query(`MERGE admin_permissions AS t USING (SELECT @userId AS user_id) AS s
-              ON t.user_id = s.user_id
-              WHEN MATCHED THEN UPDATE SET permission = @perm
-              WHEN NOT MATCHED THEN INSERT (user_id, permission) VALUES (@userId, @perm);`);
+    const user = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (!user.rows.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
+    const userId = user.rows[0].id;
+    await pool.query(
+      `INSERT INTO admin_permissions (user_id, permission) VALUES ($1, $2)
+       ON CONFLICT (user_id) DO UPDATE SET permission = $2`,
+      [userId, permission]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2544,9 +2266,7 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
   if (req.params.userId === req.user.id) return res.status(400).json({ error: 'לא ניתן להסיר את עצמך' });
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('userId', sql.UniqueIdentifier, req.params.userId)
-      .query('DELETE FROM admin_permissions WHERE user_id = @userId');
+    await pool.query('DELETE FROM admin_permissions WHERE user_id = $1', [req.params.userId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2590,67 +2310,65 @@ app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
 
   try {
     const pool = await getPool();
-    const userRes = await pool.request()
-      .input('uid', sql.UniqueIdentifier, uid)
-      .query('SELECT id, name, email, profile_pic_url FROM users WHERE id=@uid');
-    if (!userRes.recordset.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
-    const user = userRes.recordset[0];
+    const userRes = await pool.query('SELECT id, name, email, profile_pic_url FROM users WHERE id=$1', [uid]);
+    if (!userRes.rows.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
+    const user = userRes.rows[0];
 
     const b2Urls = [];
 
     // Collect B2 URLs before deletion
     if (delPic && user.profile_pic_url) b2Urls.push(user.profile_pic_url);
     if (delFiles || (delAccount && delFiles)) {
-      const rows = await pool.request().input('uid', sql.UniqueIdentifier, uid)
-        .query(`SELECT file_url FROM messages WHERE sender_id=@uid AND file_url IS NOT NULL`);
-      rows.recordset.forEach(r => b2Urls.push(r.file_url));
+      const rows = await pool.query(
+        `SELECT file_url FROM messages WHERE sender_id=$1 AND file_url IS NOT NULL`, [uid]);
+      rows.rows.forEach(r => b2Urls.push(r.file_url));
     }
     if (delListings && delFiles) {
-      const imgs = await pool.request().input('uid', sql.UniqueIdentifier, uid)
-        .query(`SELECT li.url FROM listing_images li
-                JOIN listings l ON l.id=li.listing_id WHERE l.user_id=@uid`);
-      imgs.recordset.forEach(r => b2Urls.push(r.url));
-      const main = await pool.request().input('uid', sql.UniqueIdentifier, uid)
-        .query(`SELECT image_url FROM listings WHERE user_id=@uid AND image_url IS NOT NULL`);
-      main.recordset.forEach(r => b2Urls.push(r.image_url));
+      const imgs = await pool.query(
+        `SELECT li.url FROM listing_images li
+         JOIN listings l ON l.id=li.listing_id WHERE l.user_id=$1`, [uid]);
+      imgs.rows.forEach(r => b2Urls.push(r.url));
+      const main = await pool.query(
+        `SELECT image_url FROM listings WHERE user_id=$1 AND image_url IS NOT NULL`, [uid]);
+      main.rows.forEach(r => b2Urls.push(r.image_url));
     }
 
     // Helper to run a query safely
-    const run = q => pool.request().input('uid', sql.UniqueIdentifier, uid).query(q);
+    const run = q => pool.query(q, [uid]);
 
     if (delMsg || delAccount) {
       // Clear reply references to messages being deleted
       await run(`UPDATE messages SET reply_to_id=NULL
-                 WHERE reply_to_id IN (SELECT id FROM messages WHERE sender_id=@uid OR recipient_id=@uid)`);
+                 WHERE reply_to_id IN (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`);
       await run(`DELETE FROM message_status
-                 WHERE message_id IN (SELECT id FROM messages WHERE sender_id=@uid OR recipient_id=@uid)`);
-      await run(`DELETE FROM pending_scans WHERE user_id=@uid`);
-      await run(`DELETE FROM messages WHERE sender_id=@uid OR recipient_id=@uid`);
+                 WHERE message_id IN (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`);
+      await run(`DELETE FROM pending_scans WHERE user_id=$1`);
+      await run(`DELETE FROM messages WHERE sender_id=$1 OR recipient_id=$1`);
     }
 
     if (delListings || delAccount) {
-      await run(`DELETE FROM listing_views WHERE listing_id IN (SELECT id FROM listings WHERE user_id=@uid)`);
-      await run(`DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id=@uid)`);
-      await run(`DELETE FROM listings WHERE user_id=@uid`);
+      await run(`DELETE FROM listing_views WHERE listing_id IN (SELECT id FROM listings WHERE user_id=$1)`);
+      await run(`DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id=$1)`);
+      await run(`DELETE FROM listings WHERE user_id=$1`);
     }
 
     if (delFcm || delAccount) {
-      await run(`DELETE FROM fcm_tokens WHERE user_id=@uid`);
+      await run(`DELETE FROM fcm_tokens WHERE user_id=$1`);
     }
 
     if (delAccount) {
-      await run(`DELETE FROM group_members WHERE user_id=@uid`);
-      await run(`DELETE FROM blocked_users WHERE blocker_id=@uid OR blocked_id=@uid`);
+      await run(`DELETE FROM group_members WHERE user_id=$1`);
+      await run(`DELETE FROM blocked_users WHERE blocker_id=$1 OR blocked_id=$1`);
       // Null nullable FKs for audit trail
-      await run(`UPDATE activity_log SET user_id=NULL WHERE user_id=@uid`);
-      await run(`UPDATE audit_log SET user_id=NULL WHERE user_id=@uid`);
+      await run(`UPDATE activity_log SET user_id=NULL WHERE user_id=$1`);
+      await run(`UPDATE audit_log SET user_id=NULL WHERE user_id=$1`);
       // Games: null references (no FK enforced)
-      try { await run(`UPDATE games SET winner_id=NULL WHERE winner_id=@uid`); } catch (_) {}
+      try { await run(`UPDATE games SET winner_id=NULL WHERE winner_id=$1`); } catch (_) {}
       try {
-        await run(`DELETE FROM games WHERE player1_id=@uid OR player2_id=@uid`);
+        await run(`DELETE FROM games WHERE player1_id=$1 OR player2_id=$1`);
       } catch (_) {}
       // Delete user (admin_permissions cascades)
-      await run(`DELETE FROM users WHERE id=@uid`);
+      await run(`DELETE FROM users WHERE id=$1`);
       // Disconnect socket
       const sid = onlineUsers.get(uid);
       if (sid) {
@@ -2682,7 +2400,7 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
   try {
     const pool = await getPool();
     if (type === 'pending') {
-      const result = await pool.request().query(`
+      const result = await pool.query(`
         SELECT ps.id, ps.file_name, ps.file_type, ps.file_url,
                ps.retry_count, ps.created_at, ps.last_retry,
                u.name  AS sender_name,  u.email  AS sender_email,
@@ -2693,45 +2411,48 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
         ORDER BY ps.created_at DESC
         OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
       `);
-      const cnt = await pool.request().query('SELECT COUNT(*) AS n FROM pending_scans');
-      res.json({ rows: result.recordset, total: cnt.recordset[0].n });
+      const cnt = await pool.query('SELECT COUNT(*)::int AS n FROM pending_scans');
+      res.json({ rows: result.rows, total: cnt.rows[0].n });
     } else if (type === 'approved') {
-      const result = await pool.request().query(`
+      const result = await pool.query(`
         SELECT a.id, a.created_at, a.action,
                u.name AS user_name, u.email AS user_email,
-               JSON_VALUE(a.details, '$.fileName') AS file_name,
-               JSON_VALUE(a.details, '$.fileUrl')  AS file_url,
-               JSON_VALUE(a.details, '$.fileType') AS file_type,
+               a.details->>'fileName' AS file_name,
+               a.details->>'fileUrl'  AS file_url,
+               a.details->>'fileType' AS file_type,
                ru.name AS recipient_name
         FROM activity_log a
         LEFT JOIN users u  ON u.id = a.user_id
-        LEFT JOIN users ru ON ru.id = TRY_CAST(JSON_VALUE(a.details, '$.toUserId') AS UNIQUEIDENTIFIER)
+        LEFT JOIN users ru ON ru.id = (
+          CASE WHEN (a.details->>'toUserId') ~ '^[0-9a-fA-F-]{36}$'
+               THEN (a.details->>'toUserId')::uuid ELSE NULL END
+        )
         WHERE a.action IN ('upload_file', 'upload_pending', 'send_file_delayed')
         ORDER BY a.created_at DESC
         OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
       `);
-      const cnt = await pool.request().query(`
-        SELECT COUNT(*) AS n FROM activity_log
+      const cnt = await pool.query(`
+        SELECT COUNT(*)::int AS n FROM activity_log
         WHERE action IN ('upload_file', 'upload_pending', 'send_file_delayed')`);
-      res.json({ rows: result.recordset, total: cnt.recordset[0].n });
+      res.json({ rows: result.rows, total: cnt.rows[0].n });
     } else {
-      const result = await pool.request().query(`
+      const result = await pool.query(`
         SELECT a.id, a.created_at, a.ip, a.action,
                u.name AS user_name, u.email AS user_email,
-               JSON_VALUE(a.details, '$.fileName') AS file_name,
-               JSON_VALUE(a.details, '$.reason')   AS reason,
-               JSON_VALUE(a.details, '$.fileType')  AS file_type,
-               JSON_VALUE(a.details, '$.fileUrl')   AS file_url
+               a.details->>'fileName' AS file_name,
+               a.details->>'reason'   AS reason,
+               a.details->>'fileType' AS file_type,
+               a.details->>'fileUrl'  AS file_url
         FROM activity_log a
         LEFT JOIN users u ON u.id = a.user_id
         WHERE a.action IN ('blocked_upload','blocked_upload_delayed')
         ORDER BY a.created_at DESC
         OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
       `);
-      const cnt = await pool.request().query(`
-        SELECT COUNT(*) AS n FROM activity_log
+      const cnt = await pool.query(`
+        SELECT COUNT(*)::int AS n FROM activity_log
         WHERE action IN ('blocked_upload','blocked_upload_delayed')`);
-      res.json({ rows: result.recordset, total: cnt.recordset[0].n });
+      res.json({ rows: result.rows, total: cnt.rows[0].n });
     }
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2740,9 +2461,7 @@ app.delete('/api/admin/scans/pending/:id', adminAuth, async (req, res) => {
   if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('id', sql.Int, parseInt(req.params.id))
-      .query('DELETE FROM pending_scans WHERE id = @id');
+    await pool.query('DELETE FROM pending_scans WHERE id = $1', [parseInt(req.params.id)]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2754,30 +2473,22 @@ app.post('/api/admin/groups', adminAuth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'נדרש שם קבוצה' });
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('name',    sql.NVarChar, name)
-      .input('desc',    sql.NVarChar, description || '')
-      .input('creator', sql.UniqueIdentifier, req.user.id)
-      .input('isBroadcast',    sql.Bit,      isBroadcast ? 1 : 0)
-      .input('sendPermission', sql.NVarChar, sendPermission)
-      .query(`INSERT INTO groups (name, description, creator_id, is_broadcast, send_permission)
-              OUTPUT INSERTED.id, INSERTED.name
-              VALUES (@name, @desc, @creator, @isBroadcast, @sendPermission)`);
-    const group = result.recordset[0];
+    const result = await pool.query(
+      `INSERT INTO groups (name, description, creator_id, is_broadcast, send_permission)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, name`,
+      [name, description || '', req.user.id, !!isBroadcast, sendPermission]);
+    const group = result.rows[0];
     // Add creator as admin
-    await pool.request()
-      .input('groupId', sql.UniqueIdentifier, group.id)
-      .input('userId',  sql.UniqueIdentifier, req.user.id)
-      .query(`INSERT INTO group_members (group_id, user_id, role, status)
-              VALUES (@groupId, @userId, 'admin', 'member')`);
+    await pool.query(
+      `INSERT INTO group_members (group_id, user_id, role, status) VALUES ($1, $2, 'admin', 'member')`,
+      [group.id, req.user.id]);
     // Add members directly as 'member' (no pending)
     for (const uid of memberIds) {
       try {
-        await pool.request()
-          .input('groupId', sql.UniqueIdentifier, group.id)
-          .input('userId',  sql.UniqueIdentifier, uid)
-          .query(`INSERT INTO group_members (group_id, user_id, role, status)
-                  VALUES (@groupId, @userId, 'member', 'member')`);
+        await pool.query(
+          `INSERT INTO group_members (group_id, user_id, role, status) VALUES ($1, $2, 'member', 'member')`,
+          [group.id, uid]);
       } catch (_) {}
     }
     logActivity(req.user.id, 'create_group', { groupId: group.id, name, members: memberIds.length }, req.ip);
@@ -2795,21 +2506,17 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
                      : `AND a.action IN ('upload_file','blocked_upload','blocked_upload_delayed')`;
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('limit', sql.Int, limit)
-      .input('offset', sql.Int, offset)
-      .query(`
-        SELECT a.id, a.details, a.created_at, a.action,
-               u.name AS user_name, u.email AS user_email
-        FROM activity_log a
-        LEFT JOIN users u ON u.id = a.user_id
-        WHERE 1=1 ${actionFilter}
-        ORDER BY a.created_at DESC
-        OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
-      `);
-    const rows = result.recordset.map(r => {
-      let d = {};
-      try { d = JSON.parse(r.details || '{}'); } catch {}
+    const result = await pool.query(`
+      SELECT a.id, a.details, a.created_at, a.action,
+             u.name AS user_name, u.email AS user_email
+      FROM activity_log a
+      LEFT JOIN users u ON u.id = a.user_id
+      WHERE 1=1 ${actionFilter}
+      ORDER BY a.created_at DESC
+      OFFSET $1 ROWS FETCH NEXT $2 ROWS ONLY
+    `, [offset, limit]);
+    const rows = result.rows.map(r => {
+      const d = r.details || {};
       return { id: r.id, action: r.action, created_at: r.created_at,
                user_name: r.user_name, user_email: r.user_email,
                fileName: d.fileName, fileType: d.fileType, fileSize: d.fileSize,
@@ -2827,16 +2534,15 @@ app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
   try {
     const pool = await getPool();
     // Get all image uploads without Vision results saved
-    const result = await pool.request().query(`
+    const result = await pool.query(`
       SELECT id, details FROM activity_log
       WHERE action IN ('upload_file','blocked_upload')
-        AND details LIKE '%"fileType":"image"%'
+        AND details @> '{"fileType":"image"}'::jsonb
       ORDER BY created_at DESC
     `);
     let scanned = 0, updated = 0, failed = 0;
-    for (const row of result.recordset) {
-      let d = {};
-      try { d = JSON.parse(row.details); } catch { continue; }
+    for (const row of result.rows) {
+      const d = row.details || {};
       if (!d.fileUrl) { failed++; continue; }
       if (d.safeSearch) { scanned++; continue; } // already has results
       try {
@@ -2847,14 +2553,11 @@ app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
         if (sr.pending) { failed++; continue; }
         d.safeSearch = sr.safeSearch;
         d.labels     = sr.labels;
-        await pool.request()
-          .input('id',      sql.UniqueIdentifier, row.id)
-          .input('details', sql.NVarChar,         JSON.stringify(d))
-          .query('UPDATE activity_log SET details=@details WHERE id=@id');
+        await pool.query('UPDATE activity_log SET details=$1 WHERE id=$2', [JSON.stringify(d), row.id]);
         updated++;
       } catch { failed++; }
     }
-    res.json({ total: result.recordset.length, scanned, updated, failed });
+    res.json({ total: result.rows.length, scanned, updated, failed });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2870,12 +2573,12 @@ app.post('/api/admin/moderation', adminAuth, async (req, res) => {
     return res.status(400).json({ error: 'נתונים לא תקינים' });
   try {
     const pool = await getPool();
-    await pool.request()
-      .input('v', sql.NVarChar, JSON.stringify(female_labels))
-      .query(`UPDATE app_settings SET value=@v, updated_at=GETDATE() WHERE key_name='female_labels'`);
-    await pool.request()
-      .input('v', sql.NVarChar, JSON.stringify(blocked_words))
-      .query(`UPDATE app_settings SET value=@v, updated_at=GETDATE() WHERE key_name='blocked_words'`);
+    await pool.query(
+      `UPDATE app_settings SET value=$1, updated_at=now() WHERE key_name='female_labels'`,
+      [JSON.stringify(female_labels)]);
+    await pool.query(
+      `UPDATE app_settings SET value=$1, updated_at=now() WHERE key_name='blocked_words'`,
+      [JSON.stringify(blocked_words)]);
     FEMALE_LABELS = female_labels;
     BLOCKED_WORDS = blocked_words;
     res.json({ ok: true, female_labels, blocked_words });
@@ -2903,7 +2606,7 @@ app.get('/api/test-storage', async (req, res) => {
 
 // ── App Version (also wakes up DB on cold start) ─────────────────
 app.get('/api/version', async (req, res) => {
-  try { const pool = await getPool(); await pool.request().query('SELECT 1'); } catch (_) {}
+  try { const pool = await getPool(); await pool.query('SELECT 1'); } catch (_) {}
   res.json({ version: '1.2.8', apkUrl: 'https://betshuva.com/app-release.apk' });
 });
 
@@ -2914,18 +2617,14 @@ app.post('/api/forgot-password', async (req, res) => {
   res.json({ ok: true }); // respond immediately — don't reveal if email exists
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('email', sql.NVarChar, email)
-      .query('SELECT id, name FROM users WHERE email = @email');
-    if (!result.recordset.length) return;
-    const user  = result.recordset[0];
+    const result = await pool.query('SELECT id, name FROM users WHERE email = $1', [email]);
+    if (!result.rows.length) return;
+    const user  = result.rows[0];
     const token = crypto.randomBytes(32).toString('hex');
     const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-    await pool.request()
-      .input('token',   sql.NVarChar,        token)
-      .input('userId',  sql.UniqueIdentifier, user.id)
-      .input('expires', sql.DateTime,         expires)
-      .query('INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (@token, @userId, @expires)');
+    await pool.query(
+      'INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)',
+      [token, user.id, expires]);
     const base = process.env.APP_URL || 'https://xo-app-betshuva.azurewebsites.net';
     await sendEmail({
       to: email,
@@ -2942,19 +2641,14 @@ app.post('/api/reset-password', async (req, res) => {
   if (password.length < 6) return res.status(400).json({ error: 'הסיסמה חייבת להיות לפחות 6 תווים' });
   try {
     const pool = await getPool();
-    const result = await pool.request()
-      .input('token', sql.NVarChar, token)
-      .query('SELECT user_id FROM password_reset_tokens WHERE token = @token AND used = 0 AND expires_at > GETDATE()');
-    if (!result.recordset.length) return res.status(400).json({ error: 'הקישור לא תקין או פג תוקף' });
-    const { user_id } = result.recordset[0];
+    const result = await pool.query(
+      'SELECT user_id FROM password_reset_tokens WHERE token = $1 AND used = FALSE AND expires_at > now()',
+      [token]);
+    if (!result.rows.length) return res.status(400).json({ error: 'הקישור לא תקין או פג תוקף' });
+    const { user_id } = result.rows[0];
     const hash = await bcrypt.hash(password, 10);
-    await pool.request()
-      .input('hash', sql.NVarChar,        hash)
-      .input('id',   sql.UniqueIdentifier, user_id)
-      .query('UPDATE users SET password_hash = @hash WHERE id = @id');
-    await pool.request()
-      .input('token', sql.NVarChar, token)
-      .query('UPDATE password_reset_tokens SET used = 1 WHERE token = @token');
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, user_id]);
+    await pool.query('UPDATE password_reset_tokens SET used = TRUE WHERE token = $1', [token]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2999,7 +2693,7 @@ app.get('/reset-password', (req, res) => {
       const p1=document.getElementById('p1').value,p2=document.getElementById('p2').value,m=document.getElementById('msg');
       if(p1.length<6){m.className='msg err';m.textContent='הסיסמה חייבת להיות לפחות 6 תווים';return}
       if(p1!==p2){m.className='msg err';m.textContent='הסיסמאות אינן תואמות';return}
-      const r=await fetch('/api/reset-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:'${token}',password:p1})});
+      const r=await fetch('api/reset-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:'${token}',password:p1})});
       const d=await r.json();
       if(d.ok){document.getElementById('frm').style.display='none';m.className='msg ok';m.innerHTML='✅ הסיסמה אופסה בהצלחה!<br><small>תוכל להתחבר כעת באפליקציה</small>'}
       else{m.className='msg err';m.textContent=d.error||'שגיאה באיפוס הסיסמה'}
@@ -3012,93 +2706,77 @@ app.get('/reset-password', (req, res) => {
 // ── Pending Scans — table init + background retry ─────────────────
 
 async function initPendingTable() {
-  try {
     const pool = await getPool();
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='listings')
-      CREATE TABLE listings (
-        id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
-        user_id      UNIQUEIDENTIFIER NOT NULL,
-        type         NVARCHAR(10)     NOT NULL DEFAULT 'free',
-        title        NVARCHAR(200)    NOT NULL,
-        description  NVARCHAR(1000)   NULL,
-        price        FLOAT            NULL,
-        city         NVARCHAR(100)    NULL,
-        latitude     FLOAT            NULL,
-        longitude    FLOAT            NULL,
-        image_url    NVARCHAR(500)    NULL,
-        category     NVARCHAR(50)     NULL,
-        status       NVARCHAR(20)     NOT NULL DEFAULT 'active',
-        created_at   DATETIME         DEFAULT GETDATE(),
-        expires_at   DATETIME         DEFAULT DATEADD(day, 30, GETDATE())
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS listings (
+        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id      UUID NOT NULL,
+        type         TEXT NOT NULL DEFAULT 'free',
+        title        TEXT NOT NULL,
+        description  TEXT NULL,
+        price        DOUBLE PRECISION NULL,
+        city         TEXT NULL,
+        latitude     DOUBLE PRECISION NULL,
+        longitude    DOUBLE PRECISION NULL,
+        image_url    TEXT NULL,
+        category     TEXT NULL,
+        status       TEXT NOT NULL DEFAULT 'active',
+        created_at   TIMESTAMPTZ DEFAULT now(),
+        expires_at   TIMESTAMPTZ DEFAULT now() + interval '30 days'
       )
     `);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('listings') AND name='expires_at')
-        ALTER TABLE listings ADD expires_at DATETIME DEFAULT DATEADD(day, 30, GETDATE())
-    `);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('listings') AND name='view_count')
-        ALTER TABLE listings ADD view_count INT NOT NULL DEFAULT 0
-    `);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('listings') AND name='contact_count')
-        ALTER TABLE listings ADD contact_count INT NOT NULL DEFAULT 0
-    `);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='listing_views')
-      CREATE TABLE listing_views (
-        listing_id  UNIQUEIDENTIFIER NOT NULL,
-        user_id     UNIQUEIDENTIFIER NOT NULL,
-        viewed_at   DATETIME         DEFAULT GETDATE(),
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT now() + interval '30 days'`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_count INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS listing_views (
+        listing_id  UUID NOT NULL,
+        user_id     UUID NOT NULL,
+        viewed_at   TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (listing_id, user_id)
       )
     `);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name='listing_images')
-      CREATE TABLE listing_images (
-        id          UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
-        listing_id  UNIQUEIDENTIFIER NOT NULL,
-        url         NVARCHAR(500)    NOT NULL,
-        sort_order  INT              NOT NULL DEFAULT 0
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS listing_images (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        listing_id  UUID NOT NULL,
+        url         TEXT NOT NULL,
+        sort_order  INTEGER NOT NULL DEFAULT 0
       )
     `);
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='pending_scans')
-      CREATE TABLE pending_scans (
-        id          INT IDENTITY(1,1) PRIMARY KEY,
-        user_id     UNIQUEIDENTIFIER NOT NULL,
-        to_user_id  UNIQUEIDENTIFIER NULL,
-        group_id    UNIQUEIDENTIFIER NULL,
-        file_url    NVARCHAR(500)    NOT NULL,
-        file_name   NVARCHAR(255)    NOT NULL,
-        file_type   NVARCHAR(50)     NOT NULL,
-        mime_type   NVARCHAR(100)    NOT NULL,
-        retry_count INT              NOT NULL DEFAULT 0,
-        last_retry  DATETIME         NULL,
-        created_at  DATETIME         DEFAULT GETDATE()
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pending_scans (
+        id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        user_id     UUID NOT NULL,
+        to_user_id  UUID NULL,
+        group_id    UUID NULL,
+        file_url    TEXT NOT NULL,
+        file_name   TEXT NOT NULL,
+        file_type   TEXT NOT NULL,
+        mime_type   TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        last_retry  TIMESTAMPTZ NULL,
+        created_at  TIMESTAMPTZ DEFAULT now()
       )
     `);
     console.log('tables ready');
-  } catch (e) { console.error('initPendingTable:', e.message); }
 }
 
 async function retryPendingScans() {
   try {
     const pool = await getPool();
-    const rows = await pool.request().query(`
-      SELECT TOP 10 * FROM pending_scans
+    const rows = await pool.query(`
+      SELECT * FROM pending_scans
       WHERE retry_count < 20
-        AND (last_retry IS NULL OR last_retry < DATEADD(MINUTE, -2, GETDATE()))
+        AND (last_retry IS NULL OR last_retry < now() - interval '2 minutes')
       ORDER BY created_at ASC
+      LIMIT 10
     `);
 
-    for (const row of rows.recordset) {
+    for (const row of rows.rows) {
       try {
         // Update last_retry immediately to avoid double-processing
-        await pool.request()
-          .input('id', sql.Int, row.id)
-          .query(`UPDATE pending_scans SET retry_count=retry_count+1, last_retry=GETDATE() WHERE id=@id`);
+        await pool.query(`UPDATE pending_scans SET retry_count=retry_count+1, last_retry=now() WHERE id=$1`, [row.id]);
 
         // Download file from B2 for re-scan
         const fileRes = await fetch(row.file_url);
@@ -3112,9 +2790,7 @@ async function retryPendingScans() {
         if (scanResult.pending) continue; // service still unavailable
 
         // Remove from pending regardless of outcome
-        await pool.request()
-          .input('id', sql.Int, row.id)
-          .query(`DELETE FROM pending_scans WHERE id=@id`);
+        await pool.query(`DELETE FROM pending_scans WHERE id=$1`, [row.id]);
 
         if (scanResult.blocked) {
           logActivity(row.user_id, 'blocked_upload_delayed',
@@ -3127,16 +2803,12 @@ async function retryPendingScans() {
 
         // Scan passed — save message and deliver
         if (row.to_user_id) {
-          const saved = await pool.request()
-            .input('senderId',    sql.UniqueIdentifier, row.user_id)
-            .input('recipientId', sql.UniqueIdentifier, row.to_user_id)
-            .input('type',        sql.NVarChar,         row.file_type)
-            .input('fileUrl',     sql.NVarChar,         row.file_url)
-            .input('fileName',    sql.NVarChar,         row.file_name)
-            .query(`INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name)
-                    OUTPUT INSERTED.id, INSERTED.created_at
-                    VALUES (@senderId, @recipientId, @type, @fileName, @fileUrl, @fileName)`);
-          const msg = saved.recordset[0];
+          const saved = await pool.query(
+            `INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name)
+             VALUES ($1, $2, $3, $4, $5, $4)
+             RETURNING id, created_at`,
+            [row.user_id, row.to_user_id, row.file_type, row.file_name, row.file_url]);
+          const msg = saved.rows[0];
           const payload = {
             id: msg.id, fromUserId: row.user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
@@ -3155,8 +2827,16 @@ async function retryPendingScans() {
   } catch (e) { console.error('retryPendingScans:', e.message); }
 }
 
-initPendingTable();
-setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
-
 const PORT = process.env.PORT || 3000;
-httpServer.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+async function startServer() {
+  await migrateDatabase();
+  await initPendingTable();
+  setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
+  httpServer.listen(PORT, '127.0.0.1', () => console.log(`Server running on port ${PORT}`));
+}
+
+startServer().catch((error) => {
+  console.error('Startup failed:', error);
+  process.exitCode = 1;
+});

@@ -102,8 +102,15 @@ const kOutgoing   = Color(0xFF1B6CA8); // outgoing bubble — brand blue
 const kChatBg     = Color(0xFFEBF5FC); // chat background
 const kFilterBg   = Color(0xFFE8F4FD); // filter banner background
 
-const kServer  = 'https://xo-app-betshuva.azurewebsites.net';
+const kServer  = 'https://betshuva.com/betshuva-app';
 const kApi     = '$kServer/api';
+// Socket.IO treats any path in the connection URL as a *namespace*, not a URL
+// prefix — so it must be given the bare origin plus an explicit `path` option
+// (see kSocketPath below), or it'll try to handshake at "/socket.io/" on the
+// domain root instead of through our nginx sub-path proxy.
+final kServerUri    = Uri.parse(kServer);
+final kSocketOrigin = kServerUri.origin;
+final kSocketPath   = '${kServerUri.path}/socket.io/';
 const kVersion = '1.2.2';
 // Google Web Client ID — set in Firebase Console → Authentication → Google → Web SDK config
 const kGoogleWebClientId = '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
@@ -1756,8 +1763,9 @@ class _MainShellState extends State<MainShell> {
 
   void _connectSocket() {
     _socket = IO.io(
-      kServer,
+      kSocketOrigin,
       IO.OptionBuilder()
+          .setPath(kSocketPath)
           .setTransports(['websocket'])
           .setAuth({'token': widget.token})
           .build(),

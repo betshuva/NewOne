@@ -1,110 +1,214 @@
+-- Canonical PostgreSQL schema for the BETSHUVA messenger backend.
+-- The server also auto-migrates this schema on boot (see the IIFE near the
+-- top of server/index.js and initPendingTable()); this file is the
+-- reference snapshot of what that migration converges to on a fresh DB.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- ── Users ──────────────────────────────────────────────────────────
-CREATE TABLE users (
-  id              UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-  name            NVARCHAR(100)  NOT NULL,
-  email           NVARCHAR(255)  NOT NULL UNIQUE,
-  password_hash   NVARCHAR(255)  NOT NULL,
-  phone           NVARCHAR(20),
-  email_verified  BIT            NOT NULL DEFAULT 0,
-  phone_verified  BIT            NOT NULL DEFAULT 0,
-  city            NVARCHAR(100),
-  community       NVARCHAR(100),
-  profile_pic_url NVARCHAR(500),
-  privacy_pic     NVARCHAR(20)   NOT NULL DEFAULT 'all',   -- all | contacts | nobody
-  filter_level    NVARCHAR(20)   NOT NULL DEFAULT 'standard', -- standard | strict
-  created_at      DATETIME       DEFAULT GETDATE()
+CREATE TABLE IF NOT EXISTS users (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name                TEXT NOT NULL,
+  email               TEXT UNIQUE,
+  password_hash       TEXT,
+  phone               TEXT,
+  email_verified      BOOLEAN NOT NULL DEFAULT FALSE,
+  phone_verified      BOOLEAN NOT NULL DEFAULT FALSE,
+  city                TEXT,
+  community            TEXT,
+  country             TEXT,
+  street              TEXT,
+  house_number        TEXT,
+  apartment           TEXT,
+  profile_pic_url     TEXT,
+  privacy_pic         TEXT NOT NULL DEFAULT 'all',      -- all | contacts | nobody
+  filter_level        TEXT NOT NULL DEFAULT 'standard', -- standard | strict
+  google_id           TEXT,
+  latitude            DOUBLE PRECISION,
+  longitude           DOUBLE PRECISION,
+  location_updated_at TIMESTAMPTZ,
+  wins                INTEGER NOT NULL DEFAULT 0,
+  games_played        INTEGER NOT NULL DEFAULT 0,
+  created_at          TIMESTAMPTZ DEFAULT now()
 );
 
 -- ── Auth Tokens ────────────────────────────────────────────────────
-CREATE TABLE password_reset_tokens (
-  token      NVARCHAR(64)     PRIMARY KEY,
-  user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  expires_at DATETIME         NOT NULL,
-  used       BIT              DEFAULT 0
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  token      TEXT PRIMARY KEY,
+  user_id    UUID NOT NULL REFERENCES users(id),
+  expires_at TIMESTAMPTZ NOT NULL,
+  used       BOOLEAN DEFAULT FALSE
 );
 
-CREATE TABLE email_verification_tokens (
-  token      NVARCHAR(64)     PRIMARY KEY,
-  user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  expires_at DATETIME         NOT NULL,
-  used       BIT              DEFAULT 0
-);
-
--- ── Messages ───────────────────────────────────────────────────────
-CREATE TABLE messages (
-  id                   UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-  sender_id            UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  recipient_id         UNIQUEIDENTIFIER REFERENCES users(id),     -- NULL = group message
-  group_id             UNIQUEIDENTIFIER,                          -- FK added after groups table
-  type                 NVARCHAR(20)  NOT NULL DEFAULT 'text',     -- text | image | document | audio
-  body                 NVARCHAR(MAX),                             -- text content
-  file_url             NVARCHAR(500),                             -- Azure Blob URL
-  file_name            NVARCHAR(255),
-  file_size            INT,
-  reply_to_id          UNIQUEIDENTIFIER REFERENCES messages(id),
-  deleted_for_sender   BIT NOT NULL DEFAULT 0,
-  deleted_for_everyone BIT NOT NULL DEFAULT 0,
-  created_at           DATETIME DEFAULT GETDATE()
-);
-
--- ── Message Status (קריאות) ────────────────────────────────────────
-CREATE TABLE message_status (
-  message_id UNIQUEIDENTIFIER NOT NULL REFERENCES messages(id),
-  user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  status     NVARCHAR(20)     NOT NULL DEFAULT 'delivered', -- delivered | read
-  updated_at DATETIME         DEFAULT GETDATE(),
-  PRIMARY KEY (message_id, user_id)
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  token      TEXT PRIMARY KEY,
+  user_id    UUID NOT NULL REFERENCES users(id),
+  expires_at TIMESTAMPTZ NOT NULL,
+  used       BOOLEAN DEFAULT FALSE
 );
 
 -- ── Groups ─────────────────────────────────────────────────────────
-CREATE TABLE groups (
-  id               UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-  name             NVARCHAR(100) NOT NULL,
-  description      NVARCHAR(500),
-  creator_id       UNIQUEIDENTIFIER REFERENCES users(id),
-  is_broadcast     BIT          NOT NULL DEFAULT 0,           -- שליחה חד-כיוונית
-  send_permission  NVARCHAR(20) NOT NULL DEFAULT 'all',       -- all | admin
-  filter_level     NVARCHAR(20) NOT NULL DEFAULT 'standard',  -- standard | strict
-  created_at       DATETIME     DEFAULT GETDATE()
+CREATE TABLE IF NOT EXISTS groups (
+  id               UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name             TEXT NOT NULL,
+  description      TEXT,
+  creator_id       UUID REFERENCES users(id),
+  is_broadcast     BOOLEAN NOT NULL DEFAULT FALSE,   -- שליחה חד-כיוונית
+  send_permission  TEXT NOT NULL DEFAULT 'all',      -- all | admin
+  filter_level     TEXT NOT NULL DEFAULT 'standard', -- standard | strict
+  created_at       TIMESTAMPTZ DEFAULT now()
 );
 
-ALTER TABLE messages ADD CONSTRAINT fk_messages_group
-  FOREIGN KEY (group_id) REFERENCES groups(id);
+-- ── Messages ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS messages (
+  id                   UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  sender_id            UUID NOT NULL REFERENCES users(id),
+  recipient_id         UUID REFERENCES users(id),  -- NULL = group message
+  group_id             UUID REFERENCES groups(id),
+  type                 TEXT NOT NULL DEFAULT 'text', -- text | image | document | audio
+  body                 TEXT,
+  file_url             TEXT,
+  file_name            TEXT,
+  file_size            INTEGER,
+  reply_to_id          UUID REFERENCES messages(id),
+  deleted_for_sender   BOOLEAN NOT NULL DEFAULT FALSE,
+  deleted_for_everyone BOOLEAN NOT NULL DEFAULT FALSE,
+  is_edited            BOOLEAN NOT NULL DEFAULT FALSE,
+  edited_at            TIMESTAMPTZ,
+  created_at           TIMESTAMPTZ DEFAULT now()
+);
 
--- ── Group Members ──────────────────────────────────────────────────
-CREATE TABLE group_members (
-  group_id  UNIQUEIDENTIFIER NOT NULL REFERENCES groups(id),
-  user_id   UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  role      NVARCHAR(20)     NOT NULL DEFAULT 'member',       -- member | admin
-  joined_at DATETIME         DEFAULT GETDATE(),
+-- ── Message Status (קריאות) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS message_status (
+  message_id UUID NOT NULL REFERENCES messages(id),
+  user_id    UUID NOT NULL REFERENCES users(id),
+  status     TEXT NOT NULL DEFAULT 'delivered', -- delivered | read
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (message_id, user_id)
+);
+
+-- ── Groups: membership ────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id      UUID NOT NULL REFERENCES groups(id),
+  user_id       UUID NOT NULL REFERENCES users(id),
+  role          TEXT NOT NULL DEFAULT 'member', -- member | admin
+  status        TEXT NOT NULL DEFAULT 'member', -- member | pending
+  added_by      UUID,
+  pending_since TIMESTAMPTZ,
+  joined_at     TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (group_id, user_id)
 );
 
 -- ── Blocked Users ──────────────────────────────────────────────────
-CREATE TABLE blocked_users (
-  blocker_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  blocked_id UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  created_at DATETIME         DEFAULT GETDATE(),
+CREATE TABLE IF NOT EXISTS blocked_users (
+  blocker_id UUID NOT NULL REFERENCES users(id),
+  blocked_id UUID NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (blocker_id, blocked_id)
 );
 
 -- ── Audit Log (קבצים שנחסמו) ──────────────────────────────────────
-CREATE TABLE audit_log (
-  id         UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
-  user_id    UNIQUEIDENTIFIER REFERENCES users(id),
-  file_name  NVARCHAR(255),
-  file_type  NVARCHAR(50),
-  file_size  INT,
-  reason     NVARCHAR(500),              -- סיבת החסימה מה-AI
-  appealed   BIT NOT NULL DEFAULT 0,     -- האם הוגש ערעור
-  created_at DATETIME DEFAULT GETDATE()
+CREATE TABLE IF NOT EXISTS audit_log (
+  id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id    UUID REFERENCES users(id),
+  file_name  TEXT,
+  file_type  TEXT,
+  file_size  INTEGER,
+  reason     TEXT,          -- סיבת החסימה מה-AI
+  appealed   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- ── FCM Tokens (Push Notifications) ───────────────────────────────
-CREATE TABLE fcm_tokens (
-  user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES users(id),
-  token      NVARCHAR(500)    NOT NULL,
-  device_id  NVARCHAR(255)    NOT NULL DEFAULT 'default',
-  updated_at DATETIME         DEFAULT GETDATE(),
+CREATE TABLE IF NOT EXISTS fcm_tokens (
+  user_id    UUID NOT NULL REFERENCES users(id),
+  token      TEXT NOT NULL,
+  device_id  TEXT NOT NULL DEFAULT 'default',
+  updated_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (user_id, device_id)
+);
+
+-- ── Activity Log ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS activity_log (
+  id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id    UUID REFERENCES users(id),
+  action     TEXT NOT NULL,
+  details    JSONB,
+  ip         TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ── App Settings (moderation lists etc.) ──────────────────────────
+CREATE TABLE IF NOT EXISTS app_settings (
+  key_name   TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ── Admin Permissions ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS admin_permissions (
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL DEFAULT 'view', -- view | edit
+  granted_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (user_id)
+);
+
+-- ── Games (tic-tac-toe) ────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS games (
+  id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  player1_id UUID NOT NULL REFERENCES users(id),
+  player2_id UUID NOT NULL REFERENCES users(id),
+  winner_id  UUID REFERENCES users(id),
+  result     TEXT NOT NULL, -- win | tie
+  board      TEXT NOT NULL,
+  played_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- ── Listings (classifieds board) ──────────────────────────────────
+CREATE TABLE IF NOT EXISTS listings (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        UUID NOT NULL,
+  type           TEXT NOT NULL DEFAULT 'free', -- free | sale
+  title          TEXT NOT NULL,
+  description    TEXT,
+  price          DOUBLE PRECISION,
+  city           TEXT,
+  latitude       DOUBLE PRECISION,
+  longitude      DOUBLE PRECISION,
+  image_url      TEXT,
+  category       TEXT,
+  status         TEXT NOT NULL DEFAULT 'active', -- active | sold | expired
+  view_count     INTEGER NOT NULL DEFAULT 0,
+  contact_count  INTEGER NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ DEFAULT now(),
+  expires_at     TIMESTAMPTZ DEFAULT now() + interval '30 days'
+);
+
+CREATE TABLE IF NOT EXISTS listing_views (
+  listing_id  UUID NOT NULL,
+  user_id     UUID NOT NULL,
+  viewed_at   TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (listing_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS listing_images (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id  UUID NOT NULL,
+  url         TEXT NOT NULL,
+  sort_order  INTEGER NOT NULL DEFAULT 0
+);
+
+-- ── Pending Scans (moderation retry queue) ────────────────────────
+CREATE TABLE IF NOT EXISTS pending_scans (
+  id          INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id     UUID NOT NULL,
+  to_user_id  UUID,
+  group_id    UUID,
+  file_url    TEXT NOT NULL,
+  file_name   TEXT NOT NULL,
+  file_type   TEXT NOT NULL,
+  mime_type   TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_retry  TIMESTAMPTZ,
+  created_at  TIMESTAMPTZ DEFAULT now()
 );
