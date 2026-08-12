@@ -214,6 +214,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
 #scan-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
 #listings-panel{display:none}
 #moderation-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+#files-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
 .mod-body{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px}
 .mod-section{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:10px}
 .mod-section h3{margin:0;font-size:15px;font-weight:700}
@@ -300,6 +301,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div class="sb-item" id="sb-moderation-item" onclick="showModerationPanel()">🛡 רשימות חסימה</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
     <div class="sb-item" id="sb-listings-item" onclick="showListingsPanel()">🛍 מודעות</div>
+    <div class="sb-item" id="sb-files-item" onclick="showFilesPanel()">🗂️ קבצים בשרת</div>
     <div class="sb-footer">
       <div class="sb-user" id="sb-user"></div>
       <div class="sb-logout" onclick="logout()">התנתק</div>
@@ -425,6 +427,20 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div id="lst-grid" style="flex:1;overflow-y:auto;padding:20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;align-content:start">
       <div class="loader">טוען...</div>
     </div>
+  </div>
+
+  <!-- Permissions Panel -->
+  <div id="files-panel">
+    <div class="main-head">
+      <h1>🗂️ קבצים בשרת Hetzner</h1>
+      <span class="cnt-badge" id="files-summary">—</span>
+      <div class="search-wrap">
+        <input id="files-search" placeholder="חפש קובץ או משתמש..." oninput="loadFiles(0)"/>
+        <button class="btn-sm" onclick="loadFiles(0)">🔄 רענן</button>
+      </div>
+    </div>
+    <div class="table-wrap" id="files-table"><div class="loader">טוען...</div></div>
+    <div class="pagination" id="files-pagination"></div>
   </div>
 
   <!-- Permissions Panel -->
@@ -681,6 +697,7 @@ async function loadTable(name, offset=0) {
   document.getElementById('vision-panel').style.display     = 'none';
   document.getElementById('listings-panel').style.display   = 'none';
   document.getElementById('moderation-panel').style.display = 'none';
+  document.getElementById('files-panel').style.display      = 'none';
   const main = document.getElementById('main-area');
   main.style.display = 'flex';
   main.innerHTML = '<div class="loader">טוען...</div>';
@@ -1137,6 +1154,7 @@ async function rescanAll() {
 }
 
 function showVisionPanel() {
+  document.getElementById('files-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-vision-item').classList.add('active');
@@ -1360,6 +1378,7 @@ async function loadActivity(offset = 0) {
 }
 
 function showActivityPanel() {
+  document.getElementById('files-panel').style.display = 'none';
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-activity-item').classList.add('active');
   document.getElementById('main-area').style.display        = 'none';
@@ -1377,6 +1396,7 @@ function showActivityPanel() {
 
 // ── Permissions Panel ─────────────────────────────────────────────
 function showPermPanel() {
+  document.getElementById('files-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-perm-item').classList.add('active');
@@ -1447,6 +1467,7 @@ let scanOffset    = 0;
 const SCAN_PAGE   = 100;
 
 function showScanPanel() {
+  document.getElementById('files-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-scan-item').classList.add('active');
@@ -1591,8 +1612,57 @@ async function deletePending(id) {
   } catch (e) { alert(e.message); }
 }
 
+// ── Files stored on Hetzner ──────────────────────────────────────
+const FILES_PAGE = 100;
+function formatBytes(n) {
+  n = Number(n || 0);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024*1024) return `${(n/1024).toFixed(1)} KB`;
+  if (n < 1024*1024*1024) return `${(n/1024/1024).toFixed(1)} MB`;
+  return `${(n/1024/1024/1024).toFixed(2)} GB`;
+}
+
+function showFilesPanel() {
+  clearInterval(actTimer);
+  document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
+  document.getElementById('sb-files-item').classList.add('active');
+  ['main-area','perm-panel','activity-panel','scan-panel','vision-panel','listings-panel','moderation-panel']
+    .forEach(id => document.getElementById(id).style.display='none');
+  document.getElementById('files-panel').style.display='flex';
+  loadFiles(0);
+}
+
+async function loadFiles(offset=0) {
+  const wrap = document.getElementById('files-table');
+  const pag = document.getElementById('files-pagination');
+  const search = document.getElementById('files-search').value.trim();
+  wrap.innerHTML='<div class="loader">טוען...</div>'; pag.innerHTML='';
+  try {
+    const res = await fetch(`${API}/api/admin/files?limit=${FILES_PAGE}&offset=${offset}&search=${encodeURIComponent(search)}`,
+      {headers:{Authorization:`Bearer ${token}`}});
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'שגיאה');
+    document.getElementById('files-summary').textContent = `${data.total.toLocaleString()} קבצים · ${formatBytes(data.totalBytes)}`;
+    if (!data.rows.length) { wrap.innerHTML='<div class="empty">אין קבצים</div>'; return; }
+    wrap.innerHTML=`<table><thead><tr><th>תצוגה</th><th>תאריך</th><th>משתמש</th><th>קובץ</th><th>גודל</th><th>סוג</th><th>הקשר</th><th>קישור</th></tr></thead><tbody>
+      ${data.rows.map(r=>`<tr>
+        <td>${thumbCell(r.public_url,r.original_name,r.file_type)}</td>
+        <td class="td-date">${fmtDate(r.created_at)}</td>
+        <td title="${escHtml(r.user_email||'')}">${escHtml(r.user_name||'משתמש שנמחק')}<br><small>${escHtml(r.user_email||'')}</small></td>
+        <td title="${escHtml(r.original_name)}">${escHtml(r.original_name)}</td>
+        <td>${formatBytes(r.file_size)}</td><td>${escHtml(r.mime_type||r.file_type||'—')}</td>
+        <td>${r.context_type==='chat'?'שיחה':r.context_type==='group'?'קבוצה':'כללי'}</td>
+        <td><a href="${escHtml(r.public_url)}" target="_blank" rel="noopener" style="color:var(--blue-light)">פתח ↗</a></td>
+      </tr>`).join('')}</tbody></table>`;
+    pag.innerHTML=`<button class="pag-btn" onclick="loadFiles(${Math.max(0,offset-FILES_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
+      <span>${offset+1}–${Math.min(offset+FILES_PAGE,data.total)} מתוך ${data.total.toLocaleString()}</span>
+      <button class="pag-btn" onclick="loadFiles(${offset+FILES_PAGE})" ${offset+FILES_PAGE>=data.total?'disabled':''}>הבא ▶</button>`;
+  } catch(e) { wrap.innerHTML=`<div class="loader" style="color:var(--red)">${escHtml(e.message)}</div>`; }
+}
+
 // ── Listings Panel ───────────────────────────────────────────────
 function showListingsPanel() {
+  document.getElementById('files-panel').style.display = 'none';
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-listings-item').classList.add('active');
   document.getElementById('main-area').style.display       = 'none';
@@ -1610,6 +1680,7 @@ const DEFAULT_FEMALE_LABELS_ADMIN = ['woman','women','girl','female','lady','lad
 const DEFAULT_BLOCKED_WORDS_ADMIN = ['עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות','porn','nude','naked','xxx','sex','erotic','adult content'];
 
 function showModerationPanel() {
+  document.getElementById('files-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-moderation-item').classList.add('active');

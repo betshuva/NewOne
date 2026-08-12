@@ -138,6 +138,21 @@ CREATE TABLE IF NOT EXISTS activity_log (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- ── Files stored on the Hetzner server ───────────────────────────
+CREATE TABLE IF NOT EXISTS stored_files (
+  id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id       UUID REFERENCES users(id) ON DELETE SET NULL,
+  original_name TEXT NOT NULL,
+  storage_path  TEXT NOT NULL UNIQUE,
+  public_url    TEXT NOT NULL UNIQUE,
+  mime_type     TEXT,
+  file_type     TEXT,
+  file_size     BIGINT NOT NULL DEFAULT 0,
+  context_type  TEXT,
+  context_id    UUID,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
 -- ── App Settings (moderation lists etc.) ──────────────────────────
 CREATE TABLE IF NOT EXISTS app_settings (
   key_name   TEXT PRIMARY KEY,

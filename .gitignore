@@ -3,3 +3,4 @@ node_modules/
 .flutter-sdk/
 .android-sdk/
 flutter_linux.tar.xz
+uploads/

@@ -9,7 +9,11 @@ const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const multer     = require('multer');
 const path       = require('path');
+const fs         = require('fs/promises');
 const { getPool } = require('./db');
+
+const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
+const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
 
 // ── FCM via HTTP Legacy API (no service account key needed) ───────
 async function sendPush(userId, title, body, data = {}) {
@@ -99,35 +103,16 @@ async function b2BucketId(auth) {
 }
 
 async function uploadToBlob(buffer, key, contentType) {
-  const cdnBase = (process.env.CDN_BASE_URL || '').replace(/\/$/, '');
-  const auth     = await b2Auth();
-  const bucketId = await b2BucketId(auth);
-
-  // Get one-time upload URL
-  const urlRes  = await fetch(`${auth.apiUrl}/b2api/v2/b2_get_upload_url`, {
-    method:  'POST',
-    headers: { Authorization: auth.token, 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ bucketId }),
-  });
-  const urlData = await urlRes.json();
-  if (!urlRes.ok) throw new Error(`b2_get_upload_url: ${urlData.message}`);
-
-  // Upload
-  const sha1   = crypto.createHash('sha1').update(buffer).digest('hex');
-  const upRes  = await fetch(urlData.uploadUrl, {
-    method:  'POST',
-    headers: {
-      Authorization:    urlData.authorizationToken,
-      'X-Bz-File-Name': encodeURIComponent(key).replace(/%2F/g, '/'),
-      'Content-Type':   contentType,
-      'Content-Length': String(buffer.length),
-      'X-Bz-Content-Sha1': sha1,
-    },
-    body: buffer,
-  });
-  const upData = await upRes.json();
-  if (!upRes.ok) throw new Error(`b2_upload_file: ${upData.message}`);
-  return `${cdnBase}/${key}`;
+  const safeParts = key.split('/').filter(Boolean).map(part =>
+    part.replace(/[^\w.\-]/g, '_'));
+  if (!safeParts.length) throw new Error('Invalid upload path');
+  const relativePath = path.join(...safeParts);
+  const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
+  if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+    throw new Error('Invalid upload path');
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, buffer, { flag: 'wx' });
+  return `${UPLOAD_PUBLIC_BASE}/${safeParts.map(encodeURIComponent).join('/')}`;
 }
 
 // ── Content Moderation ────────────────────────────────────────────
@@ -469,6 +454,21 @@ async function migrateDatabase() {
         details    JSONB,
         ip         TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
+      )`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS stored_files (
+        id            UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        user_id       UUID REFERENCES users(id) ON DELETE SET NULL,
+        original_name TEXT NOT NULL,
+        storage_path  TEXT NOT NULL UNIQUE,
+        public_url    TEXT NOT NULL UNIQUE,
+        mime_type     TEXT,
+        file_type     TEXT,
+        file_size     BIGINT NOT NULL DEFAULT 0,
+        context_type  TEXT,
+        context_id    UUID,
+        created_at    TIMESTAMPTZ DEFAULT now()
       )`);
 
     await pool.query(`
@@ -1485,12 +1485,6 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
 
-  if (!process.env.B2_KEY_ID || !process.env.B2_APP_KEY ||
-      !process.env.B2_BUCKET || !process.env.CDN_BASE_URL) {
-    console.error('upload: B2 storage environment variables are missing');
-    return res.status(503).json({ error: 'שירות העלאת הקבצים אינו מוגדר כרגע' });
-  }
-
   // Block video types
   if (BLOCKED_TYPES.some(t => file.mimetype.startsWith(t)))
     return res.status(400).json({ error: 'שליחת סרטוני וידאו אינה מותרת' });
@@ -1505,8 +1499,17 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
 
   try {
     // העלאה לאחסון תחילה (גם קבצים חסומים נשמרים לצורך ביקורת אדמין)
-    const blobName = `${req.user.id}/${Date.now()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
+    const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
     const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
+    const pool = await getPool();
+    await pool.query(
+      `INSERT INTO stored_files
+       (user_id, original_name, storage_path, public_url, mime_type, file_type,
+        file_size, context_type, context_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
+       file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' : 'general',
+       req.body.groupId || req.body.toUserId || null]);
 
     // Content moderation scan
     let scanResult;
@@ -1533,7 +1536,6 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       // Scan service unavailable — save for retry
       const toUserId = req.body.toUserId || null;
       const groupId  = req.body.groupId  || null;
-      const pool = await getPool();
       const ins = await pool.query(
         `INSERT INTO pending_scans (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -2278,33 +2280,19 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
 });
 
 // ── Admin: Full User Delete ──────────────────────────────────────
-function urlToB2Key(url) {
-  const cdnBase = (process.env.CDN_BASE_URL || '').replace(/\/$/, '');
-  if (cdnBase && url.startsWith(cdnBase + '/')) return url.slice(cdnBase.length + 1);
-  const m = url.match(/\/file\/[^/]+\/(.+)$/);
-  return m ? decodeURIComponent(m[1]) : null;
-}
-
-async function deleteB2File(url) {
+async function deleteStoredFile(url) {
   try {
-    const key = urlToB2Key(url);
-    if (!key) return;
-    const auth     = await b2Auth();
-    const bucketId = await b2BucketId(auth);
-    const listRes  = await fetch(
-      `${auth.apiUrl}/b2api/v2/b2_list_file_names?bucketId=${encodeURIComponent(bucketId)}&startFileName=${encodeURIComponent(key)}&maxFileCount=1`,
-      { headers: { Authorization: auth.token } }
-    );
-    const listData = await listRes.json();
-    const file = listData.files?.find(f => f.fileName === key);
-    if (!file) return;
-    await fetch(`${auth.apiUrl}/b2api/v2/b2_delete_file_version`, {
-      method: 'POST',
-      headers: { Authorization: auth.token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileId: file.fileId, fileName: key }),
-    });
+    const marker = `${UPLOAD_PUBLIC_BASE}/`;
+    const pos = url.indexOf(marker);
+    if (pos < 0) return;
+    const relativePath = url.slice(pos + marker.length).split('/').map(decodeURIComponent).join(path.sep);
+    const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
+    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) return;
+    await fs.unlink(absolutePath).catch(e => { if (e.code !== 'ENOENT') throw e; });
+    const pool = await getPool();
+    await pool.query('DELETE FROM stored_files WHERE public_url=$1', [url]);
   } catch (e) {
-    console.error('deleteB2File:', url, e.message);
+    console.error('deleteStoredFile:', url, e.message);
   }
 }
 
@@ -2386,7 +2374,7 @@ app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
 
     // Delete B2 files in background (fire-and-forget)
     const uniqueUrls = [...new Set(b2Urls.filter(Boolean))];
-    uniqueUrls.forEach(url => deleteB2File(url).catch(() => {}));
+    uniqueUrls.forEach(url => deleteStoredFile(url).catch(() => {}));
 
     logActivity(req.user.id, 'admin_delete_user', {
       targetUserId: uid, name: user.name, email: user.email,
@@ -2469,6 +2457,37 @@ app.delete('/api/admin/scans/pending/:id', adminAuth, async (req, res) => {
     const pool = await getPool();
     await pool.query('DELETE FROM pending_scans WHERE id = $1', [parseInt(req.params.id)]);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Admin: files stored on this Hetzner server ───────────────────
+app.get('/api/admin/files', adminAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+  const search = String(req.query.search || '').trim();
+  try {
+    const pool = await getPool();
+    const params = [];
+    let where = '';
+    if (search) {
+      params.push(`%${search}%`);
+      where = `WHERE sf.original_name ILIKE $1 OR u.name ILIKE $1 OR u.email ILIKE $1`;
+    }
+    const count = await pool.query(
+      `SELECT COUNT(*)::int AS n, COALESCE(SUM(sf.file_size),0)::bigint AS bytes
+       FROM stored_files sf LEFT JOIN users u ON u.id=sf.user_id ${where}`, params);
+    params.push(limit, offset);
+    const rows = await pool.query(
+      `SELECT sf.id, sf.original_name, sf.public_url, sf.mime_type, sf.file_type,
+              sf.file_size, sf.context_type, sf.context_id, sf.created_at,
+              u.id AS user_id, u.name AS user_name, u.email AS user_email
+       FROM stored_files sf LEFT JOIN users u ON u.id=sf.user_id
+       ${where}
+       ORDER BY sf.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params);
+    res.json({ rows: rows.rows, total: count.rows[0].n,
+      totalBytes: Number(count.rows[0].bytes), permission: req.adminPerm });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2593,20 +2612,13 @@ app.post('/api/admin/moderation', adminAuth, async (req, res) => {
 
 // ── Storage diagnostic ───────────────────────────────────────────
 app.get('/api/test-storage', async (req, res) => {
-  const rawKey = process.env.B2_APP_KEY || '';
-  const vars = {
-    B2_KEY_ID:       !!process.env.B2_KEY_ID,
-    B2_APP_KEY_len:  rawKey.length,
-    B2_APP_KEY_spaces: rawKey.includes(' '),
-    B2_BUCKET:       process.env.B2_BUCKET    || '(לא מוגדר)',
-    CDN_BASE_URL:    process.env.CDN_BASE_URL || '(לא מוגדר)',
-  };
   try {
     const testKey = `test/ping-${Date.now()}.txt`;
     const url = await uploadToBlob(Buffer.from('ping'), testKey, 'text/plain');
-    res.json({ ok: true, testUrl: url, vars });
+    await deleteStoredFile(url);
+    res.json({ ok: true, storage: 'local-hetzner', uploadRoot: UPLOAD_ROOT });
   } catch (e) {
-    res.json({ ok: false, error: e.message, vars });
+    res.json({ ok: false, error: e.message, storage: 'local-hetzner' });
   }
 });
 
@@ -2836,6 +2848,7 @@ async function retryPendingScans() {
 const PORT = process.env.PORT || 3000;
 
 async function startServer() {
+  await fs.mkdir(UPLOAD_ROOT, { recursive: true });
   await migrateDatabase();
   await initPendingTable();
   setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
