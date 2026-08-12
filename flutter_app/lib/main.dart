@@ -17,6 +17,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 MediaType _mimeFromFileName(String fileName) {
   switch (fileName.split('.').last.toLowerCase()) {
@@ -113,6 +114,7 @@ final kServerUri    = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath   = '${kServerUri.path}/socket.io/';
 const kVersion = '1.2.2';
+const kApkUrl = 'https://betshuva.com/betshuva-app/app-release.apk';
 // Google Web Client ID — set in Firebase Console → Authentication → Google → Web SDK config
 const kGoogleWebClientId = '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
 
@@ -183,6 +185,13 @@ Widget _magenDavid({double size = 32, Color color = kPrimary,
       size: Size(size, size),
       painter: _MagenDavidPainter(color, bg),
     );
+
+Widget _androidDownloadLink() => TextButton.icon(
+  onPressed: () => launchUrl(Uri.parse(kApkUrl), mode: LaunchMode.externalApplication),
+  icon: const Icon(Icons.android, size: 20),
+  label: const Text('הורדת אפליקציית Android'),
+  style: TextButton.styleFrom(foregroundColor: kPrimary),
+);
 
 // ── App Root ──────────────────────────────────────────────────────
 class BetshuvApp extends StatelessWidget {
@@ -274,8 +283,6 @@ class _SplashScreenState extends State<SplashScreen>
     Future.delayed(const Duration(seconds: 2), _navigate);
   }
 
-  static const _currentVersion = kVersion;
-
   Future<void> _navigate() async {
     final prefs = await SharedPreferences.getInstance();
     final token  = prefs.getString('token');
@@ -288,48 +295,6 @@ class _SplashScreenState extends State<SplashScreen>
             : kPhoneClient ? const PhoneAuthScreen() : const AuthScreen(),
       ),
     );
-    _checkUpdate();
-  }
-
-  Future<void> _checkUpdate() async {
-    try {
-      final res = await http.get(Uri.parse('$kApi/version'));
-      if (res.statusCode != 200 || !mounted) return;
-      final data       = jsonDecode(res.body);
-      final latest     = data['version'] as String;
-      final apkUrl     = data['apkUrl']  as String;
-      if (latest == _currentVersion) return;
-      if (!mounted) return;
-      showDialog(
-        context: context,
-        barrierDismissible: true,
-        builder: (ctx) => AlertDialog(
-          title: const Row(children: [
-            Icon(Icons.system_update, color: kPrimary),
-            SizedBox(width: 10),
-            Text('עדכון זמין'),
-          ]),
-          content: Text(
-            'גירסה $latest זמינה!\nגירסתך הנוכחית: $_currentVersion',
-            textDirection: TextDirection.rtl,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('אחר כך', style: TextStyle(color: kSubtext)),
-            ),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(ctx);
-                http.get(Uri.parse(apkUrl));
-              },
-              icon: const Icon(Icons.download),
-              label: const Text('הורד עכשיו'),
-            ),
-          ],
-        ),
-      );
-    } catch (_) {}
   }
 
   @override
@@ -603,6 +568,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 8),
+                _androidDownloadLink(),
               ],
             ],
           ),
@@ -858,6 +825,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 8),
+              _androidDownloadLink(),
             ],
           ),
         ),
