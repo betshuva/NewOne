@@ -1485,6 +1485,12 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
 
+  if (!process.env.B2_KEY_ID || !process.env.B2_APP_KEY ||
+      !process.env.B2_BUCKET || !process.env.CDN_BASE_URL) {
+    console.error('upload: B2 storage environment variables are missing');
+    return res.status(503).json({ error: 'שירות העלאת הקבצים אינו מוגדר כרגע' });
+  }
+
   // Block video types
   if (BLOCKED_TYPES.some(t => file.mimetype.startsWith(t)))
     return res.status(400).json({ error: 'שליחת סרטוני וידאו אינה מותרת' });

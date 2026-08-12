@@ -3898,7 +3898,7 @@ class _ChatScreenState extends State<ChatScreen> {
       imageQuality: 85,
     );
     if (picked == null) return;
-    await _uploadAndSend(File(picked.path), picked.name, 'image');
+    await _uploadAndSend(picked, picked.name, 'image');
   }
 
   Future<void> _pickDocument() async {
@@ -3906,12 +3906,12 @@ class _ChatScreenState extends State<ChatScreen> {
       type: FileType.custom,
       allowedExtensions: ['pdf', 'docx'],
     );
-    if (result == null || result.files.single.path == null) return;
+    if (result == null) return;
     final f = result.files.single;
-    await _uploadAndSend(File(f.path!), f.name, 'document');
+    await _uploadAndSend(f, f.name, 'document');
   }
 
-  Future<void> _uploadAndSend(File file, String fileName, String fileType) async {
+  Future<void> _uploadAndSend(dynamic file, String fileName, String fileType) async {
     // Show scanning/upload dialog
     if (!mounted) return;
     showDialog(
@@ -3932,13 +3932,16 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     try {
+      final bytes = file is XFile
+          ? await file.readAsBytes()
+          : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
       final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..fields['toUserId'] = widget.recipient['id'].toString()
-        ..files.add(await http.MultipartFile.fromPath('file', file.path,
+        ..files.add(http.MultipartFile.fromBytes('file', bytes,
             filename: fileName,
             contentType: _mimeFromFileName(fileName)));
-      final streamed = await request.send();
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
       final body     = await streamed.stream.bytesToString();
       if (!mounted) return;
       Navigator.pop(context); // close dialog
@@ -5832,18 +5835,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final picked = await picker.pickImage(
         source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
     if (picked == null) return;
-    await _uploadGroupFile(File(picked.path), picked.name, 'image');
+    await _uploadGroupFile(picked, picked.name, 'image');
   }
 
   Future<void> _pickDocument() async {
     final result = await FilePicker.platform.pickFiles(
         type: FileType.custom, allowedExtensions: ['pdf', 'docx']);
-    if (result == null || result.files.single.path == null) return;
+    if (result == null) return;
     final f = result.files.single;
-    await _uploadGroupFile(File(f.path!), f.name, 'document');
+    await _uploadGroupFile(f, f.name, 'document');
   }
 
-  Future<void> _uploadGroupFile(File file, String fileName, String fileType) async {
+  Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType) async {
     if (!mounted) return;
     showDialog(
       context: context,
@@ -5862,12 +5865,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ),
     );
     try {
+      final bytes = file is XFile
+          ? await file.readAsBytes()
+          : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
       final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..fields['groupId'] = _groupId
-        ..files.add(await http.MultipartFile.fromPath('file', file.path,
+        ..files.add(http.MultipartFile.fromBytes('file', bytes,
             filename: fileName, contentType: _mimeFromFileName(fileName)));
-      final streamed = await request.send();
+      final streamed = await request.send().timeout(const Duration(seconds: 60));
       final body     = await streamed.stream.bytesToString();
       if (!mounted) return;
       Navigator.pop(context);
