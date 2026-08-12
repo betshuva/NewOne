@@ -805,13 +805,27 @@ app.post('/api/auth/google', async (req, res) => {
   try {
     const tokenRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
     const payload  = await tokenRes.json();
-    console.log(`[GOOGLE] tokeninfo — email:${payload.email} sub:${payload.sub} err:${payload.error_description||'-'}`);
+    console.log(`[GOOGLE] tokeninfo — email:${payload.email} sub:${payload.sub} aud:${payload.aud} err:${payload.error_description||'-'}`);
     if (payload.error_description || !payload.sub)
       return res.status(401).json({ error: 'טוקן גוגל לא תקין' });
 
-    const clientId = process.env.GOOGLE_CLIENT_ID || '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
-    if (payload.aud !== clientId)
+    // Google issues the web client audience in browsers and may issue one of
+    // the Android OAuth client audiences in the native app. Accept only client
+    // IDs that belong to this Firebase/Google Cloud project.
+    const configuredClientIds = (process.env.GOOGLE_CLIENT_IDS || process.env.GOOGLE_CLIENT_ID || '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
+    const googleClientIds = new Set([
+      ...configuredClientIds,
+      '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com',
+      '862738339788-4ogau0m9c0nh2h8jh7k6fosj2i3tah28.apps.googleusercontent.com',
+      '862738339788-umebs5qrpaaikhdr3uuu259hufc65l98.apps.googleusercontent.com',
+    ]);
+    if (!googleClientIds.has(payload.aud)) {
+      console.warn(`[GOOGLE] rejected audience: ${payload.aud || '-'}`);
       return res.status(401).json({ error: 'Client ID לא תואם' });
+    }
     if (payload.email_verified !== 'true' && payload.email_verified !== true)
       return res.status(401).json({ error: 'חשבון Google ללא אימייל מאומת' });
 
