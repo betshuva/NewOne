@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
@@ -114,6 +115,9 @@ final kSocketPath   = '${kServerUri.path}/socket.io/';
 const kVersion = '1.2.2';
 // Google Web Client ID — set in Firebase Console → Authentication → Google → Web SDK config
 const kGoogleWebClientId = '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
+
+bool get kPhoneClient => defaultTargetPlatform == TargetPlatform.android ||
+    defaultTargetPlatform == TargetPlatform.iOS;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -281,7 +285,7 @@ class _SplashScreenState extends State<SplashScreen>
       MaterialPageRoute(
         builder: (_) => token != null
             ? MainShell(token: token)
-            : const PhoneAuthScreen(),
+            : kPhoneClient ? const PhoneAuthScreen() : const AuthScreen(),
       ),
     );
     _checkUpdate();
@@ -398,13 +402,14 @@ class PhoneAuthScreen extends StatefulWidget {
 
 class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   final _phoneCtrl = TextEditingController();
-  final _nameCtrl  = TextEditingController();
-  final _emailCtrl = TextEditingController();
   final _otpCtrl   = TextEditingController();
   bool    _otpSent  = false;
   bool    _loading  = false;
   String? _error;
-  final _googleSignIn = GoogleSignIn(serverClientId: kGoogleWebClientId);
+  final _googleSignIn = GoogleSignIn(
+    clientId: kGoogleWebClientId,
+    serverClientId: kGoogleWebClientId,
+  );
 
   Future<void> _signInWithGoogle() async {
     setState(() { _loading = true; _error = null; });
@@ -440,31 +445,27 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
             MaterialPageRoute(builder: (_) => MainShell(token: token)));
       }
     } catch (e) {
-      setState(() { _error = 'שגיאה בכניסה עם גוגל'; _loading = false; });
+      debugPrint('Google sign-in failed: $e');
+      setState(() { _error = 'כניסה עם Google נכשלה: $e'; _loading = false; });
     }
   }
 
   @override
   void dispose() {
     _phoneCtrl.dispose();
-    _nameCtrl.dispose();
-    _emailCtrl.dispose();
     _otpCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _sendOtp() async {
     final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
-    final email = _emailCtrl.text.trim();
-    if (_nameCtrl.text.trim().isEmpty) { setState(() => _error = 'נא להזין שם מלא'); return; }
-    if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
     if (phone.length < 9) { setState(() => _error = 'נא להזין מספר טלפון תקין'); return; }
     setState(() { _loading = true; _error = null; });
     try {
       final res = await http.post(
         Uri.parse('$kApi/send-otp'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': phone, 'name': _nameCtrl.text.trim(), 'email': email}),
+        body: jsonEncode({'phone': phone}),
       ).timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
@@ -485,7 +486,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       final res = await http.post(
         Uri.parse('$kApi/verify-otp'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': phone, 'code': code, 'name': _nameCtrl.text.trim()}),
+        body: jsonEncode({'phone': phone, 'code': code}),
       ).timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
@@ -531,24 +532,6 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               ),
               const SizedBox(height: 36),
               if (!_otpSent) ...[
-                TextField(
-                  controller: _nameCtrl,
-                  textDirection: TextDirection.rtl,
-                  decoration: const InputDecoration(
-                    labelText: 'שם מלא', prefixIcon: Icon(Icons.person_outline)),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: _emailCtrl,
-                  keyboardType: TextInputType.emailAddress,
-                  textDirection: TextDirection.ltr,
-                  decoration: const InputDecoration(
-                    labelText: 'כתובת אימייל',
-                    hintText: 'example@gmail.com',
-                    prefixIcon: Icon(Icons.email_outlined),
-                  ),
-                ),
-                const SizedBox(height: 14),
                 TextField(
                   controller: _phoneCtrl,
                   keyboardType: TextInputType.phone,
@@ -620,14 +603,6 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 8),
-                TextButton(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AuthScreen()),
-                  ),
-                  child: const Text('כניסה עם אימייל', style: TextStyle(color: kSubtext, fontSize: 13)),
-                ),
               ],
             ],
           ),
@@ -652,9 +627,11 @@ class _AuthScreenState extends State<AuthScreen> {
   final _nameCtrl  = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passCtrl  = TextEditingController();
-  final _phoneCtrl = TextEditingController();
 
-  final _googleSignIn = GoogleSignIn(serverClientId: kGoogleWebClientId);
+  final _googleSignIn = GoogleSignIn(
+    clientId: kGoogleWebClientId,
+    serverClientId: kGoogleWebClientId,
+  );
 
   Future<void> _signInWithGoogle() async {
     setState(() { _loading = true; _error = null; });
@@ -682,7 +659,7 @@ class _AuthScreenState extends State<AuthScreen> {
           (user['phone'] as String?) != null &&
           (user['phone'] as String).isNotEmpty;
       if (!mounted) return;
-      if (!hasPhone) {
+      if (kPhoneClient && !hasPhone) {
         Navigator.pushReplacement(context,
             MaterialPageRoute(builder: (_) => GooglePhoneSetupScreen(token: token)));
       } else {
@@ -692,7 +669,8 @@ class _AuthScreenState extends State<AuthScreen> {
             MaterialPageRoute(builder: (_) => MainShell(token: token)));
       }
     } catch (e) {
-      setState(() { _error = 'שגיאה בכניסה עם גוגל'; _loading = false; });
+      debugPrint('Google sign-in failed: $e');
+      setState(() { _error = 'כניסה עם Google נכשלה: $e'; _loading = false; });
     }
   }
 
@@ -701,7 +679,6 @@ class _AuthScreenState extends State<AuthScreen> {
     _nameCtrl.dispose();
     _emailCtrl.dispose();
     _passCtrl.dispose();
-    _phoneCtrl.dispose();
     super.dispose();
   }
 
@@ -709,7 +686,6 @@ class _AuthScreenState extends State<AuthScreen> {
     final email    = _emailCtrl.text.trim();
     final password = _passCtrl.text;
     final name     = _nameCtrl.text.trim();
-    final phone    = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
 
     if (_isLogin) {
       if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
@@ -718,7 +694,6 @@ class _AuthScreenState extends State<AuthScreen> {
       if (name.isEmpty) { setState(() => _error = 'נא להזין שם מלא'); return; }
       if (email.isEmpty || !email.contains('@')) { setState(() => _error = 'נא להזין כתובת אימייל תקינה'); return; }
       if (password.length < 6) { setState(() => _error = 'הסיסמה חייבת להיות לפחות 6 תווים'); return; }
-      if (phone.length < 9) { setState(() => _error = 'נא להזין מספר טלפון תקין'); return; }
     }
 
     setState(() { _loading = true; _error = null; });
@@ -742,17 +717,18 @@ class _AuthScreenState extends State<AuthScreen> {
         final res = await http.post(
           Uri.parse('$kApi/register'),
           headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'name': name, 'email': email, 'password': password, 'phone': phone}),
+          body: jsonEncode({'name': name, 'email': email, 'password': password}),
         ).timeout(const Duration(seconds: 30));
         final data = jsonDecode(res.body);
         if (res.statusCode != 200) {
           setState(() { _error = data['error'] ?? 'שגיאה'; _loading = false; }); return;
         }
         if (!mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => VerifyScreen(phone: phone, email: email)),
-        );
+        setState(() {
+          _isLogin = true;
+          _loading = false;
+          _error = 'נשלח אליך קישור לאימות האימייל. לאחר האימות ניתן להתחבר.';
+        });
       }
     } catch (_) {
       setState(() { _error = 'שגיאת חיבור. נסה שוב.'; _loading = false; });
@@ -819,17 +795,6 @@ class _AuthScreenState extends State<AuthScreen> {
                 decoration: const InputDecoration(
                   labelText: 'סיסמה', prefixIcon: Icon(Icons.lock_outline)),
               ),
-              if (!_isLogin) ...[
-                const SizedBox(height: 14),
-                TextField(
-                  controller: _phoneCtrl,
-                  keyboardType: TextInputType.phone,
-                  textDirection: TextDirection.ltr,
-                  decoration: const InputDecoration(
-                    labelText: 'מספר טלפון', hintText: '05X-XXX-XXXX',
-                    prefixIcon: Icon(Icons.phone_android)),
-                ),
-              ],
               if (_isLogin) ...[
                 Align(
                   alignment: Alignment.centerLeft,

@@ -752,7 +752,7 @@ app.post('/api/register', async (req, res) => {
       await pool.query(
         'INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)',
         [emailToken, user.id, expires24h]);
-      const base = process.env.APP_URL || 'https://xo-app-betshuva.azurewebsites.net';
+      const base = process.env.APP_URL || 'https://betshuva.com/betshuva-app';
       sendEmail({
         to: user.email,
         subject: 'אמת את כתובת האימייל שלך – בתשובה',
@@ -809,9 +809,11 @@ app.post('/api/auth/google', async (req, res) => {
     if (payload.error_description || !payload.sub)
       return res.status(401).json({ error: 'טוקן גוגל לא תקין' });
 
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    if (clientId && payload.aud !== clientId)
+    const clientId = process.env.GOOGLE_CLIENT_ID || '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com';
+    if (payload.aud !== clientId)
       return res.status(401).json({ error: 'Client ID לא תואם' });
+    if (payload.email_verified !== 'true' && payload.email_verified !== true)
+      return res.status(401).json({ error: 'חשבון Google ללא אימייל מאומת' });
 
     const { sub: googleId, email, name, picture } = payload;
     const pool = await getPool();
