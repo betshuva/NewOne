@@ -175,6 +175,7 @@ final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
 const kVersion = '1.2.23';
 const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.23.apk';
+const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
 String _absoluteMediaUrl(String url) =>
@@ -2530,6 +2531,25 @@ class _MainShellState extends State<MainShell> {
   final List<Map<String, dynamic>> _messageRequests = [];
   bool _showingMessageRequest = false;
 
+  List<Map<String, dynamic>> _withScanBotFirst(
+      List<Map<String, dynamic>> users) {
+    final sorted = [...users];
+    sorted.sort((a, b) {
+      final aBot = a['id'] == kScanBotId;
+      final bBot = b['id'] == kScanBotId;
+      if (aBot != bBot) return aBot ? -1 : 1;
+      final aTime = DateTime.tryParse(a['last_message_at']?.toString() ?? '');
+      final bTime = DateTime.tryParse(b['last_message_at']?.toString() ?? '');
+      if (aTime != null || bTime != null) {
+        return (bTime ?? DateTime.fromMillisecondsSinceEpoch(0))
+            .compareTo(aTime ?? DateTime.fromMillisecondsSinceEpoch(0));
+      }
+      return (a['name']?.toString() ?? '')
+          .compareTo(b['name']?.toString() ?? '');
+    });
+    return sorted;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2847,8 +2867,8 @@ class _MainShellState extends State<MainShell> {
       final prefs = await SharedPreferences.getInstance();
       final cached = prefs.getString('cache_users');
       if (cached != null && _users.isEmpty) {
-        setState(() =>
-            _users = (jsonDecode(cached) as List).cast<Map<String, dynamic>>());
+        setState(() => _users = _withScanBotFirst(
+            (jsonDecode(cached) as List).cast<Map<String, dynamic>>()));
       }
     } catch (_) {}
     // Then fetch from server and update cache
@@ -2859,7 +2879,10 @@ class _MainShellState extends State<MainShell> {
       );
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
-        if (mounted) setState(() => _users = data.cast<Map<String, dynamic>>());
+        if (mounted) {
+          setState(() =>
+              _users = _withScanBotFirst(data.cast<Map<String, dynamic>>()));
+        }
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('cache_users', res.body);
       } else if (res.statusCode == 403) {
@@ -5640,14 +5663,18 @@ class _ConversationTile extends StatelessWidget {
                     shape: BoxShape.circle,
                   ),
                   child: Center(
-                    child: Text(
-                      initials,
-                      style: TextStyle(
-                        color: unreadCount > 0 ? Colors.white : kHeader,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 20,
-                      ),
-                    ),
+                    child: user['id'] == kScanBotId
+                        ? Icon(Icons.document_scanner_outlined,
+                            color: unreadCount > 0 ? Colors.white : kHeader,
+                            size: 25)
+                        : Text(
+                            initials,
+                            style: TextStyle(
+                              color: unreadCount > 0 ? Colors.white : kHeader,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 20,
+                            ),
+                          ),
                   ),
                 ),
                 if (unreadCount > 0)
@@ -5736,7 +5763,9 @@ class _ConversationTile extends StatelessWidget {
                                 ? _conversationPreview(user)
                                 : unreadCount > 0
                                     ? 'יש הודעות חדשות!'
-                                    : 'לחץ לפתיחת שיחה',
+                                    : user['id'] == kScanBotId
+                                        ? 'שלח תמונה וקבל דוח סריקה מלא'
+                                        : 'לחץ לפתיחת שיחה',
                         style: TextStyle(
                             fontSize: 12,
                             color: isTyping
