@@ -167,6 +167,9 @@ async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
 }
 
 function imageAllowedByFilter(filter, classification) {
+  const detected = classification?.detectedCategories;
+  if (Array.isArray(detected) && detected.length)
+    return detected.every(category => filter[category] === true);
   const category = classification?.category || 'people';
   if (category === 'people')
     return filter.men && filter.women && filter.children;
@@ -196,30 +199,99 @@ async function classifyClip(buffer, labels) {
 }
 
 async function classifyImageContent(buffer) {
-  const life = await classifyClip(buffer, [
+  const startedAt = performance.now();
+  const timed = async (name, labels) => {
+    const stageStartedAt = performance.now();
+    const scores = await classifyClip(buffer, labels);
+    return {
+      name,
+      scores,
+      durationMs: Math.round(performance.now() - stageStartedAt),
+    };
+  };
+  const topResult = scores => Object.entries(scores)
+    .map(([label, score]) => ({ label, score: Number(score) || 0 }))
+    .sort((a, b) => b.score - a.score)[0] || { label: '', score: 0 };
+
+  const lifeStage = await timed('life', [
     'image containing a living being',
     'image containing no living beings',
   ]);
-  const subjects = await classifyClip(buffer, [
+  const life = lifeStage.scores;
+  const lifeTop = topResult(life);
+  lifeStage.decision = lifeTop.label;
+  lifeStage.confidence = lifeTop.score;
+
+  if (lifeTop.label === 'image containing no living beings' && lifeTop.score >= 0.70) {
+    return {
+      category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
+      uncertain: false, life, subjects: null, people: null,
+      stages: [lifeStage], totalDurationMs: Math.round(performance.now() - startedAt),
+    };
+  }
+
+  const subjectsStage = await timed('subjects', [
     'person or people', 'animal', 'plant', 'inanimate object or landscape',
   ]);
-  const noLiving = Number(life['image containing no living beings'] || 0);
-  const living = Number(life['image containing a living being'] || 0);
-  if (noLiving >= 0.60 && noLiving > living) {
-    return { category: 'nonHumanImages', life, subjects, people: null };
+  const subjects = subjectsStage.scores;
+  const subjectTop = topResult(subjects);
+  subjectsStage.decision = subjectTop.label;
+  subjectsStage.confidence = subjectTop.score;
+  if (subjectTop.label !== 'person or people' && subjectTop.score >= 0.70) {
+    return {
+      category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
+      uncertain: false, life, subjects, people: null,
+      stages: [lifeStage, subjectsStage],
+      totalDurationMs: Math.round(performance.now() - startedAt),
+    };
   }
-  const subject = Object.entries(subjects).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0];
-  if (subject !== 'person or people') {
-    return { category: 'nonHumanImages', life, subjects, people: null };
+
+  if (subjectTop.label !== 'person or people' || subjectTop.score < 0.70) {
+    subjectsStage.uncertain = true;
+    return {
+      category: null, detectedCategories: [], uncertain: true,
+      uncertainStage: 'subjects', life, subjects, people: null,
+      stages: [lifeStage, subjectsStage],
+      totalDurationMs: Math.round(performance.now() - startedAt),
+    };
   }
-  const people = await classifyClip(buffer, [
-    'adult man', 'adult woman', 'boy or girl', 'multiple people',
-  ]);
-  const person = Object.entries(people).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0];
-  const category = person === 'adult man' ? 'men'
-    : person === 'adult woman' ? 'women'
-      : person === 'boy or girl' ? 'children' : 'people';
-  return { category, life, subjects, people };
+
+  const peopleStartedAt = performance.now();
+  const checks = [
+    ['men', 'adult man present', 'no adult man present'],
+    ['women', 'adult woman present', 'no adult woman present'],
+    ['children', 'child or teenager present', 'no child or teenager present'],
+  ];
+  const results = await Promise.all(checks.map(async ([category, present, absent]) => {
+    const scores = await classifyClip(buffer, [present, absent]);
+    return { category, present, absent, scores,
+      confidence: Number(scores[present] || 0),
+      detected: Number(scores[present] || 0) >= 0.70 &&
+        Number(scores[present] || 0) > Number(scores[absent] || 0) };
+  }));
+  const detectedCategories = results.filter(result => result.detected)
+    .map(result => result.category);
+  const people = Object.fromEntries(results.map(result => [result.category, {
+    detected: result.detected, confidence: result.confidence, scores: result.scores,
+  }]));
+  const peopleStage = {
+    name: 'people', decision: detectedCategories,
+    confidence: detectedCategories.length
+      ? Math.min(...results.filter(result => result.detected).map(result => result.confidence))
+      : Math.max(...results.map(result => result.confidence)),
+    durationMs: Math.round(performance.now() - peopleStartedAt),
+    uncertain: detectedCategories.length === 0,
+  };
+  return {
+    category: detectedCategories.length === 1 ? detectedCategories[0]
+      : detectedCategories.length > 1 ? 'people' : null,
+    detectedCategories,
+    uncertain: detectedCategories.length === 0,
+    uncertainStage: detectedCategories.length === 0 ? 'people' : null,
+    life, subjects, people,
+    stages: [lifeStage, subjectsStage, peopleStage],
+    totalDurationMs: Math.round(performance.now() - startedAt),
+  };
 }
 
 
@@ -262,6 +334,14 @@ async function scanImage(buffer) {
           faces: [],
           safeSearch: {},
           genderResults: null,
+          classification,
+        };
+      }
+      if (classification.uncertain) {
+        return {
+          pending: true,
+          reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת',
+          labels: labelsRaw, faces: [], safeSearch: {}, genderResults: null,
           classification,
         };
       }
@@ -317,6 +397,9 @@ async function scanImage(buffer) {
 
   if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
     return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
+
+  if (!classification || classification.uncertain)
+    return { pending: true, reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
 
   return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
 }
@@ -2285,15 +2368,18 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         classification: scanResult.classification || null });
     }
 
-    if (allowed.dbType === 'image' && recipientPolicy &&
+    if (!scanResult?.pending && allowed.dbType === 'image' && recipientPolicy &&
         !imageAllowedByFilter(recipientPolicy.filter, scanResult?.classification)) {
-      const category = scanResult?.classification?.category || 'people';
+      const categories = scanResult?.classification?.detectedCategories ||
+        [scanResult?.classification?.category || 'people'];
       const labels = { nonHumanImages: 'תמונות ללא בני אדם', men: 'תמונות גברים',
         women: 'תמונות נשים', children: 'תמונות ילדים', people: 'תמונות עם מספר אנשים' };
-      const reason = `${labels[category] || 'סוג התמונה'} חסומות בהגדרות הנמען`;
+      const blockedCategories = categories.filter(category =>
+        recipientPolicy.filter[category] !== true);
+      const reason = `${blockedCategories.map(category => labels[category] || category).join(', ') || 'סוג התמונה'} חסומות בהגדרות הנמען`;
       logActivity(req.user.id, 'blocked_by_recipient_filter', {
         toUserId: req.body.toUserId, fileName: file.originalname, fileUrl: url,
-        category, classification: scanResult?.classification || null,
+        categories, classification: scanResult?.classification || null,
       }, req.ip);
       await pool.query(
         `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
@@ -2317,6 +2403,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       return res.json({
         url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'pending', pendingId: ins.rows[0].id,
+        reason: scanResult.reason || 'שירות הסריקה אינו זמין כרגע',
+        classification: scanResult.classification || null,
       });
     }
 
