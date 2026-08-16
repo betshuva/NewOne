@@ -258,9 +258,12 @@ async function classifyImageContent(buffer) {
 
   const peopleStartedAt = performance.now();
   const checks = [
-    ['men', 'adult man present', 'no adult man present'],
-    ['women', 'adult woman present', 'no adult woman present'],
-    ['children', 'child or teenager present', 'no child or teenager present'],
+    ['men', 'a photo containing an adult man',
+      'a photo containing only women children objects or scenery'],
+    ['women', 'a photo containing an adult woman',
+      'a photo containing only men children objects or scenery'],
+    ['children', 'a photo containing a child or teenager',
+      'a photo containing only adults objects or scenery'],
   ];
   const results = await Promise.all(checks.map(async ([category, present, absent]) => {
     const scores = await classifyClip(buffer, [present, absent]);
