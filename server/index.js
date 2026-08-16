@@ -193,6 +193,11 @@ async function classifyImageContent(buffer) {
   const subjects = await classifyClip(buffer, [
     'person or people', 'animal', 'plant', 'inanimate object or landscape',
   ]);
+  const noLiving = Number(life['image containing no living beings'] || 0);
+  const living = Number(life['image containing a living being'] || 0);
+  if (noLiving >= 0.60 && noLiving > living) {
+    return { category: 'nonHumanImages', life, subjects, people: null };
+  }
   const subject = Object.entries(subjects).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0];
   if (subject !== 'person or people') {
     return { category: 'nonHumanImages', life, subjects, people: null };

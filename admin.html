@@ -1262,10 +1262,17 @@ function renderImageTestResult(data) {
     `<span class="vc-ss-item ${['LIKELY','VERY_LIKELY'].includes(String(value))?'bad':'ok'}">${escHtml(key)}: ${escHtml(String(value))}</span>`).join('');
   const labels = (data.labels || []).map(label =>
     `<span class="vc-label ${label.blocked?'danger':''}">${escHtml(label.name)} ${Number(label.score || 0)}%</span>`).join('');
+  const categoryNames = {nonHumanImages:'ללא בני אדם',men:'גבר',women:'אישה',children:'ילד/ה',people:'מספר אנשים'};
+  const classification = data.classification || {};
+  const stage = (title, values) => values ? `<div><strong>${title}</strong><div class="vc-labels" style="margin-top:7px">${Object.entries(values).map(([name,score]) => `<span class="vc-label">${escHtml(name)} ${Math.round(Number(score)*100)}%</span>`).join('')}</div></div>` : '';
   return `<div class="image-test-status ${cls}">${title}</div>
     <div class="image-test-details">
       ${data.reason ? `<div class="vc-reason">${escHtml(data.reason)}</div>` : ''}
       ${data.blockedBy ? `<div><strong>מנגנון חסימה:</strong> ${escHtml(data.blockedBy)}</div>` : ''}
+      ${classification.category ? `<div><strong>סיווג סופי:</strong> ${categoryNames[classification.category] || escHtml(classification.category)}</div>` : ''}
+      ${stage('שלב 1 — חי או דומם', classification.life)}
+      ${stage('שלב 2 — אדם, בעל חיים, צמח או חפץ', classification.subjects)}
+      ${stage('שלב 3 — סוג האדם', classification.people)}
       <div><strong>פנים שזוהו:</strong> ${(data.faces || []).length}</div>
       ${safeRows ? `<div><strong>SafeSearch</strong><div class="vc-ss" style="margin-top:7px">${safeRows}</div></div>` : ''}
       ${labels ? `<div><strong>תוויות</strong><div class="vc-labels" style="margin-top:7px">${labels}</div></div>` : ''}
