@@ -5415,6 +5415,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       ]..sort((a, b) {
                           final aData = a['data'] as Map<String, dynamic>;
                           final bData = b['data'] as Map<String, dynamic>;
+                          final aScanBot =
+                              a['isGroup'] != true && aData['id'] == kScanBotId;
+                          final bScanBot =
+                              b['isGroup'] != true && bData['id'] == kScanBotId;
+                          if (aScanBot != bScanBot) return aScanBot ? -1 : 1;
                           return _lastMessageTime(bData)
                               .compareTo(_lastMessageTime(aData));
                         });
@@ -6786,6 +6791,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ..fields['toUserId'] = widget.recipient['id'].toString()
         ..files.add(http.MultipartFile.fromBytes('file', bytes,
             filename: fileName, contentType: _mimeFromFileName(fileName)));
+      if (kIsWeb) request.fields['scanReport'] = 'true';
       final streamed =
           await request.send().timeout(const Duration(seconds: 60));
       final body = await streamed.stream.bytesToString();

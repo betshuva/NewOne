@@ -2461,6 +2461,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   try {
     const pool = await getPool();
     const scanBotUpload = req.body.toUserId === SCAN_BOT_ID;
+    const reportImageScan = allowed.dbType === 'image' &&
+      (scanBotUpload || req.body.scanReport === 'true');
     let recipientPolicy = null;
     if (req.body.toUserId) {
       recipientPolicy = await getEffectiveRecipientFilter(pool, req.body.toUserId, req.user.id);
@@ -2502,7 +2504,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
           safeSearch: scanResult.safeSearch, labels: scanResult.labels,
           faces: scanResult.faces || [], genderResults: scanResult.genderResults || null }, req.ip);
       let scanReport = null;
-      if (scanBotUpload)
+      if (reportImageScan)
         scanReport = await saveScanBotReport(pool, req.user.id, {
           name: file.originalname, size: file.size, dbType: allowed.dbType,
         }, url, scanResult, 'rejected');
@@ -2528,9 +2530,15 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       await pool.query(
         `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
         [JSON.stringify({ reason, classification: scanResult?.classification || null }), url]);
+      let scanReport = null;
+      if (reportImageScan)
+        scanReport = await saveScanBotReport(pool, req.user.id, {
+          name: file.originalname, size: file.size, dbType: allowed.dbType,
+        }, url, { ...scanResult, reason }, 'rejected');
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason,
-        classification: scanResult?.classification || null });
+        classification: scanResult?.classification || null,
+        handledByScanBot: scanBotUpload, scanReport });
     }
 
     if (scanResult?.pending) {
@@ -2545,7 +2553,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       logActivity(req.user.id, 'upload_pending',
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
       let scanReport = null;
-      if (scanBotUpload)
+      if (reportImageScan)
         scanReport = await saveScanBotReport(pool, req.user.id, {
           name: file.originalname, size: file.size, dbType: allowed.dbType,
         }, url, scanResult, 'pending');
@@ -2563,7 +2571,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       [JSON.stringify(scanResult || {}), url]);
 
     let scanReport = null;
-    if (scanBotUpload)
+    if (reportImageScan)
       scanReport = await saveScanBotReport(pool, req.user.id, {
         name: file.originalname, size: file.size, dbType: allowed.dbType,
       }, url, scanResult, 'approved');
