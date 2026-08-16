@@ -117,6 +117,19 @@ tr:hover td{background:rgba(33,38,45,.8)}
 .empty{color:var(--text2);padding:40px;text-align:center;font-size:14px}
 /* Vision Panel */
 #vision-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+#image-test-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+.image-test-body{flex:1;overflow-y:auto;padding:24px;display:grid;grid-template-columns:minmax(280px,420px) minmax(320px,1fr);gap:22px;align-items:start}
+.image-test-box{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.image-test-drop{min-height:280px;border:2px dashed var(--border);border-radius:12px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;cursor:pointer;overflow:hidden;text-align:center;padding:18px}
+.image-test-drop:hover{border-color:var(--blue)}
+.image-test-drop img{max-width:100%;max-height:360px;object-fit:contain;border-radius:8px}
+.image-test-result{min-height:360px}
+.image-test-status{font-size:20px;font-weight:800;padding:12px 16px;border-radius:10px;text-align:center}
+.image-test-status.approved{color:var(--green);background:rgba(63,185,80,.12)}
+.image-test-status.blocked{color:var(--red);background:rgba(248,81,73,.12)}
+.image-test-status.pending{color:var(--orange);background:rgba(210,153,34,.12)}
+.image-test-details{display:flex;flex-direction:column;gap:12px}
+@media(max-width:850px){.image-test-body{grid-template-columns:1fr}}
 .vision-grid{flex:1;overflow-y:auto;padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-content:start}
 .vision-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
 .vision-card.blocked{border-color:var(--red)}
@@ -297,6 +310,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div class="sb-item" id="sb-newgroup-item" onclick="openNewGroupModal()">➕ קבוצה חדשה</div>
     <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
     <div class="sb-item" id="sb-vision-item" onclick="showVisionPanel()">🔬 תוצאות Vision</div>
+    <div class="sb-item" id="sb-image-test-item" onclick="showImageTestPanel()">🧪 בדיקת תמונה</div>
     <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
     <div class="sb-item" id="sb-moderation-item" onclick="showModerationPanel()">🛡 רשימות חסימה</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
@@ -327,6 +341,28 @@ tr:hover td{background:rgba(33,38,45,.8)}
     </div>
     <div class="vision-grid" id="vision-grid"><div class="loader">טוען...</div></div>
     <div class="pagination" id="vision-pagination"></div>
+  </div>
+
+  <!-- Image Moderation Test Panel -->
+  <div id="image-test-panel">
+    <div class="main-head">
+      <h1>🧪 בדיקת סינון תמונה</h1>
+      <span style="font-size:12px;color:var(--text2)">התמונה נבדקת בלבד ואינה נשמרת</span>
+    </div>
+    <div class="image-test-body">
+      <div class="image-test-box">
+        <input id="image-test-input" type="file" accept="image/*" hidden onchange="previewImageTest()"/>
+        <div id="image-test-drop" class="image-test-drop" onclick="document.getElementById('image-test-input').click()" ondragover="event.preventDefault()" ondrop="dropImageTest(event)">
+          <div style="font-size:48px">🖼️</div>
+          <strong>לחץ לבחירת תמונה</strong>
+          <span style="font-size:12px;color:var(--text2)">או גרור תמונה לכאן · עד 10MB</span>
+        </div>
+        <button id="image-test-btn" class="btn-sm" onclick="runImageTest()" disabled>🔬 בדוק תמונה</button>
+      </div>
+      <div id="image-test-result" class="image-test-box image-test-result">
+        <div class="empty">תוצאות הבדיקה יוצגו כאן</div>
+      </div>
+    </div>
   </div>
 
   <!-- Activity Panel -->
@@ -698,6 +734,7 @@ async function loadTable(name, offset=0) {
   document.getElementById('listings-panel').style.display   = 'none';
   document.getElementById('moderation-panel').style.display = 'none';
   document.getElementById('files-panel').style.display      = 'none';
+  document.getElementById('image-test-panel').style.display = 'none';
   const main = document.getElementById('main-area');
   main.style.display = 'flex';
   main.innerHTML = '<div class="loader">טוען...</div>';
@@ -1155,6 +1192,7 @@ async function rescanAll() {
 
 function showVisionPanel() {
   document.getElementById('files-panel').style.display = 'none';
+  document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-vision-item').classList.add('active');
@@ -1166,6 +1204,95 @@ function showVisionPanel() {
   document.getElementById('moderation-panel').style.display = 'none';
   document.getElementById('vision-panel').style.display     = 'flex';
   loadVision(0);
+}
+
+// ── Image moderation test ─────────────────────────────────────────
+let imageTestFile = null;
+let imageTestPreviewUrl = null;
+
+function showImageTestPanel() {
+  clearInterval(actTimer);
+  document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('sb-image-test-item').classList.add('active');
+  ['main-area','perm-panel','activity-panel','scan-panel','vision-panel','listings-panel','moderation-panel','files-panel']
+    .forEach(id => document.getElementById(id).style.display = 'none');
+  document.getElementById('image-test-panel').style.display = 'flex';
+}
+
+function setImageTestFile(file) {
+  const result = document.getElementById('image-test-result');
+  if (!file || !file.type.startsWith('image/')) {
+    imageTestFile = null;
+    document.getElementById('image-test-btn').disabled = true;
+    result.innerHTML = '<div class="empty" style="color:var(--red)">יש לבחור קובץ תמונה</div>';
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    imageTestFile = null;
+    document.getElementById('image-test-btn').disabled = true;
+    result.innerHTML = '<div class="empty" style="color:var(--red)">התמונה גדולה מ־10MB</div>';
+    return;
+  }
+  imageTestFile = file;
+  if (imageTestPreviewUrl) URL.revokeObjectURL(imageTestPreviewUrl);
+  imageTestPreviewUrl = URL.createObjectURL(file);
+  document.getElementById('image-test-drop').innerHTML =
+    `<img src="${imageTestPreviewUrl}" alt="תמונה לבדיקה"><strong>${escHtml(file.name)}</strong><span style="font-size:12px;color:var(--text2)">${formatBytes(file.size)} · לחץ להחלפה</span>`;
+  document.getElementById('image-test-btn').disabled = false;
+  result.innerHTML = '<div class="empty">לחץ על „בדוק תמונה” לקבלת תוצאה</div>';
+}
+
+function previewImageTest() {
+  setImageTestFile(document.getElementById('image-test-input').files[0]);
+}
+
+function dropImageTest(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  setImageTestFile(event.dataTransfer.files[0]);
+}
+
+function renderImageTestResult(data) {
+  const pending = !!data.pending;
+  const blocked = !!data.blocked;
+  const cls = pending ? 'pending' : blocked ? 'blocked' : 'approved';
+  const title = pending ? '⏳ הבדיקה ממתינה' : blocked ? '⛔ התמונה תיחסם' : '✅ התמונה תאושר';
+  const safeSearch = data.safeSearch || {};
+  const safeRows = Object.entries(safeSearch).map(([key,value]) =>
+    `<span class="vc-ss-item ${['LIKELY','VERY_LIKELY'].includes(String(value))?'bad':'ok'}">${escHtml(key)}: ${escHtml(String(value))}</span>`).join('');
+  const labels = (data.labels || []).map(label =>
+    `<span class="vc-label ${label.blocked?'danger':''}">${escHtml(label.name)} ${Number(label.score || 0)}%</span>`).join('');
+  return `<div class="image-test-status ${cls}">${title}</div>
+    <div class="image-test-details">
+      ${data.reason ? `<div class="vc-reason">${escHtml(data.reason)}</div>` : ''}
+      ${data.blockedBy ? `<div><strong>מנגנון חסימה:</strong> ${escHtml(data.blockedBy)}</div>` : ''}
+      <div><strong>פנים שזוהו:</strong> ${(data.faces || []).length}</div>
+      ${safeRows ? `<div><strong>SafeSearch</strong><div class="vc-ss" style="margin-top:7px">${safeRows}</div></div>` : ''}
+      ${labels ? `<div><strong>תוויות</strong><div class="vc-labels" style="margin-top:7px">${labels}</div></div>` : ''}
+      ${pending ? '<div style="color:var(--orange)">שירות הסריקה אינו זמין כרגע. נסה שוב מאוחר יותר.</div>' : ''}
+    </div>`;
+}
+
+async function runImageTest() {
+  if (!imageTestFile) return;
+  const btn = document.getElementById('image-test-btn');
+  const result = document.getElementById('image-test-result');
+  btn.disabled = true; btn.textContent = '⏳ בודק...';
+  result.innerHTML = '<div class="loader">התמונה נבדקת...</div>';
+  try {
+    const form = new FormData();
+    form.append('file', imageTestFile);
+    const response = await fetch(`${API}/api/admin/vision/test`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'בדיקת התמונה נכשלה');
+    result.innerHTML = renderImageTestResult(data);
+  } catch (error) {
+    result.innerHTML = `<div class="empty" style="color:var(--red)">${escHtml(error.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '🔬 בדוק תמונה';
+  }
 }
 
 // ── New Group Modal ───────────────────────────────────────────────
@@ -1379,6 +1506,7 @@ async function loadActivity(offset = 0) {
 
 function showActivityPanel() {
   document.getElementById('files-panel').style.display = 'none';
+  document.getElementById('image-test-panel').style.display = 'none';
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-activity-item').classList.add('active');
   document.getElementById('main-area').style.display        = 'none';
@@ -1397,6 +1525,7 @@ function showActivityPanel() {
 // ── Permissions Panel ─────────────────────────────────────────────
 function showPermPanel() {
   document.getElementById('files-panel').style.display = 'none';
+  document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-perm-item').classList.add('active');
@@ -1468,6 +1597,7 @@ const SCAN_PAGE   = 100;
 
 function showScanPanel() {
   document.getElementById('files-panel').style.display = 'none';
+  document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-scan-item').classList.add('active');
@@ -1626,7 +1756,7 @@ function showFilesPanel() {
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-files-item').classList.add('active');
-  ['main-area','perm-panel','activity-panel','scan-panel','vision-panel','listings-panel','moderation-panel']
+  ['main-area','perm-panel','activity-panel','scan-panel','vision-panel','image-test-panel','listings-panel','moderation-panel']
     .forEach(id => document.getElementById(id).style.display='none');
   document.getElementById('files-panel').style.display='flex';
   loadFiles(0);
@@ -1663,6 +1793,7 @@ async function loadFiles(offset=0) {
 // ── Listings Panel ───────────────────────────────────────────────
 function showListingsPanel() {
   document.getElementById('files-panel').style.display = 'none';
+  document.getElementById('image-test-panel').style.display = 'none';
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-listings-item').classList.add('active');
   document.getElementById('main-area').style.display       = 'none';
@@ -1681,6 +1812,7 @@ const DEFAULT_BLOCKED_WORDS_ADMIN = ['עירום','פורנו','סקס','ניא�
 
 function showModerationPanel() {
   document.getElementById('files-panel').style.display = 'none';
+  document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-moderation-item').classList.add('active');

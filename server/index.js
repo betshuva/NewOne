@@ -3225,6 +3225,26 @@ app.post('/api/admin/groups', adminAuth, async (req, res) => {
 });
 
 // ── Admin: Vision scan results ───────────────────────────────────
+app.post('/api/admin/vision/test', adminAuth, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'יש לבחור תמונה' });
+  const allowed = ALLOWED_TYPES[req.file.mimetype];
+  if (!allowed || allowed.dbType !== 'image')
+    return res.status(400).json({ error: 'ניתן לבדוק תמונות JPG, PNG, WebP או GIF בלבד' });
+  if (req.file.size > 10 * 1024 * 1024)
+    return res.status(400).json({ error: 'התמונה גדולה מ־10MB' });
+  try {
+    const result = await scanImage(req.file.buffer);
+    res.json({
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      mimeType: req.file.mimetype,
+      ...result,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'בדיקת התמונה נכשלה' });
+  }
+});
+
 app.get('/api/admin/vision', adminAuth, async (req, res) => {
   const limit  = Math.min(parseInt(req.query.limit || 50), 200);
   const offset = parseInt(req.query.offset || 0);
