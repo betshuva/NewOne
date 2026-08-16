@@ -166,6 +166,16 @@ CREATE TABLE IF NOT EXISTS stored_files (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
+-- System image-scanning conversation bot.
+INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
+VALUES('00000000-0000-4000-8000-000000000001','סריקה','scan@betshuva.system',
+       '0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO user_contacts(owner_id,contact_id)
+SELECT id,'00000000-0000-4000-8000-000000000001'::uuid FROM users
+WHERE id<>'00000000-0000-4000-8000-000000000001'::uuid ON CONFLICT DO NOTHING;
+
 -- ── App Settings (moderation lists etc.) ──────────────────────────
 CREATE TABLE IF NOT EXISTS app_settings (
   key_name   TEXT PRIMARY KEY,

@@ -173,8 +173,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.22';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.22.apk';
+const kVersion = '1.2.23';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.23.apk';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
 String _absoluteMediaUrl(String url) =>
@@ -6818,6 +6818,11 @@ class _ChatScreenState extends State<ChatScreen> {
             duration: Duration(seconds: 4),
           ),
         );
+        return;
+      }
+
+      if (data['handledByScanBot'] == true) {
+        await _loadMessages(silent: true);
         return;
       }
 

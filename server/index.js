@@ -14,6 +14,8 @@ const { getPool } = require('./db');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
+const SCAN_BOT_ID = '00000000-0000-4000-8000-000000000001';
+const SCAN_BOT_EMAIL = 'scan@betshuva.system';
 
 // ── FCM via HTTP Legacy API (no service account key needed) ───────
 async function sendPush(userId, title, body, data = {}) {
@@ -68,6 +70,15 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
 });
+
+function normalizeUploadFileName(name) {
+  if (!name || /[\u0590-\u05FF]/.test(name) || !/[\u00C0-\u00FF]/.test(name))
+    return name;
+  try {
+    const decoded = Buffer.from(name, 'latin1').toString('utf8');
+    return decoded.includes('\uFFFD') ? name : decoded;
+  } catch (_) { return name; }
+}
 
 // ── Backblaze B2 Native API ───────────────────────────────────────
 // Env vars: B2_KEY_ID, B2_APP_KEY, B2_BUCKET, CDN_BASE_URL
@@ -184,6 +195,70 @@ async function validateApprovedFile(pool, userId, fileUrl, contextType, contextI
        AND context_type=$3 AND context_id=$4`,
     [userId, fileUrl, contextType, contextId]);
   return result.rows.length > 0;
+}
+
+const scanLabelNames = {
+  'image containing a living being': 'יצור חי',
+  'image containing no living beings': 'ללא יצור חי',
+  'person or people': 'אדם או אנשים', animal: 'בעל חיים', plant: 'צמח',
+  'inanimate object or landscape': 'חפץ, נוף או מסמך',
+  men: 'גבר', women: 'אישה', children: 'ילד/ה',
+};
+
+function formatScanBotReport(fileName, scanResult, status) {
+  const classification = scanResult?.classification || {};
+  const statusText = status === 'rejected' ? '⛔ נחסמה'
+    : status === 'pending' ? '⏳ לא ודאית — לא נשלחה' : '✅ אושרה';
+  const lines = [`דוח סריקה: ${fileName}`, `תוצאה: ${statusText}`];
+  if (scanResult?.reason) lines.push(`סיבה: ${scanResult.reason}`);
+  const stageTitles = {
+    life: 'שלב 1 — חי או דומם',
+    subjects: 'שלב 2 — סוג התוכן',
+    people: 'שלב 3 — סוגי האנשים',
+  };
+  for (const stage of classification.stages || []) {
+    const decision = Array.isArray(stage.decision)
+      ? stage.decision.map(value => scanLabelNames[value] || value).join(', ')
+      : scanLabelNames[stage.decision] || stage.decision || 'לא ודאי';
+    lines.push(`${stageTitles[stage.name] || stage.name}: ${decision} ` +
+      `(${Math.round(Number(stage.confidence || 0) * 100)}%, ${stage.durationMs || 0}ms)`);
+    if (stage.scores) {
+      const scores = Object.entries(stage.scores).map(([label, score]) =>
+        `${scanLabelNames[label] || label} ${Math.round(Number(score) * 100)}%`);
+      lines.push(`ציונים: ${scores.join(' · ')}`);
+    }
+  }
+  const detected = classification.detectedCategories || [];
+  if (detected.length)
+    lines.push(`זוהו: ${detected.map(value => scanLabelNames[value] || value).join(', ')}`);
+  if (classification.totalDurationMs != null)
+    lines.push(`זמן סיווג: ${classification.totalDurationMs}ms`);
+  const modesty = (scanResult?.labels || [])
+    .filter(label => ['nudity', 'adult sexual content', 'lingerie or revealing clothing']
+      .includes(label.name))
+    .map(label => `${label.name} ${label.score}%`);
+  if (modesty.length) lines.push(`בדיקת צניעות: ${modesty.join(' · ')}`);
+  return lines.join('\n');
+}
+
+async function saveScanBotReport(pool, userId, file, fileUrl, scanResult, status) {
+  if (status === 'approved') {
+    await pool.query(
+      `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name,file_size)
+       VALUES($1,$2,$3,$4,$5,$4,$6)`,
+      [userId, SCAN_BOT_ID, file.dbType, file.name, fileUrl, file.size]);
+  }
+  const body = formatScanBotReport(file.name, scanResult, status);
+  const saved = await pool.query(
+    `INSERT INTO messages(sender_id,recipient_id,type,body)
+     VALUES($1,$2,'text',$3) RETURNING id,created_at`,
+    [SCAN_BOT_ID, userId, body]);
+  const sid = onlineUsers.get(userId);
+  if (sid) io.to(sid).emit('chat:message', {
+    id: saved.rows[0].id, fromUserId: SCAN_BOT_ID, fromName: 'סריקה',
+    text: body, createdAt: saved.rows[0].created_at, fileType: 'text',
+  });
+  return body;
 }
 
 async function classifyClip(buffer, labels) {
@@ -570,6 +645,11 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`
+      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
+      VALUES($1,'סריקה',$2,'0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
+      ON CONFLICT (id) DO UPDATE SET name='סריקה', email=$2,
+        email_verified=TRUE, phone_verified=TRUE`, [SCAN_BOT_ID, SCAN_BOT_EMAIL]);
 
     // Only one verified identity may own a phone number or email address.
     // Unverified drafts may coexist, but a second one can never be verified.
@@ -665,6 +745,12 @@ async function migrateDatabase() {
         CHECK (owner_id <> contact_id)
       )`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_override JSONB`);
+    await pool.query(`
+      INSERT INTO user_contacts(owner_id,contact_id)
+      SELECT id,$1 FROM users WHERE id<>$1 ON CONFLICT DO NOTHING`, [SCAN_BOT_ID]);
+    await pool.query(`
+      INSERT INTO user_contacts(owner_id,contact_id)
+      SELECT $1,id FROM users WHERE id<>$1 ON CONFLICT DO NOTHING`, [SCAN_BOT_ID]);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS message_requests (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2341,6 +2427,7 @@ app.post('/api/fcm-token', auth, async (req, res) => {
 app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
+  file.originalname = normalizeUploadFileName(file.originalname);
 
   // Block video types
   if (BLOCKED_TYPES.some(t => file.mimetype.startsWith(t)))
@@ -2356,6 +2443,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
 
   try {
     const pool = await getPool();
+    const scanBotUpload = req.body.toUserId === SCAN_BOT_ID;
     let recipientPolicy = null;
     if (req.body.toUserId) {
       recipientPolicy = await getEffectiveRecipientFilter(pool, req.body.toUserId, req.user.id);
@@ -2396,12 +2484,18 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
           fileUrl: url, reason: scanResult.reason, blockedBy: scanResult.blockedBy,
           safeSearch: scanResult.safeSearch, labels: scanResult.labels,
           faces: scanResult.faces || [], genderResults: scanResult.genderResults || null }, req.ip);
+      let scanReport = null;
+      if (scanBotUpload)
+        scanReport = await saveScanBotReport(pool, req.user.id, {
+          name: file.originalname, size: file.size, dbType: allowed.dbType,
+        }, url, scanResult, 'rejected');
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason: scanResult.reason,
-        classification: scanResult.classification || null });
+        classification: scanResult.classification || null,
+        handledByScanBot: scanBotUpload, scanReport });
     }
 
-    if (!scanResult?.pending && allowed.dbType === 'image' && recipientPolicy &&
+    if (!scanBotUpload && !scanResult?.pending && allowed.dbType === 'image' && recipientPolicy &&
         !imageAllowedByFilter(recipientPolicy.filter, scanResult?.classification)) {
       const categories = scanResult?.classification?.detectedCategories ||
         [scanResult?.classification?.category || 'people'];
@@ -2433,17 +2527,29 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         [req.user.id, toUserId, groupId, url, file.originalname, allowed.dbType, file.mimetype]);
       logActivity(req.user.id, 'upload_pending',
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
+      let scanReport = null;
+      if (scanBotUpload)
+        scanReport = await saveScanBotReport(pool, req.user.id, {
+          name: file.originalname, size: file.size, dbType: allowed.dbType,
+        }, url, scanResult, 'pending');
       return res.json({
         url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'pending', pendingId: ins.rows[0].id,
         reason: scanResult.reason || 'שירות הסריקה אינו זמין כרגע',
         classification: scanResult.classification || null,
+        handledByScanBot: scanBotUpload, scanReport,
       });
     }
 
     await pool.query(
       `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
       [JSON.stringify(scanResult || {}), url]);
+
+    let scanReport = null;
+    if (scanBotUpload)
+      scanReport = await saveScanBotReport(pool, req.user.id, {
+        name: file.originalname, size: file.size, dbType: allowed.dbType,
+      }, url, scanResult, 'approved');
 
     logActivity(req.user.id, 'upload_file',
       { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
@@ -2453,7 +2559,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         faces: scanResult?.faces || [],
         genderResults: scanResult?.genderResults || null,
         blockedBy: null }, req.ip);
-    res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType });
+    res.json({ url, fileName: file.originalname, fileSize: file.size,
+      fileType: allowed.dbType, handledByScanBot: scanBotUpload, scanReport });
   } catch (e) {
     console.error('upload:', e.message);
     res.status(500).json({ error: e.message });
@@ -3898,10 +4005,14 @@ async function retryPendingScans() {
           // Notify sender that file was rejected
           const sid = onlineUsers.get(row.user_id);
           if (sid) io.to(sid).emit('scan:rejected', { fileName: row.file_name, reason: scanResult.reason });
+          if (row.to_user_id === SCAN_BOT_ID)
+            await saveScanBotReport(pool, row.user_id, {
+              name: row.file_name, size: 0, dbType: row.file_type,
+            }, row.file_url, scanResult, 'rejected');
           continue;
         }
 
-        if (row.file_type === 'image' && row.to_user_id) {
+        if (row.file_type === 'image' && row.to_user_id && row.to_user_id !== SCAN_BOT_ID) {
           const policy = await getEffectiveRecipientFilter(pool, row.to_user_id, row.user_id);
           if (!policy?.isContact || !imageAllowedByFilter(policy.filter, scanResult.classification)) {
             const reason = !policy?.isContact
@@ -3923,6 +4034,13 @@ async function retryPendingScans() {
         await pool.query(
           `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
           [JSON.stringify(scanResult || {}), row.file_url]);
+
+        if (row.to_user_id === SCAN_BOT_ID) {
+          await saveScanBotReport(pool, row.user_id, {
+            name: row.file_name, size: 0, dbType: row.file_type,
+          }, row.file_url, scanResult, 'approved');
+          continue;
+        }
 
         // Scan passed — save message and deliver
         if (row.to_user_id) {
