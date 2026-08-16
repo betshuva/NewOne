@@ -176,6 +176,22 @@ INSERT INTO user_contacts(owner_id,contact_id)
 SELECT id,'00000000-0000-4000-8000-000000000001'::uuid FROM users
 WHERE id<>'00000000-0000-4000-8000-000000000001'::uuid ON CONFLICT DO NOTHING;
 
+CREATE OR REPLACE FUNCTION add_scan_bot_contact_for_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.id <> '00000000-0000-4000-8000-000000000001'::uuid THEN
+    INSERT INTO user_contacts(owner_id,contact_id)
+    VALUES(NEW.id,'00000000-0000-4000-8000-000000000001'::uuid)
+    ON CONFLICT DO NOTHING;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS users_add_scan_bot_contact ON users;
+CREATE TRIGGER users_add_scan_bot_contact AFTER INSERT ON users
+FOR EACH ROW EXECUTE FUNCTION add_scan_bot_contact_for_new_user();
+
 -- ── App Settings (moderation lists etc.) ──────────────────────────
 CREATE TABLE IF NOT EXISTS app_settings (
   key_name   TEXT PRIMARY KEY,

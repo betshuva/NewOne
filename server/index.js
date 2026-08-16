@@ -752,6 +752,23 @@ async function migrateDatabase() {
       INSERT INTO user_contacts(owner_id,contact_id)
       SELECT $1,id FROM users WHERE id<>$1 ON CONFLICT DO NOTHING`, [SCAN_BOT_ID]);
     await pool.query(`
+      CREATE OR REPLACE FUNCTION add_scan_bot_contact_for_new_user()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        IF NEW.id <> '${SCAN_BOT_ID}'::uuid THEN
+          INSERT INTO user_contacts(owner_id,contact_id)
+          VALUES(NEW.id,'${SCAN_BOT_ID}'::uuid) ON CONFLICT DO NOTHING;
+          INSERT INTO user_contacts(owner_id,contact_id)
+          VALUES('${SCAN_BOT_ID}'::uuid,NEW.id) ON CONFLICT DO NOTHING;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql`);
+    await pool.query(`DROP TRIGGER IF EXISTS users_add_scan_bot_contact ON users`);
+    await pool.query(`
+      CREATE TRIGGER users_add_scan_bot_contact AFTER INSERT ON users
+      FOR EACH ROW EXECUTE FUNCTION add_scan_bot_contact_for_new_user()`);
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS message_requests (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
