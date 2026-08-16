@@ -161,6 +161,8 @@ CREATE TABLE IF NOT EXISTS stored_files (
   file_size     BIGINT NOT NULL DEFAULT 0,
   context_type  TEXT,
   context_id    UUID,
+  moderation_status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+  moderation_details JSONB,
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 

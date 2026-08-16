@@ -173,8 +173,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.20';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.20.apk';
+const kVersion = '1.2.21';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.21.apk';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
 String _absoluteMediaUrl(String url) =>
@@ -182,6 +182,13 @@ String _absoluteMediaUrl(String url) =>
 
 Future<void> _forwardChatMessage(BuildContext context, String token,
     IO.Socket? socket, Map<String, dynamic> message) async {
+  final moderationStatus = message['status'] as String?;
+  if (moderationStatus == 'pending_scan' ||
+      moderationStatus == 'rejected_scan') {
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('לא ניתן להעביר תמונה שלא אושרה בסריקה')));
+    return;
+  }
   try {
     final responses = await Future.wait([
       http.get(Uri.parse('$kApi/users'),
@@ -241,14 +248,28 @@ Future<void> _forwardChatMessage(BuildContext context, String token,
     var fileName = message['fileName'] as String?;
     var fileType = message['fileType'] as String?;
     final localPath = message['localPath'] as String?;
-    if (localPath != null) {
+    if (localPath != null || fileUrl != null) {
       final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
         ..headers['Authorization'] = 'Bearer $token'
         ..fields[target['kind'] == 'group' ? 'groupId' : 'toUserId'] =
-            target['id'].toString()
-        ..files.add(await http.MultipartFile.fromPath('file', localPath,
+            target['id'].toString();
+      if (localPath != null) {
+        request.files.add(await http.MultipartFile.fromPath('file', localPath,
             filename: fileName,
             contentType: _mimeFromFileName(fileName ?? localPath)));
+      } else {
+        final source = await http
+            .get(Uri.parse(_absoluteMediaUrl(fileUrl!)))
+            .timeout(const Duration(seconds: 30));
+        if (source.statusCode != 200) {
+          throw Exception('Could not download forwarded file');
+        }
+        final forwardedName =
+            fileName ?? Uri.parse(_absoluteMediaUrl(fileUrl)).pathSegments.last;
+        request.files.add(http.MultipartFile.fromBytes('file', source.bodyBytes,
+            filename: forwardedName,
+            contentType: _mimeFromFileName(forwardedName)));
+      }
       final upload = await request.send().timeout(const Duration(seconds: 60));
       final uploadBody = await upload.stream.bytesToString();
       if (upload.statusCode != 200) {
@@ -264,6 +285,15 @@ Future<void> _forwardChatMessage(BuildContext context, String token,
         return;
       }
       final uploaded = jsonDecode(uploadBody) as Map<String, dynamic>;
+      if (uploaded['status'] == 'rejected') {
+        final reason =
+            uploaded['reason']?.toString() ?? 'התמונה נחסמה לפי הגדרות הסינון';
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(reason)));
+        }
+        return;
+      }
       if (uploaded['status'] == 'pending') {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

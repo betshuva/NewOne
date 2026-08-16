@@ -173,6 +173,16 @@ function imageAllowedByFilter(filter, classification) {
   return filter[category] === true;
 }
 
+async function validateApprovedFile(pool, userId, fileUrl, contextType, contextId) {
+  if (!fileUrl) return true;
+  const result = await pool.query(
+    `SELECT 1 FROM stored_files
+     WHERE user_id=$1 AND public_url=$2 AND moderation_status='approved'
+       AND context_type=$3 AND context_id=$4`,
+    [userId, fileUrl, contextType, contextId]);
+  return result.rows.length > 0;
+}
+
 async function classifyClip(buffer, labels) {
   const form = new FormData();
   form.append('image', new Blob([buffer]), 'upload.jpg');
@@ -652,6 +662,27 @@ async function migrateDatabase() {
         context_id    UUID,
         created_at    TIMESTAMPTZ DEFAULT now()
       )`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending'`);
+    await pool.query(`ALTER TABLE stored_files ALTER COLUMN moderation_status SET DEFAULT 'pending'`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_details JSONB`);
+    // Legacy rows predate moderation_status. Trust only files that were already
+    // delivered in the same sender/recipient or sender/group context.
+    await pool.query(`
+      UPDATE stored_files sf SET moderation_status='pending'
+      WHERE sf.moderation_details IS NULL AND NOT EXISTS (
+        SELECT 1 FROM messages m
+        WHERE m.sender_id=sf.user_id AND m.file_url=sf.public_url
+          AND ((sf.context_type='chat' AND m.recipient_id=sf.context_id)
+            OR (sf.context_type='group' AND m.group_id=sf.context_id))
+      )`);
+    await pool.query(`
+      UPDATE stored_files sf SET moderation_status='approved'
+      WHERE sf.moderation_status='pending' AND EXISTS (
+        SELECT 1 FROM messages m
+        WHERE m.sender_id=sf.user_id AND m.file_url=sf.public_url
+          AND ((sf.context_type='chat' AND m.recipient_id=sf.context_id)
+            OR (sf.context_type='group' AND m.group_id=sf.context_id))
+      )`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS app_settings (
@@ -869,6 +900,12 @@ io.on('connection', async (socket) => {
         if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
         return 'text';
       })();
+      if (fileUrl && !await validateApprovedFile(
+          pool, socket.user.id, fileUrl, 'chat', toUserId)) {
+        socket.emit('message:rejected', { toUserId,
+          reason: 'הקובץ לא עבר סריקה ואישור עבור נמען זה' });
+        return;
+      }
       const accepted = await pool.query(
         'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
         [toUserId, socket.user.id]);
@@ -960,6 +997,13 @@ io.on('connection', async (socket) => {
         ? fileType
         : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) ? 'image'
           : fileUrl ? 'document' : 'text');
+
+      if (fileUrl && !await validateApprovedFile(
+          pool, socket.user.id, fileUrl, 'group', groupId)) {
+        socket.emit('message:rejected', { groupId,
+          reason: 'הקובץ לא עבר סריקה ואישור עבור קבוצה זו' });
+        return;
+      }
 
       const saved = await pool.query(
         `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
@@ -1567,6 +1611,10 @@ app.post('/api/messages', auth, async (req, res) => {
       if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
       return 'text';
     })();
+    if (fileUrl && !await validateApprovedFile(
+        pool, senderId, fileUrl, 'chat', toUserId)) {
+      return res.status(403).json({ error: 'הקובץ לא עבר סריקה ואישור עבור נמען זה' });
+    }
 
     const accepted = await pool.query(
       'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
@@ -2205,8 +2253,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     await pool.query(
       `INSERT INTO stored_files
        (user_id, original_name, storage_path, public_url, mime_type, file_type,
-        file_size, context_type, context_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        file_size, context_type, context_id, moderation_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')`,
       [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
        file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' : 'general',
        req.body.groupId || req.body.toUserId || null]);
@@ -2224,6 +2272,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     }
 
     if (scanResult?.blocked) {
+      await pool.query(
+        `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+        [JSON.stringify(scanResult), url]);
       logActivity(req.user.id, 'blocked_upload',
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
           fileUrl: url, reason: scanResult.reason, blockedBy: scanResult.blockedBy,
@@ -2244,6 +2295,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         toUserId: req.body.toUserId, fileName: file.originalname, fileUrl: url,
         category, classification: scanResult?.classification || null,
       }, req.ip);
+      await pool.query(
+        `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+        [JSON.stringify({ reason, classification: scanResult?.classification || null }), url]);
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason,
         classification: scanResult?.classification || null });
@@ -2265,6 +2319,10 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         fileType: allowed.dbType, status: 'pending', pendingId: ins.rows[0].id,
       });
     }
+
+    await pool.query(
+      `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+      [JSON.stringify(scanResult || {}), url]);
 
     logActivity(req.user.id, 'upload_file',
       { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
@@ -3711,6 +3769,9 @@ async function retryPendingScans() {
         await pool.query(`DELETE FROM pending_scans WHERE id=$1`, [row.id]);
 
         if (scanResult.blocked) {
+          await pool.query(
+            `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+            [JSON.stringify(scanResult), row.file_url]);
           logActivity(row.user_id, 'blocked_upload_delayed',
             { fileName: row.file_name, reason: scanResult.reason, fileUrl: row.file_url });
           // Notify sender that file was rejected
@@ -3731,9 +3792,16 @@ async function retryPendingScans() {
             });
             const sid = onlineUsers.get(row.user_id);
             if (sid) io.to(sid).emit('scan:rejected', { fileName: row.file_name, reason });
+            await pool.query(
+              `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify({ reason, classification: scanResult.classification || null }), row.file_url]);
             continue;
           }
         }
+
+        await pool.query(
+          `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+          [JSON.stringify(scanResult || {}), row.file_url]);
 
         // Scan passed — save message and deliver
         if (row.to_user_id) {
