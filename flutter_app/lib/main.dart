@@ -173,8 +173,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.19';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.19.apk';
+const kVersion = '1.2.20';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.20.apk';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
 String _absoluteMediaUrl(String url) =>
@@ -442,7 +442,7 @@ Widget _androidDownloadLink() => TextButton.icon(
       onPressed: () =>
           launchUrl(Uri.parse(kApkUrl), mode: LaunchMode.externalApplication),
       icon: const Icon(Icons.android, size: 20),
-      label: const Text('הורדת betshuva-1.2.19.apk  •  גרסה 1.2.19'),
+      label: const Text('הורדת betshuva-1.2.20.apk  •  גרסה 1.2.20'),
       style: TextButton.styleFrom(foregroundColor: kPrimary),
     );
 
@@ -6398,6 +6398,18 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  void _openContactFilterSettings() {
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ContentFilterSettingsScreen(
+            token: widget.token,
+            contactId: widget.recipient['id']?.toString(),
+            contactName: widget.recipient['name'] as String?,
+          ),
+        ));
+  }
+
   void _showChatMenu() {
     final recipientName = widget.recipient['name'] as String? ?? '';
     showModalBottomSheet(
@@ -6415,19 +6427,7 @@ class _ChatScreenState extends State<ChatScreen> {
               subtitle: Text(recipientName),
               onTap: () {
                 Navigator.pop(context);
-                showDialog(
-                  context: context,
-                  builder: (_) => AlertDialog(
-                    title: Text(recipientName),
-                    content: const Text('איש קשר רשום בבתשובה'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('סגור'),
-                      )
-                    ],
-                  ),
-                );
+                _openContactFilterSettings();
               },
             ),
             ListTile(
@@ -6481,23 +6481,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _handleChatMenuAction(String action) async {
-    final recipientName = widget.recipient['name'] as String? ?? '';
     switch (action) {
       case 'info':
         if (!mounted) return;
-        showDialog(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: Text(recipientName),
-            content: const Text('איש קשר רשום בבתשובה'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('סגור'),
-              )
-            ],
-          ),
-        );
+        _openContactFilterSettings();
         break;
       case 'search':
         _searchInMessages();
@@ -6750,6 +6737,27 @@ class _ChatScreenState extends State<ChatScreen> {
       final data = jsonDecode(body) as Map<String, dynamic>;
       final fileUrl = data['url'] as String;
       final isPending = data['status'] == 'pending';
+      final isRejected = data['status'] == 'rejected';
+
+      if (isRejected) {
+        setState(() {
+          _messages.add({
+            'id': 'temp_${DateTime.now().millisecondsSinceEpoch}',
+            'text': fileName,
+            'from': widget.me?['id'],
+            'time': _nowTime(),
+            'createdAt': DateTime.now().toIso8601String(),
+            'status': 'rejected_scan',
+            'isFile': true,
+            'fileType': fileType,
+            'fileUrl': fileUrl,
+            'scanReason': data['reason'],
+          });
+        });
+        _scrollToBottom();
+        _showBlockedDialog(data['reason'] as String? ?? 'התמונה לא נשלחה');
+        return;
+      }
 
       if (isPending) {
         // Scan service unavailable — file queued, server will send it later
@@ -7669,6 +7677,11 @@ class _MessageBubble extends StatelessWidget {
           child:
               Icon(Icons.hourglass_top, size: 14, color: Colors.orangeAccent),
         );
+      case 'rejected_scan':
+        return const Tooltip(
+          message: 'התמונה לא נשלחה',
+          child: Icon(Icons.error_outline, size: 15, color: Colors.red),
+        );
       default:
         return const Icon(Icons.done, size: 14, color: kPrimaryMid);
     }
@@ -7871,6 +7884,22 @@ class _MessageBubble extends StatelessWidget {
                 ),
               ),
             ],
+
+            if (message['status'] == 'pending_scan')
+              const Padding(
+                padding: EdgeInsets.only(top: 5),
+                child: Text('ממתינה לסריקה — עדיין לא נשלחה',
+                    style: TextStyle(fontSize: 11, color: Colors.orange)),
+              ),
+            if (message['status'] == 'rejected_scan')
+              Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Text(
+                  'לא נשלחה · ${message['scanReason'] ?? 'נדחתה בסריקה'}',
+                  style: const TextStyle(fontSize: 11, color: Colors.red),
+                  textDirection: TextDirection.rtl,
+                ),
+              ),
 
             const SizedBox(height: 3),
             Row(
@@ -10400,6 +10429,169 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 }
 
+// ── Content filter settings ───────────────────────────────────────
+class ContentFilterSettingsScreen extends StatefulWidget {
+  final String token;
+  final String? contactId;
+  final String? contactName;
+  const ContentFilterSettingsScreen(
+      {super.key, required this.token, this.contactId, this.contactName});
+
+  @override
+  State<ContentFilterSettingsScreen> createState() =>
+      _ContentFilterSettingsScreenState();
+}
+
+class _ContentFilterSettingsScreenState
+    extends State<ContentFilterSettingsScreen> {
+  bool _loading = true;
+  bool _saving = false;
+  bool _inherit = true;
+  Map<String, bool> _filter = {
+    'text': true,
+    'nonHumanImages': true,
+    'men': true,
+    'women': true,
+    'children': true,
+  };
+
+  bool get _isContact => widget.contactId != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final path = _isContact
+          ? '/contacts/${widget.contactId}/filter-settings'
+          : '/filter-settings';
+      final response = await http.get(Uri.parse('$kApi$path'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200) throw Exception(data['error'] ?? 'שגיאה');
+      final raw = (_isContact ? data['filter'] : data) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _inherit = _isContact ? data['inherited'] == true : false;
+        for (final key in _filter.keys) {
+          _filter[key] = raw[key] == true;
+        }
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('טעינת ההגדרות נכשלה: $e')),
+      );
+    }
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      final path = _isContact
+          ? '/contacts/${widget.contactId}/filter-settings'
+          : '/filter-settings';
+      final body = _isContact
+          ? (_inherit ? {'inherit': true} : {'filter': _filter})
+          : _filter;
+      final response = await http.put(Uri.parse('$kApi$path'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json'
+          },
+          body: jsonEncode(body));
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200) throw Exception(data['error'] ?? 'שגיאה');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('הגדרות הסינון נשמרו')),
+      );
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('שמירת ההגדרות נכשלה: $e')),
+        );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Widget _option(String key, String title, String subtitle, IconData icon) =>
+      SwitchListTile(
+        secondary: Icon(icon, color: kPrimary),
+        title: Text(title),
+        subtitle: Text(subtitle),
+        activeColor: kPrimary,
+        value: _filter[key] == true,
+        onChanged:
+            _inherit ? null : (value) => setState(() => _filter[key] = value),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+          title: Text(_isContact
+              ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
+              : 'סינון תוכן כללי')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(children: [
+              if (_isContact) ...[
+                SwitchListTile(
+                  title: const Text('השתמש בהגדרות הכלליות'),
+                  subtitle:
+                      const Text('שינויים עתידיים בהגדרה הכללית יחולו גם כאן'),
+                  value: _inherit,
+                  activeColor: kPrimary,
+                  onChanged: (value) => setState(() => _inherit = value),
+                ),
+                const Divider(height: 1),
+              ],
+              const Padding(
+                padding: EdgeInsets.fromLTRB(18, 18, 18, 8),
+                child: Text('סוגי תוכן מותרים',
+                    style:
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              ),
+              _option('text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
+              _option('nonHumanImages', 'תמונות ללא בני אדם',
+                  'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
+              _option('men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
+              _option(
+                  'women', 'נשים', 'תמונות שסווגו כתמונות נשים', Icons.woman),
+              _option('children', 'ילדים', 'תמונות שסווגו כתמונות ילדים',
+                  Icons.child_care),
+              const Padding(
+                padding: EdgeInsets.all(18),
+                child: Text(
+                    'כל התמונות עוברות בדיקת צניעות תמיד, ללא קשר לבחירות כאן.',
+                    style: TextStyle(color: kSubtext)),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(18),
+                child: ElevatedButton.icon(
+                  onPressed: _saving ? null : _save,
+                  icon: _saving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.save),
+                  label: const Text('שמור הגדרות'),
+                ),
+              ),
+            ]),
+    );
+  }
+}
+
 // ── Settings Screen ───────────────────────────────────────────────
 class SettingsScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
@@ -10498,6 +10690,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: kCard,
             child: Column(
               children: [
+                ListTile(
+                  leading: const Icon(Icons.tune, color: kPrimary),
+                  title: const Text('סוגי תוכן מותרים'),
+                  subtitle: const Text('טקסט, תמונות, גברים, נשים וילדים'),
+                  trailing: const Icon(Icons.chevron_left),
+                  onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ContentFilterSettingsScreen(
+                          token: widget.token,
+                        ),
+                      )),
+                ),
+                const Divider(height: 1, indent: 16),
                 SwitchListTile(
                   activeColor: kPrimary,
                   title: const Text('סינון תוכן מחמיר (Strict)'),

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS users (
   profile_pic_url     TEXT,
   privacy_pic         TEXT NOT NULL DEFAULT 'all',      -- all | contacts | nobody
   filter_level        TEXT NOT NULL DEFAULT 'standard', -- standard | strict
+  content_filter      JSONB NOT NULL DEFAULT '{"text":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
   google_id           TEXT,
   latitude            DOUBLE PRECISION,
   longitude           DOUBLE PRECISION,
@@ -97,6 +98,16 @@ CREATE TABLE IF NOT EXISTS group_members (
   pending_since TIMESTAMPTZ,
   joined_at     TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (group_id, user_id)
+);
+
+-- ── Saved contacts and per-contact filter overrides ─────────────
+CREATE TABLE IF NOT EXISTS user_contacts (
+  owner_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  contact_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  filter_override JSONB,
+  created_at     TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (owner_id, contact_id),
+  CHECK (owner_id <> contact_id)
 );
 
 -- ── Blocked Users ──────────────────────────────────────────────────

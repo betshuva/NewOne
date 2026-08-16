@@ -32825,6 +32825,7 @@ record_android
 record_linux
 record_platform_interface
 record_web
+record_windows
 
 // Copyright 2022 openapi4j authors. All rights reserved.
 //
@@ -32855,7 +32856,6 @@ record_web
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------------
 record_darwin
-record_windows
 
 // Copyright 2022 openapi4j authors. All rights reserved.
 //

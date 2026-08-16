@@ -135,6 +135,78 @@ const DEFAULT_BLOCKED_WORDS = [
 let FEMALE_LABELS = [...DEFAULT_FEMALE_LABELS];
 let BLOCKED_WORDS = [...DEFAULT_BLOCKED_WORDS];
 
+const DEFAULT_CONTENT_FILTER = Object.freeze({
+  text: true,
+  nonHumanImages: true,
+  men: true,
+  women: true,
+  children: true,
+});
+
+function normalizeContentFilter(value, fallback = DEFAULT_CONTENT_FILTER) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.keys(DEFAULT_CONTENT_FILTER).map(key => [
+    key, typeof input[key] === 'boolean' ? input[key] : fallback[key],
+  ]));
+}
+
+async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
+  const result = await pool.query(
+    `SELECT u.content_filter, c.filter_override
+     FROM users u
+     LEFT JOIN user_contacts c ON c.owner_id=u.id AND c.contact_id=$2
+     WHERE u.id=$1`, [recipientId, senderId]);
+  if (!result.rows.length) return null;
+  const general = normalizeContentFilter(result.rows[0].content_filter);
+  return {
+    isContact: !!result.rows[0].filter_override || (await pool.query(
+      'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
+      [recipientId, senderId])).rows.length > 0,
+    filter: normalizeContentFilter(result.rows[0].filter_override, general),
+  };
+}
+
+function imageAllowedByFilter(filter, classification) {
+  const category = classification?.category || 'people';
+  if (category === 'people')
+    return filter.men && filter.women && filter.children;
+  return filter[category] === true;
+}
+
+async function classifyClip(buffer, labels) {
+  const form = new FormData();
+  form.append('image', new Blob([buffer]), 'upload.jpg');
+  form.append('labels', labels.join(','));
+  const response = await fetch(
+    process.env.CLIP_URL || 'http://127.0.0.1:5000/classify',
+    { method: 'POST', body: form, signal: AbortSignal.timeout(30000) },
+  );
+  if (!response.ok) throw new Error(`CLIP ${response.status}`);
+  return response.json();
+}
+
+async function classifyImageContent(buffer) {
+  const life = await classifyClip(buffer, [
+    'image containing a living being',
+    'image containing no living beings',
+  ]);
+  const subjects = await classifyClip(buffer, [
+    'person or people', 'animal', 'plant', 'inanimate object or landscape',
+  ]);
+  const subject = Object.entries(subjects).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0];
+  if (subject !== 'person or people') {
+    return { category: 'nonHumanImages', life, subjects, people: null };
+  }
+  const people = await classifyClip(buffer, [
+    'adult man', 'adult woman', 'boy or girl', 'multiple people',
+  ]);
+  const person = Object.entries(people).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0];
+  const category = person === 'adult man' ? 'men'
+    : person === 'adult woman' ? 'women'
+      : person === 'boy or girl' ? 'children' : 'people';
+  return { category, life, subjects, people };
+}
+
 
 async function scanImage(buffer) {
   const key = process.env.GOOGLE_VISION_API_KEY;
@@ -153,15 +225,10 @@ async function scanImage(buffer) {
         'adult sexual content',
         'lingerie or revealing clothing',
       ];
-      const form = new FormData();
-      form.append('image', new Blob([buffer]), 'upload.jpg');
-      form.append('labels', labels.join(','));
-      const response = await fetch(
-        process.env.CLIP_URL || 'http://127.0.0.1:5000/classify',
-        { method: 'POST', body: form, signal: AbortSignal.timeout(30000) },
-      );
-      if (!response.ok) return { pending: true };
-      const scores = await response.json();
+      const [scores, classification] = await Promise.all([
+        classifyClip(buffer, labels),
+        classifyImageContent(buffer),
+      ]);
       const labelsRaw = Object.entries(scores).map(([name, score]) => ({
         name,
         score: Math.round(Number(score) * 100),
@@ -170,21 +237,17 @@ async function scanImage(buffer) {
         Number(scores['adult sexual content'] || 0) >= 0.20 ||
         Number(scores.nudity || 0) >= 0.20 ||
         Number(scores['lingerie or revealing clothing'] || 0) >= 0.30
-          ? 'safeSearch'
-          : Number(scores['woman or girl'] || 0) >= 0.45
-            ? 'labels'
-            : null;
+          ? 'safeSearch' : null;
       if (blockedBy) {
         return {
           blocked: true,
           blockedBy,
-          reason: blockedBy === 'labels'
-            ? 'התמונה נחסמה — תמונות של נשים אינן מורשות'
-            : 'התמונה נחסמה — תוכן לא צנוע',
+          reason: 'התמונה נחסמה — תוכן לא צנוע',
           labels: labelsRaw,
           faces: [],
           safeSearch: {},
           genderResults: null,
+          classification,
         };
       }
       return {
@@ -194,6 +257,7 @@ async function scanImage(buffer) {
         faces: [],
         safeSearch: {},
         genderResults: null,
+        classification,
       };
     } catch (error) {
       console.error('Local CLIP scan:', error.message);
@@ -233,14 +297,13 @@ async function scanImage(buffer) {
   const labelsRaw = (ann.labelAnnotations || []).map(l => ({ name: l.description, score: Math.round(l.score * 100) }));
   const labelNames = labelsRaw.map(l => l.name.toLowerCase());
   const faces = ann.faceAnnotations || [];
+  let classification = null;
+  try { classification = await classifyImageContent(buffer); } catch (_) {}
 
   if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
-    return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
+    return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
 
-  if (labelNames.some(l => FEMALE_LABELS.some(f => l === f || l.startsWith(f + ' ') || l.endsWith(' ' + f) || l.includes(' ' + f + ' '))))
-    return { blocked: true, blockedBy: 'labels', reason: 'התמונה נחסמה — תמונות של נשים אינן מורשות', safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
-
-  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null };
+  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
 }
 
 async function scanDocument(buffer, mimetype) {
@@ -391,6 +454,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_pic TEXT NOT NULL DEFAULT 'all'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
 
     // ── Allow phone-only / email-only accounts ─────────────────────
     await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
@@ -499,6 +563,7 @@ async function migrateDatabase() {
         PRIMARY KEY (owner_id, contact_id),
         CHECK (owner_id <> contact_id)
       )`);
+    await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_override JSONB`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS message_requests (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -803,6 +868,10 @@ io.on('connection', async (socket) => {
         'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
         [toUserId, socket.user.id]);
       if (!accepted.rows.length) {
+        if (msgType !== 'text' || fileUrl) {
+          socket.emit('message:rejected', { toUserId, reason: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
+          return;
+        }
         const request = await pool.query(
           `INSERT INTO message_requests
              (sender_id, recipient_id, body, type, file_url, file_name)
@@ -823,6 +892,13 @@ io.on('connection', async (socket) => {
           { type: 'message_request', senderId: socket.user.id });
         socket.emit('message:request-pending', { toUserId });
         return;
+      }
+      if (msgType === 'text' && !fileUrl) {
+        const policy = await getEffectiveRecipientFilter(pool, toUserId, socket.user.id);
+        if (policy && !policy.filter.text) {
+          socket.emit('message:rejected', { toUserId, reason: 'הודעות טקסט חסומות בהגדרות הנמען' });
+          return;
+        }
       }
       const saved = await pool.query(
         `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
@@ -1197,6 +1273,7 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
     const pool = await getPool();
     const result = await pool.query(
       `SELECT u.id, u.name, u.profile_pic_url, u.city, u.community, u.phone, u.email,
+              c.filter_override,
               last_msg.body AS last_message,
               last_msg.type AS last_message_type,
               last_msg.created_at AS last_message_at,
@@ -1275,6 +1352,58 @@ app.post('/api/contacts/save/:userId', authWithDbCheck, async (req, res) => {
       `INSERT INTO user_contacts(owner_id, contact_id) VALUES($1,$2)
        ON CONFLICT DO NOTHING`, [req.user.id, req.params.userId]);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Per-user and per-contact content filters ─────────────────────
+app.get('/api/filter-settings', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
+    res.json(normalizeContentFilter(result.rows[0]?.content_filter));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/filter-settings', authWithDbCheck, async (req, res) => {
+  try {
+    const filter = normalizeContentFilter(req.body);
+    const pool = await getPool();
+    await pool.query('UPDATE users SET content_filter=$1 WHERE id=$2', [JSON.stringify(filter), req.user.id]);
+    res.json(filter);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT c.filter_override, u.content_filter AS owner_filter
+       FROM user_contacts c JOIN users u ON u.id=c.owner_id
+       WHERE c.owner_id=$1 AND c.contact_id=$2`,
+      [req.user.id, req.params.userId]);
+    if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
+    const inherited = normalizeContentFilter(result.rows[0].owner_filter);
+    const override = result.rows[0].filter_override;
+    res.json({ inherited: !override, filter: normalizeContentFilter(override, inherited) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    if (req.body?.inherit === true) {
+      const result = await pool.query(
+        'UPDATE user_contacts SET filter_override=NULL WHERE owner_id=$1 AND contact_id=$2 RETURNING owner_id',
+        [req.user.id, req.params.userId]);
+      if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
+      return res.json({ inherited: true });
+    }
+    const filter = normalizeContentFilter(req.body?.filter || req.body);
+    const result = await pool.query(
+      'UPDATE user_contacts SET filter_override=$1 WHERE owner_id=$2 AND contact_id=$3 RETURNING owner_id',
+      [JSON.stringify(filter), req.user.id, req.params.userId]);
+    if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
+    res.json({ inherited: false, filter });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1438,6 +1567,8 @@ app.post('/api/messages', auth, async (req, res) => {
       'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
       [toUserId, senderId]);
     if (!accepted.rows.length) {
+      if (type !== 'text' || fileUrl)
+        return res.status(403).json({ error: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
       const request = await pool.query(
         `INSERT INTO message_requests
            (sender_id, recipient_id, body, type, file_url, file_name)
@@ -1457,6 +1588,12 @@ app.post('/api/messages', auth, async (req, res) => {
         `${req.user.name} רוצה לשלוח לך הודעה`,
         { type: 'message_request', senderId });
       return res.json({ requestPending: true, id: requestRow.id });
+    }
+
+    if (type === 'text' && !fileUrl) {
+      const policy = await getEffectiveRecipientFilter(pool, toUserId, senderId);
+      if (policy && !policy.filter.text)
+        return res.status(403).json({ error: 'הודעות טקסט חסומות בהגדרות הנמען' });
     }
 
     const saved = await pool.query(
@@ -2049,10 +2186,17 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
 
   try {
+    const pool = await getPool();
+    let recipientPolicy = null;
+    if (req.body.toUserId) {
+      recipientPolicy = await getEffectiveRecipientFilter(pool, req.body.toUserId, req.user.id);
+      if (!recipientPolicy) return res.status(404).json({ error: 'הנמען לא נמצא' });
+      if (!recipientPolicy.isContact)
+        return res.status(403).json({ error: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
+    }
     // העלאה לאחסון תחילה (גם קבצים חסומים נשמרים לצורך ביקורת אדמין)
     const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
     const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
-    const pool = await getPool();
     await pool.query(
       `INSERT INTO stored_files
        (user_id, original_name, storage_path, public_url, mime_type, file_type,
@@ -2080,7 +2224,24 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
           fileUrl: url, reason: scanResult.reason, blockedBy: scanResult.blockedBy,
           safeSearch: scanResult.safeSearch, labels: scanResult.labels,
           faces: scanResult.faces || [], genderResults: scanResult.genderResults || null }, req.ip);
-      return res.status(400).json({ error: scanResult.reason });
+      return res.json({ url, fileName: file.originalname, fileSize: file.size,
+        fileType: allowed.dbType, status: 'rejected', reason: scanResult.reason,
+        classification: scanResult.classification || null });
+    }
+
+    if (allowed.dbType === 'image' && recipientPolicy &&
+        !imageAllowedByFilter(recipientPolicy.filter, scanResult?.classification)) {
+      const category = scanResult?.classification?.category || 'people';
+      const labels = { nonHumanImages: 'תמונות ללא בני אדם', men: 'תמונות גברים',
+        women: 'תמונות נשים', children: 'תמונות ילדים', people: 'תמונות עם מספר אנשים' };
+      const reason = `${labels[category] || 'סוג התמונה'} חסומות בהגדרות הנמען`;
+      logActivity(req.user.id, 'blocked_by_recipient_filter', {
+        toUserId: req.body.toUserId, fileName: file.originalname, fileUrl: url,
+        category, classification: scanResult?.classification || null,
+      }, req.ip);
+      return res.json({ url, fileName: file.originalname, fileSize: file.size,
+        fileType: allowed.dbType, status: 'rejected', reason,
+        classification: scanResult?.classification || null });
     }
 
     if (scanResult?.pending) {
@@ -3551,6 +3712,22 @@ async function retryPendingScans() {
           const sid = onlineUsers.get(row.user_id);
           if (sid) io.to(sid).emit('scan:rejected', { fileName: row.file_name, reason: scanResult.reason });
           continue;
+        }
+
+        if (row.file_type === 'image' && row.to_user_id) {
+          const policy = await getEffectiveRecipientFilter(pool, row.to_user_id, row.user_id);
+          if (!policy?.isContact || !imageAllowedByFilter(policy.filter, scanResult.classification)) {
+            const reason = !policy?.isContact
+              ? 'הנמען עדיין לא אישר אותך כחבר'
+              : 'סוג התמונה חסום בהגדרות הנמען';
+            logActivity(row.user_id, 'blocked_by_recipient_filter', {
+              toUserId: row.to_user_id, fileName: row.file_name,
+              fileUrl: row.file_url, category: scanResult.classification?.category,
+            });
+            const sid = onlineUsers.get(row.user_id);
+            if (sid) io.to(sid).emit('scan:rejected', { fileName: row.file_name, reason });
+            continue;
+          }
         }
 
         // Scan passed — save message and deliver
