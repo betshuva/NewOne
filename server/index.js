@@ -57,6 +57,10 @@ const ALLOWED_TYPES = {
                  { ext: 'docx', maxMB: 25, dbType: 'document' },
   'audio/mpeg':  { ext: 'mp3',  maxMB: 25, dbType: 'audio' },
   'audio/aac':   { ext: 'aac',  maxMB: 25, dbType: 'audio' },
+  'audio/mp4':   { ext: 'm4a',  maxMB: 25, dbType: 'audio' },
+  'audio/webm':  { ext: 'webm', maxMB: 25, dbType: 'audio' },
+  'audio/ogg':   { ext: 'ogg',  maxMB: 25, dbType: 'audio' },
+  'audio/wav':   { ext: 'wav',  maxMB: 25, dbType: 'audio' },
 };
 const BLOCKED_TYPES = ['video/', 'application/x-mpegURL'];
 
@@ -134,7 +138,68 @@ let BLOCKED_WORDS = [...DEFAULT_BLOCKED_WORDS];
 
 async function scanImage(buffer) {
   const key = process.env.GOOGLE_VISION_API_KEY;
-  if (!key) return { pending: true };
+  if (!key) {
+    // Free local fallback: the CLIP service is hosted on this server and does
+    // not incur a per-request API charge.
+    try {
+      const labels = [
+        'safe everyday photo',
+        'computer screen',
+        'document or screenshot',
+        'landscape or object',
+        'man or boy',
+        'woman or girl',
+        'nudity',
+        'adult sexual content',
+        'lingerie or revealing clothing',
+      ];
+      const form = new FormData();
+      form.append('image', new Blob([buffer]), 'upload.jpg');
+      form.append('labels', labels.join(','));
+      const response = await fetch(
+        process.env.CLIP_URL || 'http://127.0.0.1:5000/classify',
+        { method: 'POST', body: form, signal: AbortSignal.timeout(30000) },
+      );
+      if (!response.ok) return { pending: true };
+      const scores = await response.json();
+      const labelsRaw = Object.entries(scores).map(([name, score]) => ({
+        name,
+        score: Math.round(Number(score) * 100),
+      }));
+      const blockedBy =
+        Number(scores['adult sexual content'] || 0) >= 0.20 ||
+        Number(scores.nudity || 0) >= 0.20 ||
+        Number(scores['lingerie or revealing clothing'] || 0) >= 0.30
+          ? 'safeSearch'
+          : Number(scores['woman or girl'] || 0) >= 0.45
+            ? 'labels'
+            : null;
+      if (blockedBy) {
+        return {
+          blocked: true,
+          blockedBy,
+          reason: blockedBy === 'labels'
+            ? 'התמונה נחסמה — תמונות של נשים אינן מורשות'
+            : 'התמונה נחסמה — תוכן לא צנוע',
+          labels: labelsRaw,
+          faces: [],
+          safeSearch: {},
+          genderResults: null,
+        };
+      }
+      return {
+        blocked: false,
+        blockedBy: null,
+        labels: labelsRaw,
+        faces: [],
+        safeSearch: {},
+        genderResults: null,
+      };
+    } catch (error) {
+      console.error('Local CLIP scan:', error.message);
+      return { pending: true };
+    }
+  }
 
   let res;
   try {
@@ -341,6 +406,17 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
 
+    // Only one verified identity may own a phone number or email address.
+    // Unverified drafts may coexist, but a second one can never be verified.
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS users_verified_phone_unique
+      ON users (phone)
+      WHERE phone_verified = TRUE AND phone IS NOT NULL`);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS users_verified_email_unique
+      ON users (lower(email))
+      WHERE email_verified = TRUE AND email IS NOT NULL`);
+
     // ── Admin permissions ──────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS admin_permissions (
@@ -367,6 +443,7 @@ async function migrateDatabase() {
         filter_level    TEXT NOT NULL DEFAULT 'standard',
         created_at      TIMESTAMPTZ DEFAULT now()
       )`);
+    await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
 
     // ── Messages ───────────────────────────────────────────────────
     await pool.query(`
@@ -412,6 +489,41 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'member'`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS added_by UUID`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_contacts (
+        owner_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        contact_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        PRIMARY KEY (owner_id, contact_id),
+        CHECK (owner_id <> contact_id)
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS message_requests (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        body TEXT,
+        type TEXT NOT NULL DEFAULT 'text',
+        file_url TEXT,
+        file_name TEXT,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE(sender_id, recipient_id)
+      )`);
+    const contactsInitialized = await pool.query(
+      `SELECT 1 FROM app_settings WHERE key_name='contacts_initialized'`);
+    if (!contactsInitialized.rows.length) {
+      // Preserve the list existing accounts had before contacts were added.
+      // Accounts created after this migration start with an empty list.
+      await pool.query(`
+        INSERT INTO user_contacts(owner_id, contact_id)
+        SELECT owner.id, contact.id FROM users owner CROSS JOIN users contact
+        WHERE owner.id <> contact.id ON CONFLICT DO NOTHING`);
+      await pool.query(
+        `INSERT INTO app_settings(key_name,value) VALUES('contacts_initialized','true')
+         ON CONFLICT (key_name) DO NOTHING`);
+    }
 
     // ── Blocked Users ──────────────────────────────────────────────
     await pool.query(`
@@ -531,7 +643,9 @@ app.use(express.json());
 app.use(express.static(require('path').join(__dirname, '..')));
 app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
 app.get('/app', (req, res) => res.redirect('/app/'));
+app.get('/public-home', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'home.html')));
 app.get('/privacy', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'privacy.html')));
+app.get('/terms', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'terms.html')));
 app.get('/delete-account', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'delete-account.html')));
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -541,16 +655,47 @@ if (!JWT_SECRET) {
 const onlineUsers = new Map(); // userId → socketId
 const otpStore    = new Map(); // phone → { code, expires, name }
 
-function auth(req, res, next) {
+async function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
+    const pool = await getPool();
+    const result = await pool.query(
+      'SELECT phone, email_verified, phone_verified FROM users WHERE id = $1', [req.user.id]);
+    if (!result.rows.length)
+      return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
+    const registrationComplete = !!result.rows[0].phone &&
+      (result.rows[0].email_verified === true || result.rows[0].phone_verified === true);
+    if (!registrationComplete && !req.path.endsWith('/link-phone'))
+      return res.status(403).json({ error: 'יש להשלים אימות טלפון או אימייל', code: 'VERIFICATION_REQUIRED' });
     next();
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין — נא להתחבר מחדש' });
   }
 }
+
+// Allows a saved session to finish phone setup before entering the app.
+app.get('/api/registration-status', async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'לא מחובר' });
+  try {
+    const tokenUser = jwt.verify(token, JWT_SECRET);
+    const pool = await getPool();
+    const result = await pool.query(
+      'SELECT phone, email_verified, phone_verified FROM users WHERE id=$1', [tokenUser.id]);
+    if (!result.rows.length)
+      return res.status(401).json({ error: 'המשתמש אינו קיים' });
+    const user = result.rows[0];
+    res.json({
+      phoneMissing: !user.phone,
+      verificationRequired:
+        user.email_verified !== true && user.phone_verified !== true,
+    });
+  } catch (_) {
+    res.status(401).json({ error: 'טוקן לא תקין' });
+  }
+});
 
 // middleware שבודק שהמשתמש קיים ב-DB (למניעת ghost sessions)
 async function authWithDbCheck(req, res, next) {
@@ -559,11 +704,17 @@ async function authWithDbCheck(req, res, next) {
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     const pool = await getPool();
-    const exists = await pool.query('SELECT 1 FROM users WHERE id = $1', [req.user.id]);
+    const exists = await pool.query(
+      'SELECT phone, email_verified, phone_verified FROM users WHERE id = $1', [req.user.id]);
     if (!exists.rows.length) {
       console.warn(`[AUTH] ghost session — id:${req.user.id} email:${req.user.email}`);
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
     }
+    if (!exists.rows[0].phone)
+      return res.status(403).json({ error: 'יש להזין מספר טלפון', code: 'PHONE_REQUIRED' });
+    if (exists.rows[0].email_verified !== true &&
+        exists.rows[0].phone_verified !== true)
+      return res.status(403).json({ error: 'יש להשלים אימות טלפון או אימייל', code: 'VERIFICATION_REQUIRED' });
     next();
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין' });
@@ -575,11 +726,16 @@ io.use(async (socket, next) => {
   try {
     socket.user = jwt.verify(socket.handshake.auth.token, JWT_SECRET);
     const pool = await getPool();
-    const exists = await pool.query('SELECT 1 FROM users WHERE id = $1', [socket.user.id]);
+    const exists = await pool.query(
+      'SELECT phone, email_verified, phone_verified FROM users WHERE id = $1', [socket.user.id]);
     if (!exists.rows.length) {
       console.warn(`[SOCKET] user_not_found — id:${socket.user.id} email:${socket.user.email} name:${socket.user.name}`);
       return next(new Error('user_not_found'));
     }
+    if (!exists.rows[0].phone) return next(new Error('phone_required'));
+    if (exists.rows[0].email_verified !== true &&
+        exists.rows[0].phone_verified !== true)
+      return next(new Error('verification_required'));
     next();
   } catch (e) {
     console.warn(`[SOCKET] unauthorized — ${e.message}`);
@@ -590,6 +746,31 @@ io.use(async (socket, next) => {
 io.on('connection', async (socket) => {
   onlineUsers.set(socket.user.id, socket.id);
   io.emit('users:online', [...onlineUsers.keys()]);
+
+  // Messages waiting for this user are now delivered to a connected device.
+  try {
+    const pool = await getPool();
+    const pending = await pool.query(
+      `SELECT m.id, m.sender_id FROM messages m
+       LEFT JOIN message_status ms
+         ON ms.message_id=m.id AND ms.user_id=$1
+       WHERE m.recipient_id=$1 AND m.deleted_for_everyone=FALSE
+         AND (ms.status IS NULL OR ms.status='sent')`, [socket.user.id]);
+    for (const message of pending.rows) {
+      await pool.query(
+        `INSERT INTO message_status (message_id, user_id, status)
+         VALUES ($1, $2, 'delivered')
+         ON CONFLICT (message_id, user_id) DO UPDATE SET status='delivered', updated_at=now()
+         WHERE message_status.status != 'read'`,
+        [message.id, socket.user.id]);
+    }
+    for (const senderId of new Set(pending.rows.map(row => row.sender_id))) {
+      const senderSid = onlineUsers.get(senderId);
+      if (senderSid) io.to(senderSid).emit('messages:delivered', { by: socket.user.id });
+    }
+  } catch (e) {
+    console.error('mark delivered on connect:', e.message);
+  }
 
   // Join all group rooms this user belongs to
   try {
@@ -618,12 +799,45 @@ io.on('connection', async (socket) => {
         if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
         return 'text';
       })();
+      const accepted = await pool.query(
+        'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
+        [toUserId, socket.user.id]);
+      if (!accepted.rows.length) {
+        const request = await pool.query(
+          `INSERT INTO message_requests
+             (sender_id, recipient_id, body, type, file_url, file_name)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT(sender_id, recipient_id) DO UPDATE SET
+             body=EXCLUDED.body, type=EXCLUDED.type, file_url=EXCLUDED.file_url,
+             file_name=EXCLUDED.file_name, created_at=now()
+           RETURNING id, created_at`,
+          [socket.user.id, toUserId, text || null, msgType,
+           fileUrl || null, fileName || null]);
+        relay(toUserId, 'message:request', {
+          id: request.rows[0].id, senderId: socket.user.id,
+          senderName: socket.user.name, text, fileName,
+          createdAt: request.rows[0].created_at,
+        });
+        sendPush(toUserId, 'בקשת הודעה חדשה',
+          `${socket.user.name} רוצה לשלוח לך הודעה`,
+          { type: 'message_request', senderId: socket.user.id });
+        socket.emit('message:request-pending', { toUserId });
+        return;
+      }
       const saved = await pool.query(
         `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, created_at`,
         [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
       const row = saved.rows[0];
+      if (onlineUsers.has(toUserId)) {
+        await pool.query(
+          `INSERT INTO message_status (message_id, user_id, status)
+           VALUES ($1, $2, 'delivered')
+           ON CONFLICT (message_id, user_id) DO UPDATE SET status='delivered', updated_at=now()
+           WHERE message_status.status != 'read'`, [row.id, toUserId]);
+        socket.emit('message:delivered', { id: row.id });
+      }
       relay(toUserId, 'chat:message', {
         id: row.id, fromUserId: socket.user.id, fromName: socket.user.name,
         text, replyToId: replyToId || null, createdAt: row.created_at,
@@ -649,7 +863,7 @@ io.on('connection', async (socket) => {
     relay(toUserId, 'chat:typing', { fromUserId: socket.user.id }));
 
   // ── Group messaging ──────────────────────────────────────────────
-  socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType }) => {
+  socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType, clientMessageId }) => {
     if ((!text && !fileUrl) || !groupId) return;
     try {
       const pool = await getPool();
@@ -672,7 +886,7 @@ io.on('connection', async (socket) => {
          RETURNING id, created_at`,
         [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
       const row = saved.rows[0];
-      io.to(`group:${groupId}`).emit('group:message', {
+      const outgoingGroupMessage = {
         id:         row.id,
         groupId,
         fromUserId: socket.user.id,
@@ -680,8 +894,13 @@ io.on('connection', async (socket) => {
         text,
         fileUrl, fileName, fileType: msgType,
         replyToId:  replyToId || null,
+        clientMessageId: clientMessageId || null,
         createdAt:  row.created_at,
-      });
+      };
+      // Always acknowledge the sender directly. This also covers the creator
+      // of a brand-new group before their socket has joined the group room.
+      socket.emit('group:message', outgoingGroupMessage);
+      socket.to(`group:${groupId}`).emit('group:message', outgoingGroupMessage);
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_group_message',
         { groupId, messageId: row.id, fileName: fileName || null });
       // Push to offline members
@@ -700,9 +919,32 @@ io.on('connection', async (socket) => {
 
   socket.on('group:typing', ({ groupId }) =>
     socket.to(`group:${groupId}`).emit('group:typing', {
+      groupId,
       fromUserId: socket.user.id,
       fromName:   socket.user.name,
     }));
+
+  socket.on('group:viewed', async ({ groupId }) => {
+    if (!groupId) return;
+    try {
+      const pool = await getPool();
+      const updated = await pool.query(
+        `UPDATE group_members SET last_viewed_at=now()
+         WHERE group_id=$1 AND user_id=$2 AND status='member'
+         RETURNING last_viewed_at`,
+        [groupId, socket.user.id]);
+      if (!updated.rows.length) return;
+      socket.join(`group:${groupId}`);
+      io.to(`group:${groupId}`).emit('group:viewed', {
+        groupId,
+        userId: socket.user.id,
+        userName: socket.user.name,
+        viewedAt: updated.rows[0].last_viewed_at,
+      });
+    } catch (e) {
+      console.error('group:viewed:', e.message);
+    }
+  });
 
   socket.on('group:join', ({ groupId }) => socket.join(`group:${groupId}`));
 
@@ -717,10 +959,19 @@ io.on('connection', async (socket) => {
 
 // ── Register ─────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
-  const { name, email, password, phone } = req.body;
+  const { name, password, phone, clientType, verificationMethod } = req.body;
+  // Copying an address from RTL text can add invisible bidi controls. They
+  // are formatting characters, not part of an email address.
+  const email = typeof req.body.email === 'string'
+    ? req.body.email.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim().toLowerCase()
+    : req.body.email;
   if (!name) return res.status(400).json({ error: 'חסר שם' });
   const hasEmail = !!(email && password);
   const hasPhone = !!phone;
+  const verifyByEmail = verificationMethod !== 'phone';
+  const verifyByPhone = verificationMethod === 'phone';
+  if (clientType === 'desktop' && (!hasEmail || !hasPhone))
+    return res.status(400).json({ error: 'בהרשמה ממחשב חובה להזין אימייל ומספר טלפון' });
   if (!hasEmail && !hasPhone)
     return res.status(400).json({ error: 'יש לספק אימייל עם סיסמה, מספר טלפון, או שניהם' });
 
@@ -729,11 +980,11 @@ app.post('/api/register', async (req, res) => {
     return res.status(400).json({ error: 'מספר טלפון לא תקין' });
   try {
     const pool = await getPool();
-    if (hasEmail) {
+    if (hasEmail && verifyByEmail) {
       const emailExists = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
       if (emailExists.rows.length) return res.status(400).json({ error: 'האימייל כבר רשום' });
     }
-    if (hasPhone) {
+    if (hasPhone && verifyByPhone) {
       const phoneExists = await pool.query('SELECT id FROM users WHERE phone = $1', [cleanPhone]);
       if (phoneExists.rows.length) return res.status(400).json({ error: 'מספר הטלפון כבר רשום' });
     }
@@ -771,7 +1022,8 @@ app.post('/api/register', async (req, res) => {
     }
 
     logActivity(user.id, 'register', { email: email || null, phone: cleanPhone }, req.ip);
-    res.json({ pending: true, phone: cleanPhone, hasEmail, hasPhone });
+    res.json({ pending: true, phone: cleanPhone, hasEmail, hasPhone,
+      verificationMethod: verifyByPhone ? 'phone' : 'email' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -779,15 +1031,22 @@ app.post('/api/register', async (req, res) => {
 
 // ── Login ────────────────────────────────────────────────────────
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { password } = req.body;
+  const email = typeof req.body.email === 'string'
+    ? req.body.email.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim().toLowerCase()
+    : req.body.email;
   try {
     const pool = await getPool();
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
     if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash)))
       return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
-    if (!user.email_verified)
-      return res.status(403).json({ error: 'יש לאמת את כתובת האימייל תחילה — בדוק את תיבת הדואר שלך', code: 'EMAIL_UNVERIFIED' });
+    if (!user.phone) {
+      const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+      return res.status(403).json({ error: 'יש להזין מספר טלפון', code: 'PHONE_REQUIRED', token });
+    }
+    if (!user.email_verified && !user.phone_verified)
+      return res.status(403).json({ error: 'יש לאמת את הטלפון או האימייל תחילה', code: 'VERIFICATION_REQUIRED' });
 
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     const { password_hash, ...safeUser } = user;
@@ -795,6 +1054,52 @@ app.post('/api/login', async (req, res) => {
     res.json({ token, user: safeUser });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Resend verification after the user has proven the account password.
+app.post('/api/resend-verification', async (req, res) => {
+  const { password, method } = req.body;
+  const email = typeof req.body.email === 'string'
+    ? req.body.email.trim().toLowerCase() : '';
+  if (!['email', 'phone'].includes(method))
+    return res.status(400).json({ error: 'שיטת אימות לא תקינה' });
+  try {
+    const pool = await getPool();
+    const result = await pool.query('SELECT * FROM users WHERE email=$1', [email]);
+    const user = result.rows[0];
+    if (!user || !user.password_hash || !(await bcrypt.compare(password || '', user.password_hash)))
+      return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
+
+    if (method === 'phone') {
+      if (!user.phone) return res.status(400).json({ error: 'לא הוזן מספר טלפון לחשבון' });
+      const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
+      otpStore.set(user.phone, {
+        code: smsCode, expires: Date.now() + 10 * 60 * 1000, name: user.name,
+      });
+      await sendEmail({
+        to: `${user.phone}@019sms.co.il`,
+        subject: `קוד אימות הטלפון שלך לבתשובה: ${smsCode}`,
+        html: '',
+      });
+      return res.json({ ok: true, method: 'phone', phone: user.phone });
+    }
+
+    const emailToken = crypto.randomBytes(32).toString('hex');
+    const expires24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await pool.query(
+      'INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)',
+      [emailToken, user.id, expires24h]);
+    const base = process.env.APP_URL || 'https://betshuva.com/betshuva-app';
+    await sendEmail({
+      to: user.email,
+      subject: 'אמת את כתובת האימייל שלך – בתשובה',
+      html: emailVerificationEmail(user.name, `${base}/verify-email?token=${emailToken}`),
+    });
+    res.json({ ok: true, method: 'email' });
+  } catch (e) {
+    console.error('resend-verification:', e.message);
+    res.status(500).json({ error: 'שליחת האימות נכשלה' });
   }
 });
 
@@ -846,7 +1151,9 @@ app.post('/api/auth/google', async (req, res) => {
 
     // 2. Find by email — link google_id
     if (email) {
-      const byEmail = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+      const byEmail = await pool.query(
+        'SELECT * FROM users WHERE lower(email) = lower($1) ORDER BY email_verified DESC LIMIT 1',
+        [email]);
       if (byEmail.rows.length) {
         const user = byEmail.rows[0];
         await pool.query(
@@ -889,17 +1196,86 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT id, name, profile_pic_url, city, community, phone
-       FROM users
-       WHERE id != $1
-       AND id NOT IN (
+      `SELECT u.id, u.name, u.profile_pic_url, u.city, u.community, u.phone, u.email,
+              last_msg.body AS last_message,
+              last_msg.type AS last_message_type,
+              last_msg.created_at AS last_message_at,
+              (last_msg.sender_id = $1) AS last_message_is_mine,
+              last_msg.status AS last_message_status
+       FROM user_contacts c
+       JOIN users u ON u.id = c.contact_id
+       LEFT JOIN LATERAL (
+         SELECT m.body, m.type, m.created_at, m.sender_id, ms.status
+         FROM messages m
+         LEFT JOIN message_status ms ON ms.message_id=m.id
+           AND ms.user_id=CASE WHEN m.sender_id=$1 THEN u.id ELSE $1 END
+         WHERE ((m.sender_id = $1 AND m.recipient_id = u.id)
+             OR (m.sender_id = u.id AND m.recipient_id = $1))
+           AND m.group_id IS NULL
+           AND m.deleted_for_everyone = FALSE
+           AND NOT (m.sender_id = $1 AND m.deleted_for_sender = TRUE)
+         ORDER BY m.created_at DESC
+         LIMIT 1
+       ) last_msg ON TRUE
+       WHERE c.owner_id = $1
+       AND u.id NOT IN (
          SELECT blocked_id FROM blocked_users WHERE blocker_id = $1
        )
-       ORDER BY name`, [req.user.id]);
+       ORDER BY last_msg.created_at DESC NULLS LAST, u.name`, [req.user.id]);
     res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT id, name, profile_pic_url, city, community, phone, email
+       FROM users WHERE id != $1
+       AND (email_verified = TRUE OR phone_verified = TRUE)
+       AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
+       ORDER BY name`, [req.user.id]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/users/search', authWithDbCheck, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2) return res.json([]);
+  try {
+    const pool = await getPool();
+    const digits = q.replace(/\D/g, '');
+    const result = await pool.query(
+      `SELECT u.id, u.name, u.email, u.phone, u.profile_pic_url, u.city, u.community,
+              EXISTS(SELECT 1 FROM user_contacts c
+                     WHERE c.owner_id=$1 AND c.contact_id=u.id) AS saved
+       FROM users u
+       WHERE u.id != $1
+         AND (u.email_verified = TRUE OR u.phone_verified = TRUE)
+         AND u.id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
+         AND (u.email ILIKE $2 OR ($3 <> '' AND u.phone LIKE $4))
+       ORDER BY u.name LIMIT 30`,
+      [req.user.id, `%${q}%`, digits, `%${digits}%`]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/contacts/save/:userId', authWithDbCheck, async (req, res) => {
+  if (req.params.userId === req.user.id)
+    return res.status(400).json({ error: 'לא ניתן לשמור את עצמך' });
+  try {
+    const pool = await getPool();
+    const exists = await pool.query(
+      'SELECT 1 FROM users WHERE id=$1 AND (email_verified=TRUE OR phone_verified=TRUE)',
+      [req.params.userId]);
+    if (!exists.rows.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
+    await pool.query(
+      `INSERT INTO user_contacts(owner_id, contact_id) VALUES($1,$2)
+       ON CONFLICT DO NOTHING`, [req.user.id, req.params.userId]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Contacts: match phone numbers with registered users ───────────
@@ -925,6 +1301,7 @@ app.post('/api/contacts/match', auth, async (req, res) => {
       `SELECT id, name, profile_pic_url, phone
        FROM users
        WHERE phone IN (${placeholders})
+         AND (email_verified = TRUE OR phone_verified = TRUE)
          AND id != $1
          AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = $1)`,
       [req.user.id, ...normalized]
@@ -938,7 +1315,7 @@ app.get('/api/messages/unread', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(`
-      SELECT m.sender_id AS "senderId", COUNT(*) AS cnt
+      SELECT m.sender_id AS "senderId", COUNT(*)::int AS cnt
       FROM messages m
       LEFT JOIN message_status ms
         ON ms.message_id = m.id AND ms.user_id = $1
@@ -953,6 +1330,46 @@ app.get('/api/messages/unread', auth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Group messages: unread counts ────────────────────────────────
+app.get('/api/groups/unread', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(`
+      SELECT m.group_id, COUNT(*)::int AS cnt
+      FROM messages m
+      JOIN group_members gm
+        ON gm.group_id=m.group_id AND gm.user_id=$1 AND gm.status='member'
+      LEFT JOIN message_status ms
+        ON ms.message_id=m.id AND ms.user_id=$1
+      WHERE m.group_id IS NOT NULL
+        AND m.sender_id != $1
+        AND m.created_at >= gm.joined_at
+        AND (ms.status IS NULL OR ms.status != 'read')
+      GROUP BY m.group_id
+    `, [req.user.id]);
+    const counts = {};
+    for (const row of result.rows) counts[row.group_id] = row.cnt;
+    res.json(counts);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/groups/:id/read', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.query(`
+      INSERT INTO message_status (message_id, user_id, status)
+      SELECT m.id, $1, 'read' FROM messages m
+      WHERE m.group_id=$2 AND m.sender_id != $1
+        AND m.created_at >= (
+          SELECT gm.joined_at FROM group_members gm
+          WHERE gm.group_id=$2 AND gm.user_id=$1
+        )
+      ON CONFLICT (message_id, user_id) DO UPDATE SET status='read'
+    `, [req.user.id, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Messages: load history ─────────────────────────────────────────
@@ -972,11 +1389,13 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         m.reply_to_id, m.created_at,
         r.body        AS reply_body,
         ru.name       AS reply_sender_name,
-        CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read
+        CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
+        ms.status AS message_status
       FROM messages m
       LEFT JOIN messages r  ON m.reply_to_id = r.id
       LEFT JOIN users ru    ON r.sender_id = ru.id
-      LEFT JOIN message_status ms ON ms.message_id = m.id AND ms.user_id = $1
+      LEFT JOIN message_status ms ON ms.message_id = m.id
+        AND ms.user_id = CASE WHEN m.sender_id=$1 THEN $2 ELSE $1 END
       WHERE m.deleted_for_everyone = FALSE
         AND (
           (m.sender_id = $1 AND m.recipient_id = $2 AND m.deleted_for_sender = FALSE)
@@ -1015,6 +1434,31 @@ app.post('/api/messages', auth, async (req, res) => {
       return 'text';
     })();
 
+    const accepted = await pool.query(
+      'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
+      [toUserId, senderId]);
+    if (!accepted.rows.length) {
+      const request = await pool.query(
+        `INSERT INTO message_requests
+           (sender_id, recipient_id, body, type, file_url, file_name)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT(sender_id, recipient_id) DO UPDATE SET
+           body=EXCLUDED.body, type=EXCLUDED.type, file_url=EXCLUDED.file_url,
+           file_name=EXCLUDED.file_name, created_at=now()
+         RETURNING id, created_at`,
+        [senderId, toUserId, text || null, type, fileUrl || null, fileName || null]);
+      const requestRow = request.rows[0];
+      const sid = onlineUsers.get(toUserId);
+      if (sid) io.to(sid).emit('message:request', {
+        id: requestRow.id, senderId, senderName: req.user.name,
+        text, fileName, createdAt: requestRow.created_at,
+      });
+      sendPush(toUserId, 'בקשת הודעה חדשה',
+        `${req.user.name} רוצה לשלוח לך הודעה`,
+        { type: 'message_request', senderId });
+      return res.json({ requestPending: true, id: requestRow.id });
+    }
+
     const saved = await pool.query(
       `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1030,11 +1474,18 @@ app.post('/api/messages', auth, async (req, res) => {
     }
 
     const sid = onlineUsers.get(toUserId);
-    if (sid) io.to(sid).emit('chat:message', {
-      id: row.id, fromUserId: senderId, fromName: req.user.name,
-      text, replyToId: replyToId || null, replyBody, createdAt: row.created_at,
-      fileUrl, fileName, fileType: type,
-    });
+    if (sid) {
+      await pool.query(
+        `INSERT INTO message_status (message_id, user_id, status)
+         VALUES ($1, $2, 'delivered')
+         ON CONFLICT (message_id, user_id) DO UPDATE SET status='delivered', updated_at=now()
+         WHERE message_status.status != 'read'`, [row.id, toUserId]);
+      io.to(sid).emit('chat:message', {
+        id: row.id, fromUserId: senderId, fromName: req.user.name,
+        text, replyToId: replyToId || null, replyBody, createdAt: row.created_at,
+        fileUrl, fileName, fileType: type,
+      });
+    }
 
     const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
     const toName = recip.rows[0]?.name || toUserId;
@@ -1046,11 +1497,85 @@ app.post('/api/messages', auth, async (req, res) => {
       sendPush(toUserId, req.user.name, pushBody, { type: 'chat', fromUserId: senderId });
     }
 
-    res.json({ id: row.id, createdAt: row.created_at });
+    res.json({ id: row.id, createdAt: row.created_at,
+      status: sid ? 'delivered' : 'sent' });
   } catch (e) {
     console.error('POST /api/messages:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT mr.id, mr.sender_id, u.name AS sender_name,
+              u.profile_pic_url, mr.body, mr.type, mr.file_url,
+              mr.file_name, mr.created_at
+       FROM message_requests mr
+       JOIN users u ON u.id=mr.sender_id
+       WHERE mr.recipient_id=$1
+       ORDER BY mr.created_at`, [req.user.id]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) => {
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT * FROM message_requests WHERE id=$1 AND recipient_id=$2 FOR UPDATE`,
+      [req.params.id, req.user.id]);
+    if (!found.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'הבקשה לא נמצאה' });
+    }
+    const request = found.rows[0];
+    await client.query(
+      `INSERT INTO user_contacts(owner_id, contact_id) VALUES($1,$2),($2,$1)
+       ON CONFLICT DO NOTHING`, [req.user.id, request.sender_id]);
+    const saved = await client.query(
+      `INSERT INTO messages(sender_id, recipient_id, body, type, file_url, file_name)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING id, created_at`,
+      [request.sender_id, req.user.id, request.body, request.type,
+       request.file_url, request.file_name]);
+    await client.query('DELETE FROM message_requests WHERE id=$1', [request.id]);
+    await client.query('COMMIT');
+    const row = saved.rows[0];
+    const payload = {
+      id: row.id, fromUserId: request.sender_id,
+      text: request.body, createdAt: row.created_at,
+      fileUrl: request.file_url, fileName: request.file_name,
+      fileType: request.type,
+    };
+    const recipientSid = onlineUsers.get(req.user.id);
+    if (recipientSid) io.to(recipientSid).emit('chat:message', payload);
+    const senderSid = onlineUsers.get(request.sender_id);
+    if (senderSid) io.to(senderSid).emit('message:request-accepted', {
+      byUserId: req.user.id, messageId: row.id,
+    });
+    res.json({ ok: true, messageId: row.id });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
+});
+
+app.delete('/api/message-requests/:id', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      'DELETE FROM message_requests WHERE id=$1 AND recipient_id=$2 RETURNING sender_id',
+      [req.params.id, req.user.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'הבקשה לא נמצאה' });
+    const senderSid = onlineUsers.get(result.rows[0].sender_id);
+    if (senderSid) io.to(senderSid).emit('message:request-declined', {
+      byUserId: req.user.id,
+    });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Messages: mark as read ─────────────────────────────────────────
@@ -1084,7 +1609,9 @@ app.delete('/api/messages/:id', auth, async (req, res) => {
   const { forEveryone } = req.body;
   try {
     const pool = await getPool();
-    const found = await pool.query('SELECT sender_id, recipient_id FROM messages WHERE id = $1', [req.params.id]);
+    const found = await pool.query(
+      'SELECT sender_id, recipient_id, group_id FROM messages WHERE id = $1',
+      [req.params.id]);
     const msg = found.rows[0];
     if (!msg) return res.status(404).json({ error: 'הודעה לא נמצאה' });
 
@@ -1092,6 +1619,12 @@ app.delete('/api/messages/:id', auth, async (req, res) => {
       await pool.query('UPDATE messages SET deleted_for_everyone=TRUE, body=NULL WHERE id=$1', [req.params.id]);
       const sid = onlineUsers.get(msg.recipient_id);
       if (sid) io.to(sid).emit('message:deleted', { id: req.params.id });
+      if (msg.group_id) {
+        io.to(`group:${msg.group_id}`).emit('message:deleted', {
+          id: req.params.id,
+          groupId: msg.group_id,
+        });
+      }
     } else {
       await pool.query(
         'UPDATE messages SET deleted_for_sender=TRUE WHERE id=$1 AND sender_id=$2',
@@ -1258,6 +1791,7 @@ app.get('/api/users/nearby', auth, async (req, res) => {
         `SELECT id, name, profile_pic_url, city, country
          FROM users
          WHERE id != $1 AND city = $2
+           AND (email_verified = TRUE OR phone_verified = TRUE)
          ORDER BY name ASC`, [req.user.id, city]);
       return res.json(result.rows);
     }
@@ -1282,6 +1816,7 @@ app.get('/api/users/nearby', auth, async (req, res) => {
         ))::numeric, 1) AS distance_km
       FROM users
       WHERE id != $3
+        AND (email_verified = TRUE OR phone_verified = TRUE)
         AND latitude IS NOT NULL AND longitude IS NOT NULL
         ${cityFilter}
         AND (6371 * ACOS(
@@ -1585,12 +2120,26 @@ app.get('/api/groups', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(`
-      SELECT g.id, g.name, g.description, g.is_broadcast, g.send_permission, g.filter_level,
+      SELECT g.id, g.name, g.description, g.profile_pic_url, g.is_broadcast, g.send_permission, g.filter_level,
              gm.role, gm.status,
-             (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count
+             (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count,
+             last_msg.body AS last_message,
+             last_msg.type AS last_message_type,
+             last_msg.created_at AS last_message_at,
+             last_msg.sender_name AS last_message_sender_name,
+             (last_msg.sender_id = $1) AS last_message_is_mine
       FROM groups g
       JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $1
-      ORDER BY g.created_at DESC
+      LEFT JOIN LATERAL (
+        SELECT m.body, m.type, m.created_at, m.sender_id, u.name AS sender_name
+        FROM messages m
+        JOIN users u ON u.id=m.sender_id
+        WHERE m.group_id = g.id AND m.deleted_for_everyone = FALSE
+          AND m.created_at >= gm.joined_at
+        ORDER BY m.created_at DESC
+        LIMIT 1
+      ) last_msg ON TRUE
+      ORDER BY last_msg.created_at DESC NULLS LAST, g.created_at DESC
     `, [req.user.id]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1627,7 +2176,7 @@ app.get('/api/groups/:id', auth, async (req, res) => {
     const [grp, members] = await Promise.all([
       pool.query('SELECT * FROM groups WHERE id=$1', [req.params.id]),
       pool.query(
-        `SELECT u.id, u.name, u.profile_pic_url, gm.role, gm.joined_at
+        `SELECT u.id, u.name, u.profile_pic_url, gm.role, gm.joined_at, gm.last_viewed_at
          FROM group_members gm JOIN users u ON u.id=gm.user_id
          WHERE gm.group_id=$1 ORDER BY gm.role DESC, u.name`, [req.params.id]),
     ]);
@@ -1644,26 +2193,31 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
       'SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.user.id]);
     if (!check.rows.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
 
-    const params = [req.params.id];
-    if (before) params.push(new Date(before));
     const result = await pool.query(`
       SELECT
         m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name, m.reply_to_id, m.created_at,
         u.name AS sender_name,
-        r.body AS reply_body
+        r.body AS reply_body,
+        CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read
       FROM messages m
       JOIN users u ON m.sender_id = u.id
       LEFT JOIN messages r ON m.reply_to_id = r.id
+      LEFT JOIN message_status ms ON ms.message_id=m.id AND ms.user_id=$2
       WHERE m.group_id = $1 AND m.deleted_for_everyone = FALSE
-      ${before ? 'AND m.created_at < $2' : ''}
+        AND m.created_at >= (
+          SELECT gm.joined_at FROM group_members gm
+          WHERE gm.group_id=$1 AND gm.user_id=$2
+        )
+      ${before ? 'AND m.created_at < $3' : ''}
       ORDER BY m.created_at DESC
       LIMIT 50
-    `, params);
+    `, before ? [req.params.id, req.user.id, new Date(before)] :
+       [req.params.id, req.user.id]);
     res.json(result.rows.reverse());
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: add member as pending (admin) ─────────────────────────
+// ── Groups: add registered member directly (admin) ────────────────
 app.post('/api/groups/:id/members', auth, async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'נדרש userId' });
@@ -1681,14 +2235,20 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
     if (existing.rows.length) {
       const st = existing.rows[0].status;
       if (st === 'member')  return res.json({ ok: true, alreadyMember: true });
-      if (st === 'pending') return res.json({ ok: true, alreadyPending: true });
+      if (st === 'pending') {
+        await pool.query(
+          `UPDATE group_members SET status='member', pending_since=NULL
+           WHERE group_id=$1 AND user_id=$2`,
+          [req.params.id, userId]);
+      }
     }
 
-    // Insert/update as pending
+    // The group admin explicitly selected this registered user, matching the
+    // familiar WhatsApp flow: membership becomes active immediately.
     await pool.query(
       `INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
-       VALUES ($1, $2, 'pending', $3, now())
-       ON CONFLICT (group_id, user_id) DO UPDATE SET status='pending', added_by=$3, pending_since=now()`,
+       VALUES ($1, $2, 'member', $3, NULL)
+       ON CONFLICT (group_id, user_id) DO UPDATE SET status='member', added_by=$3, pending_since=NULL`,
       [req.params.id, userId, req.user.id]);
 
     // Fetch group name and adder name
@@ -1703,8 +2263,11 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
     const ioInst = req.app.get('io');
     const invitedSid = onlineUsers.get(userId);
     if (invitedSid) {
+      const invitedSocket = ioInst.sockets.sockets.get(invitedSid);
+      invitedSocket?.join(`group:${req.params.id}`);
       ioInst.to(invitedSid).emit('group:invited', {
         groupId: req.params.id, groupName, addedByName, addedById: req.user.id,
+        status: 'member',
       });
     }
 
@@ -1876,9 +2439,55 @@ app.delete('/api/groups/:id/leave', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Groups: delete group permanently (admin only) ────────────────
+app.delete('/api/groups/:id', auth, async (req, res) => {
+  const groupId = req.params.id;
+  let client;
+  try {
+    const pool = await getPool();
+    client = await pool.connect();
+    const admin = await client.query(
+      `SELECT g.name FROM groups g
+       JOIN group_members gm ON gm.group_id=g.id
+       WHERE g.id=$1 AND gm.user_id=$2 AND gm.role='admin'`,
+      [groupId, req.user.id]);
+    if (!admin.rows.length)
+      return res.status(403).json({ error: 'רק מנהל הקבוצה יכול למחוק אותה' });
+
+    const members = await client.query(
+      'SELECT user_id FROM group_members WHERE group_id=$1', [groupId]);
+    await client.query('BEGIN');
+    await client.query(
+      `DELETE FROM message_status WHERE message_id IN
+       (SELECT id FROM messages WHERE group_id=$1)`, [groupId]);
+    await client.query('DELETE FROM messages WHERE group_id=$1', [groupId]);
+    await client.query('DELETE FROM pending_scans WHERE group_id=$1', [groupId]);
+    await client.query('DELETE FROM group_members WHERE group_id=$1', [groupId]);
+    await client.query('DELETE FROM groups WHERE id=$1', [groupId]);
+    await client.query('COMMIT');
+
+    for (const { user_id } of members.rows) {
+      const sid = onlineUsers.get(user_id);
+      if (sid) io.to(sid).emit('group:deleted', {
+        groupId,
+        groupName: admin.rows[0].name,
+      });
+    }
+    logActivity(req.user.id, 'delete_group', {
+      groupId, name: admin.rows[0].name,
+    }, req.ip);
+    res.json({ ok: true });
+  } catch (e) {
+    if (client) try { await client.query('ROLLBACK'); } catch (_) {}
+    res.status(500).json({ error: e.message });
+  } finally {
+    client?.release();
+  }
+});
+
 // ── Groups: update settings (admin) ──────────────────────────────
 app.put('/api/groups/:id', auth, async (req, res) => {
-  const { name, description, send_permission, filter_level, is_broadcast } = req.body;
+  const { name, description, send_permission, filter_level, is_broadcast, profile_pic_url } = req.body;
   if (!name) return res.status(400).json({ error: 'נדרש שם' });
   try {
     const pool = await getPool();
@@ -1888,11 +2497,27 @@ app.put('/api/groups/:id', auth, async (req, res) => {
     if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
     await pool.query(
       `UPDATE groups SET name=$1, description=$2,
-       send_permission=$3, filter_level=$4, is_broadcast=$5
-       WHERE id=$6`,
+       send_permission=$3, filter_level=$4, is_broadcast=$5, profile_pic_url=$6
+       WHERE id=$7`,
       [name, description || '', send_permission || 'all', filter_level || 'standard',
-       !!is_broadcast, req.params.id]);
+       !!is_broadcast, profile_pic_url || null, req.params.id]);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Groups: update profile picture (admin) ───────────────────────
+app.put('/api/groups/:id/photo', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const updated = await pool.query(
+      `UPDATE groups g SET profile_pic_url=$1
+       WHERE g.id=$2 AND EXISTS (
+         SELECT 1 FROM group_members gm
+         WHERE gm.group_id=g.id AND gm.user_id=$3 AND gm.role='admin'
+       ) RETURNING profile_pic_url`,
+      [req.body.profile_pic_url || null, req.params.id, req.user.id]);
+    if (!updated.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
+    res.json(updated.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2000,8 +2625,30 @@ app.post('/api/send-otp', async (req, res) => {
   const { phone, name, email } = req.body;
   if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
   const clean      = phone.replace(/\D/g, '');
+  const cleanName = typeof name === 'string'
+    ? name.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim()
+    : '';
   const cleanEmail = (email || '').toLowerCase().trim();
   if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
+  try {
+    const pool = await getPool();
+    const existingPhone = await pool.query(
+      'SELECT 1 FROM users WHERE phone=$1', [clean]);
+    let authenticatedUser = false;
+    const bearer = req.headers.authorization?.split(' ')[1];
+    if (bearer) {
+      try {
+        const tokenUser = jwt.verify(bearer, JWT_SECRET);
+        const exists = await pool.query('SELECT 1 FROM users WHERE id=$1', [tokenUser.id]);
+        authenticatedUser = exists.rows.length > 0;
+      } catch (_) {}
+    }
+    if (!existingPhone.rows.length && !authenticatedUser && cleanName.length < 2) {
+      return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
+    }
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
   if (cleanEmail.includes('@')) {
     try {
       const pool = await getPool();
@@ -2013,7 +2660,7 @@ app.post('/api/send-otp', async (req, res) => {
   }
   const code    = Math.floor(100000 + Math.random() * 900000).toString();
   const expires = Date.now() + 5 * 60 * 1000;
-  otpStore.set(clean, { code, expires, name: name || '', email: cleanEmail });
+  otpStore.set(clean, { code, expires, name: cleanName, email: cleanEmail });
   try {
     await sendEmail({
       to:      `${clean}@019sms.co.il`,
@@ -2034,26 +2681,36 @@ app.post('/api/verify-otp', async (req, res) => {
   const entry = otpStore.get(clean);
   if (!entry || entry.code !== code || Date.now() > entry.expires)
     return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
-  otpStore.delete(clean);
-  const userName  = name || entry.name || `משתמש_${clean.slice(-4)}`;
+  const requestedName = typeof name === 'string' ? name.trim() : '';
+  const userName  = requestedName || entry.name || '';
   const userEmail = entry.email || `${clean}@betshuva.app`;
   try {
     const pool = await getPool();
     // Check existing user by phone
-    const byPhone = await pool.query('SELECT id, name, email FROM users WHERE phone=$1', [clean]);
+    const byPhone = await pool.query(
+      `SELECT id, name, email FROM users WHERE phone=$1
+       ORDER BY phone_verified DESC, created_at DESC LIMIT 1`, [clean]);
     let user;
     if (byPhone.rows.length) {
+      otpStore.delete(clean);
       user = byPhone.rows[0];
       await pool.query('UPDATE users SET phone_verified=TRUE, email_verified=TRUE WHERE id=$1', [user.id]);
     } else {
       // Check by email
-      const byEmail = await pool.query('SELECT id, name, email FROM users WHERE email=$1', [userEmail]);
+      const byEmail = await pool.query(
+        'SELECT id, name, email FROM users WHERE lower(email)=lower($1) ORDER BY email_verified DESC LIMIT 1',
+        [userEmail]);
       if (byEmail.rows.length) {
+        otpStore.delete(clean);
         user = byEmail.rows[0];
         await pool.query(
           'UPDATE users SET phone_verified=TRUE, email_verified=TRUE, phone=$1 WHERE id=$2', [clean, user.id]);
       } else {
         // New user — verified by OTP
+        if (userName.length < 2) {
+          return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
+        }
+        otpStore.delete(clean);
         const hash   = await bcrypt.hash(`otp_${clean}`, 10);
         const result = await pool.query(
           `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified)
@@ -2080,19 +2737,30 @@ app.post('/api/link-phone', auth, async (req, res) => {
   const { phone, code } = req.body;
   const clean = (phone || '').replace(/\D/g, '');
   if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
-  if (!code) return res.status(400).json({ error: 'נדרש קוד אימות' });
-  const entry = otpStore.get(clean);
-  if (!entry || entry.code !== code || Date.now() > entry.expires)
-    return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
-  otpStore.delete(clean);
   try {
     const pool = await getPool();
+    const account = await pool.query(
+      'SELECT email_verified FROM users WHERE id=$1', [req.user.id]);
+    const canSkipSms = account.rows[0]?.email_verified === true;
+    if (!canSkipSms) {
+      if (!code) return res.status(400).json({ error: 'נדרש קוד אימות' });
+      const entry = otpStore.get(clean);
+      if (!entry || entry.code !== code || Date.now() > entry.expires)
+        return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
+      otpStore.delete(clean);
+    }
     const taken = await pool.query('SELECT id FROM users WHERE phone=$1 AND id != $2', [clean, req.user.id]);
     if (taken.rows.length)
       return res.status(400).json({ error: 'מספר הטלפון כבר רשום למשתמש אחר' });
-    await pool.query('UPDATE users SET phone=$1, phone_verified=TRUE WHERE id=$2', [clean, req.user.id]);
+    await pool.query(
+      `UPDATE users SET phone=$1,
+       phone_verified=CASE WHEN $3 THEN phone_verified ELSE TRUE END
+       WHERE id=$2`, [clean, req.user.id, canSkipSms]);
     logActivity(req.user.id, 'link_phone', { phone: clean }, req.ip);
-    res.json({ ok: true });
+    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id=$1', [req.user.id]);
+    const user = userResult.rows[0];
+    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    res.json({ ok: true, token });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2106,23 +2774,30 @@ app.post('/api/verify-phone', async (req, res) => {
   otpStore.delete(cleanPhone);
   try {
     const pool = await getPool();
-    await pool.query('UPDATE users SET phone_verified = TRUE WHERE phone = $1', [cleanPhone]);
-    const result = await pool.query(
-      'SELECT id, name, email, email_verified FROM users WHERE phone = $1', [cleanPhone]);
-    const user = result.rows[0];
+    const candidates = await pool.query(
+      `SELECT id, name, email, email_verified, phone_verified
+       FROM users WHERE phone=$1
+       ORDER BY phone_verified DESC, created_at DESC`, [cleanPhone]);
+    const verified = candidates.rows.find(user => user.phone_verified === true);
+    const user = verified || candidates.rows[0];
     if (!user) return res.status(400).json({ error: 'משתמש לא נמצא' });
-    if (!user.email || user.email_verified) {
-      const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
-      return res.json({ ok: true, token });
-    }
-    res.json({ ok: true, waitingEmail: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    await pool.query('UPDATE users SET phone_verified=TRUE WHERE id=$1', [user.id]);
+    const result = await pool.query(
+      'SELECT id, name, email, email_verified FROM users WHERE id=$1', [user.id]);
+    const verifiedUser = result.rows[0];
+    const token = jwt.sign({ id: verifiedUser.id, name: verifiedUser.name, email: verifiedUser.email }, JWT_SECRET);
+    res.json({ ok: true, token });
+  } catch (e) {
+    if (e.code === '23505')
+      return res.status(409).json({ error: 'מספר הטלפון כבר משויך למשתמש מאומת אחר' });
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── Verify Email (HTML page) ─────────────────────────────────────
 app.get('/verify-email', async (req, res) => {
   const token = (req.query.token || '').replace(/[^a-f0-9]/g, '');
-  const ok = (msg) => res.send(`<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>אימות אימייל – בתשובה</title><style>body{font-family:Arial,sans-serif;background:#F0F4F0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:400px;text-align:center}h2{color:#1B4332}</style></head><body><div class="card">${msg}</div></body></html>`);
+  const ok = (msg, redirectUrl = null) => res.send(`<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>אימות אימייל – בתשובה</title><style>body{font-family:Arial,sans-serif;background:#F0F4F0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:400px;text-align:center}h2{color:#1B4332}</style></head><body><div class="card">${msg}</div>${redirectUrl ? `<script>setTimeout(function(){location.href=${JSON.stringify(redirectUrl)}},1200)</script>` : ''}</body></html>`);
   try {
     const pool = await getPool();
     const result = await pool.query(
@@ -2131,9 +2806,21 @@ app.get('/verify-email', async (req, res) => {
     if (!result.rows.length)
       return ok('<h2>❌ הקישור לא תקין או פג תוקף</h2><p>נסה להירשם מחדש.</p>');
     const { user_id } = result.rows[0];
+    const target = await pool.query('SELECT email FROM users WHERE id=$1', [user_id]);
+    const emailToVerify = target.rows[0]?.email;
+    const owner = await pool.query(
+      `SELECT id FROM users
+       WHERE email_verified=TRUE AND lower(email)=lower($1) AND id<>$2`,
+      [emailToVerify, user_id]);
+    if (owner.rows.length)
+      return ok('<h2>❌ האימייל כבר משויך למשתמש מאומת אחר</h2>');
     await pool.query('UPDATE users SET email_verified = TRUE WHERE id = $1', [user_id]);
     await pool.query('UPDATE email_verification_tokens SET used = TRUE WHERE token = $1', [token]);
-    ok('<h2>✅ האימייל אומת בהצלחה!</h2><p>כעת תוכל להתחבר לאפליקציה.</p>');
+    const userResult = await pool.query('SELECT email FROM users WHERE id=$1', [user_id]);
+    const email = userResult.rows[0]?.email || '';
+    const base = process.env.APP_URL || 'https://betshuva.com/betshuva-app';
+    const redirectUrl = `${base}/?verifiedEmail=${encodeURIComponent(email)}`;
+    ok('<h2>✅ האימייל אומת בהצלחה!</h2><p>מעבירים אותך למסך הכניסה...</p>', redirectUrl);
   } catch (e) { ok('<h2>❌ שגיאה</h2><p>' + e.message + '</p>'); }
 });
 
@@ -2812,10 +3499,21 @@ async function retryPendingScans() {
         // Update last_retry immediately to avoid double-processing
         await pool.query(`UPDATE pending_scans SET retry_count=retry_count+1, last_retry=now() WHERE id=$1`, [row.id]);
 
-        // Download file from B2 for re-scan
-        const fileRes = await fetch(row.file_url);
-        if (!fileRes.ok) continue;
-        const buffer = Buffer.from(await fileRes.arrayBuffer());
+        // Local uploads use a public relative URL. Read those directly from
+        // disk; only remote absolute URLs should be fetched over HTTP.
+        let buffer;
+        if (row.file_url.startsWith(`${UPLOAD_PUBLIC_BASE}/`)) {
+          const encodedPath = row.file_url.slice(UPLOAD_PUBLIC_BASE.length + 1);
+          const relativePath = encodedPath.split('/').map(decodeURIComponent).join(path.sep);
+          const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
+          if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+            throw new Error('Invalid pending file path');
+          buffer = await fs.readFile(absolutePath);
+        } else {
+          const fileRes = await fetch(row.file_url);
+          if (!fileRes.ok) continue;
+          buffer = Buffer.from(await fileRes.arrayBuffer());
+        }
 
         let scanResult;
         if (row.file_type === 'image') scanResult = await scanImage(buffer);
@@ -2867,6 +3565,7 @@ async function startServer() {
   await fs.mkdir(UPLOAD_ROOT, { recursive: true });
   await migrateDatabase();
   await initPendingTable();
+  setTimeout(retryPendingScans, 1000); // process queued files after startup
   setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
   httpServer.listen(PORT, '127.0.0.1', () => console.log(`Server running on port ${PORT}`));
 }

@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.betshuva.app"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -32,8 +32,8 @@ android {
         applicationId = "com.betshuva.app"
         minSdk = 26
         targetSdk = flutter.targetSdkVersion
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
     }
 
     buildTypes {
