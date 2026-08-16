@@ -201,6 +201,7 @@ const scanLabelNames = {
   'person or people are visible': 'אדם',
   'animal or plant is visible': 'בעל חיים או צמח',
   'inanimate object landscape document or screenshot': 'דומם',
+  'not a person': 'ללא אדם',
   'person or people': 'אדם או אנשים', animal: 'בעל חיים', plant: 'צמח',
   'inanimate object or landscape': 'חפץ, נוף או מסמך',
   men: 'גבר', women: 'אישה', children: 'ילד/ה',
@@ -296,11 +297,17 @@ async function classifyImageContent(buffer) {
   ]);
   const life = lifeStage.scores;
   const lifeTop = topResult(life);
-  lifeStage.decision = lifeTop.label;
-  lifeStage.confidence = lifeTop.score;
+  const personScore = Number(life['person or people are visible'] || 0);
+  const nonPersonScore = Number(life['animal or plant is visible'] || 0) +
+    Number(life['inanimate object landscape document or screenshot'] || 0);
+  lifeStage.decision = nonPersonScore >= 0.70 && nonPersonScore > personScore
+    ? 'not a person' : lifeTop.label;
+  lifeStage.confidence = nonPersonScore >= 0.70 && nonPersonScore > personScore
+    ? nonPersonScore : lifeTop.score;
+  lifeStage.personScore = personScore;
+  lifeStage.nonPersonScore = nonPersonScore;
 
-  if (lifeTop.label === 'inanimate object landscape document or screenshot' &&
-      lifeTop.score >= 0.70) {
+  if (nonPersonScore >= 0.70 && nonPersonScore > personScore) {
     return {
       category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
       uncertain: false, life, subjects: null, people: null,
