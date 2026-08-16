@@ -173,10 +173,191 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.23';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.23.apk';
+const kVersion = '1.2.24';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.24.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
+
+const _maxBatchImages = 10;
+const _maxConcurrentImageUploads = 2;
+var _uploadMessageSequence = 0;
+
+String _newUploadMessageId(String prefix) =>
+    '${prefix}${DateTime.now().microsecondsSinceEpoch}_${_uploadMessageSequence++}';
+
+enum _FileUploadOutcome { approved, rejected, pending, scanBot, failed }
+
+class _FileUploadResult {
+  _FileUploadOutcome outcome;
+  final Map<String, dynamic> data;
+  String? error;
+
+  _FileUploadResult(this.outcome,
+      {this.data = const <String, dynamic>{}, this.error});
+}
+
+Future<_FileUploadResult> _uploadFileRequest({
+  required dynamic file,
+  required String fileName,
+  required String token,
+  required Map<String, String> fields,
+}) async {
+  try {
+    final bytes = file is XFile
+        ? await file.readAsBytes()
+        : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
+    final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+      ..headers['Authorization'] = 'Bearer $token'
+      ..fields.addAll(fields)
+      ..files.add(http.MultipartFile.fromBytes('file', bytes,
+          filename: fileName, contentType: _mimeFromFileName(fileName)));
+    final streamed = await request.send().timeout(const Duration(seconds: 60));
+    final body = await streamed.stream.bytesToString();
+    Map<String, dynamic> data = const <String, dynamic>{};
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) data = decoded;
+    } catch (_) {}
+
+    if (streamed.statusCode != 200) {
+      return _FileUploadResult(
+        _FileUploadOutcome.failed,
+        data: data,
+        error: data['error']?.toString() ?? 'שגיאה בהעלאה',
+      );
+    }
+    if (data['status'] == 'rejected') {
+      return _FileUploadResult(_FileUploadOutcome.rejected, data: data);
+    }
+    if (data['status'] == 'pending') {
+      return _FileUploadResult(_FileUploadOutcome.pending, data: data);
+    }
+    if (data['handledByScanBot'] == true) {
+      return _FileUploadResult(_FileUploadOutcome.scanBot, data: data);
+    }
+    if ((data['url'] as String? ?? '').isEmpty) {
+      return _FileUploadResult(_FileUploadOutcome.failed,
+          error: 'השרת לא החזיר כתובת לקובץ');
+    }
+    return _FileUploadResult(_FileUploadOutcome.approved, data: data);
+  } catch (error) {
+    return _FileUploadResult(_FileUploadOutcome.failed,
+        error: 'שגיאת העלאה: $error');
+  }
+}
+
+Future<List<_FileUploadResult>> _runImageUploadQueue(
+  List<XFile> files,
+  Future<_FileUploadResult> Function(XFile file) upload,
+  ValueNotifier<int> completed, {
+  Future<void> Function(int index, XFile file, _FileUploadResult result)?
+      onResult,
+}) async {
+  final results = List<_FileUploadResult?>.filled(files.length, null);
+  var nextIndex = 0;
+
+  Future<void> worker() async {
+    while (true) {
+      final index = nextIndex;
+      if (index >= files.length) return;
+      nextIndex++;
+      final result = await upload(files[index]);
+      results[index] = result;
+      if (onResult != null) {
+        try {
+          await onResult(index, files[index], result);
+        } catch (error) {
+          result.outcome = _FileUploadOutcome.failed;
+          result.error = 'ההעלאה הסתיימה אך המסירה נכשלה: $error';
+        }
+      }
+      completed.value++;
+    }
+  }
+
+  final workerCount = math.min(_maxConcurrentImageUploads, files.length);
+  await Future.wait(List.generate(workerCount, (_) => worker()));
+  return results.cast<_FileUploadResult>();
+}
+
+Future<void> _showImageBatchProgress(
+    BuildContext context, ValueNotifier<int> completed, int total) {
+  return showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => PopScope(
+      canPop: false,
+      child: AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.security, color: kPrimary),
+          SizedBox(width: 8),
+          Text('סריקת תמונות'),
+        ]),
+        content: ValueListenableBuilder<int>(
+          valueListenable: completed,
+          builder: (_, count, __) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(
+                value: total == 0 ? 0 : count / total,
+                color: kPrimary,
+              ),
+              const SizedBox(height: 16),
+              Text('נסרקו $count מתוך $total תמונות',
+                  textDirection: TextDirection.rtl),
+              const SizedBox(height: 6),
+              const Text('כל תמונה נבדקת ונשלחת בנפרד',
+                  style: TextStyle(fontSize: 12, color: kSubtext),
+                  textDirection: TextDirection.rtl),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+void _showImageBatchSummary(
+    BuildContext context, List<_FileUploadResult> results) {
+  final approved = results
+      .where((result) =>
+          result.outcome == _FileUploadOutcome.approved ||
+          result.outcome == _FileUploadOutcome.scanBot)
+      .length;
+  final rejected = results
+      .where((result) => result.outcome == _FileUploadOutcome.rejected)
+      .length;
+  final pending = results
+      .where((result) => result.outcome == _FileUploadOutcome.pending)
+      .length;
+  final failed = results
+      .where((result) => result.outcome == _FileUploadOutcome.failed)
+      .length;
+  final parts = <String>[
+    if (approved > 0) '$approved אושרו',
+    if (rejected > 0) '$rejected נחסמו',
+    if (pending > 0) '$pending ממתינות לסריקה',
+    if (failed > 0) '$failed נכשלו',
+  ];
+  final hasProblem = rejected > 0 || pending > 0 || failed > 0;
+  String? firstError;
+  for (final result in results) {
+    if (result.outcome == _FileUploadOutcome.failed && result.error != null) {
+      firstError = result.error;
+      break;
+    }
+  }
+  ScaffoldMessenger.of(context)
+    ..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(
+      content: Text(
+          'העלאת התמונות הסתיימה: ${parts.join(' · ')}'
+          '${firstError == null ? '' : '\n$firstError'}',
+          textDirection: TextDirection.rtl),
+      backgroundColor: hasProblem ? Colors.orange.shade800 : kPrimary,
+      duration: const Duration(seconds: 5),
+    ));
+}
 
 String _absoluteMediaUrl(String url) =>
     Uri.parse(url).hasScheme ? url : Uri.parse(kServer).resolve(url).toString();
@@ -5903,6 +6084,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loading = true;
   bool _isTyping = false;
   late final void Function(dynamic) _chatTypingHandler;
+  late final void Function(dynamic) _scanRejectedSocketHandler;
   Timer? _messageRefreshTimer;
   String? _serverMessagesFingerprint;
   final AudioRecorder _audioRecorder = AudioRecorder();
@@ -5933,7 +6115,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadMessages({bool silent = false}) async {
-    final cacheKey = 'cache_msgs_${widget.recipient['id']}';
+    final cacheKey = 'cache_msgs_${widget.me?['id']}_${widget.recipient['id']}';
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -5969,7 +6151,12 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.clear();
           _messages.addAll(normalized);
           for (final p in pending) {
-            if (!_messages.any((m) => m['text'] == p['text'])) _messages.add(p);
+            final alreadySaved = p['fileUrl'] != null
+                ? _messages.any((message) => message['fileUrl'] == p['fileUrl'])
+                : _messages.any((message) => message['text'] == p['text']);
+            if (!alreadySaved) {
+              _messages.add(p);
+            }
           }
           _loading = false;
         });
@@ -6043,46 +6230,76 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _setupSocket() {
     widget.socket?.on('chat:message', (data) {
-      if (data['fromUserId'] == widget.recipient['id']) {
-        if (!mounted) return;
-        final fileUrl = data['fileUrl'] as String?;
-        final fileName = data['fileName'] as String?;
-        final fileType = _normalizeIncomingFileType(
-          data['fileType'] as String?,
-          fileUrl: fileUrl,
-          fileName: fileName,
-        );
-        final isFile =
-            fileUrl != null || (fileType != null && fileType != 'text');
-        setState(() {
-          _messages.add({
-            'id':
-                data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
-            'text': data['text'] as String? ?? fileName ?? '',
-            'from': widget.recipient['id'],
-            'time': data['createdAt'] != null
-                ? _formatTime(data['createdAt'])
-                : _nowTime(),
-            'createdAt': data['createdAt']?.toString() ??
-                DateTime.now().toIso8601String(),
-            'isUnread': false,
-            'status': 'received',
-            'isFile': isFile,
-            'fileType': fileType,
-            'fileUrl': fileUrl,
-            'fileName': fileName,
-            if (data['replyToId'] != null)
-              'replyTo': {
-                'id': data['replyToId'],
-                'text': data['replyBody'] ?? ''
-              },
-          });
-          _isTyping = false;
-        });
-        _scrollToBottom();
-        _markAsRead();
-      }
+      if (!mounted || data is! Map) return;
+      final fileUrl = data['fileUrl'] as String?;
+      final fileName = data['fileName'] as String?;
+      final fromUserId = data['fromUserId'];
+      final isIncoming = fromUserId == widget.recipient['id'];
+      final pendingIndex = fileUrl == null
+          ? -1
+          : _messages.indexWhere((message) =>
+              message['status'] == 'pending_scan' &&
+              message['fileUrl'] == fileUrl);
+      final isDelayedOutgoing =
+          fromUserId == widget.me?['id'] && pendingIndex != -1;
+      if (!isIncoming && !isDelayedOutgoing) return;
+      final fileType = _normalizeIncomingFileType(
+        data['fileType'] as String?,
+        fileUrl: fileUrl,
+        fileName: fileName,
+      );
+      final isFile =
+          fileUrl != null || (fileType != null && fileType != 'text');
+      final incoming = <String, dynamic>{
+        'id': data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        'text': data['text'] as String? ?? fileName ?? '',
+        'from': isIncoming ? widget.recipient['id'] : widget.me?['id'],
+        'time': data['createdAt'] != null
+            ? _formatTime(data['createdAt'])
+            : _nowTime(),
+        'createdAt':
+            data['createdAt']?.toString() ?? DateTime.now().toIso8601String(),
+        'isUnread': false,
+        'status': isIncoming ? 'received' : 'sent',
+        'isFile': isFile,
+        'fileType': fileType,
+        'fileUrl': fileUrl,
+        'fileName': fileName,
+        if (data['replyToId'] != null)
+          'replyTo': {'id': data['replyToId'], 'text': data['replyBody'] ?? ''},
+      };
+      setState(() {
+        if (pendingIndex != -1) {
+          _messages[pendingIndex] = incoming;
+        } else if (!_messages
+            .any((message) => message['id'] == incoming['id'])) {
+          _messages.add(incoming);
+        }
+        _isTyping = false;
+      });
+      _scrollToBottom();
+      if (isIncoming) _markAsRead();
     });
+
+    _scanRejectedSocketHandler = (data) {
+      if (!mounted || data is! Map) return;
+      final fileUrl = data['fileUrl'] as String?;
+      if (fileUrl == null) return;
+      final index = _messages.indexWhere((message) =>
+          message['status'] == 'pending_scan' && message['fileUrl'] == fileUrl);
+      if (index == -1) return;
+      setState(() {
+        _messages[index]['status'] = 'rejected_scan';
+        _messages[index]['scanReason'] =
+            data['reason']?.toString() ?? 'נדחתה בסריקה';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('התמונה ${data['fileName'] ?? ''} לא אושרה בסריקה',
+            textDirection: TextDirection.rtl),
+        backgroundColor: Colors.red.shade700,
+      ));
+    };
+    widget.socket?.on('scan:rejected', _scanRejectedSocketHandler);
 
     _chatTypingHandler = (data) {
       if (data['fromUserId'] == widget.recipient['id'] && mounted) {
@@ -6163,6 +6380,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _recordTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('chat:message');
+    widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
     widget.socket?.off('chat:typing', _chatTypingHandler);
     widget.socket?.off('messages:read');
     widget.socket?.off('messages:delivered');
@@ -6688,7 +6906,7 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 _AttachOption(
                   icon: Icons.image_outlined,
-                  label: 'גלריה',
+                  label: 'גלריה (עד 10)',
                   color: kPrimary,
                   onTap: () {
                     Navigator.pop(context);
@@ -6740,14 +6958,68 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pickFile(ImageSource source) async {
     final picker = ImagePicker();
+    if (source == ImageSource.gallery) {
+      final picked = await picker.pickMultiImage(
+        maxWidth: 1920,
+        maxHeight: 1920,
+        imageQuality: 85,
+        limit: _maxBatchImages,
+      );
+      if (picked.isEmpty) return;
+      final selected = picked.take(_maxBatchImages).toList();
+      if (picked.length > _maxBatchImages && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('ניתן להעלות עד 10 תמונות בכל פעם',
+              textDirection: TextDirection.rtl),
+        ));
+      }
+      await _uploadPrivateImageBatch(selected);
+      return;
+    }
+
     final picked = await picker.pickImage(
-      source: source,
-      maxWidth: 1920,
-      maxHeight: 1920,
-      imageQuality: 85,
+        source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
+    if (picked != null) await _uploadAndSend(picked, picked.name, 'image');
+  }
+
+  Future<void> _uploadPrivateImageBatch(List<XFile> files) async {
+    if (!mounted || files.isEmpty) return;
+    final completed = ValueNotifier<int>(0);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final dialogFuture =
+        _showImageBatchProgress(context, completed, files.length);
+    var refreshScanBot = false;
+    final results = await _runImageUploadQueue(
+      files,
+      (file) => _uploadFileRequest(
+        file: file,
+        fileName: file.name,
+        token: widget.token,
+        fields: {
+          'toUserId': widget.recipient['id'].toString(),
+          if (kIsWeb) 'scanReport': 'true',
+        },
+      ),
+      completed,
+      onResult: (index, file, result) async {
+        final needsRefresh = await _applyPrivateUploadResult(
+          result,
+          file.name,
+          'image',
+          showNotice: false,
+          refreshScanBot: false,
+        );
+        if (needsRefresh) refreshScanBot = true;
+      },
     );
-    if (picked == null) return;
-    await _uploadAndSend(picked, picked.name, 'image');
+    if (navigator.mounted && navigator.canPop()) navigator.pop();
+    await dialogFuture;
+    completed.dispose();
+    if (!mounted) return;
+
+    if (refreshScanBot) await _loadMessages(silent: true);
+    if (!mounted) return;
+    _showImageBatchSummary(context, results);
   }
 
   Future<void> _pickDocument() async {
@@ -6762,133 +7034,184 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _uploadAndSend(
       dynamic file, String fileName, String fileType) async {
-    // Show scanning/upload dialog
     if (!mounted) return;
-    showDialog(
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final dialogFuture = showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Row(children: [
-          Icon(Icons.security, color: kPrimary),
-          SizedBox(width: 8),
-          Text('סריקה והעלאה'),
-        ]),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          const CircularProgressIndicator(color: kPrimary),
-          const SizedBox(height: 16),
-          Text('$fileName\nעובר סריקת צניעות והעלאה...'),
-        ]),
+      builder: (_) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.security, color: kPrimary),
+            SizedBox(width: 8),
+            Text('סריקה והעלאה'),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            const CircularProgressIndicator(color: kPrimary),
+            const SizedBox(height: 16),
+            Text('$fileName\nעובר סריקת צניעות והעלאה...'),
+          ]),
+        ),
       ),
     );
+    final result = await _uploadFileRequest(
+      file: file,
+      fileName: fileName,
+      token: widget.token,
+      fields: {
+        'toUserId': widget.recipient['id'].toString(),
+        if (kIsWeb) 'scanReport': 'true',
+      },
+    );
+    if (navigator.mounted && navigator.canPop()) navigator.pop();
+    await dialogFuture;
+    if (!mounted) return;
+    await _applyPrivateUploadResult(result, fileName, fileType);
+  }
 
-    try {
-      final bytes = file is XFile
-          ? await file.readAsBytes()
-          : (file as PlatformFile).bytes ??
-              await File(file.path!).readAsBytes();
-      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
-        ..headers['Authorization'] = 'Bearer ${widget.token}'
-        ..fields['toUserId'] = widget.recipient['id'].toString()
-        ..files.add(http.MultipartFile.fromBytes('file', bytes,
-            filename: fileName, contentType: _mimeFromFileName(fileName)));
-      if (kIsWeb) request.fields['scanReport'] = 'true';
-      final streamed =
-          await request.send().timeout(const Duration(seconds: 60));
-      final body = await streamed.stream.bytesToString();
-      if (!mounted) return;
-      Navigator.pop(context); // close dialog
-
-      if (streamed.statusCode != 200) {
-        final err = jsonDecode(body)['error'] ?? 'שגיאה בהעלאה';
-        _showError(err);
-        return;
-      }
-
-      final data = jsonDecode(body) as Map<String, dynamic>;
-      final fileUrl = data['url'] as String;
-      final isPending = data['status'] == 'pending';
-      final isRejected = data['status'] == 'rejected';
-
-      if (isRejected) {
+  Future<bool> _applyPrivateUploadResult(
+    _FileUploadResult result,
+    String fileName,
+    String fileType, {
+    bool showNotice = true,
+    bool refreshScanBot = true,
+  }) async {
+    final data = result.data;
+    final fileUrl = data['url'] as String?;
+    switch (result.outcome) {
+      case _FileUploadOutcome.failed:
+        if (showNotice) _showError(result.error ?? 'שגיאה בהעלאה');
+        return false;
+      case _FileUploadOutcome.rejected:
         setState(() {
-          _messages.add({
-            'id': 'temp_${DateTime.now().millisecondsSinceEpoch}',
-            'text': fileName,
-            'from': widget.me?['id'],
-            'time': _nowTime(),
-            'createdAt': DateTime.now().toIso8601String(),
-            'status': 'rejected_scan',
-            'isFile': true,
-            'fileType': fileType,
-            'fileUrl': fileUrl,
-            'scanReason': data['reason'],
-          });
+          final existingIndex = fileUrl == null
+              ? -1
+              : _messages
+                  .indexWhere((message) => message['fileUrl'] == fileUrl);
+          if (existingIndex != -1) {
+            _messages[existingIndex]['status'] = 'rejected_scan';
+            _messages[existingIndex]['scanReason'] = data['reason'];
+          } else {
+            _messages.add({
+              'id': _newUploadMessageId('temp_'),
+              'text': fileName,
+              'from': widget.me?['id'],
+              'time': _nowTime(),
+              'createdAt': DateTime.now().toIso8601String(),
+              'status': 'rejected_scan',
+              'isFile': true,
+              'fileType': fileType,
+              'fileUrl': fileUrl,
+              'fileName': fileName,
+              'scanReason': data['reason'],
+            });
+          }
         });
         _scrollToBottom();
-        _showBlockedDialog(data['reason'] as String? ?? 'התמונה לא נשלחה');
-        return;
-      }
-
-      if (isPending) {
-        // Scan service unavailable — file queued, server will send it later
+        if (showNotice) {
+          _showBlockedDialog(data['reason'] as String? ?? 'התמונה לא נשלחה');
+        }
+        return false;
+      case _FileUploadOutcome.pending:
         setState(() {
-          _messages.add({
-            'id': 'temp_${DateTime.now().millisecondsSinceEpoch}',
-            'text': fileName,
-            'from': widget.me?['id'],
-            'time': _nowTime(),
-            'createdAt': DateTime.now().toIso8601String(),
-            'status': 'pending_scan',
-            'isFile': true,
-            'fileType': fileType,
-            'fileUrl': fileUrl,
-          });
+          final existingIndex = fileUrl == null
+              ? -1
+              : _messages
+                  .indexWhere((message) => message['fileUrl'] == fileUrl);
+          if (existingIndex != -1) {
+            _messages[existingIndex]['status'] = 'pending_scan';
+          } else {
+            _messages.add({
+              'id': _newUploadMessageId('temp_'),
+              'text': fileName,
+              'from': widget.me?['id'],
+              'time': _nowTime(),
+              'createdAt': DateTime.now().toIso8601String(),
+              'status': 'pending_scan',
+              'isFile': true,
+              'fileType': fileType,
+              'fileUrl': fileUrl,
+              'fileName': fileName,
+            });
+          }
         });
         _scrollToBottom();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('הקובץ בהמתנה לסריקה — יישלח אוטומטית כשהשירות יחזור',
-                textDirection: TextDirection.rtl),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 4),
-          ),
-        );
-        return;
-      }
-
-      if (data['handledByScanBot'] == true) {
-        await _loadMessages(silent: true);
-        return;
-      }
-
-      // Scan passed — send via socket as usual
-      widget.socket?.emit('chat:message', {
-        'toUserId': widget.recipient['id'],
-        'fileUrl': fileUrl,
-        'fileName': fileName,
-        'fileType': fileType,
-        'text': null,
-      });
-
-      setState(() {
-        _messages.add({
-          'id': 'temp_${DateTime.now().millisecondsSinceEpoch}',
-          'text': fileName,
-          'from': widget.me?['id'],
-          'time': _nowTime(),
-          'createdAt': DateTime.now().toIso8601String(),
-          'status': 'sent',
-          'isFile': true,
-          'fileType': fileType,
-          'fileUrl': fileUrl,
+        if (showNotice) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'הקובץ בהמתנה לסריקה — יישלח אוטומטית כשהשירות יחזור',
+                  textDirection: TextDirection.rtl),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        return false;
+      case _FileUploadOutcome.scanBot:
+        if (refreshScanBot) await _loadMessages(silent: true);
+        return true;
+      case _FileUploadOutcome.approved:
+        Map<String, dynamic> sendData = const <String, dynamic>{};
+        try {
+          final response = await http
+              .post(
+                Uri.parse('$kApi/messages'),
+                headers: {
+                  'Authorization': 'Bearer ${widget.token}',
+                  'Content-Type': 'application/json',
+                },
+                body: jsonEncode({
+                  'toUserId': widget.recipient['id'],
+                  'fileUrl': fileUrl,
+                  'fileName': fileName,
+                  'fileType': fileType,
+                }),
+              )
+              .timeout(const Duration(seconds: 30));
+          try {
+            final decoded = jsonDecode(response.body);
+            if (decoded is Map<String, dynamic>) sendData = decoded;
+          } catch (_) {}
+          if (response.statusCode != 200) {
+            result.outcome = _FileUploadOutcome.failed;
+            result.error =
+                sendData['error']?.toString() ?? 'הקובץ הועלה אך לא נשלח';
+            if (showNotice && mounted) _showError(result.error!);
+            return false;
+          }
+        } catch (error) {
+          result.outcome = _FileUploadOutcome.failed;
+          result.error = 'הקובץ הועלה אך לא נשלח: $error';
+          if (showNotice && mounted) _showError(result.error!);
+          return false;
+        }
+        if (!mounted) return false;
+        final messageId = sendData['id'] ?? _newUploadMessageId('temp_');
+        setState(() {
+          _messages.removeWhere((message) =>
+              message['fileUrl'] == fileUrl &&
+              message['status'] == 'pending_scan' &&
+              message['id'] != messageId);
+          if (!_messages.any((message) => message['id'] == messageId)) {
+            _messages.add({
+              'id': messageId,
+              'text': fileName,
+              'from': widget.me?['id'],
+              'time': _nowTime(),
+              'createdAt': sendData['createdAt']?.toString() ??
+                  DateTime.now().toIso8601String(),
+              'status': sendData['status'] ?? 'sent',
+              'isFile': true,
+              'fileType': fileType,
+              'fileUrl': fileUrl,
+              'fileName': fileName,
+            });
+          }
         });
-      });
-      _scrollToBottom();
-    } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-        _showError('שגיאת העלאה: ${e.toString()}');
-      }
+        _scrollToBottom();
+        return false;
     }
   }
 
@@ -8410,6 +8733,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _isTyping = false;
   String _typingName = '';
   late final void Function(dynamic) _typingSocketHandler;
+  late final void Function(dynamic) _scanRejectedSocketHandler;
   List<Map<String, dynamic>> _members = [];
   String _myStatus = 'member'; // 'member' or 'pending'
   Map<String, dynamic>? _editingMsg;
@@ -8426,13 +8750,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     super.initState();
     _isAdmin = widget.group['role'] == 'admin';
     _myStatus = widget.group['status'] as String? ?? 'member';
-    // A newly-created group is added after the socket connected, so its
-    // creator is not yet in the room that was joined during connection.
-    widget.socket?.emit('group:join', {'groupId': _groupId});
-    widget.socket?.emit('group:viewed', {'groupId': _groupId});
-    _loadMessages();
     _setupSocket();
-    _loadMembers();
+    if (_myStatus == 'member') {
+      // A newly-created group is added after the socket connected, so its
+      // creator is not yet in the room that was joined during connection.
+      widget.socket?.emit('group:join', {'groupId': _groupId});
+      widget.socket?.emit('group:viewed', {'groupId': _groupId});
+      _loadMessages();
+      _loadMembers();
+    } else {
+      // Do not reveal cached group content before an invitation is accepted.
+      _loading = false;
+    }
     if (_isAdmin) {
       if (widget.openAddMembersOnStart) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -8521,6 +8850,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         setState(() => _myStatus = 'member');
         // Join socket room
         widget.socket?.emit('group:join', {'groupId': _groupId});
+        widget.socket?.emit('group:viewed', {'groupId': _groupId});
         // Load missed messages
         final missed = (data['missedMessages'] as List? ?? [])
             .map((m) => _mapMsg(m))
@@ -8530,6 +8860,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             _messages.insertAll(0, missed);
           });
         }
+        await _loadMembers();
         _scrollToBottom();
       }
     } catch (_) {}
@@ -8983,7 +9314,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _loadMessages() async {
-    final cacheKey = 'cache_group_msgs_$_groupId';
+    final cacheKey = 'cache_group_msgs_${widget.me?['id']}_$_groupId';
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -9016,7 +9347,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               .toList();
           _messages.clear();
           _messages.addAll(normalized);
-          _messages.addAll(pending);
+          for (final message in pending) {
+            if (!_messages.any((saved) =>
+                saved['fileUrl'] != null &&
+                saved['fileUrl'] == message['fileUrl'])) {
+              _messages.add(message);
+            }
+          }
           _loading = false;
         });
         http.put(
@@ -9049,6 +9386,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'createdAt': map['created_at']?.toString(),
       'isMe': isMe,
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
+      'status': map['message_status'] ?? 'sent',
+      if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
       'fileUrl': map['file_url'],
       'fileName': map['file_name'],
@@ -9099,6 +9438,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         final existingIndex = clientMessageId == null
             ? -1
             : _messages.indexWhere((m) => m['id'] == clientMessageId);
+        final pendingIndex = fileUrl == null
+            ? -1
+            : _messages.indexWhere((m) =>
+                m['status'] == 'pending_scan' && m['fileUrl'] == fileUrl);
         if (existingIndex != -1) {
           final savedIndex =
               _messages.indexWhere((m) => m['id'] == incoming['id']);
@@ -9107,6 +9450,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           } else {
             _messages[existingIndex] = incoming;
           }
+        } else if (pendingIndex != -1) {
+          _messages[pendingIndex] = incoming;
         } else if (!_messages.any((m) => m['id'] == incoming['id'])) {
           _messages.add(incoming);
         }
@@ -9114,6 +9459,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       });
       _scrollToBottom();
     });
+
+    _scanRejectedSocketHandler = (data) {
+      if (!mounted || data is! Map || data['groupId'] != _groupId) return;
+      final fileUrl = data['fileUrl'] as String?;
+      if (fileUrl == null) return;
+      final index = _messages.indexWhere((message) =>
+          message['status'] == 'pending_scan' && message['fileUrl'] == fileUrl);
+      if (index == -1) return;
+      setState(() {
+        _messages[index]['status'] = 'rejected_scan';
+        _messages[index]['scanReason'] =
+            data['reason']?.toString() ?? 'נדחתה בסריקה';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('התמונה ${data['fileName'] ?? ''} לא אושרה בסריקה',
+            textDirection: TextDirection.rtl),
+        backgroundColor: Colors.red.shade700,
+      ));
+    };
+    widget.socket?.on('scan:rejected', _scanRejectedSocketHandler);
 
     _typingSocketHandler = (data) {
       if (data['groupId'] == _groupId && mounted) {
@@ -9171,6 +9536,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _recordTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('group:message');
+    widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
     widget.socket?.off('group:typing', _typingSocketHandler);
     widget.socket?.off('group:viewed');
     widget.socket?.off('message:edited');
@@ -9423,7 +9789,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               children: [
                 _AttachOption(
                   icon: Icons.image_outlined,
-                  label: 'גלריה',
+                  label: 'גלריה (עד 10)',
                   color: kPrimary,
                   onTap: () {
                     Navigator.pop(context);
@@ -9475,10 +9841,56 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> _pickFile(ImageSource source) async {
     final picker = ImagePicker();
+    if (source == ImageSource.gallery) {
+      final picked = await picker.pickMultiImage(
+        maxWidth: 1920,
+        maxHeight: 1920,
+        imageQuality: 85,
+        limit: _maxBatchImages,
+      );
+      if (picked.isEmpty) return;
+      final selected = picked.take(_maxBatchImages).toList();
+      if (picked.length > _maxBatchImages && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('ניתן להעלות עד 10 תמונות בכל פעם',
+              textDirection: TextDirection.rtl),
+        ));
+      }
+      await _uploadGroupImageBatch(selected);
+      return;
+    }
+
     final picked = await picker.pickImage(
         source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
-    if (picked == null) return;
-    await _uploadGroupFile(picked, picked.name, 'image');
+    if (picked != null) {
+      await _uploadGroupFile(picked, picked.name, 'image');
+    }
+  }
+
+  Future<void> _uploadGroupImageBatch(List<XFile> files) async {
+    if (!mounted || files.isEmpty) return;
+    final completed = ValueNotifier<int>(0);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final dialogFuture =
+        _showImageBatchProgress(context, completed, files.length);
+    final results = await _runImageUploadQueue(
+      files,
+      (file) => _uploadFileRequest(
+        file: file,
+        fileName: file.name,
+        token: widget.token,
+        fields: {'groupId': _groupId},
+      ),
+      completed,
+      onResult: (index, file, result) =>
+          _applyGroupUploadResult(result, file.name, 'image', false),
+    );
+    if (navigator.mounted && navigator.canPop()) navigator.pop();
+    await dialogFuture;
+    completed.dispose();
+    if (!mounted) return;
+
+    _showImageBatchSummary(context, results);
   }
 
   Future<void> _pickDocument() async {
@@ -9492,78 +9904,181 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _uploadGroupFile(
       dynamic file, String fileName, String fileType) async {
     if (!mounted) return;
-    showDialog(
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final dialogFuture = showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Row(children: [
-          Icon(Icons.security, color: kPrimary),
-          SizedBox(width: 8),
-          Text('סריקה והעלאה'),
-        ]),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          const CircularProgressIndicator(color: kPrimary),
-          const SizedBox(height: 16),
-          Text('$fileName\nעובר סריקת צניעות והעלאה...'),
-        ]),
+      builder: (_) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.security, color: kPrimary),
+            SizedBox(width: 8),
+            Text('סריקה והעלאה'),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            const CircularProgressIndicator(color: kPrimary),
+            const SizedBox(height: 16),
+            Text('$fileName\nעובר סריקת צניעות והעלאה...'),
+          ]),
+        ),
       ),
     );
-    try {
-      final bytes = file is XFile
-          ? await file.readAsBytes()
-          : (file as PlatformFile).bytes ??
-              await File(file.path!).readAsBytes();
-      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
-        ..headers['Authorization'] = 'Bearer ${widget.token}'
-        ..fields['groupId'] = _groupId
-        ..files.add(http.MultipartFile.fromBytes('file', bytes,
-            filename: fileName, contentType: _mimeFromFileName(fileName)));
-      final streamed =
-          await request.send().timeout(const Duration(seconds: 60));
-      final body = await streamed.stream.bytesToString();
-      if (!mounted) return;
-      Navigator.pop(context);
-      if (streamed.statusCode != 200) {
-        final err = jsonDecode(body)['error'] ?? 'שגיאה בהעלאה';
-        if (err.contains('נחסמה')) {
-          _showGroupBlockedDialog(err);
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(err), backgroundColor: Colors.red));
+    final result = await _uploadFileRequest(
+      file: file,
+      fileName: fileName,
+      token: widget.token,
+      fields: {'groupId': _groupId},
+    );
+    if (navigator.mounted && navigator.canPop()) navigator.pop();
+    await dialogFuture;
+    if (!mounted) return;
+    await _applyGroupUploadResult(result, fileName, fileType, true);
+  }
+
+  Future<void> _applyGroupUploadResult(_FileUploadResult result,
+      String fileName, String fileType, bool showNotice) async {
+    final data = result.data;
+    final fileUrl = data['url'] as String?;
+    switch (result.outcome) {
+      case _FileUploadOutcome.failed:
+        if (showNotice) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(result.error ?? 'שגיאה בהעלאה'),
+              backgroundColor: Colors.red));
         }
         return;
-      }
-      final data = jsonDecode(body) as Map<String, dynamic>;
-      final fileUrl = data['url'] as String;
-      final clientMessageId =
-          'group_file_${DateTime.now().microsecondsSinceEpoch}';
-      widget.socket?.emit('group:message', {
-        'groupId': _groupId,
-        'text': null,
-        'fileUrl': fileUrl,
-        'fileName': fileName,
-        'fileType': fileType,
-        'clientMessageId': clientMessageId,
-      });
-      setState(() {
-        _messages.add({
-          'id': clientMessageId,
-          'text': fileName,
-          'senderName': widget.me?['name'] as String? ?? '',
-          'time': _nowTime(),
-          'createdAt': DateTime.now().toIso8601String(),
-          'isMe': true,
-          'fileType': fileType,
-          'fileUrl': fileUrl,
+      case _FileUploadOutcome.rejected:
+        setState(() {
+          final existingIndex = fileUrl == null
+              ? -1
+              : _messages
+                  .indexWhere((message) => message['fileUrl'] == fileUrl);
+          if (existingIndex != -1) {
+            _messages[existingIndex]['status'] = 'rejected_scan';
+            _messages[existingIndex]['scanReason'] = data['reason'];
+          } else {
+            _messages.add({
+              'id': _newUploadMessageId('temp_group_file_'),
+              'text': fileName,
+              'senderName': widget.me?['name'] as String? ?? '',
+              'time': _nowTime(),
+              'createdAt': DateTime.now().toIso8601String(),
+              'isMe': true,
+              'status': 'rejected_scan',
+              'scanReason': data['reason'],
+              'fileType': fileType,
+              'fileUrl': fileUrl,
+              'fileName': fileName,
+            });
+          }
         });
-      });
-      _scrollToBottom();
-    } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('שגיאה: $e'), backgroundColor: Colors.red));
-      }
+        _scrollToBottom();
+        if (showNotice) {
+          _showGroupBlockedDialog(
+              data['reason'] as String? ?? 'התמונה לא נשלחה');
+        }
+        return;
+      case _FileUploadOutcome.pending:
+        setState(() {
+          final existingIndex = fileUrl == null
+              ? -1
+              : _messages
+                  .indexWhere((message) => message['fileUrl'] == fileUrl);
+          if (existingIndex != -1) {
+            _messages[existingIndex]['status'] = 'pending_scan';
+          } else {
+            _messages.add({
+              'id': _newUploadMessageId('temp_group_file_'),
+              'text': fileName,
+              'senderName': widget.me?['name'] as String? ?? '',
+              'time': _nowTime(),
+              'createdAt': DateTime.now().toIso8601String(),
+              'isMe': true,
+              'status': 'pending_scan',
+              'fileType': fileType,
+              'fileUrl': fileUrl,
+              'fileName': fileName,
+            });
+          }
+        });
+        _scrollToBottom();
+        if (showNotice) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'הקובץ בהמתנה לסריקה — יישלח לקבוצה אוטומטית לאחר אישור',
+                textDirection: TextDirection.rtl),
+            backgroundColor: Colors.orange,
+          ));
+        }
+        return;
+      case _FileUploadOutcome.scanBot:
+      case _FileUploadOutcome.approved:
+        Map<String, dynamic> sendData = const <String, dynamic>{};
+        try {
+          final response = await http
+              .post(
+                Uri.parse('$kApi/groups/$_groupId/messages'),
+                headers: {
+                  'Authorization': 'Bearer ${widget.token}',
+                  'Content-Type': 'application/json',
+                },
+                body: jsonEncode({
+                  'fileUrl': fileUrl,
+                  'fileName': fileName,
+                  'fileType': fileType,
+                }),
+              )
+              .timeout(const Duration(seconds: 30));
+          try {
+            final decoded = jsonDecode(response.body);
+            if (decoded is Map<String, dynamic>) sendData = decoded;
+          } catch (_) {}
+          if (response.statusCode != 200) {
+            result.outcome = _FileUploadOutcome.failed;
+            result.error =
+                sendData['error']?.toString() ?? 'הקובץ הועלה אך לא נשלח';
+            if (showNotice && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(result.error!), backgroundColor: Colors.red));
+            }
+            return;
+          }
+        } catch (error) {
+          result.outcome = _FileUploadOutcome.failed;
+          result.error = 'הקובץ הועלה אך לא נשלח: $error';
+          if (showNotice && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(result.error!), backgroundColor: Colors.red));
+          }
+          return;
+        }
+        if (!mounted) return;
+        final messageId =
+            sendData['id'] ?? _newUploadMessageId('temp_group_file_');
+        setState(() {
+          _messages.removeWhere((message) =>
+              message['fileUrl'] == fileUrl &&
+              message['status'] == 'pending_scan' &&
+              message['id'] != messageId);
+          if (!_messages.any((message) => message['id'] == messageId)) {
+            _messages.add({
+              'id': messageId,
+              'text': fileName,
+              'senderName': widget.me?['name'] as String? ?? '',
+              'time': _nowTime(),
+              'createdAt': sendData['createdAt']?.toString() ??
+                  DateTime.now().toIso8601String(),
+              'isMe': true,
+              'status': sendData['status'] ?? 'sent',
+              'fileType': fileType,
+              'fileUrl': fileUrl,
+              'fileName': fileName,
+            });
+          }
+        });
+        _scrollToBottom();
+        return;
     }
   }
 
@@ -10347,6 +10862,29 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                           style: const TextStyle(
                                               fontSize: 15, height: 1.4),
                                           textDirection: TextDirection.rtl,
+                                        ),
+                                      if (msg['status'] == 'pending_scan')
+                                        const Padding(
+                                          padding: EdgeInsets.only(top: 5),
+                                          child: Text(
+                                            'ממתינה לסריקה — עדיין לא נשלחה',
+                                            style: TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.orange),
+                                            textDirection: TextDirection.rtl,
+                                          ),
+                                        ),
+                                      if (msg['status'] == 'rejected_scan')
+                                        Padding(
+                                          padding:
+                                              const EdgeInsets.only(top: 5),
+                                          child: Text(
+                                            'לא נשלחה · ${msg['scanReason'] ?? 'נדחתה בסריקה'}',
+                                            style: const TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.red),
+                                            textDirection: TextDirection.rtl,
+                                          ),
                                         ),
                                       const SizedBox(height: 4),
                                       Row(

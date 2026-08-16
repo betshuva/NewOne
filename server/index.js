@@ -235,11 +235,35 @@ function formatScanBotReport(fileName, scanResult, status) {
     lines.push(`זוהו: ${detected.map(value => scanLabelNames[value] || value).join(', ')}`);
   if (classification.totalDurationMs != null)
     lines.push(`זמן סיווג: ${classification.totalDurationMs}ms`);
+  const strictModesty = scanResult?.strictModesty;
+  if (strictModesty?.checked) {
+    lines.push(`שלב 4 — לבוש מחמיר: ${strictModesty.blocked ? '⛔ לא עבר' : '✅ עבר'} ` +
+      `(${strictModesty.totalDurationMs || 0}ms)`);
+    for (const check of strictModesty.checks || []) {
+      const category = scanLabelNames[check.category] || check.category;
+      lines.push(`${category}${check.fallback ? ' (בדיקת גיבוי)' : ''}: ציון חריגה ${Math.round(Number(check.riskScore || 0) * 100)}% ` +
+        `· סף ${Math.round(Number(check.threshold || 0) * 100)}%`);
+    }
+  } else if (strictModesty && !strictModesty.available) {
+    lines.push('שלב 4 — לבוש מחמיר: לא זמין');
+  }
   const modesty = (scanResult?.labels || [])
     .filter(label => ['nudity', 'adult sexual content', 'lingerie or revealing clothing']
       .includes(label.name))
     .map(label => `${label.name} ${label.score}%`);
   if (modesty.length) lines.push(`בדיקת צניעות: ${modesty.join(' · ')}`);
+  const localSafety = scanResult?.localSafety;
+  if (localSafety?.available) {
+    const normal = Math.round(Number(localSafety.scores?.normal || 0) * 1000) / 10;
+    const nsfw = Math.round(Number(localSafety.scores?.nsfw || 0) * 1000) / 10;
+    const localDecision = localSafety.decision === 'nsfw' ? 'זוהה NSFW'
+      : localSafety.decision === 'review' ? 'חשד ל־NSFW' : 'לא זוהה NSFW';
+    lines.push(`בדיקת תוכן מיני מפורש FalconsAI: ${localDecision} · ללא NSFW ${normal}% · NSFW ${nsfw}% ` +
+      `(${localSafety.durationMs || 0}ms)`);
+    lines.push('מידע נוסף בלבד: המודל אינו קובע צניעות לבוש ואינו משפיע על ההחלטה');
+  } else if (localSafety) {
+    lines.push('בדיקת תוכן מיני מפורש FalconsAI: לא זמינה — לא השפיעה על ההחלטה');
+  }
   return lines.join('\n');
 }
 
@@ -273,6 +297,34 @@ async function classifyClip(buffer, labels) {
   );
   if (!response.ok) throw new Error(`CLIP ${response.status}`);
   return response.json();
+}
+
+async function classifyLocalSafety(buffer) {
+  const startedAt = performance.now();
+  try {
+    const form = new FormData();
+    form.append('image', new Blob([buffer]), 'upload.jpg');
+    const response = await fetch(
+      process.env.LOCAL_MODERATION_URL || 'http://127.0.0.1:5004/moderate',
+      { method: 'POST', body: form, signal: AbortSignal.timeout(45000) },
+    );
+    if (!response.ok) throw new Error(`Local moderation ${response.status}`);
+    const result = await response.json();
+    return {
+      ...result,
+      available: true,
+      mode: 'comparison',
+      durationMs: Number(result.durationMs) || Math.round(performance.now() - startedAt),
+    };
+  } catch (error) {
+    console.warn('Local moderation comparison:', error.message);
+    return {
+      available: false,
+      mode: 'comparison',
+      durationMs: Math.round(performance.now() - startedAt),
+      error: error.message,
+    };
+  }
 }
 
 async function classifyImageContent(buffer) {
@@ -322,6 +374,8 @@ async function classifyImageContent(buffer) {
   const subjectTop = topResult(subjects);
   subjectsStage.decision = subjectTop.label;
   subjectsStage.confidence = subjectTop.score;
+  const personConfirmed = subjectTop.label === 'person or people' &&
+    (subjectTop.score >= 0.70 || (personScore >= 0.70 && subjectTop.score >= 0.60));
   if (subjectTop.label !== 'person or people' && subjectTop.score >= 0.70) {
     return {
       category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
@@ -331,7 +385,7 @@ async function classifyImageContent(buffer) {
     };
   }
 
-  if (subjectTop.label !== 'person or people' || subjectTop.score < 0.70) {
+  if (!personConfirmed) {
     subjectsStage.uncertain = true;
     return {
       category: null, detectedCategories: [], uncertain: true,
@@ -340,6 +394,7 @@ async function classifyImageContent(buffer) {
       totalDurationMs: Math.round(performance.now() - startedAt),
     };
   }
+  subjectsStage.confirmedByLifeStage = subjectTop.score < 0.70;
 
   const peopleStartedAt = performance.now();
   const checks = [
@@ -382,9 +437,106 @@ async function classifyImageContent(buffer) {
   };
 }
 
+const STRICT_MODESTY_CHECKS = {
+  men: {
+    safe: 'all men and boys are wearing modest long sleeved shirts and long pants',
+    risk: 'a man or boy is shirtless or wearing shorts or short sleeves with exposed arms or legs',
+    threshold: 0.55,
+  },
+  women: {
+    safe: 'all women and girls are wearing modest long sleeves a high neckline and a long skirt',
+    risk: 'a woman or girl is wearing short sleeves pants a short skirt a low neckline or revealing clothing',
+    threshold: 0.55,
+  },
+  children: {
+    safe: 'all children are wearing modest long sleeved clothing that covers their arms and legs',
+    risk: 'a child is wearing shorts or short sleeves or has exposed arms legs or chest',
+    threshold: 0.55,
+  },
+};
+
+async function scanStrictModesty(buffer, classification) {
+  const detectedCategories = (classification?.detectedCategories || [])
+    .filter(category => STRICT_MODESTY_CHECKS[category]);
+  const isConfidentNonHuman = classification?.category === 'nonHumanImages' &&
+    classification?.uncertain !== true;
+  if (!detectedCategories.length && !isConfidentNonHuman) return {
+    available: true, checked: false, blocked: false, checks: [], totalDurationMs: 0,
+  };
+  // A category classifier can miss a small or secondary person. Once any
+  // person is detected, screen all person types; for a confident non-human
+  // result, use a high-threshold fallback to catch obvious classification
+  // mistakes such as a small shirtless person in a landscape.
+  const categories = Object.keys(STRICT_MODESTY_CHECKS);
+  const startedAt = performance.now();
+  try {
+    const checks = await Promise.all(categories.map(async category => {
+      const config = STRICT_MODESTY_CHECKS[category];
+      const fallback = !detectedCategories.includes(category);
+      const threshold = fallback
+        ? (isConfidentNonHuman ? 0.95 : 0.90)
+        : config.threshold;
+      const checkStartedAt = performance.now();
+      const scores = await classifyClip(buffer, [config.safe, config.risk]);
+      const riskScore = Number(scores[config.risk] || 0);
+      return {
+        category,
+        scores,
+        riskScore,
+        safeScore: Number(scores[config.safe] || 0),
+        threshold,
+        fallback,
+        blocked: riskScore >= threshold,
+        durationMs: Math.round(performance.now() - checkStartedAt),
+      };
+    }));
+    return {
+      available: true,
+      checked: true,
+      blocked: checks.some(check => check.blocked),
+      blockedCategories: checks.filter(check => check.blocked).map(check => check.category),
+      checks,
+      totalDurationMs: Math.round(performance.now() - startedAt),
+    };
+  } catch (error) {
+    console.warn('Strict modesty scan:', error.message);
+    return {
+      available: false,
+      checked: false,
+      blocked: false,
+      checks: [],
+      error: error.message,
+      totalDurationMs: Math.round(performance.now() - startedAt),
+    };
+  }
+}
+
+function isPotentiallyAnimatedImage(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return false;
+  const magic = buffer.subarray(0, 12).toString('ascii');
+  // GIF scanning in the current model stack only evaluates the first frame,
+  // so reject GIF files rather than allow later frames to bypass moderation.
+  if (magic.startsWith('GIF87a') || magic.startsWith('GIF89a')) return true;
+  if (magic.startsWith('RIFF') && magic.slice(8, 12) === 'WEBP')
+    return buffer.indexOf(Buffer.from('ANIM')) >= 0 || buffer.indexOf(Buffer.from('ANMF')) >= 0;
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])))
+    return buffer.indexOf(Buffer.from('acTL')) >= 0;
+  return false;
+}
+
 
 async function scanImage(buffer) {
+  if (isPotentiallyAnimatedImage(buffer)) {
+    return {
+      blocked: true,
+      blockedBy: 'animatedImage',
+      reason: 'תמונה מונפשת אינה נתמכת בסריקה ולכן נחסמה',
+      labels: [], faces: [], safeSearch: {}, genderResults: null,
+      classification: null, strictModesty: null, localSafety: null,
+    };
+  }
   const key = process.env.GOOGLE_VISION_API_KEY;
+  const localSafetyPromise = classifyLocalSafety(buffer);
   if (!key) {
     // Free local fallback: the CLIP service is hosted on this server and does
     // not incur a per-request API charge.
@@ -400,19 +552,21 @@ async function scanImage(buffer) {
         'adult sexual content',
         'lingerie or revealing clothing',
       ];
-      const [scores, classification] = await Promise.all([
+      const [scores, classification, localSafety] = await Promise.all([
         classifyClip(buffer, labels),
         classifyImageContent(buffer),
+        localSafetyPromise,
       ]);
       const labelsRaw = Object.entries(scores).map(([name, score]) => ({
         name,
         score: Math.round(Number(score) * 100),
       }));
-      const blockedBy =
+      const strictModesty = await scanStrictModesty(buffer, classification);
+      const blockedBy = strictModesty.blocked ? 'strictModesty' : (
         Number(scores['adult sexual content'] || 0) >= 0.20 ||
         Number(scores.nudity || 0) >= 0.20 ||
         Number(scores['lingerie or revealing clothing'] || 0) >= 0.30
-          ? 'safeSearch' : null;
+          ? 'safeSearch' : null);
       if (blockedBy) {
         return {
           blocked: true,
@@ -423,6 +577,18 @@ async function scanImage(buffer) {
           safeSearch: {},
           genderResults: null,
           classification,
+          strictModesty,
+          localSafety,
+        };
+      }
+      if (!strictModesty.available) {
+        return {
+          pending: true,
+          reason: 'בדיקת הלבוש המחמירה אינה זמינה כרגע',
+          labels: labelsRaw, faces: [], safeSearch: {}, genderResults: null,
+          classification,
+          strictModesty,
+          localSafety,
         };
       }
       if (classification.uncertain) {
@@ -431,6 +597,8 @@ async function scanImage(buffer) {
           reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת',
           labels: labelsRaw, faces: [], safeSearch: {}, genderResults: null,
           classification,
+          strictModesty,
+          localSafety,
         };
       }
       return {
@@ -441,39 +609,45 @@ async function scanImage(buffer) {
         safeSearch: {},
         genderResults: null,
         classification,
+        strictModesty,
+        localSafety,
       };
     } catch (error) {
       console.error('Local CLIP scan:', error.message);
-      return { pending: true };
+      return { pending: true, localSafety: await localSafetyPromise };
     }
   }
 
   let res;
+  let localSafety;
   try {
-    res = await fetch(
-      `https://vision.googleapis.com/v1/images:annotate?key=${key}`,
-      {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          requests: [{
-            image:    { content: buffer.toString('base64') },
-            features: [
-              { type: 'SAFE_SEARCH_DETECTION' },
-              { type: 'LABEL_DETECTION', maxResults: 20 },
-              { type: 'FACE_DETECTION', maxResults: 5 },
-            ],
-          }],
-        }),
-      }
-    );
-  } catch { return { pending: true }; }
+    [res, localSafety] = await Promise.all([
+      fetch(
+        `https://vision.googleapis.com/v1/images:annotate?key=${key}`,
+        {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requests: [{
+              image:    { content: buffer.toString('base64') },
+              features: [
+                { type: 'SAFE_SEARCH_DETECTION' },
+                { type: 'LABEL_DETECTION', maxResults: 20 },
+                { type: 'FACE_DETECTION', maxResults: 5 },
+              ],
+            }],
+          }),
+        }
+      ),
+      localSafetyPromise,
+    ]);
+  } catch { return { pending: true, localSafety: await localSafetyPromise }; }
 
   const data = await res.json();
-  if (!res.ok || data.error) return { pending: true };
+  if (!res.ok || data.error) return { pending: true, localSafety };
 
   const ann = data.responses?.[0];
-  if (!ann) return { pending: true };
+  if (!ann) return { pending: true, localSafety };
 
   const ss  = ann.safeSearchAnnotation || {};
   const BAD = ['POSSIBLE', 'LIKELY', 'VERY_LIKELY'];
@@ -482,14 +656,18 @@ async function scanImage(buffer) {
   const faces = ann.faceAnnotations || [];
   let classification = null;
   try { classification = await classifyImageContent(buffer); } catch (_) {}
+  const strictModesty = await scanStrictModesty(buffer, classification);
 
-  if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
-    return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
+  if (strictModesty.blocked || BAD.includes(ss.adult) || BAD.includes(ss.racy))
+    return { blocked: true, blockedBy: strictModesty.blocked ? 'strictModesty' : 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
+
+  if (!strictModesty.available)
+    return { pending: true, reason: 'בדיקת הלבוש המחמירה אינה זמינה כרגע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
 
   if (!classification || classification.uncertain)
-    return { pending: true, reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
+    return { pending: true, reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
 
-  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
+  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
 }
 
 async function scanDocument(buffer, mimetype) {
@@ -1187,7 +1365,8 @@ io.on('connection', async (socket) => {
       const mem = await pool.query(
         `SELECT gm.role, g.send_permission FROM group_members gm
          JOIN groups g ON g.id = gm.group_id
-         WHERE gm.group_id = $1 AND gm.user_id = $2`, [groupId, socket.user.id]);
+         WHERE gm.group_id = $1 AND gm.user_id = $2 AND gm.status='member'`,
+        [groupId, socket.user.id]);
       const member = mem.rows[0];
       if (!member) return;
       if (member.send_permission === 'admin' && member.role !== 'admin') return;
@@ -1230,7 +1409,9 @@ io.on('connection', async (socket) => {
       // Push to offline members
       const grpName = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
       const groupName = grpName.rows[0]?.name || 'קבוצה';
-      const allMembers = await pool.query('SELECT user_id FROM group_members WHERE group_id = $1', [groupId]);
+      const allMembers = await pool.query(
+        `SELECT user_id FROM group_members
+         WHERE group_id=$1 AND status='member'`, [groupId]);
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
       for (const { user_id } of allMembers.rows) {
         if (user_id !== socket.user.id && !onlineUsers.has(user_id)) {
@@ -1241,12 +1422,15 @@ io.on('connection', async (socket) => {
     } catch (e) { console.error('group:message:', e.message); }
   });
 
-  socket.on('group:typing', ({ groupId }) =>
-    socket.to(`group:${groupId}`).emit('group:typing', {
+  socket.on('group:typing', ({ groupId }) => {
+    const room = `group:${groupId}`;
+    if (!groupId || !socket.rooms.has(room)) return;
+    socket.to(room).emit('group:typing', {
       groupId,
       fromUserId: socket.user.id,
       fromName:   socket.user.name,
-    }));
+    });
+  });
 
   socket.on('group:viewed', async ({ groupId }) => {
     if (!groupId) return;
@@ -1270,7 +1454,19 @@ io.on('connection', async (socket) => {
     }
   });
 
-  socket.on('group:join', ({ groupId }) => socket.join(`group:${groupId}`));
+  socket.on('group:join', async ({ groupId }) => {
+    if (!groupId) return;
+    try {
+      const pool = await getPool();
+      const member = await pool.query(
+        `SELECT 1 FROM group_members
+         WHERE group_id=$1 AND user_id=$2 AND status='member'`,
+        [groupId, socket.user.id]);
+      if (member.rows.length) socket.join(`group:${groupId}`);
+    } catch (e) {
+      console.error('group:join:', e.message);
+    }
+  });
 
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.user.id);
@@ -2480,6 +2676,18 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       if (!recipientPolicy.isContact)
         return res.status(403).json({ error: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
     }
+    if (req.body.groupId) {
+      const groupAccess = await pool.query(
+        `SELECT gm.role, g.send_permission FROM group_members gm
+         JOIN groups g ON g.id=gm.group_id
+         WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
+        [req.body.groupId, req.user.id]);
+      const member = groupAccess.rows[0];
+      if (!member)
+        return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
+      if (member.send_permission === 'admin' && member.role !== 'admin')
+        return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
+    }
     // העלאה לאחסון תחילה (גם קבצים חסומים נשמרים לצורך ביקורת אדמין)
     const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
     const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
@@ -2512,7 +2720,9 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
           fileUrl: url, reason: scanResult.reason, blockedBy: scanResult.blockedBy,
           safeSearch: scanResult.safeSearch, labels: scanResult.labels,
-          faces: scanResult.faces || [], genderResults: scanResult.genderResults || null }, req.ip);
+          faces: scanResult.faces || [], genderResults: scanResult.genderResults || null,
+          strictModesty: scanResult.strictModesty || null,
+          localSafety: scanResult.localSafety || null }, req.ip);
       let scanReport = null;
       if (reportImageScan)
         scanReport = await saveScanBotReport(pool, req.user.id, {
@@ -2536,10 +2746,14 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       logActivity(req.user.id, 'blocked_by_recipient_filter', {
         toUserId: req.body.toUserId, fileName: file.originalname, fileUrl: url,
         categories, classification: scanResult?.classification || null,
+        strictModesty: scanResult?.strictModesty || null,
+        localSafety: scanResult?.localSafety || null,
       }, req.ip);
       await pool.query(
         `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
-        [JSON.stringify({ reason, classification: scanResult?.classification || null }), url]);
+        [JSON.stringify({ reason, classification: scanResult?.classification || null,
+          strictModesty: scanResult?.strictModesty || null,
+          localSafety: scanResult?.localSafety || null }), url]);
       let scanReport = null;
       if (reportImageScan)
         scanReport = await saveScanBotReport(pool, req.user.id, {
@@ -2593,6 +2807,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         labels: scanResult?.labels || null,
         faces: scanResult?.faces || [],
         genderResults: scanResult?.genderResults || null,
+        strictModesty: scanResult?.strictModesty || null,
+        localSafety: scanResult?.localSafety || null,
         blockedBy: null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size,
       fileType: allowed.dbType, handledByScanBot: scanBotUpload, scanReport });
@@ -2622,6 +2838,7 @@ app.get('/api/groups', auth, async (req, res) => {
         FROM messages m
         JOIN users u ON u.id=m.sender_id
         WHERE m.group_id = g.id AND m.deleted_for_everyone = FALSE
+          AND gm.status='member'
           AND m.created_at >= gm.joined_at
         ORDER BY m.created_at DESC
         LIMIT 1
@@ -2657,28 +2874,106 @@ app.get('/api/groups/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const mem = await pool.query(
-      'SELECT role FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.user.id]);
-    if (!mem.rows.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
+      `SELECT role FROM group_members
+       WHERE group_id=$1 AND user_id=$2 AND status='member'`,
+      [req.params.id, req.user.id]);
+    if (!mem.rows.length)
+      return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
 
     const [grp, members] = await Promise.all([
       pool.query('SELECT * FROM groups WHERE id=$1', [req.params.id]),
       pool.query(
         `SELECT u.id, u.name, u.profile_pic_url, gm.role, gm.joined_at, gm.last_viewed_at
          FROM group_members gm JOIN users u ON u.id=gm.user_id
-         WHERE gm.group_id=$1 ORDER BY gm.role DESC, u.name`, [req.params.id]),
+         WHERE gm.group_id=$1 AND gm.status='member'
+         ORDER BY gm.role DESC, u.name`, [req.params.id]),
     ]);
     res.json({ ...grp.rows[0], members: members.rows, myRole: mem.rows[0].role });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Groups: messages ──────────────────────────────────────────────
+app.post('/api/groups/:id/messages', auth, async (req, res) => {
+  const groupId = req.params.id;
+  const senderId = req.user.id;
+  const { text, replyToId, fileUrl, fileName, fileType, clientMessageId } = req.body || {};
+  if (!text && !fileUrl)
+    return res.status(400).json({ error: 'חסר תוכן להודעה' });
+  try {
+    const pool = await getPool();
+    const access = await pool.query(
+      `SELECT gm.role, g.send_permission, g.name AS group_name
+       FROM group_members gm JOIN groups g ON g.id=gm.group_id
+       WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
+      [groupId, senderId]);
+    const member = access.rows[0];
+    if (!member) return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
+    if (member.send_permission === 'admin' && member.role !== 'admin')
+      return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
+
+    const type = fileType && fileType !== 'text'
+      ? fileType
+      : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)
+        ? 'image' : fileUrl ? 'document' : 'text');
+    if (fileUrl && !await validateApprovedFile(
+        pool, senderId, fileUrl, 'group', groupId)) {
+      return res.status(403).json({
+        error: 'הקובץ לא עבר סריקה ואישור עבור קבוצה זו',
+      });
+    }
+
+    const saved = await pool.query(
+      `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, created_at`,
+      [senderId, groupId, text || null, type, fileUrl || null,
+       fileName || null, replyToId || null]);
+    const row = saved.rows[0];
+    const payload = {
+      id: row.id,
+      groupId,
+      fromUserId: senderId,
+      fromName: req.user.name,
+      text: text || null,
+      fileUrl: fileUrl || null,
+      fileName: fileName || null,
+      fileType: type,
+      replyToId: replyToId || null,
+      clientMessageId: clientMessageId || null,
+      createdAt: row.created_at,
+    };
+    io.to(`group:${groupId}`).emit('group:message', payload);
+
+    const allMembers = await pool.query(
+      `SELECT user_id FROM group_members
+       WHERE group_id=$1 AND status='member'`, [groupId]);
+    const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
+    for (const { user_id } of allMembers.rows) {
+      if (user_id !== senderId && !onlineUsers.has(user_id)) {
+        sendPush(user_id, `${member.group_name} • ${req.user.name}`,
+          pushBody, { type: 'group', groupId });
+      }
+    }
+    logActivity(senderId, fileUrl ? 'send_file' : 'send_group_message', {
+      groupId, messageId: row.id, fileName: fileName || null,
+    }, req.ip);
+    res.json({ id: row.id, createdAt: row.created_at, status: 'sent' });
+  } catch (e) {
+    console.error('POST /api/groups/:id/messages:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/groups/:id/messages', auth, async (req, res) => {
   const before = req.query.before;
   try {
     const pool = await getPool();
     const check = await pool.query(
-      'SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.user.id]);
-    if (!check.rows.length) return res.status(403).json({ error: 'לא חבר בקבוצה' });
+      `SELECT 1 FROM group_members
+       WHERE group_id=$1 AND user_id=$2 AND status='member'`,
+      [req.params.id, req.user.id]);
+    if (!check.rows.length)
+      return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
 
     const result = await pool.query(`
       SELECT
@@ -2700,7 +2995,37 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
       LIMIT 50
     `, before ? [req.params.id, req.user.id, new Date(before)] :
        [req.params.id, req.user.id]);
-    res.json(result.rows.reverse());
+    const scanParams = [req.params.id, req.user.id];
+    if (before) scanParams.push(new Date(before));
+    const scans = await pool.query(`
+      SELECT
+        'scan_' || sf.id::text AS id,
+        sf.user_id AS sender_id,
+        sf.file_type AS type,
+        sf.original_name AS body,
+        sf.public_url AS file_url,
+        sf.original_name AS file_name,
+        NULL::uuid AS reply_to_id,
+        sf.created_at,
+        u.name AS sender_name,
+        NULL::text AS reply_body,
+        0 AS is_read,
+        CASE WHEN sf.moderation_status='rejected'
+          THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status,
+        sf.moderation_details->>'reason' AS scan_reason
+      FROM stored_files sf
+      JOIN users u ON u.id=sf.user_id
+      WHERE sf.context_type='group' AND sf.context_id=$1
+        AND sf.user_id=$2
+        AND sf.moderation_status IN ('pending','rejected')
+        ${before ? 'AND sf.created_at < $3' : ''}
+      ORDER BY sf.created_at DESC
+      LIMIT 50
+    `, scanParams);
+    const combined = [...result.rows, ...scans.rows]
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      .slice(-50);
+    res.json(combined);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2841,10 +3166,16 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
     const wasPending = pendingRow.rows[0]?.status === 'pending';
     const pendingSince = pendingRow.rows[0]?.pending_since || null;
 
-    // Update status to member (or insert if not exists)
+    if (!wasPending) {
+      if (pendingRow.rows[0]?.status === 'member')
+        return res.json({ ok: true, missedMessages: [] });
+      return res.status(403).json({ error: 'לא קיימת הזמנה פעילה לקבוצה' });
+    }
+
+    // Only an existing invitation can become an active membership.
     await pool.query(
-      `INSERT INTO group_members (group_id, user_id, status) VALUES ($1, $2, 'member')
-       ON CONFLICT (group_id, user_id) DO UPDATE SET status='member'`,
+      `UPDATE group_members SET status='member'
+       WHERE group_id=$1 AND user_id=$2 AND status='pending'`,
       [req.params.id, req.user.id]);
 
     // Fetch missed messages since pending_since
@@ -3757,7 +4088,8 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
                fileName: d.fileName, fileType: d.fileType, fileSize: d.fileSize,
                fileUrl: d.fileUrl, reason: d.reason, blockedBy: d.blockedBy || null,
                safeSearch: d.safeSearch || null, labels: d.labels || null,
-               faces: d.faces || [] };
+               faces: d.faces || [], strictModesty: d.strictModesty || null,
+               localSafety: d.localSafety || null };
     });
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -3779,15 +4111,36 @@ app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
     for (const row of result.rows) {
       const d = row.details || {};
       if (!d.fileUrl) { failed++; continue; }
-      if (d.safeSearch) { scanned++; continue; } // already has results
+      const existingStrictComplete = d.strictModesty?.available &&
+        (d.strictModesty.checked || d.blockedBy === 'safeSearch');
+      if (d.localSafety?.available && existingStrictComplete) { scanned++; continue; }
       try {
-        const imgRes = await fetch(d.fileUrl, { signal: AbortSignal.timeout(10000) });
-        if (!imgRes.ok) { failed++; continue; }
-        const buf = Buffer.from(await imgRes.arrayBuffer());
+        let buf;
+        if (d.fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`)) {
+          const encodedPath = d.fileUrl.slice(UPLOAD_PUBLIC_BASE.length + 1);
+          const relativePath = encodedPath.split('/').map(decodeURIComponent).join(path.sep);
+          const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
+          if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) {
+            failed++;
+            continue;
+          }
+          buf = await fs.readFile(absolutePath);
+        } else {
+          const imgRes = await fetch(d.fileUrl, { signal: AbortSignal.timeout(10000) });
+          if (!imgRes.ok) { failed++; continue; }
+          buf = Buffer.from(await imgRes.arrayBuffer());
+        }
         const sr  = await scanImage(buf);
-        if (sr.pending) { failed++; continue; }
+        const strictComplete = sr.strictModesty?.available &&
+          (sr.strictModesty.checked || sr.blockedBy === 'safeSearch');
+        if (sr.pending || !sr.localSafety?.available || !strictComplete) {
+          failed++;
+          continue;
+        }
         d.safeSearch = sr.safeSearch;
         d.labels     = sr.labels;
+        d.strictModesty = sr.strictModesty || null;
+        d.localSafety = sr.localSafety;
         await pool.query('UPDATE activity_log SET details=$1 WHERE id=$2', [JSON.stringify(d), row.id]);
         updated++;
       } catch { failed++; }
@@ -3835,7 +4188,13 @@ app.get('/api/test-storage', async (req, res) => {
 // ── App Version (also wakes up DB on cold start) ─────────────────
 app.get('/api/version', async (req, res) => {
   try { const pool = await getPool(); await pool.query('SELECT 1'); } catch (_) {}
-  res.json({ version: '1.2.8', apkUrl: 'https://betshuva.com/betshuva-app/app-release.apk' });
+  let version = '1.2.24';
+  try {
+    const info = JSON.parse(await fs.readFile(
+      path.join(__dirname, '..', 'version.json'), 'utf8'));
+    if (info.version) version = String(info.version);
+  } catch (_) {}
+  res.json({ version, apkUrl: 'https://betshuva.com/betshuva-app/app-release.apk' });
 });
 
 // ── Forgot Password ──────────────────────────────────────────────
@@ -3991,20 +4350,101 @@ async function initPendingTable() {
 }
 
 async function retryPendingScans() {
+  if (retryPendingScans.running) return;
+  retryPendingScans.running = true;
   try {
     const pool = await getPool();
+    const completePending = async (rowId, persistOutcome) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await persistOutcome(client);
+        const deleted = await client.query(
+          `DELETE FROM pending_scans WHERE id=$1 RETURNING id`, [rowId]);
+        if (!deleted.rowCount) throw new Error(`Pending scan ${rowId} no longer exists`);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+
+    const rejectExhaustedScan = async (row, attempt, scanResult = null, error = null) => {
+      const reason = 'הקובץ לא נשלח — שירות הסריקה נכשל לאחר 20 ניסיונות';
+      const finalResult = {
+        ...(scanResult && typeof scanResult === 'object' ? scanResult : {}),
+        pending: false,
+        blocked: true,
+        blockedBy: 'scanRetryLimit',
+        reason,
+        retryExhausted: true,
+        retryCount: Math.max(Number(attempt) || 0, 20),
+        ...(error ? { lastError: error.message } : {}),
+      };
+      await completePending(row.id, async client => {
+        await client.query(
+          `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+          [JSON.stringify(finalResult), row.file_url]);
+        if (row.to_user_id === SCAN_BOT_ID) {
+          await saveScanBotReport(client, row.user_id, {
+            name: row.file_name, size: 0, dbType: row.file_type,
+          }, row.file_url, finalResult, 'rejected');
+        }
+      });
+      const sid = onlineUsers.get(row.user_id);
+      if (sid) io.to(sid).emit('scan:rejected', {
+        fileName: row.file_name,
+        fileUrl: row.file_url,
+        groupId: row.group_id || null,
+        toUserId: row.to_user_id || null,
+        reason,
+      });
+      logActivity(row.user_id, 'scan_retry_exhausted', {
+        fileName: row.file_name,
+        fileUrl: row.file_url,
+        groupId: row.group_id || null,
+        toUserId: row.to_user_id || null,
+        retryCount: finalResult.retryCount,
+        lastError: error?.message || null,
+      });
+    };
+
     const rows = await pool.query(`
       SELECT * FROM pending_scans
-      WHERE retry_count < 20
-        AND (last_retry IS NULL OR last_retry < now() - interval '2 minutes')
+      WHERE retry_count >= 20
+         OR (retry_count < 20
+             AND (last_retry IS NULL OR last_retry < now() - interval '2 minutes'))
       ORDER BY created_at ASC
       LIMIT 10
     `);
 
     for (const row of rows.rows) {
+      let attempt = Number(row.retry_count) || 0;
+      let scanCompleted = false;
+      let outcomePersisted = false;
+      let exhaustionAttempted = false;
       try {
-        // Update last_retry immediately to avoid double-processing
-        await pool.query(`UPDATE pending_scans SET retry_count=retry_count+1, last_retry=now() WHERE id=$1`, [row.id]);
+        // Rows left behind by the old retry implementation at retry_count=20
+        // are finalized without making an unbounded twenty-first attempt.
+        if (attempt >= 20) {
+          exhaustionAttempted = true;
+          await rejectExhaustedScan(row, attempt);
+          outcomePersisted = true;
+          continue;
+        }
+
+        // The conditional update also prevents another server process from
+        // claiming the same row after both processes selected it.
+        const claimed = await pool.query(
+          `UPDATE pending_scans
+           SET retry_count=retry_count+1, last_retry=now()
+           WHERE id=$1 AND retry_count=$2
+           RETURNING retry_count`, [row.id, attempt]);
+        if (!claimed.rows.length) continue;
+        attempt = Number(claimed.rows[0].retry_count) || attempt + 1;
 
         // Local uploads use a public relative URL. Read those directly from
         // disk; only remote absolute URLs should be fetched over HTTP.
@@ -4018,7 +4458,7 @@ async function retryPendingScans() {
           buffer = await fs.readFile(absolutePath);
         } else {
           const fileRes = await fetch(row.file_url);
-          if (!fileRes.ok) continue;
+          if (!fileRes.ok) throw new Error(`Pending file download ${fileRes.status}`);
           buffer = Buffer.from(await fileRes.arrayBuffer());
         }
 
@@ -4026,24 +4466,42 @@ async function retryPendingScans() {
         if (row.file_type === 'image') scanResult = await scanImage(buffer);
         else                           scanResult = await scanDocument(buffer, row.mime_type);
 
-        if (scanResult.pending) continue; // service still unavailable
-
-        // Remove from pending regardless of outcome
-        await pool.query(`DELETE FROM pending_scans WHERE id=$1`, [row.id]);
+        if (!scanResult || scanResult.pending) {
+          if (attempt >= 20) {
+            exhaustionAttempted = true;
+            await rejectExhaustedScan(row, attempt, scanResult);
+            outcomePersisted = true;
+          }
+          continue;
+        }
+        scanCompleted = true;
 
         if (scanResult.blocked) {
-          await pool.query(
-            `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
-            [JSON.stringify(scanResult), row.file_url]);
+          await completePending(row.id, async client => {
+            await client.query(
+              `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify(scanResult), row.file_url]);
+            if (row.to_user_id === SCAN_BOT_ID) {
+              await saveScanBotReport(client, row.user_id, {
+                name: row.file_name, size: 0, dbType: row.file_type,
+              }, row.file_url, scanResult, 'rejected');
+            }
+          });
+          outcomePersisted = true;
           logActivity(row.user_id, 'blocked_upload_delayed',
-            { fileName: row.file_name, reason: scanResult.reason, fileUrl: row.file_url });
+            { fileName: row.file_name, reason: scanResult.reason, fileUrl: row.file_url,
+              blockedBy: scanResult.blockedBy || null,
+              safeSearch: scanResult.safeSearch || null,
+              labels: scanResult.labels || null,
+              strictModesty: scanResult.strictModesty || null,
+              localSafety: scanResult.localSafety || null });
           // Notify sender that file was rejected
           const sid = onlineUsers.get(row.user_id);
-          if (sid) io.to(sid).emit('scan:rejected', { fileName: row.file_name, reason: scanResult.reason });
-          if (row.to_user_id === SCAN_BOT_ID)
-            await saveScanBotReport(pool, row.user_id, {
-              name: row.file_name, size: 0, dbType: row.file_type,
-            }, row.file_url, scanResult, 'rejected');
+          if (sid) io.to(sid).emit('scan:rejected', {
+            fileName: row.file_name, fileUrl: row.file_url,
+            groupId: row.group_id || null, toUserId: row.to_user_id || null,
+            reason: scanResult.reason,
+          });
           continue;
         }
 
@@ -4057,34 +4515,85 @@ async function retryPendingScans() {
               toUserId: row.to_user_id, fileName: row.file_name,
               fileUrl: row.file_url, category: scanResult.classification?.category,
             });
+            await completePending(row.id, async client => {
+              await client.query(
+                `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+                [JSON.stringify({ reason, classification: scanResult.classification || null,
+                  strictModesty: scanResult.strictModesty || null,
+                  localSafety: scanResult.localSafety || null }), row.file_url]);
+            });
+            outcomePersisted = true;
             const sid = onlineUsers.get(row.user_id);
-            if (sid) io.to(sid).emit('scan:rejected', { fileName: row.file_name, reason });
-            await pool.query(
-              `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
-              [JSON.stringify({ reason, classification: scanResult.classification || null }), row.file_url]);
+            if (sid) io.to(sid).emit('scan:rejected', {
+              fileName: row.file_name, fileUrl: row.file_url,
+              groupId: null, toUserId: row.to_user_id, reason,
+            });
             continue;
           }
         }
 
-        await pool.query(
-          `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
-          [JSON.stringify(scanResult || {}), row.file_url]);
+        let pendingGroup = null;
+        if (row.group_id) {
+          const groupAccess = await pool.query(
+            `SELECT gm.role, g.send_permission, g.name AS group_name,
+                    u.name AS sender_name
+             FROM group_members gm
+             JOIN groups g ON g.id=gm.group_id
+             JOIN users u ON u.id=gm.user_id
+             WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
+            [row.group_id, row.user_id]);
+          pendingGroup = groupAccess.rows[0] || null;
+          if (!pendingGroup ||
+              (pendingGroup.send_permission === 'admin' && pendingGroup.role !== 'admin')) {
+            const reason = !pendingGroup
+              ? 'אין לך עוד הרשאה לשלוח לקבוצה זו'
+              : 'רק מנהלי הקבוצה רשאים לשלוח הודעות';
+            await completePending(row.id, async client => {
+              await client.query(
+                `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+                [JSON.stringify({ ...scanResult, reason, deliveryRejected: true }), row.file_url]);
+            });
+            outcomePersisted = true;
+            const sid = onlineUsers.get(row.user_id);
+            if (sid) io.to(sid).emit('scan:rejected', {
+              groupId: row.group_id, toUserId: null,
+              fileName: row.file_name, fileUrl: row.file_url, reason,
+            });
+            logActivity(row.user_id, 'group_file_delivery_rejected', {
+              groupId: row.group_id, fileName: row.file_name,
+              fileUrl: row.file_url, reason,
+            });
+            continue;
+          }
+        }
 
         if (row.to_user_id === SCAN_BOT_ID) {
-          await saveScanBotReport(pool, row.user_id, {
-            name: row.file_name, size: 0, dbType: row.file_type,
-          }, row.file_url, scanResult, 'approved');
+          await completePending(row.id, async client => {
+            await client.query(
+              `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify(scanResult), row.file_url]);
+            await saveScanBotReport(client, row.user_id, {
+              name: row.file_name, size: 0, dbType: row.file_type,
+            }, row.file_url, scanResult, 'approved');
+          });
+          outcomePersisted = true;
           continue;
         }
 
         // Scan passed — save message and deliver
         if (row.to_user_id) {
-          const saved = await pool.query(
-            `INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name)
-             VALUES ($1, $2, $3, $4, $5, $4)
-             RETURNING id, created_at`,
-            [row.user_id, row.to_user_id, row.file_type, row.file_name, row.file_url]);
-          const msg = saved.rows[0];
+          const msg = await completePending(row.id, async client => {
+            await client.query(
+              `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify(scanResult), row.file_url]);
+            const saved = await client.query(
+              `INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name)
+               VALUES ($1, $2, $3, $4, $5, $4)
+               RETURNING id, created_at`,
+              [row.user_id, row.to_user_id, row.file_type, row.file_name, row.file_url]);
+            return saved.rows[0];
+          });
+          outcomePersisted = true;
           const payload = {
             id: msg.id, fromUserId: row.user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
@@ -4097,10 +4606,93 @@ async function retryPendingScans() {
             sendPush(row.to_user_id, '', `📎 ${row.file_name}`, { type: 'chat', fromUserId: row.user_id });
           logActivity(row.user_id, 'send_file_delayed',
             { toUserId: row.to_user_id, fileName: row.file_name, fileUrl: row.file_url, fileType: row.file_type });
+          continue;
         }
-      } catch (e) { console.error('retry row', row.id, e.message); }
+
+        if (row.group_id && pendingGroup) {
+          const msg = await completePending(row.id, async client => {
+            await client.query(
+              `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify(scanResult), row.file_url]);
+            const saved = await client.query(
+              `INSERT INTO messages (sender_id, group_id, type, body, file_url, file_name)
+               VALUES ($1, $2, $3, $4, $5, $4)
+               RETURNING id, created_at`,
+              [row.user_id, row.group_id, row.file_type, row.file_name, row.file_url]);
+            return saved.rows[0];
+          });
+          outcomePersisted = true;
+          const payload = {
+            id: msg.id,
+            groupId: row.group_id,
+            fromUserId: row.user_id,
+            fromName: pendingGroup.sender_name,
+            text: null,
+            fileUrl: row.file_url,
+            fileName: row.file_name,
+            fileType: row.file_type,
+            replyToId: null,
+            clientMessageId: null,
+            createdAt: msg.created_at,
+          };
+          const room = `group:${row.group_id}`;
+          io.to(room).emit('group:message', payload);
+          const senderSid = onlineUsers.get(row.user_id);
+          const senderSocket = senderSid ? io.sockets.sockets.get(senderSid) : null;
+          if (senderSid && !senderSocket?.rooms.has(room))
+            io.to(senderSid).emit('group:message', payload);
+
+          const allMembers = await pool.query(
+            `SELECT user_id FROM group_members
+             WHERE group_id=$1 AND status='member'`, [row.group_id]);
+          for (const { user_id } of allMembers.rows) {
+            if (user_id !== row.user_id && !onlineUsers.has(user_id)) {
+              sendPush(user_id,
+                `${pendingGroup.group_name} • ${pendingGroup.sender_name}`,
+                `📎 ${row.file_name}`,
+                { type: 'group', groupId: row.group_id });
+            }
+          }
+          logActivity(row.user_id, 'send_group_file_delayed', {
+            groupId: row.group_id, fileName: row.file_name,
+            fileUrl: row.file_url, fileType: row.file_type,
+          });
+          continue;
+        }
+
+        await completePending(row.id, async client => {
+          await client.query(
+            `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+            [JSON.stringify(scanResult), row.file_url]);
+        });
+        outcomePersisted = true;
+      } catch (e) {
+        console.error('retry row', row.id, e.message);
+        if (!outcomePersisted && !scanCompleted && attempt >= 20 && !exhaustionAttempted) {
+          try {
+            exhaustionAttempted = true;
+            await rejectExhaustedScan(row, attempt, null, e);
+            outcomePersisted = true;
+          } catch (finalError) {
+            console.error('finalize retry row', row.id, finalError.message);
+          }
+        } else if (!outcomePersisted && scanCompleted) {
+          // A persistence failure after a successful scan must not consume the
+          // final scan attempt. Leave the row eligible for a later retry.
+          try {
+            await pool.query(
+              `UPDATE pending_scans
+               SET retry_count=GREATEST(retry_count-1, 0)
+               WHERE id=$1`, [row.id]);
+          } catch (_) {}
+        }
+      }
     }
-  } catch (e) { console.error('retryPendingScans:', e.message); }
+  } catch (e) {
+    console.error('retryPendingScans:', e.message);
+  } finally {
+    retryPendingScans.running = false;
+  }
 }
 
 const PORT = process.env.PORT || 3000;
