@@ -408,10 +408,11 @@ async function scanImage(buffer) {
         name,
         score: Math.round(Number(score) * 100),
       }));
-      const blockedBy =
+      const hasPeople = classification.category !== 'nonHumanImages';
+      const blockedBy = hasPeople && (
         Number(scores['adult sexual content'] || 0) >= 0.20 ||
         Number(scores.nudity || 0) >= 0.20 ||
-        Number(scores['lingerie or revealing clothing'] || 0) >= 0.30
+        Number(scores['lingerie or revealing clothing'] || 0) >= 0.30)
           ? 'safeSearch' : null;
       if (blockedBy) {
         return {
@@ -483,7 +484,8 @@ async function scanImage(buffer) {
   let classification = null;
   try { classification = await classifyImageContent(buffer); } catch (_) {}
 
-  if (BAD.includes(ss.adult) || BAD.includes(ss.racy))
+  if (classification?.category !== 'nonHumanImages' &&
+      (BAD.includes(ss.adult) || BAD.includes(ss.racy)))
     return { blocked: true, blockedBy: 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification };
 
   if (!classification || classification.uncertain)
