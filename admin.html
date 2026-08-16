@@ -1265,7 +1265,7 @@ function renderImageTestResult(data) {
   const categoryNames = {nonHumanImages:'ללא בני אדם',men:'גבר',women:'אישה',children:'ילד/ה',people:'מספר אנשים'};
   const classification = data.classification || {};
   const legacyStage = (title, values) => values ? `<div><strong>${title}</strong><div class="vc-labels" style="margin-top:7px">${Object.entries(values).map(([name,score]) => `<span class="vc-label">${escHtml(name)} ${Math.round(Number(score)*100)}%</span>`).join('')}</div></div>` : '';
-  const stageNames = {life:'שלב 1 — חי או דומם',subjects:'שלב 2 — אדם, בעל חיים, צמח או חפץ',people:'שלב 3 — גבר, אישה וילדים'};
+  const stageNames = {life:'שלב 1 — חי, דומם או אדם',subjects:'שלב 2 — אדם, בעל חיים, צמח או חפץ',people:'שלב 3 — גבר, אישה וילדים'};
   const stageRows = (classification.stages || []).map(item => {
     const decision = Array.isArray(item.decision) ? item.decision.map(value => categoryNames[value] || value).join(', ') : item.decision;
     const scores = item.scores ? Object.entries(item.scores).map(([name,score]) => `<span class="vc-label">${escHtml(name)} ${Math.round(Number(score)*100)}%</span>`).join('') : '';
@@ -1278,7 +1278,7 @@ function renderImageTestResult(data) {
       ${classification.category ? `<div><strong>סיווג סופי:</strong> ${categoryNames[classification.category] || escHtml(classification.category)}</div>` : ''}
       ${(classification.detectedCategories || []).length ? `<div><strong>קטגוריות שנמצאו:</strong> ${classification.detectedCategories.map(value => categoryNames[value] || escHtml(value)).join(', ')}</div>` : ''}
       ${classification.totalDurationMs != null ? `<div><strong>זמן סיווג כולל:</strong> ${Number(classification.totalDurationMs)}ms</div>` : ''}
-      ${stageRows || `${legacyStage('שלב 1 — חי או דומם', classification.life)}${legacyStage('שלב 2 — אדם, בעל חיים, צמח או חפץ', classification.subjects)}${legacyStage('שלב 3 — סוג האדם', classification.people)}`}
+      ${stageRows || `${legacyStage('שלב 1 — חי, דומם או אדם', classification.life)}${legacyStage('שלב 2 — אדם, בעל חיים, צמח או חפץ', classification.subjects)}${legacyStage('שלב 3 — סוג האדם', classification.people)}`}
       <div><strong>פנים שזוהו:</strong> ${(data.faces || []).length}</div>
       ${safeRows ? `<div><strong>SafeSearch</strong><div class="vc-ss" style="margin-top:7px">${safeRows}</div></div>` : ''}
       ${labels ? `<div><strong>תוויות</strong><div class="vc-labels" style="margin-top:7px">${labels}</div></div>` : ''}

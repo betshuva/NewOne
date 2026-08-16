@@ -198,8 +198,9 @@ async function validateApprovedFile(pool, userId, fileUrl, contextType, contextI
 }
 
 const scanLabelNames = {
-  'image containing a living being': 'יצור חי',
-  'image containing no living beings': 'ללא יצור חי',
+  'person or people are visible': 'אדם',
+  'animal or plant is visible': 'בעל חיים או צמח',
+  'inanimate object landscape document or screenshot': 'דומם',
   'person or people': 'אדם או אנשים', animal: 'בעל חיים', plant: 'צמח',
   'inanimate object or landscape': 'חפץ, נוף או מסמך',
   men: 'גבר', women: 'אישה', children: 'ילד/ה',
@@ -212,7 +213,7 @@ function formatScanBotReport(fileName, scanResult, status) {
   const lines = [`דוח סריקה: ${fileName}`, `תוצאה: ${statusText}`];
   if (scanResult?.reason) lines.push(`סיבה: ${scanResult.reason}`);
   const stageTitles = {
-    life: 'שלב 1 — חי או דומם',
+    life: 'שלב 1 — חי, דומם או אדם',
     subjects: 'שלב 2 — סוג התוכן',
     people: 'שלב 3 — סוגי האנשים',
   };
@@ -289,15 +290,17 @@ async function classifyImageContent(buffer) {
     .sort((a, b) => b.score - a.score)[0] || { label: '', score: 0 };
 
   const lifeStage = await timed('life', [
-    'image containing a living being',
-    'image containing no living beings',
+    'person or people are visible',
+    'animal or plant is visible',
+    'inanimate object landscape document or screenshot',
   ]);
   const life = lifeStage.scores;
   const lifeTop = topResult(life);
   lifeStage.decision = lifeTop.label;
   lifeStage.confidence = lifeTop.score;
 
-  if (lifeTop.label === 'image containing no living beings' && lifeTop.score >= 0.70) {
+  if (lifeTop.label === 'inanimate object landscape document or screenshot' &&
+      lifeTop.score >= 0.70) {
     return {
       category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
       uncertain: false, life, subjects: null, people: null,
