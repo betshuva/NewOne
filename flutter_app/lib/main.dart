@@ -173,8 +173,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.21';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.21.apk';
+const kVersion = '1.2.22';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.22.apk';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
 String _absoluteMediaUrl(String url) =>
@@ -5974,11 +5974,16 @@ class _ChatScreenState extends State<ChatScreen> {
       'isUnread': map['sender_id'] != widget.me?['id'] &&
           map['is_read'] != true &&
           map['is_read'] != 1,
-      'status': map['message_status'] == 'read'
-          ? 'read'
-          : map['message_status'] == 'delivered'
-              ? 'delivered'
-              : 'sent',
+      'status': map['message_status'] == 'pending_scan'
+          ? 'pending_scan'
+          : map['message_status'] == 'rejected_scan'
+              ? 'rejected_scan'
+              : map['message_status'] == 'read'
+                  ? 'read'
+                  : map['message_status'] == 'delivered'
+                      ? 'delivered'
+                      : 'sent',
+      if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['reply_to_id'] != null)
         'replyTo': {
           'id': map['reply_to_id'],

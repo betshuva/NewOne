@@ -46596,7 +46596,7 @@ else n.d2(0,m,o)}n.aE(0)
 return n},
 $S:203}
 A.aNI.prototype={
-$0(){return A.aTP(A.aD("https://betshuva.com/betshuva-app/betshuva-1.2.21.apk",0,null),B.Q9)},
+$0(){return A.aTP(A.aD("https://betshuva.com/betshuva-app/betshuva-1.2.22.apk",0,null),B.Q9)},
 $S:0}
 A.N_.prototype={
 G(a){var s=null,r=A.b91(new A.f8(4,A.b2(10),B.FM),new A.f8(4,A.b2(10),B.om),B.f,!0,new A.f8(4,A.b2(10),B.FO))
@@ -49853,41 +49853,44 @@ break
 case 11:case 1:return A.o(q,r)
 case 2:return A.n(o,r)}})
 return A.p($async$nv,r)},
-aku(a){var s,r,q,p,o,n,m,l,k="file_url",j="file_name",i="sender_id",h="created_at",g="message_status",f="delivered",e="reply_to_id",d="is_edited"
-t.P.a(a)
-s=J.a_(a)
-r=A.O(s.h(a,"type"))
-q=A.O(s.h(a,k))
-p=A.v0(r,A.O(s.h(a,j)),q)
+aku(a0){var s,r,q,p,o,n,m,l,k="file_url",j="file_name",i="sender_id",h="created_at",g="message_status",f="pending_scan",e="rejected_scan",d="delivered",c="scan_reason",b="reply_to_id",a="is_edited"
+t.P.a(a0)
+s=J.a_(a0)
+r=A.O(s.h(a0,"type"))
+q=A.O(s.h(a0,k))
+p=A.v0(r,A.O(s.h(a0,j)),q)
 if(p==null)p="text"
-if(s.h(a,k)==null)o=p!=="text"&&p!=="group_invite"
+if(s.h(a0,k)==null)o=p!=="text"&&p!=="group_invite"
 else o=!0
 r=t.N
 q=t.z
 n=A.z(r,q)
-n.n(0,"id",s.h(a,"id"))
-m=s.h(a,"body")
-if(m==null)m=s.h(a,j)
+n.n(0,"id",s.h(a0,"id"))
+m=s.h(a0,"body")
+if(m==null)m=s.h(a0,j)
 n.n(0,"text",m==null?"":m)
-n.n(0,"from",s.h(a,i))
-n.n(0,"time",this.rw(s.h(a,h)))
-m=s.h(a,h)
+n.n(0,"from",s.h(a0,i))
+n.n(0,"time",this.rw(s.h(a0,h)))
+m=s.h(a0,h)
 n.n(0,"createdAt",m==null?null:J.ba(m))
-m=s.h(a,i)
+m=s.h(a0,i)
 l=this.a.d
-n.n(0,"isUnread",!J.c(m,l==null?null:J.r(l,"id"))&&!J.c(s.h(a,"is_read"),!0)&&!J.c(s.h(a,"is_read"),1))
-if(J.c(s.h(a,g),"read"))m="read"
-else m=J.c(s.h(a,g),f)?f:"sent"
+n.n(0,"isUnread",!J.c(m,l==null?null:J.r(l,"id"))&&!J.c(s.h(a0,"is_read"),!0)&&!J.c(s.h(a0,"is_read"),1))
+if(J.c(s.h(a0,g),f))m=f
+else if(J.c(s.h(a0,g),e))m=e
+else if(J.c(s.h(a0,g),"read"))m="read"
+else m=J.c(s.h(a0,g),d)?d:"sent"
 n.n(0,"status",m)
-if(s.h(a,e)!=null){m=s.h(a,e)
-l=s.h(a,"reply_body")
+if(s.h(a0,c)!=null)n.n(0,"scanReason",s.h(a0,c))
+if(s.h(a0,b)!=null){m=s.h(a0,b)
+l=s.h(a0,"reply_body")
 n.n(0,"replyTo",A.G(["id",m,"text",l==null?"":l],r,q))}n.n(0,"isFile",o)
 n.n(0,"fileType",o?p:null)
-n.n(0,"fileUrl",s.h(a,k))
-n.n(0,"fileName",s.h(a,j))
+n.n(0,"fileUrl",s.h(a0,k))
+n.n(0,"fileName",s.h(a0,j))
 n.n(0,"isGroupInvite",p==="group_invite")
-n.n(0,"meta",s.h(a,j))
-n.n(0,"isEdited",J.c(s.h(a,d),!0)||J.c(s.h(a,d),1))
+n.n(0,"meta",s.h(a0,j))
+n.n(0,"isEdited",J.c(s.h(a0,a),!0)||J.c(s.h(a0,a),1))
 return n},
 rw(a){var s,r
 if(a==null)return""
@@ -112630,7 +112633,7 @@ B.n=new A.Qi(1,"max")
 B.iA=new A.aB(58173,!1)
 B.OG=new A.aA(B.iA,null,B.F,null,null)
 B.a6C=new A.U("\u05d2\u05e8\u05e1\u05d4",null,null,null,null,null,null,null,null,null)
-B.a7C=new A.U("1.2.21",null,B.cr,null,null,null,null,null,null,null)
+B.a7C=new A.U("1.2.22",null,B.cr,null,null,null,null,null,null,null)
 B.Qh=new A.kh(B.OG,B.a6C,null,B.a7C,!1,null,null,null,null,null,!0,null,null,!1,null,null,!1,null,null,null,null,null)
 B.ek=new A.h8(1,16,null,null)
 B.NP=new A.aB(62588,!1)

@@ -1670,7 +1670,37 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       ORDER BY m.created_at DESC
       LIMIT 50
     `, params);
-    res.json(result.rows.reverse());
+    // Pending/rejected uploads are visible only to their sender. They are not
+    // messages yet, but must survive refresh so a scanned image never appears
+    // to vanish from the sender's conversation.
+    const scanParams = [myId, otherId];
+    if (before) scanParams.push(new Date(before));
+    const scans = await pool.query(`
+      SELECT
+        'scan_' || sf.id::text AS id,
+        sf.user_id AS sender_id,
+        sf.context_id AS recipient_id,
+        sf.file_type AS type,
+        sf.original_name AS body,
+        sf.public_url AS file_url,
+        sf.original_name AS file_name,
+        sf.file_size,
+        sf.created_at,
+        sf.moderation_status = 'rejected' AS scan_rejected,
+        sf.moderation_details->>'reason' AS scan_reason,
+        CASE WHEN sf.moderation_status='rejected'
+          THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status
+      FROM stored_files sf
+      WHERE sf.user_id=$1 AND sf.context_type='chat' AND sf.context_id=$2
+        AND sf.moderation_status IN ('pending','rejected')
+        ${before ? 'AND sf.created_at < $3' : ''}
+      ORDER BY sf.created_at DESC
+      LIMIT 50
+    `, scanParams);
+    const combined = [...result.rows, ...scans.rows]
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      .slice(-50);
+    res.json(combined);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
