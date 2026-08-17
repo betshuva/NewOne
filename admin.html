@@ -331,9 +331,10 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <div id="vision-panel">
     <div class="main-head">
       <h1>🔬 תוצאות Google Vision</h1>
-      <button class="btn-outline" id="rescan-btn" onclick="rescanAll()">🔬 סרוק מחדש הכל</button>
+      <button class="btn-outline" id="rescan-btn" onclick="rescanAll()">🔬 בדוק היסטוריה (דוח בלבד)</button>
       <button class="btn-sm" onclick="loadVision(0)">🔄 רענן</button>
     </div>
+    <div id="google-vision-status" style="margin:0 20px 12px;padding:10px 14px;border-radius:8px;background:var(--bg3);border:1px solid var(--border);font-size:12px">בודק את מצב Google SafeSearch...</div>
     <div class="scan-tabs" style="flex-shrink:0">
       <div class="scan-tab active" id="vtab-all"      onclick="switchVTab('all')">הכל</div>
       <div class="scan-tab"        id="vtab-blocked"  onclick="switchVTab('blocked')">⛔ נחסמו <span id="vbadge-blocked" class="scan-badge red">—</span></div>
@@ -965,13 +966,58 @@ function labelHe(name) {
 }
 
 function blockedByLabel(b) {
-  return { safeSearch:'🔞 SafeSearch', strictModesty:'🧥 לבוש מחמיר', animatedImage:'🎞️ תמונה מונפשת', labels:'🏷️ Labels', faces:'👤 פנים', gender:'🧬 זיהוי מין' }[b] || b;
+  return { safeSearch:'🔞 SafeSearch ישן', googleSafeSearch:'🔞 Google SafeSearch',
+    googleSafeSearchUncertain:'❓ Google SafeSearch לא ודאי',
+    googleSafeSearchUnsupported:'⚠️ תמונה לא נתמכת ב־Google',
+    localExplicitContent:'🛡️ סינון תוכן מקומי', strictModesty:'🧥 לבוש מחמיר',
+    animatedImage:'🎞️ תמונה מונפשת', labels:'🏷️ Labels', faces:'👤 פנים',
+    gender:'🧬 זיהוי מין' }[b] || b;
 }
 
 function ssClass(val) { return BAD_SS.includes(val) ? 'bad' : 'ok'; }
 function ssShort(val) {
   return { VERY_UNLIKELY:'לא סביר מאוד', UNLIKELY:'לא סביר', POSSIBLE:'אפשרי',
-           LIKELY:'סביר', VERY_LIKELY:'סביר מאוד' }[val] || val || '—';
+           LIKELY:'סביר', VERY_LIKELY:'סביר מאוד', UNKNOWN:'לא ידוע' }[val] || val || '—';
+}
+
+function renderGoogleSafeSearch(googleSafeSearch) {
+  if (!googleSafeSearch) return '';
+  if (!googleSafeSearch.configured) return `<div style="background:rgba(210,153,34,.08);border:1px solid rgba(210,153,34,.3);border-radius:8px;padding:10px 14px">
+    <strong>Google Vision SafeSearch</strong>
+    <div style="margin-top:5px;color:var(--orange);font-size:12px">טרם הוגדר מפתח שרת ייעודי · הבדיקה המקומית בלבד קבעה את התוצאה</div>
+  </div>`;
+  if (googleSafeSearch.status === 'skipped_local_block') return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+    <strong>Google Vision SafeSearch</strong>
+    <div style="margin-top:5px;color:var(--text2);font-size:12px">לא נשלחה בקשה בתשלום — התמונה כבר נחסמה בבדיקה המקומית</div>
+  </div>`;
+  if (String(googleSafeSearch.status || '').startsWith('deferred_local_')) return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+    <strong>Google Vision SafeSearch</strong>
+    <div style="margin-top:5px;color:var(--text2);font-size:12px">טרם נבדקה — ממתינה להשלמת הבדיקה המקומית</div>
+  </div>`;
+  if (!googleSafeSearch.available) return `<div style="background:rgba(210,153,34,.08);border:1px solid rgba(210,153,34,.3);border-radius:8px;padding:10px 14px">
+    <strong>Google Vision SafeSearch</strong>
+    <div style="margin-top:5px;color:var(--orange);font-size:12px">לא זמין — התמונה לא אושרה אוטומטית${googleSafeSearch.errorCode?` · ${escHtml(googleSafeSearch.errorCode)}`:''}</div>
+  </div>`;
+  const categories = googleSafeSearch.categories || {};
+  const rows = Object.entries(categories).filter(([key])=>SS_HE[key]).map(([key,value]) => {
+    const enforced = ['adult','racy'].includes(key);
+    const stateClass = enforced ? (BAD_SS.includes(value) ? 'bad' : 'ok') : '';
+    return `<span class="vc-ss-item ${stateClass}">${SS_HE[key]}: ${ssShort(value)}${enforced?'':' · מידע בלבד'}</span>`;
+  }).join('');
+  const decision = googleSafeSearch.blocked ? '⛔ לא עבר'
+    : googleSafeSearch.uncertain ? '⏳ לא ודאי' : '✅ עבר';
+  const color = googleSafeSearch.blocked ? 'var(--red)'
+    : googleSafeSearch.uncertain ? 'var(--orange)' : 'var(--green)';
+  return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <strong>Google Vision SafeSearch</strong>
+      <span style="font-size:12px;color:${color}">${decision}</span>
+      <span style="font-size:11px;color:var(--text2)">${Number(googleSafeSearch.durationMs || 0)}ms</span>
+      <span style="font-size:11px;color:var(--text2)">סף: ${ssShort(googleSafeSearch.threshold)}</span>
+    </div>
+    <div class="vc-ss" style="margin-top:8px">${rows}</div>
+    <div style="margin-top:7px;color:var(--text2);font-size:11px">החסימה מבוססת על תוכן למבוגרים או תוכן מגרה. הערכים הם דרגות סבירות של Google ולא אחוזים.</div>
+  </div>`;
 }
 
 function renderLocalSafety(localSafety) {
@@ -1034,6 +1080,7 @@ let visionRows = [];
 
 function renderVisionCard(r, idx) {
   const blocked = r.action === 'blocked_upload' || r.action === 'blocked_upload_delayed';
+  const rescanResult = r.rescanResult || null;
   const isImg   = r.fileType === 'image';
   const labels  = r.labels || [];
   const topLabels = labels.slice(0,3).map(l=>l.name).join(', ');
@@ -1068,6 +1115,7 @@ function renderVisionCard(r, idx) {
       <div class="vc-top">
         <span class="vc-status ${blocked?'blocked':'approved'}">${blocked?'⛔ נחסם':'✅ אושר'}</span>
         ${blocked && r.blockedBy ? `<span class="vc-blocked-by">${blockedByLabel(r.blockedBy)}</span>` : ''}
+        ${rescanResult ? `<span class="vc-blocked-by" style="color:${rescanResult.blocked?'var(--red)':'var(--green)'}">בדיקה חוזרת: ${rescanResult.blocked?'היה נחסם':'עבר'} (דוח בלבד)</span>` : ''}
         <span class="vc-filename" title="${escHtml(r.fileName||'')}">${escHtml(r.fileName||'—')}</span>
       </div>
       <span class="vc-user">👤 ${escHtml(r.user_name||'—')} · ${size} · ${fmtDate(r.created_at)}</span>
@@ -1087,6 +1135,8 @@ function openVisionDetail(idx) {
   const genderResults= r.genderResults || [];
   const localSafety  = r.localSafety   || null;
   const strictModesty= r.strictModesty || null;
+  const googleSafeSearch = r.googleSafeSearch || null;
+  const rescanResult = r.rescanResult || null;
   const isImg        = r.fileType === 'image';
 
   const ssRows = Object.entries(ss).filter(([k])=>SS_HE[k]).map(([k,v])=>`
@@ -1129,7 +1179,10 @@ function openVisionDetail(idx) {
         ${r.fileUrl?`<a href="${escHtml(r.fileUrl)}" target="_blank" style="color:var(--blue-light);font-size:12px">🔗 פתח קובץ</a>`:''}
       </div>
     </div>
-    ${ssRows?`
+    ${rescanResult ? `<div style="margin-top:14px;padding:10px 14px;border-radius:8px;background:rgba(210,153,34,.08);border:1px solid rgba(210,153,34,.3);color:var(--orange);font-size:12px">
+      בדיקה חוזרת לצורכי דוח בלבד: ${rescanResult.blocked?'התמונה הייתה נחסמת כעת':'התמונה עברה כעת'}. הבדיקה לא שינתה הודעה שכבר נשלחה או את סטטוס הקובץ המקורי.
+    </div>` : ''}
+    ${googleSafeSearch ? `<div style="margin-top:14px">${renderGoogleSafeSearch(googleSafeSearch)}</div>` : ssRows?`
     <div style="margin-top:14px">
       <div style="font-size:12px;color:var(--text2);margin-bottom:6px;font-weight:600">SafeSearch Detection</div>
       <table style="width:100%;border-collapse:collapse;background:var(--bg3);border-radius:8px;overflow:hidden">
@@ -1236,18 +1289,40 @@ async function loadVision(offset=0) {
   } catch(e) { grid.innerHTML=`<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`; }
 }
 
+async function loadGoogleVisionStatus() {
+  const el = document.getElementById('google-vision-status');
+  if (!el) return;
+  try {
+    const response = await fetch(`${API}/api/admin/vision/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'שגיאת שרת');
+    const status = data.googleSafeSearch || {};
+    el.style.borderColor = status.configured ? 'rgba(46,160,67,.4)' : 'rgba(210,153,34,.4)';
+    el.style.color = status.configured ? 'var(--green)' : 'var(--orange)';
+    el.textContent = status.configured
+      ? `✅ מפתח Google Vision SafeSearch מוגדר והבדיקה נאכפת בכל העלאה · הצלחת החיבור נבדקת בכל סריקה · סף חסימה: ${ssShort(status.threshold)} · timeout: ${status.timeoutMs}ms`
+      : '⚠️ Google Vision SafeSearch מוכן בקוד אך טרם הופעל: חסר מפתח שרת ייעודי';
+  } catch (error) {
+    el.style.color = 'var(--red)';
+    el.textContent = `שגיאה בבדיקת מצב Google SafeSearch: ${error.message}`;
+  }
+}
+
 async function rescanAll() {
+  if (!confirm('הבדיקה תעדכן את דוח הסריקה בלבד. היא לא תמחק הודעות ולא תשנה משלוחים קודמים. להמשיך?')) return;
   const btn = document.getElementById('rescan-btn');
-  btn.disabled = true; btn.textContent = '⏳ סורק...';
+  btn.disabled = true; btn.textContent = '⏳ בודק היסטוריה...';
   try {
     const res  = await fetch(`${API}/api/admin/vision/rescan`,
       { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
     if (!res.ok) { alert(data.error || 'שגיאה'); return; }
-    alert(`✅ סריקה הושלמה\nסה"כ: ${data.total} | עודכנו: ${data.updated} | נכשלו: ${data.failed}`);
+    alert(`✅ בדיקת ההיסטוריה הושלמה (דוח בלבד)\nסה"כ: ${data.total} | עודכנו: ${data.updated} | נכשלו: ${data.failed}`);
     loadVision(visionOffset);
   } catch(e) { alert(e.message); }
-  finally { btn.disabled=false; btn.textContent='🔬 סרוק מחדש הכל'; }
+  finally { btn.disabled=false; btn.textContent='🔬 בדוק היסטוריה (דוח בלבד)'; }
 }
 
 function showVisionPanel() {
@@ -1263,6 +1338,7 @@ function showVisionPanel() {
   document.getElementById('listings-panel').style.display   = 'none';
   document.getElementById('moderation-panel').style.display = 'none';
   document.getElementById('vision-panel').style.display     = 'flex';
+  loadGoogleVisionStatus();
   loadVision(0);
 }
 
@@ -1319,13 +1395,14 @@ function renderImageTestResult(data) {
   const title = pending ? '⏳ הבדיקה ממתינה' : blocked ? '⛔ התמונה תיחסם' : '✅ התמונה תאושר';
   const safeSearch = data.safeSearch || {};
   const safeRows = Object.entries(safeSearch).map(([key,value]) =>
-    `<span class="vc-ss-item ${['LIKELY','VERY_LIKELY'].includes(String(value))?'bad':'ok'}">${escHtml(key)}: ${escHtml(String(value))}</span>`).join('');
+    `<span class="vc-ss-item ${BAD_SS.includes(String(value))?'bad':'ok'}">${escHtml(key)}: ${escHtml(String(value))}</span>`).join('');
   const labels = (data.labels || []).map(label =>
     `<span class="vc-label ${label.blocked?'danger':''}">${escHtml(label.name)} ${Number(label.score || 0)}%</span>`).join('');
   const categoryNames = {nonHumanImages:'ללא בני אדם',men:'גבר',women:'אישה',children:'ילד/ה',people:'מספר אנשים'};
   const classification = data.classification || {};
   const strictModesty = renderStrictModesty(data.strictModesty || null);
   const localSafety = renderLocalSafety(data.localSafety || null);
+  const googleSafeSearch = renderGoogleSafeSearch(data.googleSafeSearch || null);
   const legacyStage = (title, values) => values ? `<div><strong>${title}</strong><div class="vc-labels" style="margin-top:7px">${Object.entries(values).map(([name,score]) => `<span class="vc-label">${escHtml(name)} ${Math.round(Number(score)*100)}%</span>`).join('')}</div></div>` : '';
   const stageNames = {life:'שלב 1 — חי, דומם או אדם',subjects:'שלב 2 — אדם, בעל חיים, צמח או חפץ',people:'שלב 3 — גבר, אישה וילדים'};
   const stageRows = (classification.stages || []).map(item => {
@@ -1343,8 +1420,9 @@ function renderImageTestResult(data) {
       ${stageRows || `${legacyStage('שלב 1 — חי, דומם או אדם', classification.life)}${legacyStage('שלב 2 — אדם, בעל חיים, צמח או חפץ', classification.subjects)}${legacyStage('שלב 3 — סוג האדם', classification.people)}`}
       ${strictModesty}
       ${localSafety}
+      ${googleSafeSearch}
       <div><strong>פנים שזוהו:</strong> ${(data.faces || []).length}</div>
-      ${safeRows ? `<div><strong>SafeSearch</strong><div class="vc-ss" style="margin-top:7px">${safeRows}</div></div>` : ''}
+      ${!data.googleSafeSearch && safeRows ? `<div><strong>SafeSearch</strong><div class="vc-ss" style="margin-top:7px">${safeRows}</div></div>` : ''}
       ${labels ? `<div><strong>תוויות</strong><div class="vc-labels" style="margin-top:7px">${labels}</div></div>` : ''}
       ${pending ? '<div style="color:var(--orange)">שירות הסריקה אינו זמין כרגע. נסה שוב מאוחר יותר.</div>' : ''}
     </div>`;

@@ -11,6 +11,11 @@ const multer     = require('multer');
 const path       = require('path');
 const fs         = require('fs/promises');
 const { getPool } = require('./db');
+const {
+  googleSafeSearchConfigured,
+  normalizeBlockThreshold,
+  scanGoogleSafeSearch,
+} = require('./google-vision');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
@@ -79,6 +84,48 @@ function normalizeUploadFileName(name) {
     return decoded.includes('\uFFFD') ? name : decoded;
   } catch (_) { return name; }
 }
+
+function createRateLimiter({ windowMs, max, message }) {
+  const buckets = new Map();
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of buckets) {
+      if (value.resetAt <= now) buckets.delete(key);
+    }
+  }, windowMs);
+  cleanup.unref();
+  return (req, res, next) => {
+    const key = req.user?.id || req.ip || 'unknown';
+    const now = Date.now();
+    let bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      bucket = { count: 0, resetAt: now + windowMs };
+      buckets.set(key, bucket);
+    }
+    bucket.count++;
+    if (bucket.count > max) {
+      res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+      return res.status(429).json({ error: message });
+    }
+    next();
+  };
+}
+
+const uploadRateLimit = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 100,
+  message: 'בוצעו יותר מדי העלאות. נסה שוב בעוד מספר דקות',
+});
+const visionTestRateLimit = createRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 30,
+  message: 'בוצעו יותר מדי בדיקות תמונה. נסה שוב בעוד מספר דקות',
+});
+const visionRescanRateLimit = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 2,
+  message: 'ניתן להפעיל בדיקת היסטוריה פעמיים בשעה בלבד',
+});
 
 // ── Backblaze B2 Native API ───────────────────────────────────────
 // Env vars: B2_KEY_ID, B2_APP_KEY, B2_BUCKET, CDN_BASE_URL
@@ -263,6 +310,30 @@ function formatScanBotReport(fileName, scanResult, status) {
     lines.push('מידע נוסף בלבד: המודל אינו קובע צניעות לבוש ואינו משפיע על ההחלטה');
   } else if (localSafety) {
     lines.push('בדיקת תוכן מיני מפורש FalconsAI: לא זמינה — לא השפיעה על ההחלטה');
+  }
+  const googleSafeSearch = scanResult?.googleSafeSearch;
+  const likelihoodHe = {
+    UNKNOWN: 'לא ידוע', VERY_UNLIKELY: 'לא סביר מאוד', UNLIKELY: 'לא סביר',
+    POSSIBLE: 'אפשרי', LIKELY: 'סביר', VERY_LIKELY: 'סביר מאוד',
+  };
+  const categoryHe = { adult: 'תוכן למבוגרים', racy: 'תוכן מגרה', violence: 'אלימות',
+    medical: 'רפואי', spoof: 'שינוי/זיוף' };
+  if (googleSafeSearch?.configured && googleSafeSearch.available) {
+    const scores = Object.entries(googleSafeSearch.categories || {}).map(([category, value]) =>
+      `${categoryHe[category] || category}: ${likelihoodHe[value] || value}`);
+    const decision = googleSafeSearch.blocked ? '⛔ לא עבר'
+      : googleSafeSearch.uncertain ? '⏳ לא ודאי' : '✅ עבר';
+    lines.push(`Google Vision SafeSearch: ${decision} · ${scores.join(' · ')} ` +
+      `(${googleSafeSearch.durationMs || 0}ms)`);
+  } else if (googleSafeSearch?.status === 'skipped_local_block') {
+    lines.push('Google Vision SafeSearch: לא נשלחה בקשה — התמונה כבר נחסמה בבדיקה המקומית');
+  } else if (String(googleSafeSearch?.status || '').startsWith('deferred_local_')) {
+    lines.push('Google Vision SafeSearch: טרם נבדקה — ממתינה להשלמת הבדיקה המקומית');
+  } else if (googleSafeSearch?.configured) {
+    lines.push(`Google Vision SafeSearch: לא זמין — התמונה לא אושרה אוטומטית` +
+      `${googleSafeSearch.errorCode ? ` (${googleSafeSearch.errorCode})` : ''}`);
+  } else if (googleSafeSearch) {
+    lines.push('Google Vision SafeSearch: טרם הוגדר בשרת');
   }
   return lines.join('\n');
 }
@@ -525,7 +596,7 @@ function isPotentiallyAnimatedImage(buffer) {
 }
 
 
-async function scanImage(buffer) {
+async function scanImage(buffer, options = {}) {
   if (isPotentiallyAnimatedImage(buffer)) {
     return {
       blocked: true,
@@ -533,145 +604,172 @@ async function scanImage(buffer) {
       reason: 'תמונה מונפשת אינה נתמכת בסריקה ולכן נחסמה',
       labels: [], faces: [], safeSearch: {}, genderResults: null,
       classification: null, strictModesty: null, localSafety: null,
+      googleSafeSearch: null,
     };
   }
-  const key = process.env.GOOGLE_VISION_API_KEY;
-  const localSafetyPromise = classifyLocalSafety(buffer);
-  if (!key) {
-    // Free local fallback: the CLIP service is hosted on this server and does
-    // not incur a per-request API charge.
-    try {
-      const labels = [
-        'safe everyday photo',
-        'computer screen',
-        'document or screenshot',
-        'landscape or object',
-        'man or boy',
-        'woman or girl',
-        'nudity',
-        'adult sexual content',
-        'lingerie or revealing clothing',
-      ];
-      const [scores, classification, localSafety] = await Promise.all([
-        classifyClip(buffer, labels),
-        classifyImageContent(buffer),
-        localSafetyPromise,
-      ]);
-      const labelsRaw = Object.entries(scores).map(([name, score]) => ({
-        name,
-        score: Math.round(Number(score) * 100),
-      }));
-      const strictModesty = await scanStrictModesty(buffer, classification);
-      const blockedBy = strictModesty.blocked ? 'strictModesty' : (
-        Number(scores['adult sexual content'] || 0) >= 0.20 ||
-        Number(scores.nudity || 0) >= 0.20 ||
-        Number(scores['lingerie or revealing clothing'] || 0) >= 0.30
-          ? 'safeSearch' : null);
-      if (blockedBy) {
-        return {
-          blocked: true,
-          blockedBy,
-          reason: 'התמונה נחסמה — תוכן לא צנוע',
-          labels: labelsRaw,
-          faces: [],
-          safeSearch: {},
-          genderResults: null,
-          classification,
-          strictModesty,
-          localSafety,
-        };
-      }
-      if (!strictModesty.available) {
-        return {
-          pending: true,
-          reason: 'בדיקת הלבוש המחמירה אינה זמינה כרגע',
-          labels: labelsRaw, faces: [], safeSearch: {}, genderResults: null,
-          classification,
-          strictModesty,
-          localSafety,
-        };
-      }
-      if (classification.uncertain) {
-        return {
-          pending: true,
-          reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת',
-          labels: labelsRaw, faces: [], safeSearch: {}, genderResults: null,
-          classification,
-          strictModesty,
-          localSafety,
-        };
-      }
-      return {
-        blocked: false,
-        blockedBy: null,
-        labels: labelsRaw,
-        faces: [],
-        safeSearch: {},
-        genderResults: null,
-        classification,
-        strictModesty,
-        localSafety,
-      };
-    } catch (error) {
-      console.error('Local CLIP scan:', error.message);
-      return { pending: true, localSafety: await localSafetyPromise };
-    }
-  }
 
-  let res;
-  let localSafety;
-  try {
-    [res, localSafety] = await Promise.all([
-      fetch(
-        `https://vision.googleapis.com/v1/images:annotate?key=${key}`,
-        {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            requests: [{
-              image:    { content: buffer.toString('base64') },
-              features: [
-                { type: 'SAFE_SEARCH_DETECTION' },
-                { type: 'LABEL_DETECTION', maxResults: 20 },
-                { type: 'FACE_DETECTION', maxResults: 5 },
-              ],
-            }],
-          }),
-        }
-      ),
+  const localSafetyPromise = classifyLocalSafety(buffer);
+  const capture = promise => promise.then(
+    value => ({ ok: true, value }),
+    error => ({ ok: false, error }),
+  );
+  const labels = [
+    'safe everyday photo',
+    'computer screen',
+    'document or screenshot',
+    'landscape or object',
+    'man or boy',
+    'woman or girl',
+    'nudity',
+    'adult sexual content',
+    'lingerie or revealing clothing',
+  ];
+  const [scoresResult, classificationResult, localSafety] =
+    await Promise.all([
+      capture(classifyClip(buffer, labels)),
+      capture(classifyImageContent(buffer)),
       localSafetyPromise,
     ]);
-  } catch { return { pending: true, localSafety: await localSafetyPromise }; }
 
-  const data = await res.json();
-  if (!res.ok || data.error) return { pending: true, localSafety };
+  const scores = scoresResult.ok ? scoresResult.value : {};
+  const classification = classificationResult.ok ? classificationResult.value : null;
+  const labelsRaw = Object.entries(scores).map(([name, score]) => ({
+    name,
+    score: Math.round(Number(score) * 100),
+  }));
+  const strictModesty = classificationResult.ok
+    ? await scanStrictModesty(buffer, classification)
+    : {
+        available: false,
+        checked: false,
+        blocked: false,
+        checks: [],
+        error: classificationResult.error?.message || 'Image classification unavailable',
+        totalDurationMs: 0,
+      };
+  const googleConfigured = googleSafeSearchConfigured();
+  const googleThreshold = normalizeBlockThreshold(
+    process.env.GOOGLE_SAFESEARCH_BLOCK_THRESHOLD,
+  );
+  const googleNotRun = status => ({
+    provider: 'google-cloud-vision',
+    configured: googleConfigured,
+    available: false,
+    enforced: googleConfigured,
+    threshold: googleThreshold,
+    categories: null,
+    blocked: false,
+    blockedCategories: [],
+    uncertain: false,
+    status,
+    durationMs: 0,
+  });
+  const common = googleSafeSearch => ({
+    safeSearch: googleSafeSearch?.available ? googleSafeSearch.categories : {},
+    googleSafeSearch,
+    labels: labelsRaw,
+    faces: [],
+    genderResults: null,
+    classification,
+    strictModesty,
+    localSafety,
+  });
 
-  const ann = data.responses?.[0];
-  if (!ann) return { pending: true, localSafety };
+  const localExplicitContent = scoresResult.ok && (
+    Number(scores['adult sexual content'] || 0) >= 0.20 ||
+    Number(scores.nudity || 0) >= 0.20 ||
+    Number(scores['lingerie or revealing clothing'] || 0) >= 0.30
+  );
+  const localBlockedBy = strictModesty.blocked ? 'strictModesty'
+    : localExplicitContent ? 'localExplicitContent' : null;
+  if (localBlockedBy) {
+    return {
+      ...common(googleNotRun('skipped_local_block')),
+      blocked: true,
+      blockedBy: localBlockedBy,
+      reason: 'התמונה נחסמה — תוכן לא צנוע',
+    };
+  }
 
-  const ss  = ann.safeSearchAnnotation || {};
-  const BAD = ['POSSIBLE', 'LIKELY', 'VERY_LIKELY'];
-  const labelsRaw = (ann.labelAnnotations || []).map(l => ({ name: l.description, score: Math.round(l.score * 100) }));
-  const labelNames = labelsRaw.map(l => l.name.toLowerCase());
-  const faces = ann.faceAnnotations || [];
-  let classification = null;
-  try { classification = await classifyImageContent(buffer); } catch (_) {}
-  const strictModesty = await scanStrictModesty(buffer, classification);
+  if (!scoresResult.ok || !classificationResult.ok) {
+    const error = scoresResult.error || classificationResult.error;
+    console.error('Local CLIP scan:', error?.message || 'unknown error');
+    return {
+      ...common(googleNotRun('deferred_local_error')),
+      pending: true,
+      reason: 'בדיקת הסינון המקומית אינה זמינה כרגע',
+    };
+  }
 
-  if (strictModesty.blocked || BAD.includes(ss.adult) || BAD.includes(ss.racy))
-    return { blocked: true, blockedBy: strictModesty.blocked ? 'strictModesty' : 'safeSearch', reason: 'התמונה נחסמה — תוכן לא צנוע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
+  if (!strictModesty.available) {
+    return {
+      ...common(googleNotRun('deferred_local_error')),
+      pending: true,
+      reason: 'בדיקת הלבוש המחמירה אינה זמינה כרגע',
+    };
+  }
 
-  if (!strictModesty.available)
-    return { pending: true, reason: 'בדיקת הלבוש המחמירה אינה זמינה כרגע', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
+  if (classification.uncertain) {
+    return {
+      ...common(googleNotRun('deferred_local_uncertain')),
+      pending: true,
+      reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת',
+    };
+  }
 
-  if (!classification || classification.uncertain)
-    return { pending: true, reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת', safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
+  const priorGoogleSafeSearch = options.googleSafeSearch;
+  const canReuseGoogle = googleConfigured && priorGoogleSafeSearch?.available &&
+    priorGoogleSafeSearch.provider === 'google-cloud-vision' &&
+    priorGoogleSafeSearch.threshold === googleThreshold;
+  const googleSafeSearch = canReuseGoogle
+    ? { ...priorGoogleSafeSearch, reused: true, durationMs: 0 }
+    : await scanGoogleSafeSearch(buffer);
+  const finalCommon = common(googleSafeSearch);
 
-  return { blocked: false, blockedBy: null, safeSearch: ss, labels: labelsRaw, faces, genderResults: null, classification, strictModesty, localSafety };
+  if (googleSafeSearch.blocked) {
+    return {
+      ...finalCommon,
+      blocked: true,
+      blockedBy: 'googleSafeSearch',
+      reason: 'התמונה נחסמה — Google SafeSearch זיהה תוכן לא צנוע',
+    };
+  }
+
+  if (googleSafeSearch.uncertain) {
+    return {
+      ...finalCommon,
+      blocked: true,
+      blockedBy: 'googleSafeSearchUncertain',
+      reason: 'התמונה לא אושרה — Google SafeSearch החזיר תוצאה לא ידועה',
+    };
+  }
+
+  if (googleSafeSearch.configured && !googleSafeSearch.available &&
+      googleSafeSearch.retryable === false) {
+    return {
+      ...finalCommon,
+      blocked: true,
+      blockedBy: 'googleSafeSearchUnsupported',
+      reason: 'התמונה לא אושרה — לא ניתן להכין אותה לבדיקת Google SafeSearch',
+    };
+  }
+
+  // Once a server key is configured, Google is an enforced stage. A timeout,
+  // quota/auth error or incomplete response can never approve an image; the
+  // retry queue will run the scan again. Available results are
+  // reused on retry so a separate local uncertainty does not create charges.
+  if (googleSafeSearch.configured && !googleSafeSearch.available) {
+    return {
+      ...finalCommon,
+      pending: true,
+      reason: 'Google SafeSearch אינו זמין כרגע',
+    };
+  }
+
+  return { ...finalCommon, blocked: false, blockedBy: null };
 }
 
 async function scanDocument(buffer, mimetype) {
-  if (!process.env.GOOGLE_VISION_API_KEY) return { pending: true };
   try {
     let text = '';
     if (mimetype === 'application/pdf') {
@@ -2647,7 +2745,7 @@ app.post('/api/fcm-token', auth, async (req, res) => {
 });
 
 // ── File Upload ───────────────────────────────────────────────────
-app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
+app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
   file.originalname = normalizeUploadFileName(file.originalname);
@@ -2722,7 +2820,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
           safeSearch: scanResult.safeSearch, labels: scanResult.labels,
           faces: scanResult.faces || [], genderResults: scanResult.genderResults || null,
           strictModesty: scanResult.strictModesty || null,
-          localSafety: scanResult.localSafety || null }, req.ip);
+          localSafety: scanResult.localSafety || null,
+          googleSafeSearch: scanResult.googleSafeSearch || null }, req.ip);
       let scanReport = null;
       if (reportImageScan)
         scanReport = await saveScanBotReport(pool, req.user.id, {
@@ -2748,12 +2847,15 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         categories, classification: scanResult?.classification || null,
         strictModesty: scanResult?.strictModesty || null,
         localSafety: scanResult?.localSafety || null,
+        googleSafeSearch: scanResult?.googleSafeSearch || null,
       }, req.ip);
       await pool.query(
         `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
         [JSON.stringify({ reason, classification: scanResult?.classification || null,
+          safeSearch: scanResult?.safeSearch || null,
           strictModesty: scanResult?.strictModesty || null,
-          localSafety: scanResult?.localSafety || null }), url]);
+          localSafety: scanResult?.localSafety || null,
+          googleSafeSearch: scanResult?.googleSafeSearch || null }), url]);
       let scanReport = null;
       if (reportImageScan)
         scanReport = await saveScanBotReport(pool, req.user.id, {
@@ -2769,13 +2871,18 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
       // Scan service unavailable — save for retry
       const toUserId = req.body.toUserId || null;
       const groupId  = req.body.groupId  || null;
+      await pool.query(
+        `UPDATE stored_files SET moderation_details=$1 WHERE public_url=$2`,
+        [JSON.stringify(scanResult), url]);
       const ins = await pool.query(
         `INSERT INTO pending_scans (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
         [req.user.id, toUserId, groupId, url, file.originalname, allowed.dbType, file.mimetype]);
       logActivity(req.user.id, 'upload_pending',
-        { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType }, req.ip);
+        { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
+          fileUrl: url, safeSearch: scanResult.safeSearch || null,
+          googleSafeSearch: scanResult.googleSafeSearch || null }, req.ip);
       let scanReport = null;
       if (reportImageScan)
         scanReport = await saveScanBotReport(pool, req.user.id, {
@@ -2809,6 +2916,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         genderResults: scanResult?.genderResults || null,
         strictModesty: scanResult?.strictModesty || null,
         localSafety: scanResult?.localSafety || null,
+        googleSafeSearch: scanResult?.googleSafeSearch || null,
         blockedBy: null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size,
       fileType: allowed.dbType, handledByScanBot: scanBotUpload, scanReport });
@@ -4043,7 +4151,21 @@ app.post('/api/admin/groups', adminAuth, async (req, res) => {
 });
 
 // ── Admin: Vision scan results ───────────────────────────────────
-app.post('/api/admin/vision/test', adminAuth, upload.single('file'), async (req, res) => {
+app.get('/api/admin/vision/status', adminAuth, (req, res) => {
+  const configured = googleSafeSearchConfigured();
+  res.json({
+    googleSafeSearch: {
+      configured,
+      enforced: configured,
+      provider: 'google-cloud-vision',
+      threshold: normalizeBlockThreshold(process.env.GOOGLE_SAFESEARCH_BLOCK_THRESHOLD),
+      timeoutMs: Number(process.env.GOOGLE_VISION_TIMEOUT_MS) || 15000,
+    },
+  });
+});
+
+app.post('/api/admin/vision/test', adminAuth, visionTestRateLimit,
+  upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'יש לבחור תמונה' });
   const allowed = ALLOWED_TYPES[req.file.mimetype];
   if (!allowed || allowed.dbType !== 'image')
@@ -4068,8 +4190,8 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
   const offset = parseInt(req.query.offset || 0);
   const filter = req.query.filter || 'all';
   const actionFilter = filter === 'blocked'  ? `AND a.action IN ('blocked_upload','blocked_upload_delayed')`
-                     : filter === 'approved' ? `AND a.action = 'upload_file'`
-                     : `AND a.action IN ('upload_file','blocked_upload','blocked_upload_delayed')`;
+                     : filter === 'approved' ? `AND a.action IN ('upload_file','send_file_delayed','send_group_file_delayed')`
+                     : `AND a.action IN ('upload_file','send_file_delayed','send_group_file_delayed','blocked_upload','blocked_upload_delayed')`;
   try {
     const pool = await getPool();
     const result = await pool.query(`
@@ -4089,21 +4211,28 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
                fileUrl: d.fileUrl, reason: d.reason, blockedBy: d.blockedBy || null,
                safeSearch: d.safeSearch || null, labels: d.labels || null,
                faces: d.faces || [], strictModesty: d.strictModesty || null,
-               localSafety: d.localSafety || null };
+               localSafety: d.localSafety || null,
+               googleSafeSearch: d.googleSafeSearch || null,
+               rescanResult: d.rescanResult || null };
     });
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Admin: re-scan all files and save Vision results ─────────────
-app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
+let visionRescanRunning = false;
+app.post('/api/admin/vision/rescan', adminAuth, visionRescanRateLimit, async (req, res) => {
   if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  if (visionRescanRunning)
+    return res.status(409).json({ error: 'בדיקת היסטוריה אחרת כבר פועלת' });
+  visionRescanRunning = true;
   try {
     const pool = await getPool();
     // Get all image uploads without Vision results saved
     const result = await pool.query(`
-      SELECT id, details FROM activity_log
-      WHERE action IN ('upload_file','blocked_upload')
+      SELECT id, action, details FROM activity_log
+      WHERE action IN ('upload_file','send_file_delayed','send_group_file_delayed',
+                       'blocked_upload','blocked_upload_delayed')
         AND details @> '{"fileType":"image"}'::jsonb
       ORDER BY created_at DESC
     `);
@@ -4112,8 +4241,22 @@ app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
       const d = row.details || {};
       if (!d.fileUrl) { failed++; continue; }
       const existingStrictComplete = d.strictModesty?.available &&
-        (d.strictModesty.checked || d.blockedBy === 'safeSearch');
-      if (d.localSafety?.available && existingStrictComplete) { scanned++; continue; }
+        (d.strictModesty.checked || ['googleSafeSearch', 'localExplicitContent', 'safeSearch']
+          .includes(d.blockedBy));
+      const existingGoogleComplete = !googleSafeSearchConfigured() ||
+        (d.googleSafeSearch?.available &&
+         d.googleSafeSearch.threshold ===
+           normalizeBlockThreshold(process.env.GOOGLE_SAFESEARCH_BLOCK_THRESHOLD)) ||
+        d.googleSafeSearch?.status === 'skipped_local_block';
+      const existingLocalTerminal = d.rescanResult?.blocked &&
+        ['strictModesty', 'localExplicitContent', 'animatedImage',
+          'googleSafeSearchUncertain', 'googleSafeSearchUnsupported']
+          .includes(d.rescanResult.blockedBy);
+      if (existingLocalTerminal ||
+          (d.localSafety?.available && existingStrictComplete && existingGoogleComplete)) {
+        scanned++;
+        continue;
+      }
       try {
         let buf;
         if (d.fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`)) {
@@ -4132,8 +4275,13 @@ app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
         }
         const sr  = await scanImage(buf);
         const strictComplete = sr.strictModesty?.available &&
-          (sr.strictModesty.checked || sr.blockedBy === 'safeSearch');
-        if (sr.pending || !sr.localSafety?.available || !strictComplete) {
+          (sr.strictModesty.checked || ['googleSafeSearch', 'localExplicitContent', 'safeSearch']
+            .includes(sr.blockedBy));
+        const googleComplete = !googleSafeSearchConfigured() ||
+          sr.googleSafeSearch?.available;
+        const reportComplete = !!sr.blocked ||
+          (!sr.pending && sr.localSafety?.available && strictComplete && googleComplete);
+        if (!reportComplete) {
           failed++;
           continue;
         }
@@ -4141,12 +4289,22 @@ app.post('/api/admin/vision/rescan', adminAuth, async (req, res) => {
         d.labels     = sr.labels;
         d.strictModesty = sr.strictModesty || null;
         d.localSafety = sr.localSafety;
+        d.googleSafeSearch = sr.googleSafeSearch || null;
+        d.rescanResult = {
+          reportOnly: true,
+          blocked: !!sr.blocked,
+          pending: !!sr.pending,
+          blockedBy: sr.blockedBy || null,
+          reason: sr.reason || null,
+          scannedAt: new Date().toISOString(),
+        };
         await pool.query('UPDATE activity_log SET details=$1 WHERE id=$2', [JSON.stringify(d), row.id]);
         updated++;
       } catch { failed++; }
     }
     res.json({ total: result.rows.length, scanned, updated, failed });
   } catch (e) { res.status(500).json({ error: e.message }); }
+  finally { visionRescanRunning = false; }
 });
 
 // ── Moderation Lists ─────────────────────────────────────────────
@@ -4413,11 +4571,14 @@ async function retryPendingScans() {
     };
 
     const rows = await pool.query(`
-      SELECT * FROM pending_scans
-      WHERE retry_count >= 20
-         OR (retry_count < 20
-             AND (last_retry IS NULL OR last_retry < now() - interval '2 minutes'))
-      ORDER BY created_at ASC
+      SELECT ps.*, sf.moderation_details AS prior_moderation_details
+      FROM pending_scans ps
+      LEFT JOIN stored_files sf
+        ON sf.public_url=ps.file_url AND sf.user_id=ps.user_id
+      WHERE ps.retry_count >= 20
+         OR (ps.retry_count < 20
+             AND (ps.last_retry IS NULL OR ps.last_retry < now() - interval '2 minutes'))
+      ORDER BY ps.created_at ASC
       LIMIT 10
     `);
 
@@ -4457,16 +4618,27 @@ async function retryPendingScans() {
             throw new Error('Invalid pending file path');
           buffer = await fs.readFile(absolutePath);
         } else {
-          const fileRes = await fetch(row.file_url);
+          const fileRes = await fetch(row.file_url, {
+            signal: AbortSignal.timeout(15000),
+          });
           if (!fileRes.ok) throw new Error(`Pending file download ${fileRes.status}`);
           buffer = Buffer.from(await fileRes.arrayBuffer());
         }
 
         let scanResult;
-        if (row.file_type === 'image') scanResult = await scanImage(buffer);
+        if (row.file_type === 'image') {
+          scanResult = await scanImage(buffer, {
+            googleSafeSearch: row.prior_moderation_details?.googleSafeSearch || null,
+          });
+        }
         else                           scanResult = await scanDocument(buffer, row.mime_type);
 
         if (!scanResult || scanResult.pending) {
+          if (scanResult) {
+            await pool.query(
+              `UPDATE stored_files SET moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify(scanResult), row.file_url]);
+          }
           if (attempt >= 20) {
             exhaustionAttempted = true;
             await rejectExhaustedScan(row, attempt, scanResult);
@@ -4494,7 +4666,8 @@ async function retryPendingScans() {
               safeSearch: scanResult.safeSearch || null,
               labels: scanResult.labels || null,
               strictModesty: scanResult.strictModesty || null,
-              localSafety: scanResult.localSafety || null });
+              localSafety: scanResult.localSafety || null,
+              googleSafeSearch: scanResult.googleSafeSearch || null });
           // Notify sender that file was rejected
           const sid = onlineUsers.get(row.user_id);
           if (sid) io.to(sid).emit('scan:rejected', {
@@ -4519,8 +4692,10 @@ async function retryPendingScans() {
               await client.query(
                 `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
                 [JSON.stringify({ reason, classification: scanResult.classification || null,
+                  safeSearch: scanResult.safeSearch || null,
                   strictModesty: scanResult.strictModesty || null,
-                  localSafety: scanResult.localSafety || null }), row.file_url]);
+                  localSafety: scanResult.localSafety || null,
+                  googleSafeSearch: scanResult.googleSafeSearch || null }), row.file_url]);
             });
             outcomePersisted = true;
             const sid = onlineUsers.get(row.user_id);
@@ -4605,7 +4780,14 @@ async function retryPendingScans() {
           if (!recipientSid)
             sendPush(row.to_user_id, '', `📎 ${row.file_name}`, { type: 'chat', fromUserId: row.user_id });
           logActivity(row.user_id, 'send_file_delayed',
-            { toUserId: row.to_user_id, fileName: row.file_name, fileUrl: row.file_url, fileType: row.file_type });
+            { toUserId: row.to_user_id, fileName: row.file_name,
+              fileUrl: row.file_url, fileType: row.file_type,
+              safeSearch: scanResult.safeSearch || null,
+              labels: scanResult.labels || null,
+              strictModesty: scanResult.strictModesty || null,
+              localSafety: scanResult.localSafety || null,
+              googleSafeSearch: scanResult.googleSafeSearch || null,
+              blockedBy: null });
           continue;
         }
 
@@ -4656,6 +4838,12 @@ async function retryPendingScans() {
           logActivity(row.user_id, 'send_group_file_delayed', {
             groupId: row.group_id, fileName: row.file_name,
             fileUrl: row.file_url, fileType: row.file_type,
+            safeSearch: scanResult.safeSearch || null,
+            labels: scanResult.labels || null,
+            strictModesty: scanResult.strictModesty || null,
+            localSafety: scanResult.localSafety || null,
+            googleSafeSearch: scanResult.googleSafeSearch || null,
+            blockedBy: null,
           });
           continue;
         }
