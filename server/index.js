@@ -1238,10 +1238,22 @@ app.use((req, res, next) => {
   });
   next();
 });
-app.use(/^\/(?:server|flutter_app|test|docs|local_moderation|\.git)(?:\/|$)/, (_req, res) =>
-  res.status(404).end());
-app.use(/^\/(?:package(?:-lock)?\.json|README\.md|docker-compose[^/]*|.*\.env)(?:$|\/)/i,
-  (_req, res) => res.status(404).end());
+app.use((req, res, next) => {
+  const requestPath = req.path.toLowerCase();
+  const blockedDirectories = [
+    '/server', '/flutter_app', '/test', '/docs', '/local_moderation', '/.git',
+  ];
+  const blockedFiles = [
+    '/package.json', '/package-lock.json', '/readme.md',
+    '/docker-compose.local-moderation.yml', '/.env',
+  ];
+  if (blockedDirectories.some(prefix =>
+      requestPath === prefix || requestPath.startsWith(`${prefix}/`)) ||
+      blockedFiles.includes(requestPath) || requestPath.endsWith('/.env')) {
+    return res.status(404).end();
+  }
+  next();
+});
 app.use(express.static(require('path').join(__dirname, '..')));
 app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
 
