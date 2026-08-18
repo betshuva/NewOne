@@ -6,7 +6,10 @@ const GOOGLE_VISION_ENDPOINT = 'https://vision.googleapis.com/v1/images:annotate
 const MAX_INLINE_IMAGE_BYTES = 7 * 1024 * 1024;
 const MAX_INPUT_PIXELS = 120_000_000;
 const DEFAULT_TIMEOUT_MS = 15000;
-const DEFAULT_BLOCK_THRESHOLD = 'POSSIBLE';
+// POSSIBLE is intentionally a weak, high-recall signal and produced false
+// positives on ordinary portraits and screenshots. Require LIKELY unless an
+// operator explicitly configures a different threshold.
+const DEFAULT_BLOCK_THRESHOLD = 'LIKELY';
 const MODERATION_CATEGORIES = ['adult', 'racy'];
 const ALL_CATEGORIES = ['adult', 'racy', 'violence', 'medical', 'spoof'];
 const LIKELIHOOD_RANK = Object.freeze({

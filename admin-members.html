@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>ספר משתמשים למנהל · בתשובה</title>
+  <style>
+    :root{--navy:#123a57;--blue:#1976b8;--bg:#edf4f8;--ink:#183247;--muted:#6b8292;--line:#d5e3ec;--red:#c93838;--green:#198754}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,sans-serif;min-height:100vh}
+    header{background:linear-gradient(120deg,var(--navy),var(--blue));color:#fff;padding:22px max(18px,calc((100% - 1160px)/2));display:flex;align-items:center;justify-content:space-between;gap:14px;box-shadow:0 4px 18px #123a5730}
+    h1{font-size:23px;margin:0}.small{font-size:12px;color:#d9edf9;margin-top:5px}.back{color:#fff;text-decoration:none;border:1px solid #ffffff55;border-radius:9px;padding:9px 12px;white-space:nowrap}
+    main{width:min(1160px,calc(100% - 24px));margin:20px auto 45px}.toolbar{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:13px;box-shadow:0 5px 18px #163d5410}
+    input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;font:inherit;outline:none}input:focus{border-color:var(--blue);box-shadow:0 0 0 3px #1976b81e}.count{color:var(--muted);white-space:nowrap;font-size:13px}
+    .wrap{margin-top:14px;background:#fff;border:1px solid var(--line);border-radius:14px;overflow:auto;box-shadow:0 5px 18px #163d5410}table{width:100%;border-collapse:collapse;min-width:850px}th,td{text-align:right;padding:13px 14px;border-bottom:1px solid #e8f0f5;font-size:14px}th{background:#f5f9fb;color:#526d7e;font-size:12px}tr:last-child td{border-bottom:0}
+    .person{display:flex;align-items:center;gap:10px;font-weight:700}.avatar{width:38px;height:38px;border-radius:50%;object-fit:cover;background:#dcecf5;display:grid;place-items:center;color:var(--navy);flex:0 0 38px}.ltr{direction:ltr;text-align:left;unicode-bidi:plaintext}.verified{color:var(--green);font-size:11px}.unverified{color:var(--red);font-size:11px}.state{text-align:center;padding:45px;color:var(--muted)}
+    .login{max-width:430px;margin:70px auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:30px;text-align:center;box-shadow:0 12px 35px #173d5420}.login a{display:inline-block;margin-top:12px;background:var(--blue);color:#fff;text-decoration:none;border-radius:10px;padding:11px 18px}
+    @media(max-width:600px){header{align-items:flex-start}h1{font-size:19px}.toolbar{flex-direction:column}.count{align-self:center}}
+  </style>
+</head>
+<body>
+  <header><div><h1>ספר משתמשים למנהל</h1><div class="small">פרטי קשר חסויים · גישה למנהלים בלבד</div></div><a class="back" href="admin.html">לוח הניהול</a></header>
+  <main id="main"><div class="state">מאמת הרשאת מנהל...</div></main>
+  <script>
+    const token=localStorage.getItem('bt_admin_token')||localStorage.getItem('bt_token'),main=document.getElementById('main');let users=[];
+    const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    function login(msg){main.innerHTML=`<div class="login"><h2>נדרשת כניסת מנהל</h2><p>${esc(msg||'יש להיכנס תחילה ללוח הניהול.')}</p><a href="admin.html">כניסה ללוח הניהול</a></div>`}
+    function render(){
+      const q=document.getElementById('search').value.trim().toLocaleLowerCase('he');
+      const rows=users.filter(u=>[u.name,u.email,u.phone,u.city,u.community].some(v=>String(v||'').toLocaleLowerCase('he').includes(q)));
+      document.getElementById('count').textContent=`${rows.length} משתמשים`;
+      document.getElementById('body').innerHTML=rows.map(u=>{
+        const initial=esc((u.name||'?').trim().charAt(0));
+        const avatar=u.profile_pic_url?`<img class="avatar" src="${esc(u.profile_pic_url)}" alt="" onerror="this.style.display='none'">`:`<div class="avatar">${initial}</div>`;
+        return `<tr><td><div class="person">${avatar}<span>${esc(u.name)}</span></div></td><td class="ltr">${esc(u.phone||'—')}<div class="${u.phone_verified?'verified':'unverified'}">${u.phone_verified?'מאומת':'לא מאומת'}</div></td><td class="ltr">${esc(u.email||'—')}<div class="${u.email_verified?'verified':'unverified'}">${u.email_verified?'מאומת':'לא מאומת'}</div></td><td>${esc(u.city||'—')}</td><td>${esc(u.community||'—')}</td><td>${new Date(u.created_at).toLocaleDateString('he-IL')}</td></tr>`;
+      }).join('')||'<tr><td colspan="6" class="state">לא נמצאו משתמשים</td></tr>';
+    }
+    async function start(){
+      if(!token)return login();
+      try{const res=await fetch('api/admin/members-directory',{headers:{Authorization:`Bearer ${token}`},cache:'no-store'}),data=await res.json();if(!res.ok)return login(data.error);users=data.users||[];
+        main.innerHTML='<div class="toolbar"><input id="search" type="search" placeholder="חיפוש לפי שם, טלפון, אימייל, עיר או קהילה"><div class="count" id="count"></div></div><div class="wrap"><table><thead><tr><th>משתמש</th><th>טלפון</th><th>אימייל</th><th>עיר</th><th>קהילה</th><th>הצטרפות</th></tr></thead><tbody id="body"></tbody></table></div>';
+        document.getElementById('search').addEventListener('input',render);render();
+      }catch(e){login('שגיאת חיבור לשרת')}
+    }start();
+  </script>
+</body>
+</html>

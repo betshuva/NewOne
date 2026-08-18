@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS users (
   latitude            DOUBLE PRECISION,
   longitude           DOUBLE PRECISION,
   location_updated_at TIMESTAMPTZ,
+  terms_accepted_at   TIMESTAMPTZ,
+  terms_version       TEXT,
+  age_confirmed       BOOLEAN NOT NULL DEFAULT FALSE,
   wins                INTEGER NOT NULL DEFAULT 0,
   games_played        INTEGER NOT NULL DEFAULT 0,
   created_at          TIMESTAMPTZ DEFAULT now()
@@ -180,6 +183,12 @@ CREATE OR REPLACE FUNCTION add_scan_bot_contact_for_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.id <> '00000000-0000-4000-8000-000000000001'::uuid THEN
+    -- A full administrative purge can remove the bot while the application is
+    -- still running. Recreate it before adding the mandatory contact.
+    INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
+    VALUES('00000000-0000-4000-8000-000000000001','סריקה',
+           'scan@betshuva.system','0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
+    ON CONFLICT (id) DO NOTHING;
     INSERT INTO user_contacts(owner_id,contact_id)
     VALUES(NEW.id,'00000000-0000-4000-8000-000000000001'::uuid)
     ON CONFLICT DO NOTHING;

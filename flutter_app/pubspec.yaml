@@ -1,7 +1,7 @@
 name: betshuva
 description: BETSHUVA Messenger - אפליקציית מסרים לקהילה החרדית
 publish_to: 'none'
-version: 1.2.24+144
+version: 1.2.38+158
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -24,12 +24,18 @@ dependencies:
   record: ^5.2.1
   audioplayers: ^6.4.0
   path_provider: ^2.1.5
+  crypto: ^3.0.7
 
 dependency_overrides:
   record_platform_interface: 1.2.0
   record_web: 1.1.5
   record_android:
     path: third_party/record_android
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
 
 flutter:
   uses-material-design: true

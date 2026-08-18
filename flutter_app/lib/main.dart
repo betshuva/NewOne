@@ -22,6 +22,7 @@ import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'file_download.dart';
+import 'media_cache.dart';
 
 MediaType _mimeFromFileName(String fileName) {
   switch (fileName.split('.').last.toLowerCase()) {
@@ -173,12 +174,12 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.24';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.24.apk';
+const kVersion = '1.2.38';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.38.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
-const _maxBatchImages = 10;
+const _maxBatchImages = 20;
 const _maxConcurrentImageUploads = 2;
 var _uploadMessageSequence = 0;
 
@@ -361,6 +362,126 @@ void _showImageBatchSummary(
 
 String _absoluteMediaUrl(String url) =>
     Uri.parse(url).hasScheme ? url : Uri.parse(kServer).resolve(url).toString();
+
+final Map<String, Future<Uint8List?>> _activeMediaLoads = {};
+
+Future<Uint8List?> _loadPersistentMedia(String url) {
+  final absoluteUrl = _absoluteMediaUrl(url);
+  final existing = _activeMediaLoads[absoluteUrl];
+  if (existing != null) return existing;
+  final future = () async {
+    final cached = await readMediaCache(absoluteUrl);
+    if (cached != null && cached.isNotEmpty) return cached;
+    final response = await http
+        .get(Uri.parse(absoluteUrl))
+        .timeout(const Duration(seconds: 30));
+    if (response.statusCode < 200 || response.statusCode >= 300) return null;
+    final bytes = response.bodyBytes;
+    if (bytes.isEmpty) return null;
+    await writeMediaCache(absoluteUrl, bytes);
+    return bytes;
+  }();
+  _activeMediaLoads[absoluteUrl] = future;
+  void removeActiveLoad() {
+    if (identical(_activeMediaLoads[absoluteUrl], future)) {
+      _activeMediaLoads.remove(absoluteUrl);
+    }
+  }
+
+  future.then((_) => removeActiveLoad(), onError: (_) => removeActiveLoad());
+  return future;
+}
+
+class _PersistentMediaImage extends StatefulWidget {
+  final String url;
+  final double? width;
+  final double? height;
+  final BoxFit fit;
+  final WidgetBuilder? loadingBuilder;
+  final WidgetBuilder? errorBuilder;
+
+  const _PersistentMediaImage({
+    required this.url,
+    this.width,
+    this.height,
+    this.fit = BoxFit.cover,
+    this.loadingBuilder,
+    this.errorBuilder,
+  });
+
+  @override
+  State<_PersistentMediaImage> createState() => _PersistentMediaImageState();
+}
+
+class _PersistentMediaImageState extends State<_PersistentMediaImage> {
+  late Future<Uint8List?> _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _bytes = _loadPersistentMedia(widget.url);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PersistentMediaImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _bytes = _loadPersistentMedia(widget.url);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List?>(
+      future: _bytes,
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes != null && bytes.isNotEmpty) {
+          return Image.memory(
+            bytes,
+            width: widget.width,
+            height: widget.height,
+            fit: widget.fit,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) =>
+                widget.errorBuilder?.call(context) ?? const SizedBox.shrink(),
+          );
+        }
+        if (snapshot.connectionState != ConnectionState.done) {
+          return widget.loadingBuilder?.call(context) ??
+              SizedBox(width: widget.width, height: widget.height);
+        }
+        return widget.errorBuilder?.call(context) ?? const SizedBox.shrink();
+      },
+    );
+  }
+}
+
+Future<void> _persistRecentImageUrls(
+    Iterable<Map<String, dynamic>> records) async {
+  final urls = <String>{};
+  for (final record in records.toList().reversed) {
+    final fileUrl = record['fileUrl'] as String? ??
+        record['file_url'] as String? ??
+        record['image_url'] as String?;
+    final fileType = _normalizeIncomingFileType(
+      record['fileType'] as String? ?? record['type'] as String?,
+      fileUrl: fileUrl,
+      fileName: record['fileName'] as String? ?? record['file_name'] as String?,
+    );
+    if (fileUrl == null ||
+        (fileType != 'image' && record['image_url'] == null)) {
+      continue;
+    }
+    urls.add(fileUrl);
+    if (urls.length >= 20) break;
+  }
+  for (final url in urls) {
+    try {
+      await _loadPersistentMedia(url);
+    } catch (_) {}
+  }
+}
 
 Future<void> _forwardChatMessage(BuildContext context, String token,
     IO.Socket? socket, Map<String, dynamic> message) async {
@@ -654,7 +775,7 @@ Widget _androidDownloadLink() => TextButton.icon(
       onPressed: () =>
           launchUrl(Uri.parse(kApkUrl), mode: LaunchMode.externalApplication),
       icon: const Icon(Icons.android, size: 20),
-      label: const Text('הורדת betshuva-1.2.20.apk  •  גרסה 1.2.20'),
+      label: const Text('הורדת betshuva-1.2.38.apk  •  גרסה 1.2.38'),
       style: TextButton.styleFrom(foregroundColor: kPrimary),
     );
 
@@ -877,6 +998,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   final _otpCtrl = TextEditingController();
   bool _otpSent = false;
   bool _loading = false;
+  bool _acceptedTerms = false;
+  bool _ageConfirmed = false;
   String? _error;
   final _googleSignIn = GoogleSignIn(
     clientId: kIsWeb ? kGoogleWebClientId : null,
@@ -908,7 +1031,11 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
           .post(
             Uri.parse('$kApi/auth/google'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'idToken': idToken}),
+            body: jsonEncode({
+              'idToken': idToken,
+              'acceptedTerms': _acceptedTerms,
+              'ageConfirmed': _ageConfirmed,
+            }),
           )
           .timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
@@ -962,6 +1089,11 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       setState(() => _error = 'נא להזין מספר טלפון תקין');
       return;
     }
+    if (!_acceptedTerms || !_ageConfirmed) {
+      setState(() =>
+          _error = 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה');
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -971,7 +1103,12 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
           .post(
             Uri.parse('$kApi/send-otp'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'phone': phone, 'name': _nameCtrl.text.trim()}),
+            body: jsonEncode({
+              'phone': phone,
+              'name': _nameCtrl.text.trim(),
+              'acceptedTerms': true,
+              'ageConfirmed': true,
+            }),
           )
           .timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
@@ -1113,6 +1250,23 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                           prefixIcon: Icon(Icons.phone_android),
                         ),
                       ),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: _ageConfirmed,
+                        onChanged: (value) =>
+                            setState(() => _ageConfirmed = value == true),
+                        title: const Text('אני בן/בת 13 ומעלה',
+                            style: TextStyle(fontSize: 13)),
+                      ),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: _acceptedTerms,
+                        onChanged: (value) =>
+                            setState(() => _acceptedTerms = value == true),
+                        title: const Text(
+                            'קראתי ואני מסכים/ה לתנאי השימוש ולמדיניות הפרטיות',
+                            style: TextStyle(fontSize: 13)),
+                      ),
                     ] else ...[
                       TextField(
                         controller: _otpCtrl,
@@ -1225,6 +1379,8 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _loading = false;
   bool _choosingVerification = false;
   bool _verificationRequired = false;
+  bool _acceptedTerms = false;
+  bool _ageConfirmed = false;
   String _verificationMethod = 'email';
   String? _error;
 
@@ -1270,7 +1426,11 @@ class _AuthScreenState extends State<AuthScreen> {
           .post(
             Uri.parse('$kApi/auth/google'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'idToken': idToken}),
+            body: jsonEncode({
+              'idToken': idToken,
+              'acceptedTerms': _acceptedTerms,
+              'ageConfirmed': _ageConfirmed,
+            }),
           )
           .timeout(const Duration(seconds: 30));
       final data = jsonDecode(res.body);
@@ -1339,6 +1499,11 @@ class _AuthScreenState extends State<AuthScreen> {
         return;
       }
     } else {
+      if (!_acceptedTerms || !_ageConfirmed) {
+        setState(() =>
+            _error = 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה');
+        return;
+      }
       if (name.isEmpty) {
         setState(() => _error = 'נא להזין שם מלא');
         return;
@@ -1417,7 +1582,9 @@ class _AuthScreenState extends State<AuthScreen> {
                 'phone': phone,
                 'password': password,
                 'clientType': 'desktop',
-                'verificationMethod': _verificationMethod
+                'verificationMethod': _verificationMethod,
+                'acceptedTerms': true,
+                'ageConfirmed': true,
               }),
             )
             .timeout(const Duration(seconds: 30));
@@ -1644,6 +1811,48 @@ class _AuthScreenState extends State<AuthScreen> {
                             active: _verificationMethod == 'phone',
                             onTap: () =>
                                 setState(() => _verificationMethod = 'phone'),
+                          ),
+                        ]),
+                      ),
+                    ],
+                    if (!_isLogin) ...[
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        value: _ageConfirmed,
+                        onChanged: (value) =>
+                            setState(() => _ageConfirmed = value == true),
+                        title: const Text('אני בן/בת 13 ומעלה',
+                            style: TextStyle(fontSize: 13)),
+                      ),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        value: _acceptedTerms,
+                        onChanged: (value) =>
+                            setState(() => _acceptedTerms = value == true),
+                        title: Wrap(children: [
+                          const Text('קראתי ואני מסכים/ה ל',
+                              style: TextStyle(fontSize: 13)),
+                          InkWell(
+                            onTap: () => launchUrl(Uri.parse('$kServer/terms'),
+                                mode: LaunchMode.externalApplication),
+                            child: const Text('תנאי השימוש',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: kPrimary,
+                                    decoration: TextDecoration.underline)),
+                          ),
+                          const Text(' ול', style: TextStyle(fontSize: 13)),
+                          InkWell(
+                            onTap: () => launchUrl(
+                                Uri.parse('$kServer/privacy'),
+                                mode: LaunchMode.externalApplication),
+                            child: const Text('מדיניות הפרטיות',
+                                style: TextStyle(
+                                    fontSize: 13,
+                                    color: kPrimary,
+                                    decoration: TextDecoration.underline)),
                           ),
                         ]),
                       ),
@@ -2261,15 +2470,12 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
               minScale: 0.5,
               maxScale: 5.0,
               child: Center(
-                child: Image.network(
-                  _absoluteMediaUrl(widget.url),
+                child: _PersistentMediaImage(
+                  url: widget.url,
                   fit: BoxFit.contain,
-                  loadingBuilder: (_, child, progress) => progress == null
-                      ? child
-                      : const Center(
-                          child:
-                              CircularProgressIndicator(color: Colors.white)),
-                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image,
+                  loadingBuilder: (_) => const Center(
+                      child: CircularProgressIndicator(color: Colors.white)),
+                  errorBuilder: (_) => const Icon(Icons.broken_image,
                       color: Colors.white54, size: 64),
                 ),
               ),
@@ -2299,6 +2505,15 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                               color: Colors.white, fontSize: 14),
                           overflow: TextOverflow.ellipsis,
                         ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.download, color: Colors.white),
+                        onPressed: () => _downloadChatFile(
+                          context,
+                          widget.url,
+                          widget.filename,
+                        ),
+                        tooltip: 'הורדת תמונה',
                       ),
                       IconButton(
                         icon:
@@ -2745,7 +2960,6 @@ class _MainShellState extends State<MainShell> {
     _registerFcmToken();
     _loadAdminPerm();
     _loadMessageRequests();
-    _updateLocation();
     WidgetsBinding.instance.addObserver(_lifecycleObserver);
     // Reconcile badges periodically in case a browser tab missed a socket event.
     _usersRefreshTimer = Timer.periodic(
@@ -2913,37 +3127,6 @@ class _MainShellState extends State<MainShell> {
               {'token': newToken, 'deviceId': Platform.operatingSystem}),
         );
       });
-    } catch (_) {}
-  }
-
-  Future<void> _updateLocation() async {
-    try {
-      LocationPermission perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
-      }
-      if (perm == LocationPermission.deniedForever ||
-          perm == LocationPermission.denied) return;
-
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 10),
-        ),
-      );
-
-      // server does Hebrew reverse geocoding via Nominatim
-      await http.put(
-        Uri.parse('$kApi/location'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'latitude': pos.latitude,
-          'longitude': pos.longitude,
-        }),
-      );
     } catch (_) {}
   }
 
@@ -3465,8 +3648,10 @@ class _ListingsScreenState extends State<ListingsScreen>
           .get(uri, headers: {'Authorization': 'Bearer ${widget.token}'});
       if (!mounted) return;
       final data = jsonDecode(res.body);
+      final items = List<Map<String, dynamic>>.from(data);
+      _persistRecentImageUrls(items).ignore();
       setState(() {
-        _items = List<Map<String, dynamic>>.from(data);
+        _items = items;
         _loading = false;
       });
     } catch (_) {
@@ -3480,11 +3665,18 @@ class _ListingsScreenState extends State<ListingsScreen>
         MaterialPageRoute(
           builder: (_) => PostListingScreen(token: widget.token, me: widget.me),
         ));
-    if (ok == true) _load();
+    if (ok == true) {
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('המודעה פורסמה בהצלחה')),
+        );
+      }
+    }
   }
 
-  void _openDetail(Map<String, dynamic> item) {
-    Navigator.push(
+  Future<void> _openDetail(Map<String, dynamic> item) async {
+    final updated = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
           builder: (_) => ListingDetailScreen(
@@ -3493,6 +3685,7 @@ class _ListingsScreenState extends State<ListingsScreen>
               me: widget.me,
               socket: widget.socket),
         ));
+    if (updated == true) await _load();
   }
 
   @override
@@ -3731,11 +3924,12 @@ class _ListingCard extends StatelessWidget {
             borderRadius:
                 const BorderRadius.horizontal(right: Radius.circular(14)),
             child: item['image_url'] != null
-                ? Image.network(item['image_url'],
+                ? _PersistentMediaImage(
+                    url: item['image_url'].toString(),
                     width: 110,
                     height: 110,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _placeholder())
+                    errorBuilder: (_) => _placeholder())
                 : _placeholder(),
           ),
           // Info
@@ -3956,11 +4150,12 @@ class _MyListingCard extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: item['image_url'] != null
-                  ? Image.network(item['image_url'],
+                  ? _PersistentMediaImage(
+                      url: item['image_url'].toString(),
                       width: 66,
                       height: 66,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _imgPlaceholder())
+                      errorBuilder: (_) => _imgPlaceholder())
                   : _imgPlaceholder(),
             ),
             const SizedBox(width: 12),
@@ -4073,33 +4268,65 @@ class _PostListingScreenState extends State<PostListingScreen> {
       TextEditingController(text: widget.me?['city'] as String? ?? '');
   String _type = 'free';
   String _category = 'אחר';
-  final List<String?> _imageUrls = [null, null, null, null];
-  final List<bool> _uploadingSlot = [false, false, false, false];
+  final List<String?> _imageUrls = List<String?>.filled(8, null);
+  final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   bool _saving = false;
 
   Future<void> _pickImage(int slot) async {
     final picker = ImagePicker();
-    final f =
-        await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
-    if (f == null) return;
-    setState(() => _uploadingSlot[slot] = true);
-    try {
-      final req = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
-        ..headers['Authorization'] = 'Bearer ${widget.token}'
-        ..files.add(await http.MultipartFile.fromPath('file', f.path,
-            contentType: _mimeFromFileName(f.path)));
-      final res = await req.send();
-      final body = jsonDecode(await res.stream.bytesToString());
-      if (!mounted) return;
-      if (body['url'] != null) {
-        setState(() => _imageUrls[slot] = body['url']);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(body['error'] ?? 'שגיאה בהעלאת תמונה')));
+    final picked = await picker.pickMultiImage(imageQuality: 80);
+    if (picked.isEmpty || !mounted) return;
+    final availableSlots = <int>[
+      slot,
+      for (var i = 0; i < _imageUrls.length; i++)
+        if (i != slot && _imageUrls[i] == null) i,
+    ];
+    final selected = picked.take(availableSlots.length).toList();
+    if (picked.length > availableSlots.length) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('ניתן לצרף עד 8 תמונות למודעה'),
+      ));
+    }
+    setState(() {
+      for (var i = 0; i < selected.length; i++) {
+        _uploadingSlot[availableSlots[i]] = true;
       }
-    } catch (_) {
+    });
+    final completed = ValueNotifier<int>(0);
+    try {
+      final results = await _runImageUploadQueue(
+        selected,
+        (file) => _uploadFileRequest(
+          file: file,
+          fileName: file.name,
+          token: widget.token,
+          fields: const {'listingImage': 'true'},
+        ),
+        completed,
+      );
+      if (!mounted) return;
+      setState(() {
+        for (var i = 0; i < results.length; i++) {
+          if (results[i].outcome == _FileUploadOutcome.approved) {
+            _imageUrls[availableSlots[i]] = results[i].data['url'] as String;
+          }
+        }
+      });
+      _showImageBatchSummary(context, results);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
+      }
     } finally {
-      if (mounted) setState(() => _uploadingSlot[slot] = false);
+      completed.dispose();
+      if (mounted) {
+        setState(() {
+          for (var i = 0; i < selected.length; i++) {
+            _uploadingSlot[availableSlots[i]] = false;
+          }
+        });
+      }
     }
   }
 
@@ -4123,16 +4350,37 @@ class _PostListingScreenState extends State<PostListingScreen> {
       };
       if (_type == 'sale')
         body['price'] = double.tryParse(_priceCtrl.text) ?? 0;
-      final res = await http.post(
-        Uri.parse('$kApi/listings'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json'
-        },
-        body: jsonEncode(body),
+      final res = await http
+          .post(
+            Uri.parse('$kApi/listings'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Content-Type': 'application/json'
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 30));
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        Navigator.pop(context, true);
+        return;
+      }
+      var message = 'פרסום המודעה נכשל';
+      try {
+        final response = jsonDecode(res.body);
+        if (response is Map && response['error'] != null) {
+          message = response['error'].toString();
+        }
+      } catch (_) {}
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$message (${res.statusCode})')),
       );
-      if (res.statusCode == 200 && mounted) Navigator.pop(context, true);
-    } catch (_) {
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('פרסום המודעה נכשל: $error')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -4171,7 +4419,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
           ]),
           const SizedBox(height: 16),
           // Images grid (up to 4)
-          Text('תמונות (עד 4)',
+          Text('תמונות (עד 8, ללא אנשים)',
               style: TextStyle(
                   fontSize: 13, color: kSubtext, fontWeight: FontWeight.w500)),
           const SizedBox(height: 8),
@@ -4181,7 +4429,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
             mainAxisSpacing: 8,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            children: List.generate(4, (i) => _imageSlot(i)),
+            children: List.generate(8, (i) => _imageSlot(i)),
           ),
           const SizedBox(height: 16),
           // Title
@@ -4255,7 +4503,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
     final url = _imageUrls[i];
     final uploading = _uploadingSlot[i];
     return GestureDetector(
-      onTap: uploading || url != null ? null : () => _pickImage(i),
+      onTap: uploading ? null : () => _pickImage(i),
       onLongPress:
           url != null ? () => setState(() => _imageUrls[i] = null) : null,
       child: Container(
@@ -4270,7 +4518,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
                 ? Stack(fit: StackFit.expand, children: [
                     ClipRRect(
                         borderRadius: BorderRadius.circular(9),
-                        child: Image.network(url, fit: BoxFit.cover)),
+                        child:
+                            _PersistentMediaImage(url: url, fit: BoxFit.cover)),
                     Positioned(
                         top: 3,
                         left: 3,
@@ -4284,6 +4533,18 @@ class _PostListingScreenState extends State<PostListingScreen> {
                                     shape: BoxShape.circle),
                                 child: const Icon(Icons.close,
                                     size: 13, color: Colors.white)))),
+                    Positioned(
+                      right: 3,
+                      bottom: 3,
+                      child: Container(
+                        width: 22,
+                        height: 22,
+                        decoration: const BoxDecoration(
+                            color: Colors.black54, shape: BoxShape.circle),
+                        child: const Icon(Icons.edit,
+                            size: 13, color: Colors.white),
+                      ),
+                    ),
                   ])
                 : Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -4334,8 +4595,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
   final _cityCtrl = TextEditingController();
   String _type = 'free';
   String _category = 'אחר';
-  final List<String?> _imageUrls = [null, null, null, null];
-  final List<bool> _uploadingSlot = [false, false, false, false];
+  final List<String?> _imageUrls = List<String?>.filled(8, null);
+  final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   bool _loading = true;
   bool _saving = false;
 
@@ -4371,7 +4632,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
         _descCtrl.text = item['description'] as String? ?? '';
         _priceCtrl.text = item['price'] != null ? item['price'].toString() : '';
         _cityCtrl.text = item['city'] as String? ?? '';
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 8; i++) {
           _imageUrls[i] = i < imgs.length ? imgs[i] : null;
         }
         _loading = false;
@@ -4383,27 +4644,59 @@ class _EditListingScreenState extends State<EditListingScreen> {
 
   Future<void> _pickImage(int slot) async {
     final picker = ImagePicker();
-    final f =
-        await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
-    if (f == null) return;
-    setState(() => _uploadingSlot[slot] = true);
-    try {
-      final req = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
-        ..headers['Authorization'] = 'Bearer ${widget.token}'
-        ..files.add(await http.MultipartFile.fromPath('file', f.path,
-            contentType: _mimeFromFileName(f.path)));
-      final res = await req.send();
-      final body = jsonDecode(await res.stream.bytesToString());
-      if (!mounted) return;
-      if (body['url'] != null) {
-        setState(() => _imageUrls[slot] = body['url']);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(body['error'] ?? 'שגיאה בהעלאת תמונה')));
+    final picked = await picker.pickMultiImage(imageQuality: 80);
+    if (picked.isEmpty || !mounted) return;
+    final availableSlots = <int>[
+      slot,
+      for (var i = 0; i < _imageUrls.length; i++)
+        if (i != slot && _imageUrls[i] == null) i,
+    ];
+    final selected = picked.take(availableSlots.length).toList();
+    if (picked.length > availableSlots.length) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('ניתן לצרף עד 8 תמונות למודעה'),
+      ));
+    }
+    setState(() {
+      for (var i = 0; i < selected.length; i++) {
+        _uploadingSlot[availableSlots[i]] = true;
       }
-    } catch (_) {
+    });
+    final completed = ValueNotifier<int>(0);
+    try {
+      final results = await _runImageUploadQueue(
+        selected,
+        (file) => _uploadFileRequest(
+          file: file,
+          fileName: file.name,
+          token: widget.token,
+          fields: const {'listingImage': 'true'},
+        ),
+        completed,
+      );
+      if (!mounted) return;
+      setState(() {
+        for (var i = 0; i < results.length; i++) {
+          if (results[i].outcome == _FileUploadOutcome.approved) {
+            _imageUrls[availableSlots[i]] = results[i].data['url'] as String;
+          }
+        }
+      });
+      _showImageBatchSummary(context, results);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
+      }
     } finally {
-      if (mounted) setState(() => _uploadingSlot[slot] = false);
+      completed.dispose();
+      if (mounted) {
+        setState(() {
+          for (var i = 0; i < selected.length; i++) {
+            _uploadingSlot[availableSlots[i]] = false;
+          }
+        });
+      }
     }
   }
 
@@ -4479,7 +4772,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                               const Color(0xFF5B21B6))),
                     ]),
                     const SizedBox(height: 16),
-                    Text('תמונות (עד 4)',
+                    Text('תמונות (עד 8, ללא אנשים)',
                         style: TextStyle(
                             fontSize: 13,
                             color: kSubtext,
@@ -4491,7 +4784,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                       mainAxisSpacing: 8,
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      children: List.generate(4, (i) => _imageSlot(i)),
+                      children: List.generate(8, (i) => _imageSlot(i)),
                     ),
                     const SizedBox(height: 16),
                     TextField(
@@ -4562,7 +4855,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
     final url = _imageUrls[i];
     final uploading = _uploadingSlot[i];
     return GestureDetector(
-      onTap: uploading || url != null ? null : () => _pickImage(i),
+      onTap: uploading ? null : () => _pickImage(i),
       onLongPress:
           url != null ? () => setState(() => _imageUrls[i] = null) : null,
       child: Container(
@@ -4577,7 +4870,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
                 ? Stack(fit: StackFit.expand, children: [
                     ClipRRect(
                         borderRadius: BorderRadius.circular(9),
-                        child: Image.network(url, fit: BoxFit.cover)),
+                        child:
+                            _PersistentMediaImage(url: url, fit: BoxFit.cover)),
                     Positioned(
                         top: 3,
                         left: 3,
@@ -4591,6 +4885,18 @@ class _EditListingScreenState extends State<EditListingScreen> {
                                     shape: BoxShape.circle),
                                 child: const Icon(Icons.close,
                                     size: 13, color: Colors.white)))),
+                    Positioned(
+                      right: 3,
+                      bottom: 3,
+                      child: Container(
+                        width: 22,
+                        height: 22,
+                        decoration: const BoxDecoration(
+                            color: Colors.black54, shape: BoxShape.circle),
+                        child: const Icon(Icons.edit,
+                            size: 13, color: Colors.white),
+                      ),
+                    ),
                   ])
                 : Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -4658,6 +4964,16 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     return single != null ? [single] : [];
   }
 
+  void _showImagePage(int page, int count) {
+    if (count < 2) return;
+    final target = page.clamp(0, count - 1);
+    _pageCtrl.animateToPage(
+      target,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
+
   String _listingDefaultMessage() {
     final title = (widget.item['title'] ?? '').toString().trim();
     final id = (widget.item['id'] ?? '').toString().trim();
@@ -4684,6 +5000,19 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
             initialText: _listingDefaultMessage(),
           ),
         ));
+  }
+
+  Future<void> _openEdit() async {
+    final updated = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EditListingScreen(
+          listingId: widget.item['id'] as String,
+          token: widget.token,
+        ),
+      ),
+    );
+    if (updated == true && mounted) Navigator.pop(context, true);
   }
 
   Future<void> _setStatus(String newStatus) async {
@@ -4733,6 +5062,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     final isFree = widget.item['type'] == 'free';
     final isOwner = widget.me?['id'] == widget.item['seller_id'];
     final images = _images;
+    final galleryHeight =
+        (MediaQuery.sizeOf(context).width * 0.56).clamp(280.0, 520.0);
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
@@ -4740,6 +5071,14 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         title: Text(widget.item['title'] ?? '',
             style: const TextStyle(color: Colors.white)),
         leading: BackButton(color: Colors.white),
+        actions: [
+          if (isOwner)
+            TextButton.icon(
+              onPressed: _openEdit,
+              icon: const Icon(Icons.edit_outlined, color: Colors.white),
+              label: const Text('ערוך', style: TextStyle(color: Colors.white)),
+            ),
+        ],
       ),
       body: SingleChildScrollView(
         child:
@@ -4747,17 +5086,44 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
           if (images.isNotEmpty)
             Stack(children: [
               SizedBox(
-                height: 260,
+                height: galleryHeight,
                 child: PageView.builder(
                   controller: _pageCtrl,
                   itemCount: images.length,
                   onPageChanged: (i) => setState(() => _pageIdx = i),
-                  itemBuilder: (_, i) => Image.network(images[i],
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) =>
-                          Container(color: const Color(0xFFE8F4FD))),
+                  itemBuilder: (_, i) => Container(
+                    color: Colors.black,
+                    alignment: Alignment.center,
+                    child: _PersistentMediaImage(
+                      url: images[i],
+                      width: double.infinity,
+                      height: double.infinity,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_) =>
+                          Container(color: const Color(0xFFE8F4FD)),
+                    ),
+                  ),
                 ),
               ),
+              if (images.length > 1)
+                Positioned.fill(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      IconButton.filledTonal(
+                        onPressed: () => _showImagePage(
+                            (_pageIdx - 1 + images.length) % images.length,
+                            images.length),
+                        icon: const Icon(Icons.chevron_left),
+                      ),
+                      IconButton.filledTonal(
+                        onPressed: () => _showImagePage(
+                            (_pageIdx + 1) % images.length, images.length),
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                    ],
+                  ),
+                ),
               if (images.length > 1)
                 Positioned(
                   bottom: 10,
@@ -4765,24 +5131,26 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   right: 0,
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(
-                        images.length,
-                        (i) => Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 3),
-                              width: _pageIdx == i ? 18 : 7,
-                              height: 7,
-                              decoration: BoxDecoration(
-                                  color: _pageIdx == i
-                                      ? Colors.white
-                                      : Colors.white54,
-                                  borderRadius: BorderRadius.circular(4)),
-                            )),
+                    children: List.generate(images.length, (i) {
+                      return GestureDetector(
+                        onTap: () => _showImagePage(i, images.length),
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          width: _pageIdx == i ? 18 : 9,
+                          height: 9,
+                          decoration: BoxDecoration(
+                              color:
+                                  _pageIdx == i ? Colors.white : Colors.white60,
+                              borderRadius: BorderRadius.circular(5)),
+                        ),
+                      );
+                    }),
                   ),
                 ),
             ])
           else
             Container(
-                height: 200,
+                height: galleryHeight,
                 color: const Color(0xFFE8F4FD),
                 child: Icon(Icons.image_outlined, size: 80, color: kSubtext)),
           Padding(
@@ -4863,6 +5231,15 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
               ),
               const SizedBox(height: 20),
               if (isOwner) ...[
+                OutlinedButton.icon(
+                  onPressed: _openEdit,
+                  icon: const Icon(Icons.edit_outlined),
+                  label: const Text('ערוך מודעה'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 46),
+                  ),
+                ),
+                const SizedBox(height: 10),
                 if (_status != 'active')
                   Container(
                     width: double.infinity,
@@ -6141,6 +6518,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         final normalized = data.map(_normalizeDbMessage).toList();
+        _persistRecentImageUrls(normalized).ignore();
         final fingerprint = jsonEncode(normalized);
         if (silent && fingerprint == _serverMessagesFingerprint) return;
         _serverMessagesFingerprint = fingerprint;
@@ -6969,7 +7347,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final selected = picked.take(_maxBatchImages).toList();
       if (picked.length > _maxBatchImages && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('ניתן להעלות עד 10 תמונות בכל פעם',
+          content: Text('ניתן להעלות עד 20 תמונות בכל פעם',
               textDirection: TextDirection.rtl),
         ));
       }
@@ -8170,40 +8548,53 @@ class _MessageBubble extends StatelessWidget {
             if (isAudioFile)
               VoiceMessagePlayer(url: fileUrl!, isMe: isMe)
             else if (isImageFile)
-              GestureDetector(
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ImagePreviewScreen(
-                        url: fileUrl!,
-                        filename: message['text'] as String?,
-                      ),
-                    )),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: Image.network(
-                    _absoluteMediaUrl(fileUrl!),
-                    width: 220,
-                    fit: BoxFit.cover,
-                    loadingBuilder: (_, child, p) => p == null
-                        ? child
-                        : Container(
-                            width: 220,
-                            height: 160,
-                            color: kBorder,
-                            child: const Center(
-                                child: CircularProgressIndicator(
-                                    color: kPrimary, strokeWidth: 2)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  GestureDetector(
+                    onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ImagePreviewScreen(
+                            url: fileUrl!,
+                            filename: fileName,
                           ),
-                    errorBuilder: (_, __, ___) => Container(
-                      width: 220,
-                      height: 120,
-                      color: kBorder,
-                      child: const Icon(Icons.broken_image,
-                          color: kSubtext, size: 40),
+                        )),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: _PersistentMediaImage(
+                        url: fileUrl!,
+                        width: 220,
+                        fit: BoxFit.cover,
+                        loadingBuilder: (_) => Container(
+                          width: 220,
+                          height: 160,
+                          color: kBorder,
+                          child: const Center(
+                              child: CircularProgressIndicator(
+                                  color: kPrimary, strokeWidth: 2)),
+                        ),
+                        errorBuilder: (_) => Container(
+                          width: 220,
+                          height: 120,
+                          color: kBorder,
+                          child: const Icon(Icons.broken_image,
+                              color: kSubtext, size: 40),
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  if (displayText.trim().isNotEmpty &&
+                      displayText.trim() != (fileName ?? '').trim()) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      displayText,
+                      style: const TextStyle(
+                          fontSize: 14, height: 1.45, color: textColor),
+                      textDirection: TextDirection.rtl,
+                    ),
+                  ],
+                ],
               )
             else if (isFile)
               InkWell(
@@ -8794,7 +9185,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> _addSelectedMembers(
       List<Map<String, dynamic>> selectedUsers) async {
-    var added = 0;
+    var invited = 0;
     for (final user in selectedUsers) {
       try {
         final res = await http.post(
@@ -8805,13 +9196,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           },
           body: jsonEncode({'userId': user['id']}),
         );
-        if (res.statusCode == 200) added++;
+        if (res.statusCode == 200) invited++;
       } catch (_) {}
     }
     if (!mounted) return;
     await _loadMembers();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$added חברים נוספו לקבוצה בהצלחה')),
+      SnackBar(content: Text('נשלחו $invited הזמנות לקבוצה')),
     );
   }
 
@@ -9051,7 +9442,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               unregistered.where((u) => _matchesQuery(u, query)).toList();
 
           return AlertDialog(
-            title: const Text('הוסף חבר לקבוצה'),
+            title: const Text('הזמן לקבוצה'),
             contentPadding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
             content: SizedBox(
               width: double.maxFinite,
@@ -9340,6 +9731,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         final normalized = data.map(_normalize).toList();
+        _persistRecentImageUrls(normalized).ignore();
         setState(() {
           final pending = _messages
               .where((message) =>
@@ -9852,7 +10244,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final selected = picked.take(_maxBatchImages).toList();
       if (picked.length > _maxBatchImages && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('ניתן להעלות עד 10 תמונות בכל פעם',
+          content: Text('ניתן להעלות עד 20 תמונות בכל פעם',
               textDirection: TextDirection.rtl),
         ));
       }
@@ -10784,33 +11176,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                           child: ClipRRect(
                                             borderRadius:
                                                 BorderRadius.circular(8),
-                                            child: Image.network(
-                                              _absoluteMediaUrl(
-                                                  msg['fileUrl'] as String),
+                                            child: _PersistentMediaImage(
+                                              url: msg['fileUrl'] as String,
                                               width: 200,
                                               fit: BoxFit.cover,
-                                              loadingBuilder: (_, child, p) => p ==
-                                                      null
-                                                  ? child
-                                                  : Container(
-                                                      width: 200,
-                                                      height: 140,
-                                                      color: kBorder,
-                                                      child: const Center(
-                                                          child:
-                                                              CircularProgressIndicator(
-                                                                  color:
-                                                                      kPrimary,
-                                                                  strokeWidth:
-                                                                      2))),
-                                              errorBuilder: (_, __, ___) =>
-                                                  Container(
-                                                      width: 200,
-                                                      height: 100,
-                                                      color: kBorder,
-                                                      child: const Icon(
-                                                          Icons.broken_image,
-                                                          color: kSubtext)),
+                                              loadingBuilder: (_) => Container(
+                                                  width: 200,
+                                                  height: 140,
+                                                  color: kBorder,
+                                                  child: const Center(
+                                                      child:
+                                                          CircularProgressIndicator(
+                                                              color: kPrimary,
+                                                              strokeWidth: 2))),
+                                              errorBuilder: (_) => Container(
+                                                  width: 200,
+                                                  height: 100,
+                                                  color: kBorder,
+                                                  child: const Icon(
+                                                      Icons.broken_image,
+                                                      color: kSubtext)),
                                             ),
                                           ),
                                         )
@@ -11229,6 +11614,103 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _notifications = true;
   bool _readReceipts = true;
 
+  Future<void> _shareLocation() async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('שיתוף מיקום מדויק'),
+        content: const Text(
+            'אם תאשר/י, המיקום המדויק יישמר בשרת וישמש לחיפוש משתמשים ומודעות בקרבתך. משתמשים אחרים יקבלו עיר ומרחק משוער בלבד. ניתן למחוק את המיקום בכל עת.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('ביטול')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('אישור ושיתוף')),
+        ],
+      ),
+    );
+    if (approved != true) return;
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        throw Exception('לא ניתנה הרשאת מיקום');
+      }
+      final position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.high,
+              timeLimit: Duration(seconds: 10)));
+      final response = await http.put(Uri.parse('$kApi/location'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+          }));
+      if (response.statusCode != 200) throw Exception('שמירת המיקום נכשלה');
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('המיקום נשמר')));
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+    }
+  }
+
+  Future<void> _clearLocation() async {
+    final response = await http.delete(Uri.parse('$kApi/location'),
+        headers: {'Authorization': 'Bearer ${widget.token}'});
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(response.statusCode == 200
+            ? 'המיקום נמחק'
+            : 'מחיקת המיקום נכשלה')));
+  }
+
+  Future<void> _deleteAccount() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('מחיקת חשבון לצמיתות'),
+        content: const Text(
+            'החשבון, ההודעות, הקבצים, המיקום והפרטים האישיים שלך יימחקו. לא ניתן לבטל פעולה זו.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('ביטול')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('מחק לצמיתות',
+                  style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final response = await http.delete(Uri.parse('$kApi/account'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'confirmation': 'DELETE'}));
+    if (!mounted) return;
+    if (response.statusCode == 200) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('token');
+      widget.onLogout();
+    } else {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('מחיקת החשבון נכשלה')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final name = widget.me?['name'] as String? ?? 'משתמש';
@@ -11383,7 +11865,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   leading: const Icon(Icons.lock_outline, color: kSubtext),
                   title: const Text('מדיניות פרטיות'),
                   trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                  onTap: () {},
+                  onTap: () => launchUrl(Uri.parse('$kServer/privacy'),
+                      mode: LaunchMode.externalApplication),
+                ),
+                const Divider(height: 1, indent: 16),
+                ListTile(
+                  leading:
+                      const Icon(Icons.location_on_outlined, color: kPrimary),
+                  title: const Text('שיתוף מיקום'),
+                  subtitle: const Text('כבוי כברירת מחדל; נדרש אישור מפורש'),
+                  trailing: const Icon(Icons.chevron_left, color: kSubtext),
+                  onTap: _shareLocation,
+                ),
+                ListTile(
+                  leading:
+                      const Icon(Icons.location_off_outlined, color: kSubtext),
+                  title: const Text('מחיקת מיקום שמור'),
+                  onTap: _clearLocation,
                 ),
               ],
             ),
@@ -11436,6 +11934,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
 
           const SizedBox(height: 8),
+
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextButton.icon(
+              onPressed: _deleteAccount,
+              icon: const Icon(Icons.delete_forever, color: Colors.red),
+              label: const Text('מחיקת החשבון לצמיתות',
+                  style: TextStyle(color: Colors.red)),
+            ),
+          ),
 
           // Logout
           Padding(

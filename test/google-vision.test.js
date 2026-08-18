@@ -17,7 +17,7 @@ function response(body, status = 200) {
   };
 }
 
-test('SafeSearch blocks adult or racy at POSSIBLE by default', () => {
+test('SafeSearch does not block a weak POSSIBLE result by default', () => {
   const result = evaluateSafeSearch({
     adult: 'UNLIKELY',
     racy: 'POSSIBLE',
@@ -26,9 +26,19 @@ test('SafeSearch blocks adult or racy at POSSIBLE by default', () => {
     spoof: 'VERY_UNLIKELY',
   });
 
+  assert.equal(result.blocked, false);
+  assert.deepEqual(result.blockedCategories, []);
+  assert.equal(result.categories.violence, 'VERY_LIKELY');
+});
+
+test('SafeSearch blocks adult or racy at LIKELY by default', () => {
+  const result = evaluateSafeSearch({
+    adult: 'UNLIKELY', racy: 'LIKELY', violence: 'UNLIKELY',
+    medical: 'UNLIKELY', spoof: 'UNLIKELY',
+  });
+
   assert.equal(result.blocked, true);
   assert.deepEqual(result.blockedCategories, ['racy']);
-  assert.equal(result.categories.violence, 'VERY_LIKELY');
 });
 
 test('SafeSearch treats UNKNOWN in a moderation category as uncertain', () => {

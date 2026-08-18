@@ -339,21 +339,16 @@ function formatScanBotReport(fileName, scanResult, status) {
 }
 
 async function saveScanBotReport(pool, userId, file, fileUrl, scanResult, status) {
-  if (status === 'approved') {
-    await pool.query(
-      `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name,file_size)
-       VALUES($1,$2,$3,$4,$5,$4,$6)`,
-      [userId, SCAN_BOT_ID, file.dbType, file.name, fileUrl, file.size]);
-  }
   const body = formatScanBotReport(file.name, scanResult, status);
   const saved = await pool.query(
-    `INSERT INTO messages(sender_id,recipient_id,type,body)
-     VALUES($1,$2,'text',$3) RETURNING id,created_at`,
-    [SCAN_BOT_ID, userId, body]);
+    `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name,file_size)
+     VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,created_at`,
+    [SCAN_BOT_ID, userId, file.dbType, body, fileUrl, file.name, file.size]);
   const sid = onlineUsers.get(userId);
   if (sid) io.to(sid).emit('chat:message', {
     id: saved.rows[0].id, fromUserId: SCAN_BOT_ID, fromName: 'סריקה',
-    text: body, createdAt: saved.rows[0].created_at, fileType: 'text',
+    text: body, createdAt: saved.rows[0].created_at, fileType: file.dbType,
+    fileUrl, fileName: file.name, fileSize: file.size,
   });
   return body;
 }
@@ -512,17 +507,17 @@ const STRICT_MODESTY_CHECKS = {
   men: {
     safe: 'all men and boys are wearing modest long sleeved shirts and long pants',
     risk: 'a man or boy is shirtless or wearing shorts or short sleeves with exposed arms or legs',
-    threshold: 0.55,
+    threshold: 0.90,
   },
   women: {
     safe: 'all women and girls are wearing modest long sleeves a high neckline and a long skirt',
     risk: 'a woman or girl is wearing short sleeves pants a short skirt a low neckline or revealing clothing',
-    threshold: 0.55,
+    threshold: 0.90,
   },
   children: {
     safe: 'all children are wearing modest long sleeved clothing that covers their arms and legs',
     risk: 'a child is wearing shorts or short sleeves or has exposed arms legs or chest',
-    threshold: 0.55,
+    threshold: 0.90,
   },
 };
 
@@ -675,12 +670,19 @@ async function scanImage(buffer, options = {}) {
     localSafety,
   });
 
+  const adultScore = Number(scores['adult sexual content'] || 0);
+  const nudityScore = Number(scores.nudity || 0);
+  const revealingScore = Number(scores['lingerie or revealing clothing'] || 0);
+  // Zero-shot CLIP scores are useful as supporting evidence, but low scores
+  // must not override a strongly normal NSFW result. Require a strong signal
+  // for explicit content and corroboration before enforcing clothing checks.
   const localExplicitContent = scoresResult.ok && (
-    Number(scores['adult sexual content'] || 0) >= 0.20 ||
-    Number(scores.nudity || 0) >= 0.20 ||
-    Number(scores['lingerie or revealing clothing'] || 0) >= 0.30
+    adultScore >= 0.75 || nudityScore >= 0.65 || revealingScore >= 0.70
   );
-  const localBlockedBy = strictModesty.blocked ? 'strictModesty'
+  const strictModestyCorroborated = strictModesty.blocked && scoresResult.ok && (
+    adultScore >= 0.35 || nudityScore >= 0.20 || revealingScore >= 0.25
+  );
+  const localBlockedBy = strictModestyCorroborated ? 'strictModesty'
     : localExplicitContent ? 'localExplicitContent' : null;
   if (localBlockedBy) {
     return {
@@ -706,14 +708,6 @@ async function scanImage(buffer, options = {}) {
       ...common(googleNotRun('deferred_local_error')),
       pending: true,
       reason: 'בדיקת הלבוש המחמירה אינה זמינה כרגע',
-    };
-  }
-
-  if (classification.uncertain) {
-    return {
-      ...common(googleNotRun('deferred_local_uncertain')),
-      pending: true,
-      reason: 'הסיווג אינו ודאי ונדרשת בדיקה נוספת',
     };
   }
 
@@ -929,6 +923,9 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_version TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS age_confirmed BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`
@@ -1042,6 +1039,12 @@ async function migrateDatabase() {
       RETURNS TRIGGER AS $$
       BEGIN
         IF NEW.id <> '${SCAN_BOT_ID}'::uuid THEN
+          -- Keep contact creation resilient if an administrator purges every
+          -- user row while the server is still running.
+          INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
+          VALUES('${SCAN_BOT_ID}'::uuid,'סריקה','${SCAN_BOT_EMAIL}',
+                 '0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
+          ON CONFLICT (id) DO NOTHING;
           INSERT INTO user_contacts(owner_id,contact_id)
           VALUES(NEW.id,'${SCAN_BOT_ID}'::uuid) ON CONFLICT DO NOTHING;
           INSERT INTO user_contacts(owner_id,contact_id)
@@ -1209,20 +1212,45 @@ async function logActivity(userId, action, details = {}, ip = null) {
   } catch (_) {}
 }
 
+const allowedOrigins = new Set((process.env.CORS_ORIGINS ||
+  'https://betshuva.com,https://www.betshuva.com')
+  .split(',').map(value => value.trim()).filter(Boolean));
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    callback(new Error('Origin is not allowed'));
+  },
+};
+
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*' } });
+const io = new Server(httpServer, { cors: corsOptions });
 app.set('io', io);
 
-app.use(cors());
-app.use(express.json());
+app.disable('x-powered-by');
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '1mb' }));
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(self)',
+  });
+  next();
+});
+app.use(/^\/(?:server|flutter_app|test|docs|local_moderation|\.git)(?:\/|$)/, (_req, res) =>
+  res.status(404).end());
+app.use(/^\/(?:package(?:-lock)?\.json|README\.md|docker-compose[^/]*|.*\.env)(?:$|\/)/i,
+  (_req, res) => res.status(404).end());
 app.use(express.static(require('path').join(__dirname, '..')));
 app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
+
 app.get('/app', (req, res) => res.redirect('/app/'));
 app.get('/public-home', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'home.html')));
 app.get('/privacy', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'privacy.html')));
 app.get('/terms', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'terms.html')));
 app.get('/delete-account', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'delete-account.html')));
+app.get('/accessibility', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'accessibility.html')));
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -1578,6 +1606,8 @@ io.on('connection', async (socket) => {
 // ── Register ─────────────────────────────────────────────────────
 app.post('/api/register', async (req, res) => {
   const { name, password, phone, clientType, verificationMethod } = req.body;
+  if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
+    return res.status(400).json({ error: 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה' });
   // Copying an address from RTL text can add invisible bidi controls. They
   // are formatting characters, not part of an email address.
   const email = typeof req.body.email === 'string'
@@ -1609,8 +1639,8 @@ app.post('/api/register', async (req, res) => {
 
     const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
     const result = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed)
+       VALUES ($1, $2, $3, $4, now(), '2026-08-18', TRUE)
        RETURNING id, name, email`,
       [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash]);
     const user = result.rows[0];
@@ -1788,10 +1818,13 @@ app.post('/api/auth/google', async (req, res) => {
     }
 
     // 3. Create new user
+    if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
+      return res.status(400).json({ error: 'ליצירת חשבון חדש יש לעבור למסך הרשמה ולאשר תנאים וגיל 13 ומעלה' });
     console.log(`[GOOGLE] new user — name:${name} email:${email}`);
     const inserted = await pool.query(
-      `INSERT INTO users (name, email, email_verified, google_id, profile_pic_url)
-       VALUES ($1, $2, TRUE, $3, $4)
+      `INSERT INTO users (name, email, email_verified, google_id, profile_pic_url,
+                          terms_accepted_at, terms_version, age_confirmed)
+       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-18', TRUE)
        RETURNING *`,
       [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null]);
     const user  = inserted.rows[0];
@@ -2491,6 +2524,16 @@ app.put('/api/location', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.delete('/api/location', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.query(
+      `UPDATE users SET latitude=NULL, longitude=NULL, location_updated_at=NULL
+       WHERE id=$1`, [req.user.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'לא ניתן למחוק את המיקום' }); }
+});
+
 // ── Location: get nearby users (by radius and/or city) ───────────
 app.get('/api/users/nearby', auth, async (req, res) => {
   const { city, radius } = req.query;
@@ -2559,7 +2602,7 @@ app.get('/api/cities', auth, async (req, res) => {
 
 app.post('/api/listings', auth, async (req, res) => {
   const { type, title, description, price, city, latitude, longitude, image_url, image_urls, category } = req.body;
-  const allImages = image_urls?.length ? image_urls.slice(0, 4) : (image_url ? [image_url] : []);
+  const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const validTypes = ['free', 'sale'];
   const validCats  = ['רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
@@ -2627,12 +2670,19 @@ app.get('/api/listings', auth, async (req, res) => {
 
     const result = await pool.query(`
       SELECT id, type, title, description, price, city,
-             image_url, category, status, created_at,
+             image_url, images, category, status, created_at,
              view_count, contact_count,
              seller_id, seller_name, seller_pic, dist AS distance_km
       FROM (
         SELECT l.id, l.type, l.title, l.description, l.price, l.city,
-               l.image_url, l.category, l.status, l.created_at,
+               l.image_url,
+               COALESCE(
+                 (SELECT ARRAY_AGG(li.url ORDER BY li.sort_order)
+                  FROM listing_images li WHERE li.listing_id=l.id),
+                 CASE WHEN l.image_url IS NOT NULL THEN ARRAY[l.image_url]
+                      ELSE ARRAY[]::text[] END
+               ) AS images,
+               l.category, l.status, l.created_at,
                l.view_count, l.contact_count, l.latitude, l.longitude,
                u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
                ${distExpr} AS dist,
@@ -2701,7 +2751,7 @@ app.put('/api/listings/:id', auth, async (req, res) => {
   const validCats  = ['רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
   const safeType   = validTypes.includes(type) ? type : 'free';
   const safeCat    = validCats.includes(category) ? category : 'אחר';
-  const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 4) : [];
+  const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 8) : [];
   try {
     const pool = await getPool();
     const upd = await pool.query(
@@ -2795,7 +2845,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         file_size, context_type, context_id, moderation_status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')`,
       [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
-       file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' : 'general',
+       file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' :
+         req.body.listingImage === 'true' ? 'listing' : 'general',
        req.body.groupId || req.body.toUserId || null]);
 
     // Content moderation scan
@@ -2831,6 +2882,37 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         fileType: allowed.dbType, status: 'rejected', reason: scanResult.reason,
         classification: scanResult.classification || null,
         handledByScanBot: scanBotUpload, scanReport });
+    }
+
+    // Listings deliberately allow product/object photos only. A listing image
+    // must be confidently classified as non-human; people and uncertain
+    // classifications are rejected instead of being published accidentally.
+    if (req.body.listingImage === 'true' && allowed.dbType === 'image' &&
+        !scanResult?.pending) {
+      const classification = scanResult?.classification || null;
+      const categories = classification?.detectedCategories || [];
+      const hasPeople = (scanResult?.faces?.length || 0) > 0 ||
+        categories.some(category => ['men', 'women', 'children', 'people'].includes(category));
+      const confidentNonHuman = classification?.category === 'nonHumanImages' &&
+        classification?.uncertain !== true && !hasPeople;
+      if (!confidentNonHuman) {
+        const reason = hasPeople
+          ? 'במודעות מותרות רק תמונות ללא אנשים'
+          : 'לא ניתן לאשר שזו תמונה ללא אנשים';
+        const details = { ...scanResult, reason, listingImage: true };
+        await pool.query(
+          `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1
+           WHERE public_url=$2`,
+          [JSON.stringify(details), url]);
+        logActivity(req.user.id, 'blocked_listing_image', {
+          fileName: file.originalname, fileUrl: url, reason, classification,
+          faces: scanResult?.faces || [],
+        }, req.ip);
+        return res.json({
+          url, fileName: file.originalname, fileSize: file.size,
+          fileType: allowed.dbType, status: 'rejected', reason, classification,
+        });
+      }
     }
 
     if (!scanBotUpload && !scanResult?.pending && allowed.dbType === 'image' && recipientPolicy &&
@@ -3137,7 +3219,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: add registered member directly (admin) ────────────────
+// ── Groups: invite a registered user (admin) ─────────────────
 app.post('/api/groups/:id/members', auth, async (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'נדרש userId' });
@@ -3155,20 +3237,15 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
     if (existing.rows.length) {
       const st = existing.rows[0].status;
       if (st === 'member')  return res.json({ ok: true, alreadyMember: true });
-      if (st === 'pending') {
-        await pool.query(
-          `UPDATE group_members SET status='member', pending_since=NULL
-           WHERE group_id=$1 AND user_id=$2`,
-          [req.params.id, userId]);
-      }
+      if (st === 'pending') return res.json({ ok: true, alreadyPending: true });
     }
 
-    // The group admin explicitly selected this registered user, matching the
-    // familiar WhatsApp flow: membership becomes active immediately.
+    // Selecting a user only creates an invitation. Membership becomes active
+    // after the invited user explicitly accepts it via POST /groups/:id/join.
     await pool.query(
       `INSERT INTO group_members (group_id, user_id, status, added_by, pending_since)
-       VALUES ($1, $2, 'member', $3, NULL)
-       ON CONFLICT (group_id, user_id) DO UPDATE SET status='member', added_by=$3, pending_since=NULL`,
+       VALUES ($1, $2, 'pending', $3, now())
+       ON CONFLICT (group_id, user_id) DO UPDATE SET status='pending', added_by=$3, pending_since=now()`,
       [req.params.id, userId, req.user.id]);
 
     // Fetch group name and adder name
@@ -3183,16 +3260,14 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
     const ioInst = req.app.get('io');
     const invitedSid = onlineUsers.get(userId);
     if (invitedSid) {
-      const invitedSocket = ioInst.sockets.sockets.get(invitedSid);
-      invitedSocket?.join(`group:${req.params.id}`);
       ioInst.to(invitedSid).emit('group:invited', {
         groupId: req.params.id, groupName, addedByName, addedById: req.user.id,
-        status: 'member',
+        status: 'pending',
       });
     }
 
     // Send push notification
-    sendPush(userId, groupName, `${addedByName} הוסיף אותך לקבוצה`,
+    sendPush(userId, groupName, `${addedByName} הזמין אותך לקבוצה`,
       { type: 'group_invite', groupId: req.params.id });
 
     res.json({ ok: true });
@@ -3472,7 +3547,7 @@ app.post('/api/games', auth, async (req, res) => {
 });
 
 // ── Admin: activity log ───────────────────────────────────────────
-app.get('/api/admin/activity', auth, async (req, res) => {
+app.get('/api/admin/activity', adminAuth, async (req, res) => {
   const limit  = Math.min(parseInt(req.query.limit  || 100), 500);
   const offset = parseInt(req.query.offset || 0);
   const userId = req.query.userId || null;
@@ -3505,7 +3580,7 @@ app.get('/api/admin/activity', auth, async (req, res) => {
 });
 
 // ── Admin: all users ─────────────────────────────────────────────
-app.get('/api/admin/users', auth, async (req, res) => {
+app.get('/api/admin/users', adminAuth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
@@ -3518,7 +3593,7 @@ app.get('/api/admin/users', auth, async (req, res) => {
 });
 
 // ── Admin: all games ─────────────────────────────────────────────
-app.get('/api/admin/games', auth, async (req, res) => {
+app.get('/api/admin/games', adminAuth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(`
@@ -3569,8 +3644,11 @@ app.post('/api/send-otp', async (req, res) => {
         authenticatedUser = exists.rows.length > 0;
       } catch (_) {}
     }
-    if (!existingPhone.rows.length && !authenticatedUser && cleanName.length < 2) {
-      return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
+    if (!existingPhone.rows.length && !authenticatedUser) {
+      if (cleanName.length < 2)
+        return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
+      if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
+        return res.status(400).json({ error: 'יש לאשר תנאים וגיל 13 ומעלה' });
     }
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -3586,7 +3664,9 @@ app.post('/api/send-otp', async (req, res) => {
   }
   const code    = Math.floor(100000 + Math.random() * 900000).toString();
   const expires = Date.now() + 5 * 60 * 1000;
-  otpStore.set(clean, { code, expires, name: cleanName, email: cleanEmail });
+  otpStore.set(clean, { code, expires, name: cleanName, email: cleanEmail,
+    acceptedTerms: req.body.acceptedTerms === true,
+    ageConfirmed: req.body.ageConfirmed === true });
   try {
     await sendEmail({
       to:      `${clean}@019sms.co.il`,
@@ -3633,14 +3713,17 @@ app.post('/api/verify-otp', async (req, res) => {
           'UPDATE users SET phone_verified=TRUE, email_verified=TRUE, phone=$1 WHERE id=$2', [clean, user.id]);
       } else {
         // New user — verified by OTP
+        if (entry.acceptedTerms !== true || entry.ageConfirmed !== true)
+          return res.status(400).json({ error: 'יש לאשר תנאים וגיל 13 ומעלה' });
         if (userName.length < 2) {
           return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
         }
         otpStore.delete(clean);
         const hash   = await bcrypt.hash(`otp_${clean}`, 10);
         const result = await pool.query(
-          `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified)
-           VALUES ($1, $2, $3, $4, TRUE, TRUE)
+          `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified,
+                              terms_accepted_at, terms_version, age_confirmed)
+           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-18', TRUE)
            RETURNING id, name, email`,
           [userName, userEmail, clean, hash]);
         user = result.rows[0];
@@ -3781,6 +3864,24 @@ async function adminAuth(req, res, next) {
     res.status(401).json({ error: 'טוקן לא תקין' });
   }
 }
+
+app.get('/admin-members', (_req, res) => res.sendFile(
+  require('path').join(__dirname, '..', 'admin-members.html')));
+app.get('/api/admin/members-directory', adminAuth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(`
+      SELECT id, name, email, phone, city, community,
+             email_verified, phone_verified, created_at, profile_pic_url
+      FROM users
+      WHERE id <> $1
+      ORDER BY name COLLATE "C" ASC`, [SCAN_BOT_ID]);
+    res.set('Cache-Control', 'no-store, private');
+    res.json({ users: result.rows, total: result.rowCount, permission: req.adminPerm });
+  } catch (e) {
+    res.status(500).json({ error: 'לא ניתן לטעון את רשימת המשתמשים' });
+  }
+});
 
 // List tables + row counts
 app.get('/api/admin/db', adminAuth, async (req, res) => {
@@ -3925,6 +4026,68 @@ async function deleteStoredFile(url) {
   }
 }
 
+// A signed-in user can permanently delete their own account. The confirmation
+// phrase protects against accidental requests and CSRF-like client mistakes.
+app.delete('/api/account', auth, async (req, res) => {
+  if (req.body?.confirmation !== 'DELETE')
+    return res.status(400).json({ error: 'נדרש אישור מחיקה מפורש' });
+  const uid = req.user.id;
+  const pool = await getPool();
+  const client = await pool.connect();
+  let fileUrls = [];
+  try {
+    await client.query('BEGIN');
+    const files = await client.query(
+      'SELECT public_url FROM stored_files WHERE user_id=$1', [uid]);
+    fileUrls = files.rows.map(row => row.public_url).filter(Boolean);
+    const profile = await client.query(
+      'SELECT profile_pic_url FROM users WHERE id=$1 FOR UPDATE', [uid]);
+    if (!profile.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'החשבון אינו קיים' });
+    }
+    if (profile.rows[0].profile_pic_url) fileUrls.push(profile.rows[0].profile_pic_url);
+
+    await client.query(`UPDATE messages SET reply_to_id=NULL WHERE reply_to_id IN
+      (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`, [uid]);
+    await client.query(`DELETE FROM message_status WHERE message_id IN
+      (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`, [uid]);
+    await client.query('DELETE FROM messages WHERE sender_id=$1 OR recipient_id=$1', [uid]);
+    await client.query('DELETE FROM message_requests WHERE sender_id=$1 OR recipient_id=$1', [uid]);
+    await client.query('DELETE FROM pending_scans WHERE user_id=$1 OR to_user_id=$1', [uid]);
+    await client.query('DELETE FROM listing_views WHERE user_id=$1 OR listing_id IN (SELECT id FROM listings WHERE user_id=$1)', [uid]);
+    await client.query('DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id=$1)', [uid]);
+    await client.query('DELETE FROM listings WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM fcm_tokens WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM password_reset_tokens WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM email_verification_tokens WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM group_members WHERE user_id=$1', [uid]);
+    await client.query('UPDATE groups SET creator_id=NULL WHERE creator_id=$1', [uid]);
+    await client.query('DELETE FROM blocked_users WHERE blocker_id=$1 OR blocked_id=$1', [uid]);
+    await client.query('DELETE FROM user_contacts WHERE owner_id=$1 OR contact_id=$1', [uid]);
+    await client.query('DELETE FROM admin_permissions WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM games WHERE player1_id=$1 OR player2_id=$1', [uid]);
+    await client.query('UPDATE games SET winner_id=NULL WHERE winner_id=$1', [uid]);
+    await client.query('DELETE FROM activity_log WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM audit_log WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM stored_files WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM users WHERE id=$1', [uid]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('self account delete:', e.message);
+    return res.status(500).json({ error: 'מחיקת החשבון נכשלה' });
+  } finally {
+    client.release();
+  }
+
+  await Promise.all([...new Set(fileUrls)].map(url => deleteStoredFile(url)));
+  const sid = onlineUsers.get(uid);
+  if (sid) io.sockets.sockets.get(sid)?.disconnect(true);
+  onlineUsers.delete(uid);
+  res.json({ ok: true });
+});
+
 app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
   if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
   const uid = req.params.userId;
@@ -4060,21 +4223,29 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
       res.json({ rows: result.rows, total: cnt.rows[0].n });
     } else {
       const result = await pool.query(`
-        SELECT a.id, a.created_at, a.ip, a.action,
+        SELECT sf.id, sf.created_at, matched.ip,
+               COALESCE(matched.action, 'blocked_upload') AS action,
                u.name AS user_name, u.email AS user_email,
-               a.details->>'fileName' AS file_name,
-               a.details->>'reason'   AS reason,
-               a.details->>'fileType' AS file_type,
-               a.details->>'fileUrl'  AS file_url
-        FROM activity_log a
-        LEFT JOIN users u ON u.id = a.user_id
-        WHERE a.action IN ('blocked_upload','blocked_upload_delayed')
-        ORDER BY a.created_at DESC
+               sf.original_name AS file_name,
+               COALESCE(sf.moderation_details->>'reason',
+                        matched.details->>'reason', 'הקובץ נדחה בסריקה') AS reason,
+               sf.file_type, sf.public_url AS file_url
+        FROM stored_files sf
+        LEFT JOIN users u ON u.id = sf.user_id
+        LEFT JOIN LATERAL (
+          SELECT a.action, a.ip, a.details
+          FROM activity_log a
+          WHERE a.details->>'fileUrl' = sf.public_url
+          ORDER BY a.created_at DESC
+          LIMIT 1
+        ) matched ON TRUE
+        WHERE sf.moderation_status = 'rejected'
+        ORDER BY sf.created_at DESC
         OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY
       `);
       const cnt = await pool.query(`
-        SELECT COUNT(*)::int AS n FROM activity_log
-        WHERE action IN ('blocked_upload','blocked_upload_delayed')`);
+        SELECT COUNT(*)::int AS n FROM stored_files
+        WHERE moderation_status = 'rejected'`);
       res.json({ rows: result.rows, total: cnt.rows[0].n });
     }
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -4346,7 +4517,7 @@ app.get('/api/test-storage', async (req, res) => {
 // ── App Version (also wakes up DB on cold start) ─────────────────
 app.get('/api/version', async (req, res) => {
   try { const pool = await getPool(); await pool.query('SELECT 1'); } catch (_) {}
-  let version = '1.2.24';
+  let version = '1.2.26';
   try {
     const info = JSON.parse(await fs.readFile(
       path.join(__dirname, '..', 'version.json'), 'utf8'));
@@ -4530,54 +4701,15 @@ async function retryPendingScans() {
       }
     };
 
-    const rejectExhaustedScan = async (row, attempt, scanResult = null, error = null) => {
-      const reason = 'הקובץ לא נשלח — שירות הסריקה נכשל לאחר 20 ניסיונות';
-      const finalResult = {
-        ...(scanResult && typeof scanResult === 'object' ? scanResult : {}),
-        pending: false,
-        blocked: true,
-        blockedBy: 'scanRetryLimit',
-        reason,
-        retryExhausted: true,
-        retryCount: Math.max(Number(attempt) || 0, 20),
-        ...(error ? { lastError: error.message } : {}),
-      };
-      await completePending(row.id, async client => {
-        await client.query(
-          `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
-          [JSON.stringify(finalResult), row.file_url]);
-        if (row.to_user_id === SCAN_BOT_ID) {
-          await saveScanBotReport(client, row.user_id, {
-            name: row.file_name, size: 0, dbType: row.file_type,
-          }, row.file_url, finalResult, 'rejected');
-        }
-      });
-      const sid = onlineUsers.get(row.user_id);
-      if (sid) io.to(sid).emit('scan:rejected', {
-        fileName: row.file_name,
-        fileUrl: row.file_url,
-        groupId: row.group_id || null,
-        toUserId: row.to_user_id || null,
-        reason,
-      });
-      logActivity(row.user_id, 'scan_retry_exhausted', {
-        fileName: row.file_name,
-        fileUrl: row.file_url,
-        groupId: row.group_id || null,
-        toUserId: row.to_user_id || null,
-        retryCount: finalResult.retryCount,
-        lastError: error?.message || null,
-      });
-    };
-
     const rows = await pool.query(`
       SELECT ps.*, sf.moderation_details AS prior_moderation_details
       FROM pending_scans ps
       LEFT JOIN stored_files sf
         ON sf.public_url=ps.file_url AND sf.user_id=ps.user_id
-      WHERE ps.retry_count >= 20
-         OR (ps.retry_count < 20
+      WHERE (ps.retry_count < 20
              AND (ps.last_retry IS NULL OR ps.last_retry < now() - interval '2 minutes'))
+         OR (ps.retry_count >= 20
+             AND ps.last_retry < now() - interval '30 minutes')
       ORDER BY ps.created_at ASC
       LIMIT 10
     `);
@@ -4586,17 +4718,7 @@ async function retryPendingScans() {
       let attempt = Number(row.retry_count) || 0;
       let scanCompleted = false;
       let outcomePersisted = false;
-      let exhaustionAttempted = false;
       try {
-        // Rows left behind by the old retry implementation at retry_count=20
-        // are finalized without making an unbounded twenty-first attempt.
-        if (attempt >= 20) {
-          exhaustionAttempted = true;
-          await rejectExhaustedScan(row, attempt);
-          outcomePersisted = true;
-          continue;
-        }
-
         // The conditional update also prevents another server process from
         // claiming the same row after both processes selected it.
         const claimed = await pool.query(
@@ -4638,11 +4760,6 @@ async function retryPendingScans() {
             await pool.query(
               `UPDATE stored_files SET moderation_details=$1 WHERE public_url=$2`,
               [JSON.stringify(scanResult), row.file_url]);
-          }
-          if (attempt >= 20) {
-            exhaustionAttempted = true;
-            await rejectExhaustedScan(row, attempt, scanResult);
-            outcomePersisted = true;
           }
           continue;
         }
@@ -4856,15 +4973,7 @@ async function retryPendingScans() {
         outcomePersisted = true;
       } catch (e) {
         console.error('retry row', row.id, e.message);
-        if (!outcomePersisted && !scanCompleted && attempt >= 20 && !exhaustionAttempted) {
-          try {
-            exhaustionAttempted = true;
-            await rejectExhaustedScan(row, attempt, null, e);
-            outcomePersisted = true;
-          } catch (finalError) {
-            console.error('finalize retry row', row.id, finalError.message);
-          }
-        } else if (!outcomePersisted && scanCompleted) {
+        if (!outcomePersisted && scanCompleted) {
           // A persistence failure after a successful scan must not consume the
           // final scan attempt. Leave the row eligible for a later retry.
           try {
