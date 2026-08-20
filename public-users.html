@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="חברי קהילת בתשובה">
+  <title>חברי קהילת בתשובה</title>
+  <style>
+    :root{--blue:#1976b8;--deep:#0d4f80;--soft:#eef7fc;--ink:#173042;--muted:#668092;--line:#d8e8f2}
+    *{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#edf6fb,#fff 45%,#e7f2f9);color:var(--ink);font-family:Arial,"Noto Sans Hebrew",sans-serif;min-height:100vh}
+    header{background:linear-gradient(120deg,var(--deep),var(--blue));color:#fff;padding:34px 20px 70px;text-align:center}
+    .logo{width:74px;height:74px;border-radius:20px;background:#fff1;display:grid;place-items:center;margin:auto;border:1px solid #ffffff38;font-size:40px}
+    h1{margin:14px 0 5px;font-size:30px}.subtitle{margin:0;color:#dceefa;font-size:15px}
+    main{width:min(1040px,calc(100% - 28px));margin:-40px auto 45px}
+    .toolbar{background:#fff;border:1px solid var(--line);box-shadow:0 14px 35px #0a56801a;border-radius:18px;padding:16px;display:flex;gap:12px;align-items:center}
+    input{width:100%;border:1px solid var(--line);border-radius:12px;padding:13px 15px;font:inherit;outline:none;background:var(--soft);color:var(--ink)}input:focus{border-color:var(--blue);box-shadow:0 0 0 3px #1976b820}
+    .count{white-space:nowrap;color:var(--muted);font-size:14px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(235px,1fr));gap:14px;margin-top:16px}
+    .card{background:#fff;border:1px solid var(--line);border-radius:17px;padding:18px;display:flex;align-items:center;gap:13px;box-shadow:0 6px 20px #17445f0c}
+    .avatar{width:58px;height:58px;flex:0 0 58px;border-radius:50%;object-fit:cover;background:linear-gradient(145deg,#d8ebf7,#b9d9ec);display:grid;place-items:center;color:var(--deep);font-size:24px;font-weight:700;border:2px solid #fff;box-shadow:0 0 0 1px var(--line)}
+    .name{font-weight:700;font-size:17px;margin-bottom:5px;overflow-wrap:anywhere}.meta{font-size:13px;color:var(--muted);line-height:1.45}
+    .state{grid-column:1/-1;text-align:center;background:#fff;border:1px solid var(--line);border-radius:16px;padding:35px;color:var(--muted)}
+    footer{text-align:center;color:var(--muted);font-size:12px;padding:0 20px 30px}
+    @media(max-width:520px){header{padding-top:25px}.toolbar{align-items:stretch;flex-direction:column}.count{text-align:center}.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">✡</div>
+    <h1>חברי קהילת בתשובה</h1>
+    <p class="subtitle">האנשים שמרכיבים את הקהילה שלנו</p>
+  </header>
+  <main>
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="חיפוש לפי שם, עיר או קהילה" aria-label="חיפוש משתמשים">
+      <div class="count" id="count">טוען...</div>
+    </div>
+    <section class="grid" id="grid"><div class="state">טוען את חברי הקהילה...</div></section>
+  </main>
+  <footer>מוצגים פרטים ציבוריים בלבד</footer>
+  <script>
+    const grid=document.getElementById('grid'),count=document.getElementById('count'),search=document.getElementById('search');
+    let users=[];
+    const esc=value=>String(value??'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+    function render(){
+      const q=search.value.trim().toLocaleLowerCase('he');
+      const shown=users.filter(u=>[u.name,u.city,u.community].some(v=>String(v||'').toLocaleLowerCase('he').includes(q)));
+      count.textContent=`${shown.length} חברים`;
+      if(!shown.length){grid.innerHTML='<div class="state">לא נמצאו משתמשים מתאימים</div>';return}
+      grid.innerHTML=shown.map(u=>{
+        const initial=esc((u.name||'?').trim().charAt(0));
+        const avatar=u.profile_pic_url
+          ? `<img class="avatar" src="${esc(u.profile_pic_url)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'avatar',textContent:'${initial}'}))">`
+          : `<div class="avatar">${initial}</div>`;
+        const meta=[u.city,u.community].filter(Boolean).map(esc).join(' · ')||'חבר/ת הקהילה';
+        return `<article class="card">${avatar}<div><div class="name">${esc(u.name)}</div><div class="meta">${meta}</div></div></article>`;
+      }).join('');
+    }
+    search.addEventListener('input',render);
+    fetch('api/public/users').then(r=>{if(!r.ok)throw new Error();return r.json()}).then(data=>{users=data.users||[];render()}).catch(()=>{count.textContent='';grid.innerHTML='<div class="state">לא ניתן לטעון את הרשימה כרגע</div>'});
+  </script>
+</body>
+</html>

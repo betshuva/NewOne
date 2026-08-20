@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS users (
   email_verified      BOOLEAN NOT NULL DEFAULT FALSE,
   phone_verified      BOOLEAN NOT NULL DEFAULT FALSE,
   city                TEXT,
-  community            TEXT,
   country             TEXT,
   street              TEXT,
   house_number        TEXT,
@@ -170,36 +169,16 @@ CREATE TABLE IF NOT EXISTS stored_files (
 );
 
 -- System image-scanning conversation bot.
-INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
+INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city)
 VALUES('00000000-0000-4000-8000-000000000001','סריקה','scan@betshuva.system',
-       '0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
+       '0000000000',TRUE,TRUE,'מערכת')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO user_contacts(owner_id,contact_id)
-SELECT id,'00000000-0000-4000-8000-000000000001'::uuid FROM users
-WHERE id<>'00000000-0000-4000-8000-000000000001'::uuid ON CONFLICT DO NOTHING;
-
-CREATE OR REPLACE FUNCTION add_scan_bot_contact_for_new_user()
-RETURNS TRIGGER AS $$
-BEGIN
-  IF NEW.id <> '00000000-0000-4000-8000-000000000001'::uuid THEN
-    -- A full administrative purge can remove the bot while the application is
-    -- still running. Recreate it before adding the mandatory contact.
-    INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
-    VALUES('00000000-0000-4000-8000-000000000001','סריקה',
-           'scan@betshuva.system','0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
-    ON CONFLICT (id) DO NOTHING;
-    INSERT INTO user_contacts(owner_id,contact_id)
-    VALUES(NEW.id,'00000000-0000-4000-8000-000000000001'::uuid)
-    ON CONFLICT DO NOTHING;
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 DROP TRIGGER IF EXISTS users_add_scan_bot_contact ON users;
-CREATE TRIGGER users_add_scan_bot_contact AFTER INSERT ON users
-FOR EACH ROW EXECUTE FUNCTION add_scan_bot_contact_for_new_user();
+DROP FUNCTION IF EXISTS add_scan_bot_contact_for_new_user();
+DELETE FROM user_contacts
+WHERE owner_id='00000000-0000-4000-8000-000000000001'::uuid
+   OR contact_id='00000000-0000-4000-8000-000000000001'::uuid;
 
 -- ── App Settings (moderation lists etc.) ──────────────────────────
 CREATE TABLE IF NOT EXISTS app_settings (

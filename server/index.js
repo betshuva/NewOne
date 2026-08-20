@@ -1,4 +1,5 @@
 require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.turn') });
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -85,7 +86,19 @@ function normalizeUploadFileName(name) {
   } catch (_) { return name; }
 }
 
-function createRateLimiter({ windowMs, max, message }) {
+function isLoopbackAddress(address) {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+function clientIp(req) {
+  const remoteAddress = req.socket?.remoteAddress || '';
+  const realIp = req.get?.('x-real-ip');
+  // X-Real-IP is authoritative only when it was supplied by our local Nginx.
+  if (isLoopbackAddress(remoteAddress) && realIp) return realIp.trim();
+  return req.ip || remoteAddress || 'unknown';
+}
+
+function createRateLimiter({ windowMs, max, message, keyGenerator, maxBuckets = 50000 }) {
   const buckets = new Map();
   const cleanup = setInterval(() => {
     const now = Date.now();
@@ -95,14 +108,24 @@ function createRateLimiter({ windowMs, max, message }) {
   }, windowMs);
   cleanup.unref();
   return (req, res, next) => {
-    const key = req.user?.id || req.ip || 'unknown';
+    const key = String(keyGenerator?.(req) || req.user?.id || clientIp(req));
     const now = Date.now();
     let bucket = buckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
+      // Bound memory use even when an attacker rotates source addresses/identifiers.
+      if (!buckets.has(key) && buckets.size >= maxBuckets) {
+        const oldestKey = buckets.keys().next().value;
+        if (oldestKey !== undefined) buckets.delete(oldestKey);
+      }
       bucket = { count: 0, resetAt: now + windowMs };
       buckets.set(key, bucket);
     }
     bucket.count++;
+    res.set({
+      'RateLimit-Limit': String(max),
+      'RateLimit-Remaining': String(Math.max(0, max - bucket.count)),
+      'RateLimit-Reset': String(Math.ceil(bucket.resetAt / 1000)),
+    });
     if (bucket.count > max) {
       res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
       return res.status(429).json({ error: message });
@@ -110,6 +133,56 @@ function createRateLimiter({ windowMs, max, message }) {
     next();
   };
 }
+
+const normalizedCredential = req => {
+  const value = req.body?.email || req.body?.phone || req.body?.identifier || '';
+  return `${clientIp(req)}:${String(value).trim().toLowerCase().slice(0, 200)}`;
+};
+
+const apiRateLimit = createRateLimiter({
+  windowMs: 5 * 60 * 1000,
+  max: 600,
+  keyGenerator: clientIp,
+  message: 'בוצעו יותר מדי בקשות. נסה שוב בעוד מספר דקות',
+});
+const authRateLimit = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  keyGenerator: clientIp,
+  message: 'בוצעו יותר מדי ניסיונות אימות מכתובת זו. נסה שוב מאוחר יותר',
+});
+const credentialRateLimit = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: normalizedCredential,
+  message: 'בוצעו יותר מדי ניסיונות עבור חשבון זה. נסה שוב מאוחר יותר',
+});
+const otpRateLimit = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyGenerator: normalizedCredential,
+  message: 'נשלחו יותר מדי בקשות לקוד אימות. נסה שוב מאוחר יותר',
+});
+const messageRateLimit = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 120,
+  message: 'נשלחו יותר מדי הודעות. נסה שוב בעוד דקה',
+});
+const searchRateLimit = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: 'בוצעו יותר מדי חיפושים. נסה שוב בעוד דקה',
+});
+const inviteRateLimit = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: 'נשלחו יותר מדי הזמנות. נסה שוב מאוחר יותר',
+});
+const reportRateLimit = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: 'נשלחו יותר מדי דיווחים. נסה שוב מאוחר יותר',
+});
 
 const uploadRateLimit = createRateLimiter({
   windowMs: 10 * 60 * 1000,
@@ -189,9 +262,50 @@ const DEFAULT_BLOCKED_WORDS = [
   'עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות',
   'porn','nude','naked','xxx','sex','erotic','adult content',
 ];
+const CHAT_HARMFUL_TERMS = [
+  // Threats, harassment and common abusive language. Sexual terms are loaded
+  // from BLOCKED_WORDS below so administrators can extend them at runtime.
+  'אני אהרוג אותך','אני אפגע בך','מוות לך','תתאבד','תמות','מטומטם',
+  'מפגר','שרמוטה','זונה','בן זונה','כלבה','מניאק',
+  'kill yourself','i will kill you','death threat','idiot','moron','bitch',
+  'whore','slut','fuck you','stupid','retard',
+];
 
 let FEMALE_LABELS = [...DEFAULT_FEMALE_LABELS];
 let BLOCKED_WORDS = [...DEFAULT_BLOCKED_WORDS];
+
+function normalizeModerationText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\u0591-\u05C7]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function moderateChatText(value) {
+  const normalized = normalizeModerationText(value);
+  if (!normalized) return { blocked: false };
+  const terms = [...BLOCKED_WORDS, ...CHAT_HARMFUL_TERMS];
+  for (const rawTerm of terms) {
+    const term = normalizeModerationText(rawTerm);
+    if (!term) continue;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, 'u').test(normalized)) {
+      return { blocked: true, category: 'harmful_language' };
+    }
+  }
+  return { blocked: false };
+}
+
+function recordBlockedChat(userId, context, text, targetId, ip = null) {
+  const digest = crypto.createHash('sha256').update(String(text || '')).digest('hex');
+  logActivity(userId, 'blocked_chat_text', {
+    context, targetId, category: 'harmful_language',
+    textLength: String(text || '').length, textHash: digest,
+  }, ip);
+}
 
 const DEFAULT_CONTENT_FILTER = Object.freeze({
   text: true,
@@ -805,12 +919,12 @@ function welcomeEmail(name) {
   return `<div dir="rtl" style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
     <div style="background:#1B4332;padding:24px;border-radius:12px 12px 0 0;text-align:center">
       <h1 style="color:white;margin:0;font-size:24px">בתשובה</h1>
-      <p style="color:rgba(255,255,255,0.8);margin:8px 0 0">מסרים לקהילה החרדית</p>
+      <p style="color:rgba(255,255,255,0.8);margin:8px 0 0">מסרים לקהילה הישראלית</p>
     </div>
     <div style="background:#fff;padding:28px;border-radius:0 0 12px 12px;border:1px solid #e0e0e0">
       <h2 style="color:#1B4332;margin-top:0">ברוכים הבאים, ${name}!</h2>
       <p style="color:#444;line-height:1.6">חשבונך נרשם בהצלחה. אנו שמחים שהצטרפת לקהילת בתשובה.</p>
-      <p style="color:#6C757D;font-size:13px;margin-top:24px;border-top:1px solid #eee;padding-top:16px">בתשובה — מסרים לקהילה החרדית</p>
+      <p style="color:#6C757D;font-size:13px;margin-top:24px;border-top:1px solid #eee;padding-top:16px">בתשובה — מסרים לקהילה הישראלית</p>
     </div>
   </div>`;
 }
@@ -827,7 +941,7 @@ function emailVerificationEmail(name, verifyUrl) {
         <a href="${verifyUrl}" style="background:#1B4332;color:white;padding:14px 32px;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold">אמת אימייל</a>
       </div>
       <p style="color:#888;font-size:12px">הקישור תקף ל-24 שעות. אם לא נרשמת, התעלם מהודעה זו.</p>
-      <p style="color:#6C757D;font-size:13px;margin-top:24px;border-top:1px solid #eee;padding-top:16px">בתשובה — מסרים לקהילה החרדית</p>
+      <p style="color:#6C757D;font-size:13px;margin-top:24px;border-top:1px solid #eee;padding-top:16px">בתשובה — מסרים לקהילה הישראלית</p>
     </div>
   </div>`;
 }
@@ -844,7 +958,7 @@ function resetPasswordEmail(resetUrl) {
         <a href="${resetUrl}" style="background:#1B4332;color:white;padding:14px 32px;text-decoration:none;border-radius:8px;font-size:16px;font-weight:bold">איפוס סיסמה</a>
       </div>
       <p style="color:#888;font-size:12px">הקישור תקף ל-1 שעה בלבד. אם לא ביקשת איפוס, התעלם מהודעה זו.</p>
-      <p style="color:#6C757D;font-size:13px;margin-top:24px;border-top:1px solid #eee;padding-top:16px">בתשובה — מסרים לקהילה החרדית</p>
+      <p style="color:#6C757D;font-size:13px;margin-top:24px;border-top:1px solid #eee;padding-top:16px">בתשובה — מסרים לקהילה הישראלית</p>
     </div>
   </div>`;
 }
@@ -867,7 +981,6 @@ async function migrateDatabase() {
         email_verified      BOOLEAN NOT NULL DEFAULT FALSE,
         phone_verified      BOOLEAN NOT NULL DEFAULT FALSE,
         city                TEXT,
-        community           TEXT,
         country             TEXT,
         street              TEXT,
         house_number        TEXT,
@@ -906,7 +1019,9 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS community TEXT`);
+    // This profile field was removed to avoid collecting religious/community
+    // affiliation. Dropping it also deletes values collected by older builds.
+    await pool.query(`ALTER TABLE users DROP COLUMN IF EXISTS community`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_pic TEXT NOT NULL DEFAULT 'all'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
@@ -929,8 +1044,8 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`
-      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
-      VALUES($1,'סריקה',$2,'0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
+      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city)
+      VALUES($1,'סריקה',$2,'0000000000',TRUE,TRUE,'מערכת')
       ON CONFLICT (id) DO UPDATE SET name='סריקה', email=$2,
         email_verified=TRUE, phone_verified=TRUE`, [SCAN_BOT_ID, SCAN_BOT_EMAIL]);
 
@@ -1018,6 +1133,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS added_by UUID`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_contacts (
@@ -1028,35 +1144,14 @@ async function migrateDatabase() {
         CHECK (owner_id <> contact_id)
       )`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_override JSONB`);
-    await pool.query(`
-      INSERT INTO user_contacts(owner_id,contact_id)
-      SELECT id,$1 FROM users WHERE id<>$1 ON CONFLICT DO NOTHING`, [SCAN_BOT_ID]);
-    await pool.query(`
-      INSERT INTO user_contacts(owner_id,contact_id)
-      SELECT $1,id FROM users WHERE id<>$1 ON CONFLICT DO NOTHING`, [SCAN_BOT_ID]);
-    await pool.query(`
-      CREATE OR REPLACE FUNCTION add_scan_bot_contact_for_new_user()
-      RETURNS TRIGGER AS $$
-      BEGIN
-        IF NEW.id <> '${SCAN_BOT_ID}'::uuid THEN
-          -- Keep contact creation resilient if an administrator purges every
-          -- user row while the server is still running.
-          INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,community)
-          VALUES('${SCAN_BOT_ID}'::uuid,'סריקה','${SCAN_BOT_EMAIL}',
-                 '0000000000',TRUE,TRUE,'מערכת','בודק תמונות')
-          ON CONFLICT (id) DO NOTHING;
-          INSERT INTO user_contacts(owner_id,contact_id)
-          VALUES(NEW.id,'${SCAN_BOT_ID}'::uuid) ON CONFLICT DO NOTHING;
-          INSERT INTO user_contacts(owner_id,contact_id)
-          VALUES('${SCAN_BOT_ID}'::uuid,NEW.id) ON CONFLICT DO NOTHING;
-        END IF;
-        RETURN NEW;
-      END;
-      $$ LANGUAGE plpgsql`);
+    await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
     await pool.query(`DROP TRIGGER IF EXISTS users_add_scan_bot_contact ON users`);
-    await pool.query(`
-      CREATE TRIGGER users_add_scan_bot_contact AFTER INSERT ON users
-      FOR EACH ROW EXECUTE FUNCTION add_scan_bot_contact_for_new_user()`);
+    await pool.query(`DROP FUNCTION IF EXISTS add_scan_bot_contact_for_new_user()`);
+    // The scanner remains an internal FK identity for moderation reports, but
+    // must never appear as a contact or a user-facing conversation.
+    await pool.query(
+      `DELETE FROM user_contacts WHERE owner_id=$1 OR contact_id=$1`,
+      [SCAN_BOT_ID]);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS message_requests (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1091,6 +1186,25 @@ async function migrateDatabase() {
         created_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (blocker_id, blocked_id)
       )`);
+
+    // ── User reports (Google Play UGC moderation) ─────────────────
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_reports (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        reporter_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        target_type TEXT NOT NULL CHECK (target_type IN ('user','message','group','listing')),
+        target_id   UUID NOT NULL,
+        reason      TEXT NOT NULL,
+        details     TEXT,
+        status      TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','reviewed','resolved','dismissed')),
+        reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        reviewed_at TIMESTAMPTZ,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (reporter_id, target_type, target_id)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS user_reports_status_created_idx
+      ON user_reports(status, created_at DESC)`);
 
     // ── Audit Log ──────────────────────────────────────────────────
     await pool.query(`
@@ -1228,6 +1342,8 @@ const io = new Server(httpServer, { cors: corsOptions });
 app.set('io', io);
 
 app.disable('x-powered-by');
+// Nginx runs on the same host. Trust only the local reverse proxy when resolving req.ip.
+app.set('trust proxy', 'loopback');
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use((req, res, next) => {
@@ -1257,6 +1373,10 @@ app.use((req, res, next) => {
 app.use(express.static(require('path').join(__dirname, '..')));
 app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
 
+// Baseline protection for all API routes. Sensitive/write-heavy routes below
+// receive additional, stricter per-account or per-user limits.
+app.use('/api', apiRateLimit);
+
 app.get('/app', (req, res) => res.redirect('/app/'));
 app.get('/public-home', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'home.html')));
 app.get('/privacy', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'privacy.html')));
@@ -1270,6 +1390,48 @@ if (!JWT_SECRET) {
 }
 const onlineUsers = new Map(); // userId → socketId
 const otpStore    = new Map(); // phone → { code, expires, name }
+const socketRateBuckets = new Map();
+const activeVoiceCalls = new Map(); // callId → { callerId, calleeId, timeout }
+const userVoiceCalls = new Map();   // userId → callId
+
+function finishVoiceCall(callId, endedBy, reason = 'ended') {
+  const call = activeVoiceCalls.get(callId);
+  if (!call) return;
+  clearTimeout(call.timeout);
+  activeVoiceCalls.delete(callId);
+  userVoiceCalls.delete(call.callerId);
+  userVoiceCalls.delete(call.calleeId);
+  for (const userId of [call.callerId, call.calleeId]) {
+    if (userId === endedBy) continue;
+    const sid = onlineUsers.get(userId);
+    if (sid) io.to(sid).emit('call:end', { callId, reason });
+  }
+}
+
+function allowSocketEvent(socket, category, max, windowMs) {
+  const now = Date.now();
+  const key = `${socket.user.id}:${category}`;
+  let bucket = socketRateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = { count: 0, resetAt: now + windowMs };
+    socketRateBuckets.set(key, bucket);
+  }
+  bucket.count++;
+  if (bucket.count <= max) return true;
+  socket.emit('rate:limited', {
+    category,
+    retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+  });
+  return false;
+}
+
+const socketRateCleanup = setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of socketRateBuckets) {
+    if (bucket.resetAt <= now) socketRateBuckets.delete(key);
+  }
+}, 5 * 60 * 1000);
+socketRateCleanup.unref();
 
 async function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -1311,6 +1473,35 @@ app.get('/api/registration-status', async (req, res) => {
   } catch (_) {
     res.status(401).json({ error: 'טוקן לא תקין' });
   }
+});
+
+// Short-lived TURN REST credentials. The shared secret never leaves the
+// server; clients receive credentials valid for ten minutes only.
+app.get('/api/calls/ice-servers', auth, (req, res) => {
+  const secret = process.env.TURN_SECRET;
+  if (!secret) {
+    return res.json({ iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    ] });
+  }
+  const expires = Math.floor(Date.now() / 1000) + 10 * 60;
+  const username = `${expires}:${req.user.id}`;
+  const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    expires,
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      {
+        urls: [
+          'turn:178.105.240.236:3478?transport=udp',
+          'turn:178.105.240.236:3478?transport=tcp',
+        ],
+        username,
+        credential,
+      },
+    ],
+  });
 });
 
 // middleware שבודק שהמשתמש קיים ב-DB (למניעת ghost sessions)
@@ -1363,6 +1554,115 @@ io.on('connection', async (socket) => {
   onlineUsers.set(socket.user.id, socket.id);
   io.emit('users:online', [...onlineUsers.keys()]);
 
+  // Register call signaling before asynchronous chat initialization so a
+  // client can safely call as soon as it receives the call:ready event.
+  socket.on('call:start', async ({ toUserId } = {}) => {
+    if (!toUserId || toUserId === socket.user.id) return;
+    if (!allowSocketEvent(socket, 'call', 10, 60 * 1000)) return;
+    if (userVoiceCalls.has(socket.user.id)) {
+      return socket.emit('call:error', { code: 'CALLER_BUSY', message: 'כבר מתקיימת שיחה' });
+    }
+    const targetSid = onlineUsers.get(toUserId);
+    if (!targetSid || userVoiceCalls.has(toUserId)) {
+      return socket.emit('call:unavailable', { toUserId, reason: targetSid ? 'busy' : 'offline' });
+    }
+    try {
+      const pool = await getPool();
+      const allowed = await pool.query(
+        `SELECT 1 FROM user_contacts
+         WHERE owner_id=$1 AND contact_id=$2
+           AND NOT EXISTS (
+             SELECT 1 FROM blocked_users
+             WHERE (blocker_id=$1 AND blocked_id=$2)
+                OR (blocker_id=$2 AND blocked_id=$1))`,
+        [toUserId, socket.user.id]);
+      if (!allowed.rows.length) {
+        return socket.emit('call:unavailable', { toUserId, reason: 'not_allowed' });
+      }
+      const callId = crypto.randomUUID();
+      const timeout = setTimeout(() => finishVoiceCall(callId, null, 'no_answer'), 30 * 1000);
+      activeVoiceCalls.set(callId, {
+        callerId: socket.user.id,
+        callerName: socket.user.name || 'משתמש',
+        calleeId: toUserId,
+        timeout,
+      });
+      userVoiceCalls.set(socket.user.id, callId);
+      userVoiceCalls.set(toUserId, callId);
+      socket.emit('call:ringing', { callId, toUserId });
+      io.to(targetSid).emit('call:incoming', {
+        callId, fromUserId: socket.user.id, fromName: socket.user.name || 'משתמש',
+      });
+    } catch (e) {
+      console.error('call:start:', e.message);
+      socket.emit('call:error', { code: 'SERVER_ERROR', message: 'לא ניתן להתחיל שיחה' });
+    }
+  });
+
+  socket.on('call:accept', ({ callId } = {}) => {
+    const call = activeVoiceCalls.get(callId);
+    if (!call || call.calleeId !== socket.user.id) return;
+    clearTimeout(call.timeout);
+    const callerSid = onlineUsers.get(call.callerId);
+    if (callerSid) io.to(callerSid).emit('call:accepted', { callId, byUserId: socket.user.id });
+  });
+
+  socket.on('call:reject', ({ callId } = {}) => {
+    const call = activeVoiceCalls.get(callId);
+    if (!call || call.calleeId !== socket.user.id) return;
+    finishVoiceCall(callId, socket.user.id, 'rejected');
+  });
+
+  socket.on('call:signal', ({ callId, signal } = {}) => {
+    const call = activeVoiceCalls.get(callId);
+    if (!call || !signal ||
+        (call.callerId !== socket.user.id && call.calleeId !== socket.user.id)) return;
+    if (!allowSocketEvent(socket, 'call_signal', 240, 60 * 1000)) return;
+    const otherId = call.callerId === socket.user.id ? call.calleeId : call.callerId;
+    const sid = onlineUsers.get(otherId);
+    if (sid) io.to(sid).emit('call:signal', { callId, signal });
+  });
+
+  socket.on('call:diagnostic', (data = {}) => {
+    if (!allowSocketEvent(socket, 'call_diagnostic', 120, 60 * 1000)) return;
+    const callId = typeof data.callId === 'string' ? data.callId : '-';
+    const event = typeof data.event === 'string' ? data.event.slice(0, 40) : 'unknown';
+    const safe = {
+      event,
+      state: typeof data.state === 'string' ? data.state.slice(0, 80) : undefined,
+      candidateType: typeof data.candidateType === 'string' ? data.candidateType : undefined,
+      count: Number.isFinite(data.count) ? data.count : undefined,
+      localCandidates: Number.isFinite(data.localCandidates) ? data.localCandidates : undefined,
+      remoteCandidates: Number.isFinite(data.remoteCandidates) ? data.remoteCandidates : undefined,
+      serverCount: Number.isFinite(data.serverCount) ? data.serverCount : undefined,
+      hasTurn: typeof data.hasTurn === 'boolean' ? data.hasTurn : undefined,
+    };
+    console.info(`[CALL_DIAG] call=${callId} user=${socket.user.id} ${JSON.stringify(safe)}`);
+  });
+
+  socket.on('call:end', ({ callId, reason } = {}) => {
+    const call = activeVoiceCalls.get(callId);
+    if (!call || (call.callerId !== socket.user.id && call.calleeId !== socket.user.id)) return;
+    const safeReason = reason === 'connection_failed' ? reason : 'ended';
+    console.info(`[CALL] end call=${callId} by=${socket.user.id} reason=${safeReason}`);
+    finishVoiceCall(callId, socket.user.id, safeReason);
+  });
+
+  socket.on('call:client-ready', () => {
+    socket.emit('call:ready');
+    const callId = userVoiceCalls.get(socket.user.id);
+    const call = callId ? activeVoiceCalls.get(callId) : null;
+    if (call && call.calleeId === socket.user.id) {
+      io.to(socket.id).emit('call:incoming', {
+        callId,
+        fromUserId: call.callerId,
+        fromName: call.callerName || 'משתמש',
+      });
+    }
+  });
+
+  socket.emit('call:ready');
+
   // Messages waiting for this user are now delivered to a connected device.
   try {
     const pool = await getPool();
@@ -1403,6 +1703,14 @@ io.on('connection', async (socket) => {
 
   socket.on('chat:message', async ({ toUserId, text, replyToId, fileUrl, fileName, fileType }) => {
     if (!toUserId || (!text && !fileUrl)) return;
+    if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
+    if (text && moderateChatText(text).blocked) {
+      recordBlockedChat(socket.user.id, 'private_socket', text, toUserId,
+        socket.handshake.address);
+      socket.emit('message:rejected', { toUserId,
+        reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
+      return;
+    }
     try {
       const pool = await getPool();
       // Check if blocked
@@ -1492,12 +1800,22 @@ io.on('connection', async (socket) => {
     }
   });
 
-  socket.on('chat:typing', ({ toUserId }) =>
-    relay(toUserId, 'chat:typing', { fromUserId: socket.user.id }));
+  socket.on('chat:typing', ({ toUserId }) => {
+    if (!allowSocketEvent(socket, 'typing', 180, 60 * 1000)) return;
+    relay(toUserId, 'chat:typing', { fromUserId: socket.user.id });
+  });
 
   // ── Group messaging ──────────────────────────────────────────────
   socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType, clientMessageId }) => {
     if ((!text && !fileUrl) || !groupId) return;
+    if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
+    if (text && moderateChatText(text).blocked) {
+      recordBlockedChat(socket.user.id, 'group_socket', text, groupId,
+        socket.handshake.address);
+      socket.emit('message:rejected', { groupId, clientMessageId,
+        reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
+      return;
+    }
     try {
       const pool = await getPool();
       const mem = await pool.query(
@@ -1563,6 +1881,7 @@ io.on('connection', async (socket) => {
   socket.on('group:typing', ({ groupId }) => {
     const room = `group:${groupId}`;
     if (!groupId || !socket.rooms.has(room)) return;
+    if (!allowSocketEvent(socket, 'typing', 180, 60 * 1000)) return;
     socket.to(room).emit('group:typing', {
       groupId,
       fromUserId: socket.user.id,
@@ -1607,7 +1926,14 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('disconnect', () => {
-    onlineUsers.delete(socket.user.id);
+    // A reconnect can establish a replacement socket before the old socket's
+    // disconnect callback runs. Never let that stale callback remove the new
+    // connection from presence.
+    if (onlineUsers.get(socket.user.id) === socket.id) {
+      const callId = userVoiceCalls.get(socket.user.id);
+      if (callId) finishVoiceCall(callId, socket.user.id, 'disconnected');
+      onlineUsers.delete(socket.user.id);
+    }
     io.emit('users:online', [...onlineUsers.keys()]);
     logActivity(socket.user.id, 'disconnect', {});
   });
@@ -1616,7 +1942,7 @@ io.on('connection', async (socket) => {
 });
 
 // ── Register ─────────────────────────────────────────────────────
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) => {
   const { name, password, phone, clientType, verificationMethod } = req.body;
   if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
     return res.status(400).json({ error: 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה' });
@@ -1690,7 +2016,7 @@ app.post('/api/register', async (req, res) => {
 });
 
 // ── Login ────────────────────────────────────────────────────────
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authRateLimit, credentialRateLimit, async (req, res) => {
   const { password } = req.body;
   const email = typeof req.body.email === 'string'
     ? req.body.email.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim().toLowerCase()
@@ -1718,7 +2044,7 @@ app.post('/api/login', async (req, res) => {
 });
 
 // Resend verification after the user has proven the account password.
-app.post('/api/resend-verification', async (req, res) => {
+app.post('/api/resend-verification', authRateLimit, otpRateLimit, async (req, res) => {
   const { password, method } = req.body;
   const email = typeof req.body.email === 'string'
     ? req.body.email.trim().toLowerCase() : '';
@@ -1764,7 +2090,7 @@ app.post('/api/resend-verification', async (req, res) => {
 });
 
 // ── Google Sign-In ────────────────────────────────────────────────
-app.post('/api/auth/google', async (req, res) => {
+app.post('/api/auth/google', authRateLimit, async (req, res) => {
   const { idToken } = req.body;
   if (!idToken) return res.status(400).json({ error: 'חסר idToken' });
   try {
@@ -1859,8 +2185,8 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT u.id, u.name, u.profile_pic_url, u.city, u.community, u.phone, u.email,
-              c.filter_override,
+      `SELECT u.id, u.name, u.profile_pic_url, u.city, u.phone, u.email,
+              c.filter_override, c.pinned_at,
               last_msg.body AS last_message,
               last_msg.type AS last_message_type,
               last_msg.created_at AS last_message_at,
@@ -1882,10 +2208,13 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
          LIMIT 1
        ) last_msg ON TRUE
        WHERE c.owner_id = $1
+       AND u.id <> $2
        AND u.id NOT IN (
          SELECT blocked_id FROM blocked_users WHERE blocker_id = $1
        )
-       ORDER BY last_msg.created_at DESC NULLS LAST, u.name`, [req.user.id]);
+       ORDER BY c.pinned_at DESC NULLS LAST,
+                last_msg.created_at DESC NULLS LAST, u.name`,
+      [req.user.id, SCAN_BOT_ID]);
     res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1896,32 +2225,33 @@ app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT id, name, profile_pic_url, city, community, phone, email
-       FROM users WHERE id != $1
+      `SELECT id, name, profile_pic_url, city, phone, email
+       FROM users WHERE id != $1 AND id != $2
        AND (email_verified = TRUE OR phone_verified = TRUE)
        AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
-       ORDER BY name`, [req.user.id]);
+       ORDER BY name`, [req.user.id, SCAN_BOT_ID]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/users/search', authWithDbCheck, async (req, res) => {
+app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) => {
   const q = String(req.query.q || '').trim();
-  if (q.length < 2) return res.json([]);
+  if (!q) return res.json([]);
   try {
     const pool = await getPool();
     const digits = q.replace(/\D/g, '');
     const result = await pool.query(
-      `SELECT u.id, u.name, u.email, u.phone, u.profile_pic_url, u.city, u.community,
+      `SELECT u.id, u.name, u.email, u.phone, u.profile_pic_url, u.city,
               EXISTS(SELECT 1 FROM user_contacts c
                      WHERE c.owner_id=$1 AND c.contact_id=u.id) AS saved
        FROM users u
        WHERE u.id != $1
+         AND u.id != $5
          AND (u.email_verified = TRUE OR u.phone_verified = TRUE)
          AND u.id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
          AND (u.email ILIKE $2 OR ($3 <> '' AND u.phone LIKE $4))
        ORDER BY u.name LIMIT 30`,
-      [req.user.id, `%${q}%`, digits, `%${digits}%`]);
+      [req.user.id, `%${q}%`, digits, `%${digits}%`, SCAN_BOT_ID]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1929,6 +2259,8 @@ app.get('/api/users/search', authWithDbCheck, async (req, res) => {
 app.post('/api/contacts/save/:userId', authWithDbCheck, async (req, res) => {
   if (req.params.userId === req.user.id)
     return res.status(400).json({ error: 'לא ניתן לשמור את עצמך' });
+  if (req.params.userId === SCAN_BOT_ID)
+    return res.status(404).json({ error: 'משתמש לא נמצא' });
   try {
     const pool = await getPool();
     const exists = await pool.query(
@@ -1940,6 +2272,32 @@ app.post('/api/contacts/save/:userId', authWithDbCheck, async (req, res) => {
        ON CONFLICT DO NOTHING`, [req.user.id, req.params.userId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/pins/:type/:targetId', authWithDbCheck, async (req, res) => {
+  const pinnedAt = req.body.pinned === true ? new Date() : null;
+  try {
+    const pool = await getPool();
+    let result;
+    if (req.params.type === 'chat') {
+      result = await pool.query(
+        `UPDATE user_contacts SET pinned_at=$1
+         WHERE owner_id=$2 AND contact_id=$3 RETURNING pinned_at`,
+        [pinnedAt, req.user.id, req.params.targetId]);
+    } else if (req.params.type === 'group') {
+      result = await pool.query(
+        `UPDATE group_members SET pinned_at=$1
+         WHERE user_id=$2 AND group_id=$3 AND status='member' RETURNING pinned_at`,
+        [pinnedAt, req.user.id, req.params.targetId]);
+    } else {
+      return res.status(400).json({ error: 'סוג הצמדה לא תקין' });
+    }
+    if (!result.rows.length)
+      return res.status(404).json({ error: 'השיחה לא נמצאה' });
+    res.json({ pinned_at: result.rows[0].pinned_at });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── Per-user and per-contact content filters ─────────────────────
@@ -2161,11 +2519,18 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
 // ── Messages: send (HTTP fallback / always-on path) ───────────────
 // משכפל את הלוגיקה של ה-socket handler 'chat:message', כדי שהודעות
 // יישמרו גם כש-socket לא מחובר (למשל כשפותחים צ'אט ממסך מודעה).
-app.post('/api/messages', auth, async (req, res) => {
+app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   const senderId = req.user.id;
   const { toUserId, text, replyToId, fileUrl, fileName, fileType } = req.body || {};
   if (!toUserId || (!text && !fileUrl)) {
     return res.status(400).json({ error: 'חסר נמען או תוכן' });
+  }
+  if (text && moderateChatText(text).blocked) {
+    recordBlockedChat(senderId, 'private_http', text, toUserId, clientIp(req));
+    return res.status(422).json({
+      error: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
+      code: 'CHAT_CONTENT_BLOCKED',
+    });
   }
   try {
     const pool = await getPool();
@@ -2398,6 +2763,14 @@ app.delete('/api/messages/:id', auth, async (req, res) => {
 app.patch('/api/messages/:id', auth, async (req, res) => {
   const newBody = (req.body.body || '').trim();
   if (!newBody) return res.status(400).json({ error: 'תוכן ההודעה ריק' });
+  if (moderateChatText(newBody).blocked) {
+    recordBlockedChat(req.user.id, 'message_edit', newBody, req.params.id,
+      clientIp(req));
+    return res.status(422).json({
+      error: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
+      code: 'CHAT_CONTENT_BLOCKED',
+    });
+  }
   try {
     const pool = await getPool();
     const found = await pool.query(
@@ -2467,13 +2840,67 @@ app.get('/api/blocked', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Reports: users, messages, groups and listings ─────────────────
+app.post('/api/reports', auth, reportRateLimit, async (req, res) => {
+  const targetType = String(req.body.targetType || '').trim();
+  const targetId = String(req.body.targetId || '').trim();
+  const reason = String(req.body.reason || '').trim();
+  const details = String(req.body.details || '').trim().slice(0, 1000) || null;
+  const allowedReasons = new Set([
+    'spam', 'harassment', 'inappropriate', 'fraud', 'illegal', 'other',
+  ]);
+  if (!['user', 'message', 'group', 'listing'].includes(targetType) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetId) ||
+      !allowedReasons.has(reason)) {
+    return res.status(400).json({ error: 'פרטי הדיווח אינם תקינים' });
+  }
+  if (targetType === 'user' && targetId === req.user.id)
+    return res.status(400).json({ error: 'לא ניתן לדווח על עצמך' });
+  try {
+    const pool = await getPool();
+    let visible = false;
+    if (targetType === 'user') {
+      visible = !!(await pool.query('SELECT 1 FROM users WHERE id=$1', [targetId])).rows.length;
+    } else if (targetType === 'listing') {
+      visible = !!(await pool.query('SELECT 1 FROM listings WHERE id=$1', [targetId])).rows.length;
+    } else if (targetType === 'group') {
+      visible = !!(await pool.query(
+        `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2`,
+        [targetId, req.user.id])).rows.length;
+    } else {
+      visible = !!(await pool.query(
+        `SELECT 1 FROM messages m
+         WHERE m.id=$1 AND (
+           m.sender_id=$2 OR m.recipient_id=$2 OR
+           EXISTS (SELECT 1 FROM group_members gm
+                   WHERE gm.group_id=m.group_id AND gm.user_id=$2)
+         )`, [targetId, req.user.id])).rows.length;
+    }
+    if (!visible) return res.status(404).json({ error: 'התוכן לא נמצא או אינו נגיש' });
+    const inserted = await pool.query(
+      `INSERT INTO user_reports(reporter_id,target_type,target_id,reason,details)
+       VALUES($1,$2,$3,$4,$5)
+       ON CONFLICT(reporter_id,target_type,target_id) DO UPDATE SET
+         reason=EXCLUDED.reason, details=EXCLUDED.details,
+         status='pending', reviewed_by=NULL, reviewed_at=NULL, created_at=now()
+       RETURNING id,status`,
+      [req.user.id, targetType, targetId, reason, details]);
+    logActivity(req.user.id, 'submit_report',
+      { reportId: inserted.rows[0].id, targetType, targetId }, clientIp(req));
+    res.status(201).json({ ok: true, ...inserted.rows[0] });
+  } catch (e) {
+    console.error('submit report:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לשמור את הדיווח' });
+  }
+});
+
 // ── Profile: get ──────────────────────────────────────────────────
 app.get('/api/profile', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
       `SELECT id, name, email, phone, email_verified, phone_verified,
-              city, community, country, street, house_number, apartment,
+              city, country, street, house_number, apartment,
               profile_pic_url, privacy_pic, filter_level
        FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
@@ -2483,7 +2910,7 @@ app.get('/api/profile', auth, async (req, res) => {
 
 // ── Profile: update ───────────────────────────────────────────────
 app.put('/api/profile', auth, async (req, res) => {
-  const { name, city, community, privacy_pic, filter_level, profile_pic_url,
+  const { name, city, privacy_pic, filter_level, profile_pic_url,
           country, street, house_number, apartment } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'נדרש שם' });
   const validPrivacy = ['all', 'contacts', 'nobody'];
@@ -2492,12 +2919,12 @@ app.put('/api/profile', auth, async (req, res) => {
     const pool = await getPool();
     await pool.query(
       `UPDATE users
-       SET name=$1, city=$2, community=$3,
-           country=$4, street=$5, house_number=$6, apartment=$7,
-           privacy_pic=$8, filter_level=$9,
-           profile_pic_url=$10
-       WHERE id=$11`,
-      [name.trim(), city || null, community || null, country || 'ישראל', street || null,
+       SET name=$1, city=$2,
+           country=$3, street=$4, house_number=$5, apartment=$6,
+           privacy_pic=$7, filter_level=$8,
+           profile_pic_url=$9
+       WHERE id=$10`,
+      [name.trim(), city || null, country || 'ישראל', street || null,
        house_number || null, apartment || null,
        validPrivacy.includes(privacy_pic) ? privacy_pic : 'all',
        validFilter.includes(filter_level) ? filter_level : 'standard',
@@ -3026,7 +3453,8 @@ app.get('/api/groups', auth, async (req, res) => {
     const pool = await getPool();
     const result = await pool.query(`
       SELECT g.id, g.name, g.description, g.profile_pic_url, g.is_broadcast, g.send_permission, g.filter_level,
-             gm.role, gm.status,
+             gm.role, gm.status, gm.pinned_at,
+             group_admin.id AS admin_id, group_admin.name AS admin_name,
              (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count,
              last_msg.body AS last_message,
              last_msg.type AS last_message_type,
@@ -3035,6 +3463,16 @@ app.get('/api/groups', auth, async (req, res) => {
              (last_msg.sender_id = $1) AS last_message_is_mine
       FROM groups g
       JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $1
+      LEFT JOIN LATERAL (
+        SELECT u.id, u.name
+        FROM group_members admin_member
+        JOIN users u ON u.id = admin_member.user_id
+        WHERE admin_member.group_id = g.id
+          AND admin_member.role = 'admin'
+          AND admin_member.status = 'member'
+        ORDER BY admin_member.joined_at
+        LIMIT 1
+      ) group_admin ON TRUE
       LEFT JOIN LATERAL (
         SELECT m.body, m.type, m.created_at, m.sender_id, u.name AS sender_name
         FROM messages m
@@ -3045,7 +3483,8 @@ app.get('/api/groups', auth, async (req, res) => {
         ORDER BY m.created_at DESC
         LIMIT 1
       ) last_msg ON TRUE
-      ORDER BY last_msg.created_at DESC NULLS LAST, g.created_at DESC
+      ORDER BY gm.pinned_at DESC NULLS LAST,
+               last_msg.created_at DESC NULLS LAST, g.created_at DESC
     `, [req.user.id]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -3067,7 +3506,15 @@ app.post('/api/groups', auth, async (req, res) => {
       `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')`,
       [group.id, req.user.id]);
     logActivity(req.user.id, 'create_group', { groupId: group.id, name }, req.ip);
-    res.json({ ...group, role: 'admin', member_count: 1, is_broadcast: false, send_permission: 'all' });
+    res.json({
+      ...group,
+      role: 'admin',
+      admin_id: req.user.id,
+      admin_name: req.user.name,
+      member_count: 1,
+      is_broadcast: false,
+      send_permission: 'all',
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3095,10 +3542,17 @@ app.get('/api/groups/:id', auth, async (req, res) => {
 });
 
 // ── Groups: messages ──────────────────────────────────────────────
-app.post('/api/groups/:id/messages', auth, async (req, res) => {
+app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) => {
   const groupId = req.params.id;
   const senderId = req.user.id;
   const { text, replyToId, fileUrl, fileName, fileType, clientMessageId } = req.body || {};
+  if (text && moderateChatText(text).blocked) {
+    recordBlockedChat(senderId, 'group_http', text, groupId, clientIp(req));
+    return res.status(422).json({
+      error: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
+      code: 'CHAT_CONTENT_BLOCKED',
+    });
+  }
   if (!text && !fileUrl)
     return res.status(400).json({ error: 'חסר תוכן להודעה' });
   try {
@@ -3412,7 +3866,7 @@ app.delete('/api/groups/:id/decline', auth, async (req, res) => {
 });
 
 // ── Groups: invite non-member via SMS (admin) ─────────────────────
-app.post('/api/groups/:id/invite-sms', auth, async (req, res) => {
+app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) => {
   const { phone, contactName } = req.body;
   if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
   try {
@@ -3591,13 +4045,42 @@ app.get('/api/admin/activity', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/admin/reports', adminAuth, async (req, res) => {
+  const status = String(req.query.status || 'pending');
+  const allowed = new Set(['pending', 'reviewed', 'resolved', 'dismissed', 'all']);
+  if (!allowed.has(status)) return res.status(400).json({ error: 'סטטוס לא תקין' });
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT r.*, u.name AS reporter_name, u.email AS reporter_email
+       FROM user_reports r JOIN users u ON u.id=r.reporter_id
+       WHERE ($1='all' OR r.status=$1)
+       ORDER BY r.created_at DESC LIMIT 500`, [status]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/admin/reports/:id', adminAuth, async (req, res) => {
+  const status = String(req.body.status || '');
+  if (!['reviewed', 'resolved', 'dismissed'].includes(status))
+    return res.status(400).json({ error: 'סטטוס לא תקין' });
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `UPDATE user_reports SET status=$1,reviewed_by=$2,reviewed_at=now()
+       WHERE id=$3 RETURNING *`, [status, req.user.id, req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'דיווח לא נמצא' });
+    res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Admin: all users ─────────────────────────────────────────────
 app.get('/api/admin/users', adminAuth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
       `SELECT id, name, email, phone, email_verified, phone_verified,
-              google_id, profile_pic_url, city, community,
+              google_id, profile_pic_url, city,
               filter_level, created_at
        FROM users ORDER BY created_at DESC`);
     res.json(result.rows);
@@ -3634,7 +4117,7 @@ app.get('/api/leaderboard', auth, async (req, res) => {
 });
 
 // ── Send OTP via SMS (019 email gateway) ────────────────────────
-app.post('/api/send-otp', async (req, res) => {
+app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
   const { phone, name, email } = req.body;
   if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
   const clean      = phone.replace(/\D/g, '');
@@ -3693,7 +4176,7 @@ app.post('/api/send-otp', async (req, res) => {
 });
 
 // ── Verify OTP ───────────────────────────────────────────────────
-app.post('/api/verify-otp', async (req, res) => {
+app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res) => {
   const { phone, code, name } = req.body;
   const clean = (phone || '').replace(/\D/g, '');
   const entry = otpStore.get(clean);
@@ -3754,7 +4237,7 @@ app.post('/api/verify-otp', async (req, res) => {
 });
 
 // ── Link Phone to existing account (after Google sign-in) ───────
-app.post('/api/link-phone', auth, async (req, res) => {
+app.post('/api/link-phone', auth, otpRateLimit, async (req, res) => {
   const { phone, code } = req.body;
   const clean = (phone || '').replace(/\D/g, '');
   if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
@@ -3786,7 +4269,7 @@ app.post('/api/link-phone', auth, async (req, res) => {
 });
 
 // ── Verify Phone (after registration) ───────────────────────────
-app.post('/api/verify-phone', async (req, res) => {
+app.post('/api/verify-phone', authRateLimit, credentialRateLimit, async (req, res) => {
   const { phone, code } = req.body;
   const cleanPhone = (phone || '').replace(/\D/g, '');
   const entry = otpStore.get(cleanPhone);
@@ -3883,7 +4366,7 @@ app.get('/api/admin/members-directory', adminAuth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(`
-      SELECT id, name, email, phone, city, community,
+      SELECT id, name, email, phone, city,
              email_verified, phone_verified, created_at, profile_pic_url
       FROM users
       WHERE id <> $1
@@ -4535,11 +5018,14 @@ app.get('/api/version', async (req, res) => {
       path.join(__dirname, '..', 'version.json'), 'utf8'));
     if (info.version) version = String(info.version);
   } catch (_) {}
-  res.json({ version, apkUrl: 'https://betshuva.com/betshuva-app/app-release.apk' });
+  res.json({
+    version,
+    apkUrl: `https://betshuva.com/betshuva-app/betshuva-${version}.apk`,
+  });
 });
 
 // ── Forgot Password ──────────────────────────────────────────────
-app.post('/api/forgot-password', async (req, res) => {
+app.post('/api/forgot-password', authRateLimit, otpRateLimit, async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'נדרש אימייל' });
   res.json({ ok: true }); // respond immediately — don't reveal if email exists
@@ -4563,7 +5049,7 @@ app.post('/api/forgot-password', async (req, res) => {
 });
 
 // ── Reset Password API ───────────────────────────────────────────
-app.post('/api/reset-password', async (req, res) => {
+app.post('/api/reset-password', authRateLimit, credentialRateLimit, async (req, res) => {
   const { token, password } = req.body;
   if (!token || !password) return res.status(400).json({ error: 'חסרים שדות' });
   if (password.length < 6) return res.status(400).json({ error: 'הסיסמה חייבת להיות לפחות 6 תווים' });

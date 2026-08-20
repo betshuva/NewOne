@@ -3,6 +3,8 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
+	<string>בתשובה זקוקה לגישה למיקרופון כדי לבצע שיחות קול ולשלוח הודעות קוליות.</string>
+	<key>NSMicrophoneUsageDescription</key>
 	<string>האפליקציה זקוקה למיקרופון כדי להקליט הודעות קוליות.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>

@@ -1,5 +1,6 @@
 node_modules/
 .env
+.env.turn
 .flutter-sdk/
 .android-sdk/
 flutter_linux.tar.xz
