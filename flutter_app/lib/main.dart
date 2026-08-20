@@ -9259,12 +9259,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> _declinePending() async {
     try {
-      await http.delete(
+      final response = await http.delete(
         Uri.parse('$kApi/groups/$_groupId/decline'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (mounted) Navigator.pop(context);
+      if (mounted && response.statusCode == 200) {
+        _closeRemovedGroup();
+      }
     } catch (_) {}
+  }
+
+  void _closeRemovedGroup() {
+    if (!mounted) return;
+    if (widget.embedded) {
+      widget.onClose?.call();
+      return;
+    }
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) navigator.pop();
   }
 
   Future<void> _removeMember(String userId, String userName) async {
@@ -10554,12 +10566,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
     if (confirm != true) return;
     try {
-      await http.delete(
+      final response = await http.delete(
         Uri.parse('$kApi/groups/$_groupId/leave'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (mounted) Navigator.pop(context);
-    } catch (_) {}
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        _closeRemovedGroup();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('לא ניתן לצאת מהקבוצה')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שגיאת תקשורת ביציאה מהקבוצה')),
+        );
+      }
+    }
   }
 
   Future<void> _deleteGroup() async {
@@ -10595,11 +10620,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('הקבוצה נמחקה')),
         );
-        if (widget.onClose != null) {
-          widget.onClose!();
-        } else {
-          Navigator.pop(context);
-        }
+        _closeRemovedGroup();
         return;
       }
 

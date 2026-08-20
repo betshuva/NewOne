@@ -1,11 +1,6 @@
 name: Build APK
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - flutter_app/**
-      - .github/workflows/build-apk.yml
   workflow_dispatch:
 
 permissions:
