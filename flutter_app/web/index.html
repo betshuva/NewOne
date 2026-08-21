@@ -35,15 +35,51 @@
 </head>
 <body>
   <script>
-    // Force clear old service workers and caches
+    // Remove stale Flutter workers/caches after deployments, while preserving
+    // the dedicated Firebase Messaging worker used for background push.
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(regs => {
-        regs.forEach(r => r.unregister());
+      navigator.serviceWorker.getRegistrations().then(registrations => {
+        registrations.forEach(registration => {
+          const script = registration.active?.scriptURL ||
+              registration.waiting?.scriptURL ||
+              registration.installing?.scriptURL || '';
+          if (!script.includes('firebase-messaging-sw.js')) {
+            registration.unregister();
+          }
+        });
       });
     }
     if ('caches' in window) {
-      caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
+      caches.keys().then(keys => keys.forEach(key => {
+        if (!key.toLowerCase().includes('firebase')) caches.delete(key);
+      }));
     }
+  </script>
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+    import { getMessaging, getToken } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging.js';
+
+    const firebaseConfig = {
+      apiKey: 'AIzaSyBCw4OzUPjquuw_kB1bFXqzOjZ-zPKrAP8',
+      authDomain: 'betshuva-c74a3.firebaseapp.com',
+      projectId: 'betshuva-c74a3',
+      storageBucket: 'betshuva-c74a3.firebasestorage.app',
+      messagingSenderId: '862738339788',
+      appId: '1:862738339788:web:36671c37704a2520f4af69'
+    };
+    const firebaseApp = initializeApp(firebaseConfig, 'betshuva-web-push');
+    const messaging = getMessaging(firebaseApp);
+    window.betshuvaGetWebPushToken = async () => {
+      const registration = await navigator.serviceWorker.register(
+        '/betshuva-app/firebase-messaging-sw.js',
+        { scope: '/betshuva-app/firebase-cloud-messaging-push-scope/' }
+      );
+      await navigator.serviceWorker.ready;
+      return getToken(messaging, {
+        vapidKey: 'BBniCUfYE9i8XVOfYm-1DXwEFw0eaV_YK0Gx15k7J7AW20ltMLEFafq9NvUL5HJdVyKe6enVqV-cYHoGWsnhKAA',
+        serviceWorkerRegistration: registration
+      });
+    };
   </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>

@@ -24,6 +24,7 @@ import 'package:path_provider/path_provider.dart';
 import 'file_download.dart';
 import 'media_cache.dart';
 import 'voice_call.dart';
+import 'web_push.dart';
 
 MediaType _mimeFromFileName(String fileName) {
   switch (fileName.split('.').last.toLowerCase()) {
@@ -241,6 +242,17 @@ Future<void> _initLocalNotifications() async {
   await _localNotif.initialize(
     const InitializationSettings(android: android, iOS: ios),
   );
+  const channel = AndroidNotificationChannel(
+    'betshuva_messages',
+    'הודעות ושיחות',
+    description: 'התראות על הודעות, קבוצות ושיחות נכנסות',
+    importance: Importance.high,
+    playSound: true,
+  );
+  await _localNotif
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
 }
 
 void _showLocalNotification(RemoteMessage msg) {
@@ -288,8 +300,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.61';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.61.apk';
+const kVersion = '1.2.67';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.67.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -769,7 +781,20 @@ Future<void> main() async {
     DeviceOrientation.portraitDown,
   ]);
   try {
-    await Firebase.initializeApp();
+    if (kIsWeb) {
+      await Firebase.initializeApp(
+        options: const FirebaseOptions(
+          apiKey: 'AIzaSyBCw4OzUPjquuw_kB1bFXqzOjZ-zPKrAP8',
+          appId: '1:862738339788:web:36671c37704a2520f4af69',
+          messagingSenderId: '862738339788',
+          projectId: 'betshuva-c74a3',
+          authDomain: 'betshuva-c74a3.firebaseapp.com',
+          storageBucket: 'betshuva-c74a3.firebasestorage.app',
+        ),
+      );
+    } else {
+      await Firebase.initializeApp();
+    }
     FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
     await _initLocalNotifications();
     FirebaseMessaging.onMessage.listen(_showLocalNotification);
@@ -1074,6 +1099,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   bool _loading = false;
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
+  String? _gender;
   String? _error;
   final _googleSignIn = GoogleSignIn(
     clientId: kIsWeb ? kGoogleWebClientId : null,
@@ -1109,6 +1135,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               'idToken': idToken,
               'acceptedTerms': _acceptedTerms,
               'ageConfirmed': _ageConfirmed,
+              'gender': _gender,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1182,6 +1209,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               'name': _nameCtrl.text.trim(),
               'acceptedTerms': true,
               'ageConfirmed': true,
+              'gender': _gender,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1314,6 +1342,20 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                         ),
                       ),
                       const SizedBox(height: 14),
+                      DropdownButtonFormField<String>(
+                        value: _gender,
+                        decoration: const InputDecoration(
+                          labelText: 'מגדר (חובה בהרשמה חדשה)',
+                          prefixIcon: Icon(Icons.wc_outlined),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'male', child: Text('זכר')),
+                          DropdownMenuItem(
+                              value: 'female', child: Text('נקבה')),
+                        ],
+                        onChanged: (value) => setState(() => _gender = value),
+                      ),
+                      const SizedBox(height: 14),
                       TextField(
                         controller: _phoneCtrl,
                         keyboardType: TextInputType.phone,
@@ -1407,11 +1449,11 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                         child: OutlinedButton.icon(
                           onPressed: _loading ? null : _signInWithGoogle,
                           icon: Image.network(
-                            'https://www.google.com/favicon.ico',
+                            'https://developers.google.com/static/identity/images/g-logo.png',
                             width: 18,
                             height: 18,
                             errorBuilder: (_, __, ___) =>
-                                const Icon(Icons.g_mobiledata, size: 22),
+                                const SizedBox(width: 18, height: 18),
                           ),
                           label: const Text('המשך עם Google',
                               style: TextStyle(
@@ -1455,6 +1497,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _verificationRequired = false;
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
+  String? _gender;
   String _verificationMethod = 'email';
   String? _error;
 
@@ -1504,6 +1547,7 @@ class _AuthScreenState extends State<AuthScreen> {
               'idToken': idToken,
               'acceptedTerms': _acceptedTerms,
               'ageConfirmed': _ageConfirmed,
+              'gender': _gender,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1580,6 +1624,10 @@ class _AuthScreenState extends State<AuthScreen> {
       }
       if (name.isEmpty) {
         setState(() => _error = 'נא להזין שם מלא');
+        return;
+      }
+      if (_gender == null) {
+        setState(() => _error = 'יש לבחור מגדר');
         return;
       }
       if (email.isEmpty || !email.contains('@')) {
@@ -1659,6 +1707,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 'verificationMethod': _verificationMethod,
                 'acceptedTerms': true,
                 'ageConfirmed': true,
+                'gender': _gender,
               }),
             )
             .timeout(const Duration(seconds: 30));
@@ -1827,6 +1876,20 @@ class _AuthScreenState extends State<AuthScreen> {
                         decoration: const InputDecoration(
                             labelText: 'שם מלא',
                             prefixIcon: Icon(Icons.person_outline)),
+                      ),
+                      const SizedBox(height: 14),
+                      DropdownButtonFormField<String>(
+                        value: _gender,
+                        decoration: const InputDecoration(
+                          labelText: 'מגדר',
+                          prefixIcon: Icon(Icons.wc_outlined),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'male', child: Text('זכר')),
+                          DropdownMenuItem(
+                              value: 'female', child: Text('נקבה')),
+                        ],
+                        onChanged: (value) => setState(() => _gender = value),
                       ),
                       const SizedBox(height: 14),
                     ],
@@ -2018,11 +2081,11 @@ class _AuthScreenState extends State<AuthScreen> {
                       child: OutlinedButton.icon(
                         onPressed: _loading ? null : _signInWithGoogle,
                         icon: Image.network(
-                          'https://www.google.com/favicon.ico',
+                          'https://developers.google.com/static/identity/images/g-logo.png',
                           width: 18,
                           height: 18,
                           errorBuilder: (_, __, ___) =>
-                              const Icon(Icons.g_mobiledata, size: 22),
+                              const SizedBox(width: 18, height: 18),
                         ),
                         label: const Text('המשך עם Google',
                             style: TextStyle(
@@ -3223,7 +3286,8 @@ class _MainShellState extends State<MainShell> {
     try {
       final messaging = FirebaseMessaging.instance;
       await messaging.requestPermission(alert: true, badge: true, sound: true);
-      final token = await messaging.getToken();
+      final token =
+          kIsWeb ? await getBetshuvaWebPushToken() : await messaging.getToken();
       if (token == null) return;
       await http.post(
         Uri.parse('$kApi/fcm-token'),
@@ -3231,8 +3295,10 @@ class _MainShellState extends State<MainShell> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body:
-            jsonEncode({'token': token, 'deviceId': Platform.operatingSystem}),
+        body: jsonEncode({
+          'token': token,
+          'deviceId': kIsWeb ? 'web:$token' : 'android:$token',
+        }),
       );
       // Refresh token when it changes
       messaging.onTokenRefresh.listen((newToken) {
@@ -3242,8 +3308,10 @@ class _MainShellState extends State<MainShell> {
             'Authorization': 'Bearer ${widget.token}',
             'Content-Type': 'application/json',
           },
-          body: jsonEncode(
-              {'token': newToken, 'deviceId': Platform.operatingSystem}),
+          body: jsonEncode({
+            'token': newToken,
+            'deviceId': kIsWeb ? 'web:$newToken' : 'android:$newToken',
+          }),
         );
       });
     } catch (_) {}
@@ -5601,8 +5669,104 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   }
 
   Future<void> _showFindFriendDialog() async {
+    String normalizeContactPhone(String value) {
+      var digits = value.replaceAll(RegExp(r'\D'), '');
+      if (digits.startsWith('972') && digits.length > 10) {
+        digits = '0${digits.substring(3)}';
+      }
+      return digits;
+    }
+
+    final deviceResults = <Map<String, dynamic>>[];
+    var contactsPermissionDenied = false;
+    if (!kIsWeb) {
+      try {
+        final granted = await FlutterContacts.requestPermission(readonly: true);
+        contactsPermissionDenied = !granted;
+        if (granted) {
+          final contacts =
+              await FlutterContacts.getContacts(withProperties: true);
+          final localContacts = <Map<String, dynamic>>[];
+          final phones = <String>[];
+          final emails = <String>[];
+          for (final contact in contacts) {
+            final phone = contact.phones.isEmpty
+                ? ''
+                : normalizeContactPhone(contact.phones.first.number);
+            final email = contact.emails.isEmpty
+                ? ''
+                : contact.emails.first.address.trim().toLowerCase();
+            if (phone.isEmpty && email.isEmpty) continue;
+            localContacts.add({
+              'name': contact.displayName.trim().isEmpty
+                  ? phone.isNotEmpty
+                      ? phone
+                      : email
+                  : contact.displayName.trim(),
+              'phone': phone,
+              'email': email,
+            });
+            if (phone.isNotEmpty) phones.add(phone);
+            if (email.contains('@')) emails.add(email);
+          }
+          var matched = <Map<String, dynamic>>[];
+          if (phones.isNotEmpty || emails.isNotEmpty) {
+            final response = await http.post(
+              Uri.parse('$kApi/contacts/match'),
+              headers: {
+                'Authorization': 'Bearer ${widget.token}',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({'phones': phones, 'emails': emails}),
+            );
+            if (response.statusCode == 200) {
+              matched = (jsonDecode(response.body) as List)
+                  .cast<Map<String, dynamic>>();
+            }
+          }
+          final matchedPhones = matched
+              .map((u) => normalizeContactPhone((u['phone'] ?? '').toString()))
+              .where((value) => value.isNotEmpty)
+              .toSet();
+          final matchedEmails = matched
+              .map((u) => (u['email'] ?? '').toString().trim().toLowerCase())
+              .where((value) => value.isNotEmpty)
+              .toSet();
+          for (final local in localContacts) {
+            Map<String, dynamic>? appUser;
+            for (final candidate in matched) {
+              final candidatePhone = (candidate['phone'] ?? '').toString();
+              final candidateEmail =
+                  (candidate['email'] ?? '').toString().trim().toLowerCase();
+              if ((local['phone'].toString().isNotEmpty &&
+                      normalizeContactPhone(candidatePhone) ==
+                          local['phone']) ||
+                  (local['email'].toString().isNotEmpty &&
+                      candidateEmail == local['email'])) {
+                appUser = Map<String, dynamic>.from(candidate);
+                break;
+              }
+            }
+            if (appUser != null) {
+              appUser['device_name'] = local['name'];
+              appUser['saved'] = false;
+              if (!deviceResults.any((u) => u['id'] == appUser!['id'])) {
+                deviceResults.add(appUser);
+              }
+            } else if (!matchedPhones.contains(local['phone']) &&
+                !matchedEmails.contains(local['email'])) {
+              deviceResults.add({...local, 'device_only': true});
+            }
+          }
+        }
+      } catch (_) {
+        contactsPermissionDenied = true;
+      }
+    }
+    if (!mounted) return;
     final searchController = TextEditingController();
-    var results = <Map<String, dynamic>>[];
+    Timer? searchDebounce;
+    var results = List<Map<String, dynamic>>.from(deviceResults);
     var loading = false;
     String? error;
     await showDialog(
@@ -5613,7 +5777,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             final query = searchController.text.trim();
             if (query.isEmpty) {
               setDialogState(() {
-                results = [];
+                results = List<Map<String, dynamic>>.from(deviceResults);
                 error = null;
               });
               return;
@@ -5629,12 +5793,34 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 headers: {'Authorization': 'Bearer ${widget.token}'},
               );
               if (!dialogContext.mounted) return;
+              final serverResults = response.statusCode == 200
+                  ? (jsonDecode(response.body) as List)
+                      .cast<Map<String, dynamic>>()
+                  : <Map<String, dynamic>>[];
+              final lowerQuery = query.toLowerCase();
+              final localMatches = deviceResults.where((item) {
+                final haystack = [
+                  item['name'],
+                  item['device_name'],
+                  item['phone'],
+                  item['email'],
+                ].whereType<Object>().join(' ').toLowerCase();
+                return haystack.contains(lowerQuery);
+              });
+              final merged = <Map<String, dynamic>>[];
+              for (final item in [...localMatches, ...serverResults]) {
+                final key = item['id']?.toString() ??
+                    '${item['phone'] ?? ''}|${item['email'] ?? ''}';
+                if (!merged.any((existing) =>
+                    (existing['id']?.toString() ??
+                        '${existing['phone'] ?? ''}|${existing['email'] ?? ''}') ==
+                    key)) {
+                  merged.add(item);
+                }
+              }
               setDialogState(() {
                 loading = false;
-                results = response.statusCode == 200
-                    ? (jsonDecode(response.body) as List)
-                        .cast<Map<String, dynamic>>()
-                    : [];
+                results = merged;
                 if (results.isEmpty) error = 'לא נמצאו משתמשים';
               });
             } catch (_) {
@@ -5659,6 +5845,30 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             }
           }
 
+          Future<void> invite(Map<String, dynamic> contact) async {
+            final email = (contact['email'] ?? '').toString();
+            final phone = (contact['phone'] ?? '').toString();
+            final uri = email.contains('@')
+                ? Uri(
+                    scheme: 'mailto',
+                    path: email,
+                    queryParameters: {
+                      'subject': 'הזמנה לבתשובה',
+                      'body':
+                          'הצטרף אליי לאפליקציית בתשובה: https://betshuva.com/betshuva-app/home.html',
+                    },
+                  )
+                : Uri(
+                    scheme: 'sms',
+                    path: phone,
+                    queryParameters: {
+                      'body':
+                          'הצטרף אליי לאפליקציית בתשובה: https://betshuva.com/betshuva-app/home.html',
+                    },
+                  );
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+          }
+
           return AlertDialog(
             title: const Text('חיפוש ושמירת חבר'),
             content: SizedBox(
@@ -5671,16 +5881,30 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     autofocus: true,
                     textDirection: TextDirection.rtl,
                     decoration: InputDecoration(
-                      hintText: 'מספר טלפון או אימייל',
+                      hintText: 'שם, מספר טלפון או אימייל',
                       prefixIcon: const Icon(Icons.search),
                       suffixIcon: IconButton(
                         icon: const Icon(Icons.arrow_forward),
                         onPressed: search,
                       ),
                     ),
+                    onChanged: (_) {
+                      searchDebounce?.cancel();
+                      searchDebounce = Timer(
+                          const Duration(milliseconds: 300), () => search());
+                    },
                     onSubmitted: (_) => search(),
                   ),
                   const SizedBox(height: 12),
+                  if (contactsPermissionDenied && !kIsWeb)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        'כדי להציג אנשי קשר יש לאשר הרשאת אנשי קשר בהגדרות הטלפון',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.orange),
+                      ),
+                    ),
                   if (loading) const CircularProgressIndicator(),
                   if (error != null && !loading)
                     Text(error!, style: const TextStyle(color: kSubtext)),
@@ -5692,25 +5916,32 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                         itemCount: results.length,
                         itemBuilder: (_, index) {
                           final user = results[index];
+                          final deviceOnly = user['device_only'] == true;
                           final saved = user['saved'] == true;
                           return ListTile(
                             leading: UserAvatar(
                               picUrl: user['profile_pic_url'] as String?,
                               name: user['name'] as String? ?? '',
                             ),
-                            title: Text(user['name'] as String? ?? ''),
+                            title: Text((user['device_name'] ?? user['name'])
+                                .toString()),
                             subtitle: Text(
                               (user['phone'] as String?)?.isNotEmpty == true
                                   ? user['phone'] as String
                                   : user['email'] as String? ?? '',
                             ),
-                            trailing: saved
-                                ? const Icon(Icons.check_circle,
-                                    color: Colors.green)
-                                : TextButton(
-                                    onPressed: () => save(user),
-                                    child: const Text('שמור'),
-                                  ),
+                            trailing: deviceOnly
+                                ? TextButton(
+                                    onPressed: () => invite(user),
+                                    child: const Text('הזמן'),
+                                  )
+                                : saved
+                                    ? const Icon(Icons.check_circle,
+                                        color: Colors.green)
+                                    : TextButton(
+                                        onPressed: () => save(user),
+                                        child: const Text('שמור'),
+                                      ),
                           );
                         },
                       ),
@@ -5728,6 +5959,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         },
       ),
     );
+    searchDebounce?.cancel();
     searchController.dispose();
   }
 
@@ -6615,16 +6847,31 @@ class _AdminBadge extends StatelessWidget {
   const _AdminBadge({required this.adminName});
 
   @override
-  Widget build(BuildContext context) => Tooltip(
-        message: adminName == null || adminName!.isEmpty
-            ? 'מנהל הקבוצה'
-            : 'מנהל הקבוצה: $adminName',
-        child: const Icon(
-          Icons.admin_panel_settings_outlined,
-          size: 19,
-          color: Color(0xFF9A6500),
+  Widget build(BuildContext context) {
+    final message = adminName == null || adminName!.isEmpty
+        ? 'מנהל הקבוצה'
+        : 'מנהל הקבוצה: $adminName';
+    return Tooltip(
+      message: message,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: () => ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 2),
+          )),
+        child: const Padding(
+          padding: EdgeInsets.all(4),
+          child: Icon(
+            Icons.admin_panel_settings_outlined,
+            size: 19,
+            color: Color(0xFF9A6500),
+          ),
         ),
-      );
+      ),
+    );
+  }
 }
 
 class _CompactMenuItem extends StatelessWidget {
@@ -9842,7 +10089,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return d;
   }
 
-  Future<void> _inviteViaSms(String phone, String contactName) async {
+  Future<void> _inviteExternalContact(
+      String? phone, String? email, String contactName) async {
     try {
       final res = await http.post(
         Uri.parse('$kApi/groups/$_groupId/invite-sms'),
@@ -9850,7 +10098,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'phone': phone, 'contactName': contactName}),
+        body: jsonEncode(
+            {'phone': phone, 'email': email, 'contactName': contactName}),
       );
       if (!mounted) return;
       if (res.statusCode == 200) {
@@ -9875,8 +10124,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (q.isEmpty) return true;
     final name = (u['name'] as String? ?? '').toLowerCase();
     final phone = _normalizePhone(u['phone'] as String? ?? '');
+    final email = (u['email'] as String? ?? '').toLowerCase();
     final normQ = _normalizePhone(q);
-    return name.contains(q) || phone.contains(normQ);
+    return name.contains(q) ||
+        email.contains(q) ||
+        (normQ.isNotEmpty && phone.contains(normQ));
   }
 
   Future<void> _showAddMemberDialog() async {
@@ -9894,7 +10146,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
     // All registered users not in group
     List<Map<String, dynamic>> allUsers = [];
-    // Unregistered phone contacts — { name, phone }
+    // Unregistered device contacts — { name, phone, email }
     List<Map<String, dynamic>> unregistered = [];
     // IDs of users found via phone contacts (to show badge)
     Set<String> contactUserIds = {};
@@ -9913,15 +10165,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (granted) {
       final contacts = await FlutterContacts.getContacts(withProperties: true);
       final Map<String, String> phoneToName = {};
+      final Map<String, String> emailToName = {};
       for (final c in contacts) {
         for (final p in c.phones) {
           final norm = _normalizePhone(p.number);
           if (norm.length >= 9)
             phoneToName.putIfAbsent(norm, () => c.displayName);
         }
+        for (final e in c.emails) {
+          final email = e.address.trim().toLowerCase();
+          if (email.contains('@')) {
+            emailToName.putIfAbsent(email, () => c.displayName);
+          }
+        }
       }
 
-      if (phoneToName.isNotEmpty) {
+      if (phoneToName.isNotEmpty || emailToName.isNotEmpty) {
         try {
           final res = await http.post(
             Uri.parse('$kApi/contacts/match'),
@@ -9929,7 +10188,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               'Authorization': 'Bearer ${widget.token}',
               'Content-Type': 'application/json',
             },
-            body: jsonEncode({'phones': phoneToName.keys.toList()}),
+            body: jsonEncode({
+              'phones': phoneToName.keys.toList(),
+              'emails': emailToName.keys.toList(),
+            }),
           );
           if (res.statusCode == 200) {
             final matched =
@@ -9943,9 +10205,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             .map((u) => _normalizePhone(u['phone'] as String? ?? ''))
             .where((p) => p.isNotEmpty)
             .toSet();
-        unregistered = phoneToName.entries
-            .where((e) => !appPhones.contains(e.key))
-            .map((e) => {'name': e.value, 'phone': e.key})
+        final appEmails = allUsers
+            .map((u) => (u['email'] as String? ?? '').trim().toLowerCase())
+            .where((e) => e.isNotEmpty)
+            .toSet();
+        final byName = <String, Map<String, dynamic>>{};
+        for (final entry in phoneToName.entries) {
+          if (!appPhones.contains(entry.key)) {
+            byName.putIfAbsent(
+                entry.value, () => {'name': entry.value, 'phone': entry.key});
+          }
+        }
+        for (final entry in emailToName.entries) {
+          if (!appEmails.contains(entry.key)) {
+            byName.putIfAbsent(
+                entry.value, () => {'name': entry.value})['email'] = entry.key;
+          }
+        }
+        unregistered = byName.values
+            .where((c) => c['phone'] != null || c['email'] != null)
             .toList()
           ..sort(
               (a, b) => (a['name'] as String).compareTo(b['name'] as String));
@@ -9991,7 +10269,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       controller: searchCtrl,
                       keyboardType: TextInputType.text,
                       decoration: const InputDecoration(
-                        hintText: 'חיפוש לפי שם או מספר...',
+                        hintText: 'חיפוש לפי שם, טלפון או אימייל...',
                         hintTextDirection: TextDirection.rtl,
                         prefixIcon: Icon(Icons.search),
                       ),
@@ -10094,7 +10372,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                       subtitle: const Text('לא רשום בבתשובה',
                                           style: TextStyle(fontSize: 11)),
                                       trailing: TextButton.icon(
-                                        icon: const Icon(Icons.sms_outlined,
+                                        icon: Icon(
+                                            c['email'] != null
+                                                ? Icons.email_outlined
+                                                : Icons.sms_outlined,
                                             size: 16),
                                         label: const Text('הזמן'),
                                         style: TextButton.styleFrom(
@@ -10105,7 +10386,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         onPressed: () {
                                           Navigator.pop(ctx);
                                           _confirmAndInvite(
-                                              c['phone'] as String,
+                                              c['phone'] as String?,
+                                              c['email'] as String?,
                                               c['name'] as String);
                                         },
                                       ),
@@ -10143,8 +10425,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
-  Future<void> _confirmAndInvite(String phone, String contactName) async {
-    final myName = widget.me?['name'] as String? ?? 'חבר';
+  Future<void> _confirmAndInvite(
+      String? phone, String? email, String contactName) async {
     final groupName = widget.group['name'] as String? ?? 'הקבוצה';
     final confirm = await showDialog<bool>(
       context: context,
@@ -10152,22 +10434,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         title: Text('הזמן את $contactName'),
         content: Text(
           '$contactName אינו רשום בבתשובה.\n\n'
-          'האם לשלוח לו SMS עם הזמנה להצטרף לקבוצה "$groupName"?',
+          'האם לשלוח ${email != null ? 'אימייל' : 'SMS'} עם הזמנה להצטרף לקבוצה "$groupName"?',
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
               child: const Text('ביטול')),
           ElevatedButton.icon(
-            icon: const Icon(Icons.sms_outlined),
-            label: const Text('שלח SMS'),
+            icon:
+                Icon(email != null ? Icons.email_outlined : Icons.sms_outlined),
+            label: Text(email != null ? 'שלח אימייל' : 'שלח SMS'),
             style: ElevatedButton.styleFrom(backgroundColor: kPrimary),
             onPressed: () => Navigator.pop(context, true),
           ),
         ],
       ),
     );
-    if (confirm == true) _inviteViaSms(phone, contactName);
+    if (confirm == true) {
+      _inviteExternalContact(phone, email, contactName);
+    }
   }
 
   void _showMembersDialog() {
@@ -12298,38 +12583,89 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _deleteAccount() async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('מה ברצונך למחוק?'),
+        content: const Text(
+            'יש לבחור אחת משתי האפשרויות. הפעולה אינה ניתנת לביטול.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('ביטול')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'data'),
+              child: const Text('מחיקת כל הנתונים')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, 'account'),
+              child: const Text('מחיקת הנתונים והחשבון',
+                  style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (choice == null) return;
+    if (!mounted) return;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('מחיקת חשבון לצמיתות'),
-        content: const Text(
-            'החשבון, ההודעות, הקבצים, המיקום והפרטים האישיים שלך יימחקו. לא ניתן לבטל פעולה זו.'),
+        title: Text(choice == 'account'
+            ? 'מחיקת הנתונים והחשבון לצמיתות'
+            : 'מחיקת כל הנתונים'),
+        content: Text(choice == 'account'
+            ? 'כל הנתונים והחשבון יימחקו ולא יהיה ניתן להתחבר אליו שוב.'
+            : 'ההודעות, הקבצים, המיקום ופרטי הפרופיל יימחקו, אך החשבון ופרטי ההתחברות יישארו פעילים.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
               child: const Text('ביטול')),
           TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('מחק לצמיתות',
-                  style: TextStyle(color: Colors.red))),
+            onPressed: () => Navigator.pop(context, true),
+            child:
+                const Text('אישור מחיקה', style: TextStyle(color: Colors.red)),
+          ),
         ],
       ),
     );
     if (confirmed != true) return;
-    final response = await http.delete(Uri.parse('$kApi/account'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({'confirmation': 'DELETE'}));
-    if (!mounted) return;
-    if (response.statusCode == 200) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('token');
-      widget.onLogout();
-    } else {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('מחיקת החשבון נכשלה')));
+
+    try {
+      final deletingAccount = choice == 'account';
+      final response = await http.delete(
+          Uri.parse(deletingAccount ? '$kApi/account' : '$kApi/account/data'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode(
+              {'confirmation': deletingAccount ? 'DELETE' : 'DELETE_DATA'}));
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        if (deletingAccount) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove('token');
+          widget.onLogout();
+        } else {
+          await widget.onProfileChanged();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('כל הנתונים נמחקו בהצלחה')));
+          }
+        }
+      } else {
+        var message =
+            deletingAccount ? 'מחיקת החשבון נכשלה' : 'מחיקת הנתונים נכשלה';
+        try {
+          message = jsonDecode(response.body)['error'] ?? message;
+        } catch (_) {}
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('לא ניתן להתחבר לשרת. נסו שוב.')));
+      }
     }
   }
 
@@ -12507,18 +12843,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _SectionHeader(title: 'אודות'),
           Container(
             color: kCard,
-            child: const Column(
+            child: Column(
               children: [
-                ListTile(
+                const ListTile(
                   leading: Icon(Icons.info_outline, color: kSubtext),
                   title: Text('גרסה'),
                   trailing: Text(kVersion, style: TextStyle(color: kSubtext)),
                 ),
-                Divider(height: 1, indent: 16),
-                ListTile(
+                const Divider(height: 1, indent: 16),
+                const ListTile(
                   leading: Icon(Icons.verified_outlined, color: kAccent),
                   title: Text('בתשובה Messenger'),
                   subtitle: Text('מסרים לקהילה הישראלית'),
+                ),
+                const Divider(height: 1, indent: 16),
+                ListTile(
+                  leading:
+                      const Icon(Icons.description_outlined, color: kSubtext),
+                  title: const Text('רישיונות קוד פתוח'),
+                  subtitle: const Text('Flutter וספריות צד שלישי'),
+                  trailing: const Icon(Icons.chevron_left, color: kSubtext),
+                  onTap: () => showLicensePage(
+                    context: context,
+                    applicationName: 'בתשובה',
+                    applicationVersion: kVersion,
+                    applicationIcon: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child:
+                          Image.asset('icon_source.png', width: 64, height: 64),
+                    ),
+                    applicationLegalese: '© 2026 בתשובה',
+                  ),
                 ),
               ],
             ),
@@ -12555,7 +12910,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: TextButton.icon(
               onPressed: _deleteAccount,
               icon: const Icon(Icons.delete_forever, color: Colors.red),
-              label: const Text('מחיקת החשבון לצמיתות',
+              label: const Text('מחיקת נתונים או חשבון',
                   style: TextStyle(color: Colors.red)),
             ),
           ),

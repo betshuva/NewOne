@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.turn
+firebase-service-account.json
 .flutter-sdk/
 .android-sdk/
 flutter_linux.tar.xz

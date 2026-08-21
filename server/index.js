@@ -11,6 +11,8 @@ const crypto     = require('crypto');
 const multer     = require('multer');
 const path       = require('path');
 const fs         = require('fs/promises');
+const { cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
 const { getPool } = require('./db');
 const {
   googleSafeSearchConfigured,
@@ -23,32 +25,43 @@ const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
 const SCAN_BOT_ID = '00000000-0000-4000-8000-000000000001';
 const SCAN_BOT_EMAIL = 'scan@betshuva.system';
 
-// ── FCM via HTTP Legacy API (no service account key needed) ───────
+// ── Firebase Cloud Messaging (HTTP v1 via Admin SDK) ──────────────
+let firebaseMessaging = null;
+function getFirebaseMessaging() {
+  if (firebaseMessaging) return firebaseMessaging;
+  const credentialsPath = path.join(__dirname, '..', 'firebase-service-account.json');
+  const credentials = require(credentialsPath);
+  const app = getApps()[0] || initializeApp({ credential: cert(credentials) });
+  firebaseMessaging = getMessaging(app);
+  return firebaseMessaging;
+}
+
 async function sendPush(userId, title, body, data = {}) {
-  const serverKey = process.env.FCM_SERVER_KEY;
-  if (!serverKey) return;
   try {
     const pool   = await getPool();
     const result = await pool.query('SELECT token FROM fcm_tokens WHERE user_id = $1', [userId]);
-    for (const { token } of result.rows) {
-      const res = await fetch('https://fcm.googleapis.com/fcm/send', {
-        method:  'POST',
-        headers: {
-          'Authorization': `key=${serverKey}`,
-          'Content-Type':  'application/json',
-        },
-        body: JSON.stringify({
-          to:           token,
-          notification: { title, body, sound: 'default' },
-          data:         Object.fromEntries(Object.entries(data).map(([k,v]) => [k, String(v)])),
-          priority:     'high',
-          android:      { priority: 'high' },
-          apns:         { payload: { aps: { badge: 1, sound: 'default' } } },
-        }),
-      });
-      const json = await res.json();
-      if (json.failure && json.results?.[0]?.error === 'NotRegistered') {
-        pool.query('DELETE FROM fcm_tokens WHERE token=$1', [token]).catch(() => {});
+    const tokens = result.rows.map(row => row.token).filter(Boolean);
+    if (!tokens.length) return;
+    const response = await getFirebaseMessaging().sendEachForMulticast({
+      tokens,
+      notification: { title: title || 'בתשובה', body: body || '' },
+      data: Object.fromEntries(Object.entries(data).map(([key, value]) =>
+        [key, String(value)])),
+      android: {
+        priority: 'high',
+        notification: { sound: 'default', channelId: 'betshuva_messages' },
+      },
+      webpush: {
+        notification: { icon: '/betshuva-app/icons/Icon-192.png' },
+        fcmOptions: { link: '/betshuva-app/' },
+      },
+      apns: { payload: { aps: { badge: 1, sound: 'default' } } },
+    });
+    for (let index = 0; index < response.responses.length; index++) {
+      const errorCode = response.responses[index].error?.code;
+      if (errorCode === 'messaging/registration-token-not-registered' ||
+          errorCode === 'messaging/invalid-registration-token') {
+        pool.query('DELETE FROM fcm_tokens WHERE token=$1', [tokens[index]]).catch(() => {});
       }
     }
   } catch (e) { console.error('sendPush:', e.message); }
@@ -1041,6 +1054,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_version TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS age_confirmed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`
@@ -1134,6 +1148,21 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS external_group_invites (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+        invited_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT,
+        phone TEXT,
+        contact_name TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        claimed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        CHECK (email IS NOT NULL OR phone IS NOT NULL)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS external_group_invites_email_idx ON external_group_invites(lower(email)) WHERE status='pending'`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS external_group_invites_phone_idx ON external_group_invites(phone) WHERE status='pending'`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_contacts (
@@ -1550,9 +1579,33 @@ io.use(async (socket, next) => {
   }
 });
 
+async function claimExternalGroupInvites(userId) {
+  const pool = await getPool();
+  const userResult = await pool.query(
+    'SELECT lower(email) AS email, phone FROM users WHERE id=$1', [userId]);
+  const user = userResult.rows[0];
+  if (!user) return;
+  const invites = await pool.query(
+    `SELECT id, group_id, invited_by FROM external_group_invites
+     WHERE status='pending'
+       AND (($1 <> '' AND lower(email)=$1) OR ($2 <> '' AND phone=$2))`,
+    [user.email || '', user.phone || '']);
+  for (const invite of invites.rows) {
+    await pool.query(
+      `INSERT INTO group_members(group_id,user_id,status,added_by,pending_since)
+       VALUES($1,$2,'pending',$3,now()) ON CONFLICT DO NOTHING`,
+      [invite.group_id, userId, invite.invited_by]);
+    await pool.query(
+      `UPDATE external_group_invites SET status='claimed', claimed_by=$1 WHERE id=$2`,
+      [userId, invite.id]);
+  }
+}
+
 io.on('connection', async (socket) => {
   onlineUsers.set(socket.user.id, socket.id);
   io.emit('users:online', [...onlineUsers.keys()]);
+  claimExternalGroupInvites(socket.user.id).catch(e =>
+    console.error('claimExternalGroupInvites:', e.message));
 
   // Register call signaling before asynchronous chat initialization so a
   // client can safely call as soon as it receives the call:ready event.
@@ -1563,8 +1616,8 @@ io.on('connection', async (socket) => {
       return socket.emit('call:error', { code: 'CALLER_BUSY', message: 'כבר מתקיימת שיחה' });
     }
     const targetSid = onlineUsers.get(toUserId);
-    if (!targetSid || userVoiceCalls.has(toUserId)) {
-      return socket.emit('call:unavailable', { toUserId, reason: targetSid ? 'busy' : 'offline' });
+    if (userVoiceCalls.has(toUserId)) {
+      return socket.emit('call:unavailable', { toUserId, reason: 'busy' });
     }
     try {
       const pool = await getPool();
@@ -1590,8 +1643,14 @@ io.on('connection', async (socket) => {
       userVoiceCalls.set(socket.user.id, callId);
       userVoiceCalls.set(toUserId, callId);
       socket.emit('call:ringing', { callId, toUserId });
-      io.to(targetSid).emit('call:incoming', {
-        callId, fromUserId: socket.user.id, fromName: socket.user.name || 'משתמש',
+      if (targetSid) {
+        io.to(targetSid).emit('call:incoming', {
+          callId, fromUserId: socket.user.id, fromName: socket.user.name || 'משתמש',
+        });
+      }
+      sendPush(toUserId, 'שיחה נכנסת', `${socket.user.name || 'משתמש'} מתקשר אליך`, {
+        type: 'call', callId, fromUserId: socket.user.id,
+        fromName: socket.user.name || 'משתמש',
       });
     } catch (e) {
       console.error('call:start:', e.message);
@@ -1789,11 +1848,9 @@ io.on('connection', async (socket) => {
       const toName = recip.rows[0]?.name || toUserId;
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_message',
         { to: toName, toUserId, messageId: row.id, type: fileType || 'text', fileName: fileName || null });
-      // Push only if recipient is offline
-      if (!onlineUsers.has(toUserId)) {
-        const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-        sendPush(toUserId, socket.user.name, pushBody, { type: 'chat', fromUserId: socket.user.id });
-      }
+      const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
+      sendPush(toUserId, socket.user.name, pushBody,
+        { type: 'chat', fromUserId: socket.user.id });
     } catch (e) {
       console.error('chat:message save:', e.message);
       relay(toUserId, 'chat:message', { fromUserId: socket.user.id, fromName: socket.user.name, text });
@@ -1862,7 +1919,7 @@ io.on('connection', async (socket) => {
       socket.to(`group:${groupId}`).emit('group:message', outgoingGroupMessage);
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_group_message',
         { groupId, messageId: row.id, fileName: fileName || null });
-      // Push to offline members
+      // Push reaches backgrounded apps as well as fully offline devices.
       const grpName = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
       const groupName = grpName.rows[0]?.name || 'קבוצה';
       const allMembers = await pool.query(
@@ -1870,7 +1927,7 @@ io.on('connection', async (socket) => {
          WHERE group_id=$1 AND status='member'`, [groupId]);
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
       for (const { user_id } of allMembers.rows) {
-        if (user_id !== socket.user.id && !onlineUsers.has(user_id)) {
+        if (user_id !== socket.user.id) {
           sendPush(user_id, `${groupName} • ${socket.user.name}`,
             pushBody, { type: 'group', groupId });
         }
@@ -1943,7 +2000,7 @@ io.on('connection', async (socket) => {
 
 // ── Register ─────────────────────────────────────────────────────
 app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) => {
-  const { name, password, phone, clientType, verificationMethod } = req.body;
+  const { name, password, phone, clientType, verificationMethod, gender } = req.body;
   if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
     return res.status(400).json({ error: 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה' });
   // Copying an address from RTL text can add invisible bidi controls. They
@@ -1952,6 +2009,8 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
     ? req.body.email.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim().toLowerCase()
     : req.body.email;
   if (!name) return res.status(400).json({ error: 'חסר שם' });
+  if (!['male', 'female'].includes(gender))
+    return res.status(400).json({ error: 'יש לבחור מגדר' });
   const hasEmail = !!(email && password);
   const hasPhone = !!phone;
   const verifyByEmail = verificationMethod !== 'phone';
@@ -1977,10 +2036,10 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
 
     const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
     const result = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed)
-       VALUES ($1, $2, $3, $4, now(), '2026-08-18', TRUE)
+      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender)
+       VALUES ($1, $2, $3, $4, now(), '2026-08-18', TRUE, $5)
        RETURNING id, name, email`,
-      [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash]);
+      [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender]);
     const user = result.rows[0];
 
     if (hasEmail) {
@@ -2158,13 +2217,16 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
     // 3. Create new user
     if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
       return res.status(400).json({ error: 'ליצירת חשבון חדש יש לעבור למסך הרשמה ולאשר תנאים וגיל 13 ומעלה' });
+    if (!['male', 'female'].includes(req.body.gender))
+      return res.status(400).json({ error: 'יש לבחור מגדר בהרשמה' });
     console.log(`[GOOGLE] new user — name:${name} email:${email}`);
     const inserted = await pool.query(
       `INSERT INTO users (name, email, email_verified, google_id, profile_pic_url,
-                          terms_accepted_at, terms_version, age_confirmed)
-       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-18', TRUE)
+                          terms_accepted_at, terms_version, age_confirmed, gender)
+       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-18', TRUE, $5)
        RETURNING *`,
-      [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null]);
+      [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null,
+       req.body.gender]);
     const user  = inserted.rows[0];
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     logActivity(user.id, 'google_register', { email: user.email }, req.ip);
@@ -2249,7 +2311,7 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
          AND u.id != $5
          AND (u.email_verified = TRUE OR u.phone_verified = TRUE)
          AND u.id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
-         AND (u.email ILIKE $2 OR ($3 <> '' AND u.phone LIKE $4))
+         AND (u.name ILIKE $2 OR u.email ILIKE $2 OR ($3 <> '' AND u.phone LIKE $4))
        ORDER BY u.name LIMIT 30`,
       [req.user.id, `%${q}%`, digits, `%${digits}%`, SCAN_BOT_ID]);
     res.json(result.rows);
@@ -2354,9 +2416,8 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
 
 // ── Contacts: match phone numbers with registered users ───────────
 app.post('/api/contacts/match', auth, async (req, res) => {
-  const { phones } = req.body;
-  if (!Array.isArray(phones) || phones.length === 0)
-    return res.status(400).json({ error: 'נדרש מערך phones' });
+  const phones = Array.isArray(req.body.phones) ? req.body.phones : [];
+  const emails = Array.isArray(req.body.emails) ? req.body.emails : [];
 
   // Normalize: keep digits only, handle Israeli prefix (972 → 0)
   const normalize = (p) => {
@@ -2365,20 +2426,19 @@ app.post('/api/contacts/match', auth, async (req, res) => {
     return d;
   };
   const normalized = [...new Set(phones.map(normalize).filter(Boolean))];
-  if (normalized.length === 0) return res.json([]);
+  const normalizedEmails = [...new Set(emails.map(e => String(e).trim().toLowerCase()).filter(e => e.includes('@')))];
+  if (normalized.length === 0 && normalizedEmails.length === 0) return res.json([]);
 
   try {
     const pool = await getPool();
-    // Build a values list for IN clause using parameterized placeholders
-    const placeholders = normalized.map((_, i) => `$${i + 2}`).join(',');
     const result = await pool.query(
-      `SELECT id, name, profile_pic_url, phone
+      `SELECT id, name, profile_pic_url, phone, email
        FROM users
-       WHERE phone IN (${placeholders})
+       WHERE (phone = ANY($2::text[]) OR lower(email) = ANY($3::text[]))
          AND (email_verified = TRUE OR phone_verified = TRUE)
          AND id != $1
          AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = $1)`,
-      [req.user.id, ...normalized]
+      [req.user.id, normalized, normalizedEmails]
     );
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2615,10 +2675,9 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
     logActivity(senderId, fileUrl ? 'send_file' : 'send_message',
       { to: toName, toUserId, messageId: row.id, type, fileName: fileName || null });
 
-    if (!onlineUsers.has(toUserId)) {
-      const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-      sendPush(toUserId, req.user.name, pushBody, { type: 'chat', fromUserId: senderId });
-    }
+    const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
+    sendPush(toUserId, req.user.name, pushBody,
+      { type: 'chat', fromUserId: senderId });
 
     res.json({ id: row.id, createdAt: row.created_at,
       status: sid ? 'delivered' : 'sent' });
@@ -3605,7 +3664,7 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
        WHERE group_id=$1 AND status='member'`, [groupId]);
     const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
     for (const { user_id } of allMembers.rows) {
-      if (user_id !== senderId && !onlineUsers.has(user_id)) {
+      if (user_id !== senderId) {
         sendPush(user_id, `${member.group_name} • ${req.user.name}`,
           pushBody, { type: 'group', groupId });
       }
@@ -3865,10 +3924,13 @@ app.delete('/api/groups/:id/decline', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: invite non-member via SMS (admin) ─────────────────────
+// ── Groups: invite an unregistered contact (email preferred, SMS fallback) ──
 app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) => {
-  const { phone, contactName } = req.body;
-  if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
+  const { phone, email, contactName } = req.body;
+  const cleanPhone = String(phone || '').replace(/\D/g, '');
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  if (!cleanPhone && !cleanEmail.includes('@'))
+    return res.status(400).json({ error: 'נדרש אימייל או מספר טלפון' });
   try {
     const pool = await getPool();
     const [adminCheck, grp] = await Promise.all([
@@ -3882,13 +3944,23 @@ app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) =
     const groupName  = grp.rows[0]?.name || 'הקבוצה';
     const senderName = req.user.name || 'חבר';
     const greeting   = contactName ? `שלום ${contactName}!` : 'שלום!';
-    const msg = `${greeting} ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" באפליקציית בתשובה. הורד את האפליקציה: https://betshuva.com`;
+    const msg = `${greeting} ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" באפליקציית בתשובה. לפרטים ולהצטרפות: https://betshuva.com/betshuva-app/home.html`;
 
-    const cleanPhone = phone.replace(/\D/g, '');
+    const existing = await pool.query(
+      `SELECT id FROM external_group_invites WHERE group_id=$1 AND status='pending'
+       AND (($2 <> '' AND lower(email)=$2) OR ($3 <> '' AND phone=$3)) LIMIT 1`,
+      [req.params.id, cleanEmail.includes('@') ? cleanEmail : '', cleanPhone]);
+    if (!existing.rows.length) {
+      await pool.query(
+        `INSERT INTO external_group_invites(group_id,invited_by,email,phone,contact_name)
+         VALUES($1,$2,$3,$4,$5)`,
+        [req.params.id, req.user.id, cleanEmail.includes('@') ? cleanEmail : null,
+         cleanPhone || null, contactName || null]);
+    }
     await mailer.sendMail({
       from:    `"בתשובה" <${process.env.EMAIL_FROM}>`,
-      to:      `${cleanPhone}@019sms.co.il`,
-      subject: msg,
+      to:      cleanEmail.includes('@') ? cleanEmail : `${cleanPhone}@019sms.co.il`,
+      subject: cleanEmail.includes('@') ? `הזמנה לקבוצה "${groupName}" בבתשובה` : msg,
       text:    msg,
     });
 
@@ -4118,7 +4190,7 @@ app.get('/api/leaderboard', auth, async (req, res) => {
 
 // ── Send OTP via SMS (019 email gateway) ────────────────────────
 app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
-  const { phone, name, email } = req.body;
+  const { phone, name, email, gender } = req.body;
   if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
   const clean      = phone.replace(/\D/g, '');
   const cleanName = typeof name === 'string'
@@ -4144,6 +4216,8 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
         return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
       if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
         return res.status(400).json({ error: 'יש לאשר תנאים וגיל 13 ומעלה' });
+      if (!['male', 'female'].includes(gender))
+        return res.status(400).json({ error: 'יש לבחור מגדר' });
     }
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -4161,7 +4235,8 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
   const expires = Date.now() + 5 * 60 * 1000;
   otpStore.set(clean, { code, expires, name: cleanName, email: cleanEmail,
     acceptedTerms: req.body.acceptedTerms === true,
-    ageConfirmed: req.body.ageConfirmed === true });
+    ageConfirmed: req.body.ageConfirmed === true,
+    gender: ['male', 'female'].includes(gender) ? gender : null });
   try {
     await sendEmail({
       to:      `${clean}@019sms.co.il`,
@@ -4213,14 +4288,16 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
         if (userName.length < 2) {
           return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
         }
+        if (!['male', 'female'].includes(entry.gender))
+          return res.status(400).json({ error: 'יש לבחור מגדר' });
         otpStore.delete(clean);
         const hash   = await bcrypt.hash(`otp_${clean}`, 10);
         const result = await pool.query(
           `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified,
-                              terms_accepted_at, terms_version, age_confirmed)
-           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-18', TRUE)
+                              terms_accepted_at, terms_version, age_confirmed, gender)
+           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-18', TRUE, $5)
            RETURNING id, name, email`,
-          [userName, userEmail, clean, hash]);
+          [userName, userEmail, clean, hash, entry.gender]);
         user = result.rows[0];
         // הודע לכל המחוברים על משתמש חדש
         req.app.get('io').emit('users:new', {
@@ -4543,6 +4620,7 @@ app.delete('/api/account', auth, async (req, res) => {
     }
     if (profile.rows[0].profile_pic_url) fileUrls.push(profile.rows[0].profile_pic_url);
 
+    await client.query('DELETE FROM message_status WHERE user_id=$1', [uid]);
     await client.query(`UPDATE messages SET reply_to_id=NULL WHERE reply_to_id IN
       (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`, [uid]);
     await client.query(`DELETE FROM message_status WHERE message_id IN
@@ -4558,6 +4636,8 @@ app.delete('/api/account', auth, async (req, res) => {
     await client.query('DELETE FROM email_verification_tokens WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM group_members WHERE user_id=$1', [uid]);
     await client.query('UPDATE groups SET creator_id=NULL WHERE creator_id=$1', [uid]);
+    await client.query('DELETE FROM external_group_invites WHERE invited_by=$1', [uid]);
+    await client.query('UPDATE external_group_invites SET claimed_by=NULL WHERE claimed_by=$1', [uid]);
     await client.query('DELETE FROM blocked_users WHERE blocker_id=$1 OR blocked_id=$1', [uid]);
     await client.query('DELETE FROM user_contacts WHERE owner_id=$1 OR contact_id=$1', [uid]);
     await client.query('DELETE FROM admin_permissions WHERE user_id=$1', [uid]);
@@ -4565,6 +4645,8 @@ app.delete('/api/account', auth, async (req, res) => {
     await client.query('UPDATE games SET winner_id=NULL WHERE winner_id=$1', [uid]);
     await client.query('DELETE FROM activity_log WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM audit_log WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM user_reports WHERE reporter_id=$1', [uid]);
+    await client.query('UPDATE user_reports SET reviewed_by=NULL WHERE reviewed_by=$1', [uid]);
     await client.query('DELETE FROM stored_files WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM users WHERE id=$1', [uid]);
     await client.query('COMMIT');
@@ -4580,6 +4662,73 @@ app.delete('/api/account', auth, async (req, res) => {
   const sid = onlineUsers.get(uid);
   if (sid) io.sockets.sockets.get(sid)?.disconnect(true);
   onlineUsers.delete(uid);
+  res.json({ ok: true });
+});
+
+// Delete the user's content and personal profile while keeping the login
+// identity active. Credentials are intentionally retained so the account can
+// still be used after this operation.
+app.delete('/api/account/data', auth, async (req, res) => {
+  if (req.body?.confirmation !== 'DELETE_DATA')
+    return res.status(400).json({ error: 'נדרש אישור מחיקת נתונים מפורש' });
+  const uid = req.user.id;
+  const pool = await getPool();
+  const client = await pool.connect();
+  let fileUrls = [];
+  try {
+    await client.query('BEGIN');
+    const files = await client.query(
+      'SELECT public_url FROM stored_files WHERE user_id=$1', [uid]);
+    fileUrls = files.rows.map(row => row.public_url).filter(Boolean);
+    const profile = await client.query(
+      'SELECT profile_pic_url FROM users WHERE id=$1 FOR UPDATE', [uid]);
+    if (!profile.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'החשבון אינו קיים' });
+    }
+    if (profile.rows[0].profile_pic_url) fileUrls.push(profile.rows[0].profile_pic_url);
+
+    await client.query('DELETE FROM message_status WHERE user_id=$1', [uid]);
+    await client.query(`UPDATE messages SET reply_to_id=NULL WHERE reply_to_id IN
+      (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`, [uid]);
+    await client.query(`DELETE FROM message_status WHERE message_id IN
+      (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`, [uid]);
+    await client.query('DELETE FROM messages WHERE sender_id=$1 OR recipient_id=$1', [uid]);
+    await client.query('DELETE FROM message_requests WHERE sender_id=$1 OR recipient_id=$1', [uid]);
+    await client.query('DELETE FROM pending_scans WHERE user_id=$1 OR to_user_id=$1', [uid]);
+    await client.query('DELETE FROM listing_views WHERE user_id=$1 OR listing_id IN (SELECT id FROM listings WHERE user_id=$1)', [uid]);
+    await client.query('DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id=$1)', [uid]);
+    await client.query('DELETE FROM listings WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM fcm_tokens WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM group_members WHERE user_id=$1', [uid]);
+    await client.query('UPDATE groups SET creator_id=NULL WHERE creator_id=$1', [uid]);
+    await client.query('DELETE FROM external_group_invites WHERE invited_by=$1', [uid]);
+    await client.query('UPDATE external_group_invites SET claimed_by=NULL WHERE claimed_by=$1', [uid]);
+    await client.query('DELETE FROM blocked_users WHERE blocker_id=$1 OR blocked_id=$1', [uid]);
+    await client.query('DELETE FROM user_contacts WHERE owner_id=$1 OR contact_id=$1', [uid]);
+    await client.query('DELETE FROM games WHERE player1_id=$1 OR player2_id=$1', [uid]);
+    await client.query('UPDATE games SET winner_id=NULL WHERE winner_id=$1', [uid]);
+    await client.query('DELETE FROM activity_log WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM audit_log WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM user_reports WHERE reporter_id=$1', [uid]);
+    await client.query('UPDATE user_reports SET reviewed_by=NULL WHERE reviewed_by=$1', [uid]);
+    await client.query('DELETE FROM stored_files WHERE user_id=$1', [uid]);
+    await client.query(`UPDATE users SET
+      name='משתמש', city=NULL, country=NULL,
+      street=NULL, house_number=NULL, apartment=NULL, profile_pic_url=NULL,
+      latitude=NULL, longitude=NULL, location_updated_at=NULL, gender=NULL,
+      wins=0, games_played=0
+      WHERE id=$1`, [uid]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('self data delete:', e.message);
+    return res.status(500).json({ error: 'מחיקת הנתונים נכשלה' });
+  } finally {
+    client.release();
+  }
+
+  await Promise.all([...new Set(fileUrls)].map(url => deleteStoredFile(url)));
   res.json({ ok: true });
 });
 
@@ -5443,7 +5592,7 @@ async function retryPendingScans() {
             `SELECT user_id FROM group_members
              WHERE group_id=$1 AND status='member'`, [row.group_id]);
           for (const { user_id } of allMembers.rows) {
-            if (user_id !== row.user_id && !onlineUsers.has(user_id)) {
+            if (user_id !== row.user_id) {
               sendPush(user_id,
                 `${pendingGroup.group_name} • ${pendingGroup.sender_name}`,
                 `📎 ${row.file_name}`,
