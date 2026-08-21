@@ -3115,6 +3115,47 @@ app.put('/api/profile', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Profile: use an approved image from an accessible message ────
+app.put('/api/profile/photo-from-message', auth, async (req, res) => {
+  const messageId = String(req.body.messageId || '');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(messageId))
+    return res.status(400).json({ error: 'הודעה לא תקינה' });
+  try {
+    const pool = await getPool();
+    const image = await pool.query(
+      `SELECT m.file_url
+       FROM messages m
+       JOIN stored_files sf
+         ON sf.public_url=m.file_url
+        AND sf.moderation_status='approved'
+        AND sf.file_type='image'
+       WHERE m.id=$1 AND m.deleted_for_everyone=FALSE
+         AND (
+           m.sender_id=$2 OR m.recipient_id=$2 OR
+           EXISTS (
+             SELECT 1 FROM group_members gm
+             WHERE gm.group_id=m.group_id AND gm.user_id=$2
+               AND gm.status='member'
+           )
+         )`,
+      [messageId, req.user.id]);
+    if (!image.rows.length)
+      return res.status(404).json({
+        error: 'התמונה לא נמצאה, אינה נגישה או שטרם אושרה בסריקה',
+      });
+    const profilePicUrl = image.rows[0].file_url;
+    await pool.query(
+      'UPDATE users SET profile_pic_url=$1 WHERE id=$2',
+      [profilePicUrl, req.user.id]);
+    logActivity(req.user.id, 'profile_photo_from_message',
+      { messageId, profilePicUrl }, req.ip);
+    res.json({ ok: true, profile_pic_url: profilePicUrl });
+  } catch (e) {
+    console.error('profile photo from message:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לעדכן את תמונת הפרופיל' });
+  }
+});
+
 // ── Location: update precise location ────────────────────────────
 async function reverseGeocodeHebrew(lat, lng) {
   try {
@@ -3374,6 +3415,11 @@ app.put('/api/listings/:id', auth, async (req, res) => {
   const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 8) : [];
   try {
     const pool = await getPool();
+    const previousImages = await pool.query(
+      `SELECT url FROM listing_images WHERE listing_id=$1
+       UNION SELECT image_url AS url FROM listings
+       WHERE id=$1 AND image_url IS NOT NULL`,
+      [req.params.id]);
     const upd = await pool.query(
       `UPDATE listings SET type=$1, title=$2, description=$3,
        price=$4, city=$5, category=$6, image_url=$7
@@ -3386,6 +3432,16 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       await pool.query(
         'INSERT INTO listing_images (listing_id, url, sort_order) VALUES ($1, $2, $3)',
         [req.params.id, allImages[i], i]);
+    }
+    const removedImages = previousImages.rows
+      .map(row => row.url)
+      .filter(url => url && !allImages.includes(url));
+    for (const url of removedImages) {
+      const stillUsed = await pool.query(
+        `SELECT 1 FROM listing_images WHERE url=$1
+         UNION SELECT 1 FROM listings WHERE image_url=$1 LIMIT 1`,
+        [url]);
+      if (!stillUsed.rows.length) await deleteStoredFile(url);
     }
     logActivity(req.user.id, 'edit_listing', { id: req.params.id }, req.ip);
     res.json({ ok: true });
@@ -4157,7 +4213,7 @@ app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) =
     const groupName  = grp.rows[0]?.name || 'הקבוצה';
     const senderName = req.user.name || 'חבר';
     const greeting   = contactName ? `שלום ${contactName}!` : 'שלום!';
-    const msg = `${greeting} ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" באפליקציית בתשובה. לפרטים ולהצטרפות: https://betshuva.com/betshuva-app/home.html`;
+    const msg = `${greeting} ${senderName} מזמין אותך להצטרף לקבוצה "${groupName}" באפליקציית בתשובה. לפרטים ולהצטרפות: https://betshuva.com/betshuva-app/invite-v2.html`;
 
     const existing = await pool.query(
       `SELECT id FROM external_group_invites WHERE group_id=$1 AND status='pending'

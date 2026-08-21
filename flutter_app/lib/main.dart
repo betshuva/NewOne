@@ -26,7 +26,7 @@ import 'media_cache.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
 
-const _appInviteUrl = 'https://betshuva.com/betshuva-app/home.html';
+const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 
 String _whatsAppPhoneNumber(String rawPhone) {
   var digits = rawPhone.replaceAll(RegExp(r'\D'), '');
@@ -102,6 +102,61 @@ Future<String?> _chooseInviteDelivery(BuildContext context,
       ),
     ),
   );
+}
+
+Future<void> _setMessageImageAsProfile(
+  BuildContext context,
+  String token,
+  Map<String, dynamic> message,
+  Map<String, dynamic>? me,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('תמונת פרופיל'),
+      content: const Text('להגדיר את התמונה הזו כתמונת הפרופיל שלך?'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('ביטול'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('הגדר כתמונת פרופיל'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  try {
+    final response = await http.put(
+      Uri.parse('$kApi/profile/photo-from-message'),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'messageId': message['id']}),
+    );
+    if (!context.mounted) return;
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      me?['profile_pic_url'] = data['profile_pic_url'];
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('תמונת הפרופיל עודכנה')),
+      );
+    } else {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(data['error']?.toString() ?? 'העדכון נכשל')),
+      );
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('שגיאת תקשורת בעדכון התמונה')),
+      );
+    }
+  }
 }
 
 MediaType _mimeFromFileName(String fileName) {
@@ -378,8 +433,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.73';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.73.apk';
+const kVersion = '1.2.74';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.74.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -4752,6 +4807,34 @@ class _PostListingScreenState extends State<PostListingScreen> {
     }
   }
 
+  Future<void> _removeImage(int slot) async {
+    if (_imageUrls[slot] == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('מחיקת תמונה'),
+        content: const Text(
+            'להסיר את התמונה מהמודעה? המחיקה תושלם לאחר לחיצה על „שמור שינויים”.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('ביטול'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.delete_outline, color: Colors.white),
+            label:
+                const Text('הסר תמונה', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      setState(() => _imageUrls[slot] = null);
+    }
+  }
+
   Future<void> _submit() async {
     if (_titleCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context)
@@ -4926,8 +5009,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
     final uploading = _uploadingSlot[i];
     return GestureDetector(
       onTap: uploading ? null : () => _pickImage(i),
-      onLongPress:
-          url != null ? () => setState(() => _imageUrls[i] = null) : null,
+      onLongPress: url != null ? () => _removeImage(i) : null,
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFFE8F4FD),
@@ -4945,16 +5027,19 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     Positioned(
                         top: 3,
                         left: 3,
-                        child: GestureDetector(
-                            onTap: () => setState(() => _imageUrls[i] = null),
-                            child: Container(
-                                width: 20,
-                                height: 20,
-                                decoration: const BoxDecoration(
-                                    color: Colors.black54,
-                                    shape: BoxShape.circle),
-                                child: const Icon(Icons.close,
-                                    size: 13, color: Colors.white)))),
+                        child: Material(
+                          color: Colors.red.shade700,
+                          shape: const CircleBorder(),
+                          child: InkWell(
+                            customBorder: const CircleBorder(),
+                            onTap: () => _removeImage(i),
+                            child: const Padding(
+                              padding: EdgeInsets.all(6),
+                              child: Icon(Icons.delete_outline,
+                                  size: 18, color: Colors.white),
+                            ),
+                          ),
+                        )),
                     Positioned(
                       right: 3,
                       bottom: 3,
@@ -7691,6 +7776,21 @@ class _ChatScreenState extends State<ChatScreen> {
                 _forwardChatMessage(context, widget.token, widget.socket, msg);
               },
             ),
+            if (msg['fileType'] == 'image' &&
+                msg['fileUrl'] != null &&
+                msg['status'] != 'pending_scan' &&
+                msg['status'] != 'rejected_scan' &&
+                msg['id']?.toString().startsWith('temp_') != true)
+              ListTile(
+                leading:
+                    const Icon(Icons.account_circle_outlined, color: kPrimary),
+                title: const Text('הגדר כתמונת פרופיל'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _setMessageImageAsProfile(
+                      context, widget.token, msg, widget.me);
+                },
+              ),
             if (!isMe &&
                 msg['id'] != null &&
                 msg['id']?.toString().startsWith('temp_') != true)
@@ -11907,6 +12007,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 _forwardChatMessage(context, widget.token, widget.socket, msg);
               },
             ),
+            if (msg['fileType'] == 'image' &&
+                msg['fileUrl'] != null &&
+                msg['status'] != 'pending_scan' &&
+                msg['status'] != 'rejected_scan' &&
+                msg['id']?.toString().startsWith('temp_') != true)
+              ListTile(
+                leading:
+                    const Icon(Icons.account_circle_outlined, color: kPrimary),
+                title: const Text('הגדר כתמונת פרופיל'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _setMessageImageAsProfile(
+                      context, widget.token, msg, widget.me);
+                },
+              ),
             if (!isMe &&
                 msg['id'] != null &&
                 msg['id']?.toString().startsWith('temp_') != true)
