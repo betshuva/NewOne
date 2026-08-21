@@ -369,7 +369,20 @@ async function validateApprovedFile(pool, userId, fileUrl, contextType, contextI
      WHERE user_id=$1 AND public_url=$2 AND moderation_status='approved'
        AND context_type=$3 AND context_id=$4`,
     [userId, fileUrl, contextType, contextId]);
-  return result.rows.length > 0;
+  if (result.rows.length > 0) return true;
+  const shared = await pool.query(
+    `SELECT sf.moderation_details FROM shared_gifs sg
+     JOIN stored_files sf ON sf.id=sg.stored_file_id
+     WHERE sf.public_url=$1 AND sf.moderation_status='approved'
+       AND sg.status='active'`, [fileUrl]);
+  if (!shared.rows.length) return false;
+  if (contextType === 'chat') {
+    const policy = await getEffectiveRecipientFilter(pool, contextId, userId);
+    if (!policy?.isContact) return false;
+    return imageAllowedByFilter(
+      policy.filter, shared.rows[0].moderation_details?.classification);
+  }
+  return true;
 }
 
 const scanLabelNames = {
@@ -1345,6 +1358,19 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ALTER COLUMN moderation_status SET DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_details JSONB`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS shared_gifs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        stored_file_id UUID NOT NULL UNIQUE REFERENCES stored_files(id) ON DELETE CASCADE,
+        creator_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        tags TEXT[] NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','hidden')),
+        uses_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS shared_gifs_created_idx
+      ON shared_gifs(created_at DESC) WHERE status='active'`);
     // Legacy rows predate moderation_status. Trust only files that were already
     // delivered in the same sender/recipient or sender/group context.
     await pool.query(`
@@ -3353,74 +3379,42 @@ app.post('/api/fcm-token', auth, async (req, res) => {
 
 // ── File Upload ───────────────────────────────────────────────────
 app.get('/api/gifs/search', auth, searchRateLimit, async (req, res) => {
-  const apiKey = process.env.TENOR_API_KEY;
-  if (!apiKey)
-    return res.status(503).json({ error: 'חיפוש GIF טרם הוגדר בשרת' });
   const query = String(req.query.q || '').trim().slice(0, 80);
-  if (!query) return res.status(400).json({ error: 'יש להזין מילת חיפוש' });
   try {
-    const url = new URL('https://tenor.googleapis.com/v2/search');
-    url.searchParams.set('key', apiKey);
-    url.searchParams.set('client_key', 'betshuva_messenger');
-    url.searchParams.set('q', query);
-    url.searchParams.set('limit', '20');
-    url.searchParams.set('locale', 'he_IL');
-    url.searchParams.set('country', 'IL');
-    url.searchParams.set('contentfilter', 'high');
-    url.searchParams.set('media_filter', 'gif,tinygif');
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error(`Tenor ${response.status}`);
-    const payload = await response.json();
-    const results = (payload.results || []).flatMap(item => {
-      const full = item.media_formats?.gif;
-      const preview = item.media_formats?.tinygif || full;
-      if (!full?.url || !preview?.url) return [];
-      const token = jwt.sign(
-        { purpose: 'gif-download', url: full.url, id: String(item.id || '') },
-        JWT_SECRET,
-        { expiresIn: '10m' },
-      );
-      return [{
-        id: String(item.id || ''),
-        description: String(item.content_description || ''),
-        previewUrl: preview.url,
-        width: Number(preview.dims?.[0] || 1),
-        height: Number(preview.dims?.[1] || 1),
-        downloadToken: token,
-      }];
-    });
-    res.json({ results, attribution: 'Tenor' });
+    const pool = await getPool();
+    const params = [];
+    let where = `sg.status='active' AND sf.moderation_status='approved'`;
+    if (query) {
+      params.push(`%${query}%`);
+      where += ` AND (sg.title ILIKE $1 OR EXISTS
+        (SELECT 1 FROM unnest(sg.tags) tag WHERE tag ILIKE $1))`;
+    }
+    const result = await pool.query(
+      `SELECT sg.id, sg.title, sg.tags, sg.uses_count,
+              sf.public_url AS preview_url, sf.original_name AS file_name,
+              u.name AS creator_name
+       FROM shared_gifs sg
+       JOIN stored_files sf ON sf.id=sg.stored_file_id
+       LEFT JOIN users u ON u.id=sg.creator_id
+       WHERE ${where}
+       ORDER BY sg.uses_count DESC, sg.created_at DESC LIMIT 40`, params);
+    res.json({ results: result.rows, source: 'betshuva' });
   } catch (error) {
-    console.error('gif search:', error.message);
-    res.status(502).json({ error: 'חיפוש ה-GIF נכשל' });
+    console.error('shared gif search:', error.message);
+    res.status(500).json({ error: 'חיפוש ה-GIF נכשל' });
   }
 });
 
-app.get('/api/gifs/download', auth, async (req, res) => {
+app.post('/api/gifs/:id/use', auth, async (req, res) => {
   try {
-    const decoded = jwt.verify(String(req.query.token || ''), JWT_SECRET);
-    if (decoded.purpose !== 'gif-download') throw new Error('invalid purpose');
-    const gifUrl = new URL(decoded.url);
-    if (gifUrl.protocol !== 'https:' ||
-        !(gifUrl.hostname === 'tenor.com' || gifUrl.hostname.endsWith('.tenor.com')))
-      return res.status(400).json({ error: 'מקור GIF אינו מורשה' });
-    const response = await fetch(gifUrl, { signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`GIF download ${response.status}`);
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.toLowerCase().startsWith('image/gif'))
-      return res.status(415).json({ error: 'הקובץ שהתקבל אינו GIF' });
-    const declaredSize = Number(response.headers.get('content-length') || 0);
-    if (declaredSize > 10 * 1024 * 1024)
-      return res.status(413).json({ error: 'קובץ ה-GIF גדול מדי' });
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > 10 * 1024 * 1024)
-      return res.status(413).json({ error: 'קובץ ה-GIF גדול מדי' });
-    res.set('Content-Type', 'image/gif');
-    res.set('Cache-Control', 'private, no-store');
-    res.send(buffer);
+    const pool = await getPool();
+    const result = await pool.query(
+      `UPDATE shared_gifs SET uses_count=uses_count+1
+       WHERE id=$1 AND status='active' RETURNING id`, [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'ה-GIF לא נמצא' });
+    res.json({ ok: true });
   } catch (error) {
-    console.error('gif download:', error.message);
-    res.status(400).json({ error: 'קישור ה-GIF אינו תקין או שפג תוקפו' });
+    res.status(500).json({ error: 'עדכון השימוש ב-GIF נכשל' });
   }
 });
 
@@ -3435,6 +3429,11 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
 
   const allowed = ALLOWED_TYPES[file.mimetype];
   if (!allowed) return res.status(400).json({ error: 'סוג קובץ לא נתמך' });
+  if (req.body.sharedGif === 'true' &&
+      (file.mimetype !== 'image/gif' || req.body.rightsConfirmed !== 'true'))
+    return res.status(400).json({
+      error: 'שיתוף בספרייה דורש GIF ואישור זכויות מפורש',
+    });
 
   // Size check
   const maxBytes = allowed.maxMB * 1024 * 1024;
@@ -3612,6 +3611,29 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
       [JSON.stringify(scanResult || {}), url]);
 
+    let sharedGifId = null;
+    if (req.body.sharedGif === 'true') {
+      if (file.mimetype !== 'image/gif' || req.body.rightsConfirmed !== 'true') {
+        return res.status(400).json({
+          error: 'שיתוף בספרייה דורש GIF ואישור זכויות מפורש',
+        });
+      }
+      const title = String(req.body.sharedGifTitle || '')
+        .replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 80);
+      if (!title)
+        return res.status(400).json({ error: 'נדרש שם ל-GIF המשותף' });
+      const tags = String(req.body.sharedGifTags || '')
+        .split(',').map(tag => tag.trim().slice(0, 30))
+        .filter(Boolean).slice(0, 10);
+      const insertedGif = await pool.query(
+        `INSERT INTO shared_gifs(stored_file_id,creator_id,title,tags)
+         SELECT id,$1,$2,$3 FROM stored_files WHERE public_url=$4
+         ON CONFLICT (stored_file_id) DO UPDATE SET title=$2,tags=$3
+         RETURNING id`,
+        [req.user.id, title, tags, url]);
+      sharedGifId = insertedGif.rows[0]?.id || null;
+    }
+
     let scanReport = null;
     if (reportImageScan)
       scanReport = await saveScanBotReport(pool, req.user.id, {
@@ -3630,7 +3652,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         googleSafeSearch: scanResult?.googleSafeSearch || null,
         blockedBy: null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size,
-      fileType: allowed.dbType, handledByScanBot: scanBotUpload, scanReport });
+      fileType: allowed.dbType, handledByScanBot: scanBotUpload, scanReport,
+      sharedGifId });
   } catch (e) {
     console.error('upload:', e.message);
     res.status(500).json({ error: e.message });

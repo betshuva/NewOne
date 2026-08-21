@@ -300,8 +300,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.70';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.70.apk';
+const kVersion = '1.2.71';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.71.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -7984,6 +7984,24 @@ class _ChatScreenState extends State<ChatScreen> {
       await _uploadAndSend(file.xFile, file.name, 'image');
       return;
     }
+    if (choice == _sharedGifUploadAction) {
+      final details = await _requestSharedGifDetails(context);
+      if (details == null || !mounted) return;
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['gif'],
+        withData: kIsWeb,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.single;
+      await _uploadAndSend(file.xFile, file.name, 'image', extraFields: {
+        'sharedGif': 'true',
+        'rightsConfirmed': 'true',
+        'sharedGifTitle': details['title']!,
+        'sharedGifTags': details['tags']!,
+      });
+      return;
+    }
     if (choice == _personalStickerAction) {
       final picked = await ImagePicker().pickImage(
         source: ImageSource.gallery,
@@ -7996,23 +8014,18 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       return;
     }
-    if (choice.startsWith(_onlineGifPrefix)) {
-      final token = choice.substring(_onlineGifPrefix.length);
-      final response = await http.get(
-        Uri.parse(
-            '$kApi/gifs/download?token=${Uri.encodeQueryComponent(token)}'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+    if (choice.startsWith(_sharedGifPrefix)) {
+      final gif = jsonDecode(utf8.decode(base64Url.decode(
+              base64Url.normalize(choice.substring(_sharedGifPrefix.length)))))
+          as Map<String, dynamic>;
+      await _applyPrivateUploadResult(
+        _FileUploadResult(_FileUploadOutcome.approved,
+            data: {'url': gif['preview_url']}),
+        gif['file_name'] as String? ?? '${gif['title']}.gif',
+        'image',
       );
-      if (response.statusCode != 200) {
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('הורדת ה-GIF נכשלה')));
-        }
-        return;
-      }
-      final file = XFile.fromData(response.bodyBytes,
-          mimeType: 'image/gif', name: 'tenor.gif');
-      await _uploadAndSend(file, file.name, 'image');
+      http.post(Uri.parse('$kApi/gifs/${gif['id']}/use'),
+          headers: {'Authorization': 'Bearer ${widget.token}'}).ignore();
       return;
     }
     if (choice.startsWith(_stickerPrefix)) {
@@ -8100,8 +8113,8 @@ class _ChatScreenState extends State<ChatScreen> {
     await _uploadAndSend(f, f.name, 'document');
   }
 
-  Future<void> _uploadAndSend(
-      dynamic file, String fileName, String fileType) async {
+  Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
+      {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
     final showProgress = fileType != 'image';
     final navigator =
@@ -8134,6 +8147,7 @@ class _ChatScreenState extends State<ChatScreen> {
       fields: {
         'toUserId': widget.recipient['id'].toString(),
         if (kIsWeb) 'scanReport': 'true',
+        ...extraFields,
       },
     );
     if (navigator != null && navigator.mounted && navigator.canPop()) {
@@ -9704,8 +9718,9 @@ class _MessageBubble extends StatelessWidget {
 }
 
 const _gifPickerAction = '__pick_gif__';
+const _sharedGifUploadAction = '__shared_gif_upload__';
 const _personalStickerAction = '__personal_sticker__';
-const _onlineGifPrefix = '__online_gif__:';
+const _sharedGifPrefix = '__shared_gif__:';
 const _stickerPrefix = '__sticker__:';
 const _emojiCategories = <String, List<String>>{
   'אחרונים': [],
@@ -9941,6 +9956,59 @@ Future<String?> _showExpressionPicker(BuildContext context, String token) {
   );
 }
 
+Future<Map<String, String>?> _requestSharedGifDetails(
+    BuildContext context) async {
+  final title = TextEditingController();
+  final tags = TextEditingController();
+  var rightsConfirmed = false;
+  final result = await showDialog<Map<String, String>>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: const Text('הוספת GIF לספרייה המשותפת'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+              controller: title,
+              onChanged: (_) => setDialogState(() {}),
+              decoration: const InputDecoration(labelText: 'שם ה-GIF')),
+          TextField(
+              controller: tags,
+              decoration: const InputDecoration(
+                  labelText: 'תגיות לחיפוש, מופרדות בפסיקים')),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: rightsConfirmed,
+            onChanged: (value) =>
+                setDialogState(() => rightsConfirmed = value == true),
+            title: const Text(
+                'אני מאשר/ת שיש לי זכות לשתף את הקובץ עם כל המשתמשים',
+                style: TextStyle(fontSize: 13)),
+          ),
+          const Text('ה-GIF יפורסם רק לאחר סריקת כל הפריימים.',
+              style: TextStyle(fontSize: 12, color: kSubtext)),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('ביטול')),
+          ElevatedButton(
+            onPressed: rightsConfirmed && title.text.trim().isNotEmpty
+                ? () => Navigator.pop(dialogContext, {
+                      'title': title.text.trim(),
+                      'tags': tags.text.trim(),
+                    })
+                : null,
+            child: const Text('בחר GIF והעלה'),
+          ),
+        ],
+      ),
+    ),
+  );
+  title.dispose();
+  tags.dispose();
+  return result;
+}
+
 class _ExpressionPickerSheet extends StatefulWidget {
   final String token;
   const _ExpressionPickerSheet({required this.token});
@@ -10166,6 +10234,12 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                                         context, _gifPickerAction),
                                     icon: const Icon(Icons.folder_open),
                                     label: const Text('בחירה מהמכשיר')),
+                                const SizedBox(height: 8),
+                                ElevatedButton.icon(
+                                    onPressed: () => Navigator.pop(
+                                        context, _sharedGifUploadAction),
+                                    icon: const Icon(Icons.public),
+                                    label: const Text('הוספה לספרייה המשותפת')),
                               ]))
                         : GridView.builder(
                             padding: const EdgeInsets.all(10),
@@ -10178,10 +10252,15 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                             itemBuilder: (_, index) {
                               final gif = _gifs[index];
                               return InkWell(
-                                onTap: () => Navigator.pop(context,
-                                    '$_onlineGifPrefix${gif['downloadToken']}'),
+                                onTap: () {
+                                  final encoded = base64Url
+                                      .encode(utf8.encode(jsonEncode(gif)));
+                                  Navigator.pop(
+                                      context, '$_sharedGifPrefix$encoded');
+                                },
                                 child: Image.network(
-                                    gif['previewUrl'] as String,
+                                    _absoluteMediaUrl(
+                                        gif['preview_url'] as String),
                                     fit: BoxFit.cover,
                                     errorBuilder: (_, __, ___) =>
                                         const ColoredBox(
@@ -10190,10 +10269,22 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                               );
                             },
                           )),
-                const Padding(
-                    padding: EdgeInsets.only(bottom: 8),
-                    child: Text('Powered by Tenor • כל GIF נסרק לפני השליחה',
-                        style: TextStyle(fontSize: 11, color: kSubtext))),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () =>
+                            Navigator.pop(context, _sharedGifUploadAction),
+                        icon: const Icon(Icons.add, size: 17),
+                        label: const Text('הוספה לספרייה'),
+                      ),
+                      const Text('• כל GIF נסרק לפני הפרסום',
+                          style: TextStyle(fontSize: 11, color: kSubtext)),
+                    ],
+                  ),
+                ),
               ]),
             ])),
           ]),
@@ -11787,6 +11878,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       await _uploadGroupFile(file.xFile, file.name, 'image');
       return;
     }
+    if (choice == _sharedGifUploadAction) {
+      final details = await _requestSharedGifDetails(context);
+      if (details == null || !mounted) return;
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['gif'],
+        withData: kIsWeb,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.single;
+      await _uploadGroupFile(file.xFile, file.name, 'image', extraFields: {
+        'sharedGif': 'true',
+        'rightsConfirmed': 'true',
+        'sharedGifTitle': details['title']!,
+        'sharedGifTags': details['tags']!,
+      });
+      return;
+    }
     if (choice == _personalStickerAction) {
       final picked = await ImagePicker().pickImage(
         source: ImageSource.gallery,
@@ -11799,23 +11908,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       }
       return;
     }
-    if (choice.startsWith(_onlineGifPrefix)) {
-      final token = choice.substring(_onlineGifPrefix.length);
-      final response = await http.get(
-        Uri.parse(
-            '$kApi/gifs/download?token=${Uri.encodeQueryComponent(token)}'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+    if (choice.startsWith(_sharedGifPrefix)) {
+      final gif = jsonDecode(utf8.decode(base64Url.decode(
+              base64Url.normalize(choice.substring(_sharedGifPrefix.length)))))
+          as Map<String, dynamic>;
+      await _applyGroupUploadResult(
+        _FileUploadResult(_FileUploadOutcome.approved,
+            data: {'url': gif['preview_url']}),
+        gif['file_name'] as String? ?? '${gif['title']}.gif',
+        'image',
+        true,
       );
-      if (response.statusCode != 200) {
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('הורדת ה-GIF נכשלה')));
-        }
-        return;
-      }
-      final file = XFile.fromData(response.bodyBytes,
-          mimeType: 'image/gif', name: 'tenor.gif');
-      await _uploadGroupFile(file, file.name, 'image');
+      http.post(Uri.parse('$kApi/gifs/${gif['id']}/use'),
+          headers: {'Authorization': 'Bearer ${widget.token}'}).ignore();
       return;
     }
     if (choice.startsWith(_stickerPrefix)) {
@@ -11956,8 +12061,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     await _uploadGroupFile(f, f.name, 'document');
   }
 
-  Future<void> _uploadGroupFile(
-      dynamic file, String fileName, String fileType) async {
+  Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType,
+      {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
     final showProgress = fileType != 'image';
     final navigator =
@@ -11987,7 +12092,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       file: file,
       fileName: fileName,
       token: widget.token,
-      fields: {'groupId': _groupId},
+      fields: {'groupId': _groupId, ...extraFields},
     );
     if (navigator != null && navigator.mounted && navigator.canPop()) {
       navigator.pop();
