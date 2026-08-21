@@ -300,8 +300,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.67';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.67.apk';
+const kVersion = '1.2.68';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.68.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -311,6 +311,13 @@ var _uploadMessageSequence = 0;
 
 String _newUploadMessageId(String prefix) =>
     '${prefix}${DateTime.now().microsecondsSinceEpoch}_${_uploadMessageSequence++}';
+
+bool _looksLikeSticker(String text) {
+  final value = text.trim();
+  return value.isNotEmpty &&
+      value.runes.length <= 5 &&
+      !RegExp(r'[A-Za-z0-9א-ת]').hasMatch(value);
+}
 
 enum _FileUploadOutcome { approved, rejected, pending, scanBot, failed }
 
@@ -2625,19 +2632,69 @@ class _AvatarPickerSheetState extends State<AvatarPickerSheet>
 class ImagePreviewScreen extends StatefulWidget {
   final String url;
   final String? filename;
-  const ImagePreviewScreen({super.key, required this.url, this.filename});
+  final List<String>? urls;
+  final List<String?>? filenames;
+  final List<String?>? dates;
+  final int initialIndex;
+  const ImagePreviewScreen({
+    super.key,
+    required this.url,
+    this.filename,
+    this.urls,
+    this.filenames,
+    this.dates,
+    this.initialIndex = 0,
+  });
   @override
   State<ImagePreviewScreen> createState() => _ImagePreviewScreenState();
 }
 
 class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
   final _transform = TransformationController();
+  late final List<String> _urls;
+  late final List<String?> _filenames;
+  late final List<String?> _dates;
+  late final PageController _pageController;
+  late int _currentIndex;
   bool _showBars = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _urls =
+        widget.urls?.where((url) => url.isNotEmpty).toList() ?? [widget.url];
+    if (_urls.isEmpty) _urls.add(widget.url);
+    _filenames = List<String?>.generate(
+      _urls.length,
+      (index) => index < (widget.filenames?.length ?? 0)
+          ? widget.filenames![index]
+          : index == 0
+              ? widget.filename
+              : null,
+    );
+    _dates = List<String?>.generate(
+      _urls.length,
+      (index) =>
+          index < (widget.dates?.length ?? 0) ? widget.dates![index] : null,
+    );
+    _currentIndex = widget.initialIndex.clamp(0, _urls.length - 1);
+    _pageController = PageController(initialPage: _currentIndex);
+  }
 
   @override
   void dispose() {
     _transform.dispose();
+    _pageController.dispose();
     super.dispose();
+  }
+
+  void _goToPage(int index) {
+    if (index < 0 || index >= _urls.length) return;
+    _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+    );
   }
 
   @override
@@ -2649,21 +2706,80 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            InteractiveViewer(
-              transformationController: _transform,
-              minScale: 0.5,
-              maxScale: 5.0,
-              child: Center(
-                child: _PersistentMediaImage(
-                  url: widget.url,
-                  fit: BoxFit.contain,
-                  loadingBuilder: (_) => const Center(
-                      child: CircularProgressIndicator(color: Colors.white)),
-                  errorBuilder: (_) => const Icon(Icons.broken_image,
-                      color: Colors.white54, size: 64),
+            PageView.builder(
+              controller: _pageController,
+              itemCount: _urls.length,
+              onPageChanged: (index) {
+                _transform.value = Matrix4.identity();
+                setState(() => _currentIndex = index);
+              },
+              itemBuilder: (_, index) => InteractiveViewer(
+                transformationController:
+                    index == _currentIndex ? _transform : null,
+                minScale: 0.5,
+                maxScale: 5.0,
+                child: Center(
+                  child: _PersistentMediaImage(
+                    url: _urls[index],
+                    fit: BoxFit.contain,
+                    loadingBuilder: (_) => const Center(
+                        child: CircularProgressIndicator(color: Colors.white)),
+                    errorBuilder: (_) => const Icon(Icons.broken_image,
+                        color: Colors.white54, size: 64),
+                  ),
                 ),
               ),
             ),
+            if (_showBars && _urls.length > 1) ...[
+              Positioned(
+                left: 12,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: IconButton.filled(
+                    tooltip: 'התמונה הקודמת',
+                    onPressed: _currentIndex > 0
+                        ? () => _goToPage(_currentIndex - 1)
+                        : null,
+                    icon: const Icon(Icons.chevron_left),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 12,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: IconButton.filled(
+                    tooltip: 'התמונה הבאה',
+                    onPressed: _currentIndex < _urls.length - 1
+                        ? () => _goToPage(_currentIndex + 1)
+                        : null,
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                ),
+              ),
+              Positioned(
+                bottom: 28,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Text(
+                      '${_currentIndex + 1} / ${_urls.length}',
+                      textDirection: TextDirection.ltr,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ],
             if (_showBars) ...[
               Positioned(
                 top: 0,
@@ -2683,19 +2799,33 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                         onPressed: () => Navigator.pop(context),
                       ),
                       Expanded(
-                        child: Text(
-                          widget.filename ?? '',
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 14),
-                          overflow: TextOverflow.ellipsis,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if ((_filenames[_currentIndex] ?? '').isNotEmpty)
+                              Text(
+                                _filenames[_currentIndex]!,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 14),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            if ((_dates[_currentIndex] ?? '').isNotEmpty)
+                              Text(
+                                _dates[_currentIndex]!,
+                                textDirection: TextDirection.ltr,
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 12),
+                              ),
+                          ],
                         ),
                       ),
                       IconButton(
                         icon: const Icon(Icons.download, color: Colors.white),
                         onPressed: () => _downloadChatFile(
                           context,
-                          widget.url,
-                          widget.filename,
+                          _urls[_currentIndex],
+                          _filenames[_currentIndex],
                         ),
                         tooltip: 'הורדת תמונה',
                       ),
@@ -7840,6 +7970,35 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Future<void> _showExpressions() async {
+    final choice = await _showExpressionPicker(context);
+    if (choice == null || !mounted) return;
+    if (choice == _gifPickerAction) {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['gif'],
+        withData: kIsWeb,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.single;
+      await _uploadAndSend(file.xFile, file.name, 'image');
+      return;
+    }
+    if (choice.startsWith(_stickerPrefix)) {
+      _msgCtrl.text = choice.substring(_stickerPrefix.length);
+      await _send();
+      return;
+    }
+    final selection = _msgCtrl.selection;
+    final start = selection.isValid ? selection.start : _msgCtrl.text.length;
+    final end = selection.isValid ? selection.end : _msgCtrl.text.length;
+    final next = _msgCtrl.text.replaceRange(start, end, choice);
+    _msgCtrl.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + choice.length),
+    );
+  }
+
   Future<void> _pickFile(ImageSource source) async {
     final picker = ImagePicker();
     if (source == ImageSource.gallery) {
@@ -8446,7 +8605,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                 )
                               else if (imageSequence.isNotEmpty)
                                 _ConsecutiveImageGrid(
-                                    messages: imageSequence, isMe: isMe)
+                                    messages: imageSequence,
+                                    conversationMessages: _messages,
+                                    isMe: isMe)
                               else
                                 GestureDetector(
                                   onTap: !kIsWeb && msg['isFile'] != true
@@ -8459,6 +8620,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                       _showMessageOptions(msg, isMe),
                                   child: _MessageBubble(
                                     message: msg,
+                                    conversationMessages: _messages,
                                     isMe: isMe,
                                     token: widget.token,
                                     me: widget.me,
@@ -8513,6 +8675,14 @@ class _ChatScreenState extends State<ChatScreen> {
                         const Icon(Icons.verified_user_outlined,
                             size: 16, color: kPrimary),
                         const SizedBox(width: 6),
+                        IconButton(
+                          tooltip: 'אימוג׳י, GIF ומדבקות',
+                          icon: const Icon(Icons.emoji_emotions_outlined,
+                              size: 19, color: kPrimary),
+                          onPressed: _showExpressions,
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(),
+                        ),
                         Expanded(
                           child: TextField(
                             controller: _msgCtrl,
@@ -9045,6 +9215,28 @@ bool _isGridImageMessage(Map<String, dynamic> message) {
       'image';
 }
 
+List<Map<String, dynamic>> _conversationImageMessages(
+        Iterable<Map<String, dynamic>> messages) =>
+    messages.where(_isGridImageMessage).toList();
+
+int _conversationImageIndex(
+    List<Map<String, dynamic>> images, Map<String, dynamic> selectedMessage) {
+  final selectedId = selectedMessage['id'];
+  final index = images.indexWhere((message) =>
+      identical(message, selectedMessage) ||
+      (selectedId != null && message['id'] == selectedId));
+  return index < 0 ? 0 : index;
+}
+
+String _imageSentAtLabel(Map<String, dynamic> message) {
+  final parsed = DateTime.tryParse(message['createdAt']?.toString() ?? '');
+  if (parsed == null) return message['time']?.toString() ?? '';
+  final local = parsed.toLocal();
+  String twoDigits(int value) => value.toString().padLeft(2, '0');
+  return '${twoDigits(local.day)}/${twoDigits(local.month)}/${local.year} · '
+      '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
+}
+
 bool _sameImageSequenceSender(
     Map<String, dynamic> first, Map<String, dynamic> second) {
   final firstTime = DateTime.tryParse(first['createdAt']?.toString() ?? '');
@@ -9063,9 +9255,14 @@ bool _sameImageSequenceSender(
 
 class _ConsecutiveImageGrid extends StatelessWidget {
   final List<Map<String, dynamic>> messages;
+  final List<Map<String, dynamic>> conversationMessages;
   final bool isMe;
 
-  const _ConsecutiveImageGrid({required this.messages, required this.isMe});
+  const _ConsecutiveImageGrid({
+    required this.messages,
+    required this.conversationMessages,
+    required this.isMe,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -9097,6 +9294,10 @@ class _ConsecutiveImageGrid extends StatelessWidget {
               final message = visible[index];
               final url = message['fileUrl'] as String;
               final hiddenCount = messages.length - 3;
+              final conversationImages =
+                  _conversationImageMessages(conversationMessages);
+              final selectedIndex =
+                  _conversationImageIndex(conversationImages, message);
               return GestureDetector(
                 onTap: () => Navigator.push(
                   context,
@@ -9104,6 +9305,16 @@ class _ConsecutiveImageGrid extends StatelessWidget {
                     builder: (_) => ImagePreviewScreen(
                       url: url,
                       filename: message['fileName'] as String?,
+                      urls: conversationImages
+                          .map((item) => item['fileUrl'] as String)
+                          .toList(),
+                      filenames: conversationImages
+                          .map((item) => item['fileName'] as String?)
+                          .toList(),
+                      dates: conversationImages
+                          .map((item) => _imageSentAtLabel(item))
+                          .toList(),
+                      initialIndex: selectedIndex,
                     ),
                   ),
                 ),
@@ -9160,12 +9371,14 @@ class _ConsecutiveImageGrid extends StatelessWidget {
 
 class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic> message;
+  final List<Map<String, dynamic>> conversationMessages;
   final bool isMe;
   final String token;
   final Map<String, dynamic>? me;
 
   const _MessageBubble({
     required this.message,
+    required this.conversationMessages,
     required this.isMe,
     required this.token,
     required this.me,
@@ -9207,6 +9420,9 @@ class _MessageBubble extends StatelessWidget {
     );
     final isImageFile = isFile && fileUrl != null && fileType == 'image';
     final isAudioFile = isFile && fileUrl != null && fileType == 'audio';
+    final conversationImages = _conversationImageMessages(conversationMessages);
+    final selectedImageIndex =
+        _conversationImageIndex(conversationImages, message);
 
     // זיהוי קישור מודעה פנימי: betshuva://listing/{id}
     final rawText = message['text'] as String? ?? '';
@@ -9290,6 +9506,16 @@ class _MessageBubble extends StatelessWidget {
                           builder: (_) => ImagePreviewScreen(
                             url: fileUrl!,
                             filename: fileName,
+                            urls: conversationImages
+                                .map((item) => item['fileUrl'] as String)
+                                .toList(),
+                            filenames: conversationImages
+                                .map((item) => item['fileName'] as String?)
+                                .toList(),
+                            dates: conversationImages
+                                .map((item) => _imageSentAtLabel(item))
+                                .toList(),
+                            initialIndex: selectedImageIndex,
                           ),
                         )),
                     child: Stack(
@@ -9373,7 +9599,10 @@ class _MessageBubble extends StatelessWidget {
             else
               Text(
                 displayText,
-                style: TextStyle(fontSize: 14, height: 1.45, color: textColor),
+                style: TextStyle(
+                    fontSize: _looksLikeSticker(displayText) ? 44 : 14,
+                    height: 1.45,
+                    color: textColor),
                 textDirection: TextDirection.rtl,
               ),
 
@@ -9441,6 +9670,141 @@ class _MessageBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+const _gifPickerAction = '__pick_gif__';
+const _stickerPrefix = '__sticker__:';
+const _messageEmojis = [
+  '😀',
+  '😂',
+  '😍',
+  '🥰',
+  '😊',
+  '😎',
+  '🤩',
+  '🥳',
+  '😢',
+  '😭',
+  '😡',
+  '🤔',
+  '🙏',
+  '👍',
+  '👎',
+  '👏',
+  '❤️',
+  '💙',
+  '💚',
+  '🔥',
+  '✨',
+  '🎉',
+  '🇮🇱',
+  '💪',
+];
+const _messageStickers = [
+  '👍',
+  '❤️',
+  '🙏',
+  '😂',
+  '🥳',
+  '🎉',
+  '🔥',
+  '💯',
+  '👏',
+  '🤝',
+  '💪',
+  '🌹',
+  '⭐',
+  '☀️',
+  '🕊️',
+  '🇮🇱',
+];
+
+Future<String?> _showExpressionPicker(BuildContext context) {
+  return showModalBottomSheet<String>(
+    context: context,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: DefaultTabController(
+        length: 3,
+        child: SizedBox(
+          height: 360,
+          child: Column(
+            children: [
+              const TabBar(
+                labelColor: kPrimary,
+                tabs: [
+                  Tab(
+                      icon: Icon(Icons.emoji_emotions_outlined),
+                      text: 'אימוג׳י'),
+                  Tab(icon: Icon(Icons.auto_awesome), text: 'מדבקות'),
+                  Tab(icon: Icon(Icons.gif_box_outlined), text: 'GIF'),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    GridView.builder(
+                      padding: const EdgeInsets.all(16),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 8,
+                      ),
+                      itemCount: _messageEmojis.length,
+                      itemBuilder: (_, index) => InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () =>
+                            Navigator.pop(sheetContext, _messageEmojis[index]),
+                        child: Center(
+                          child: Text(_messageEmojis[index],
+                              style: const TextStyle(fontSize: 28)),
+                        ),
+                      ),
+                    ),
+                    GridView.builder(
+                      padding: const EdgeInsets.all(16),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 4,
+                        mainAxisSpacing: 10,
+                        crossAxisSpacing: 10,
+                      ),
+                      itemCount: _messageStickers.length,
+                      itemBuilder: (_, index) => InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () => Navigator.pop(sheetContext,
+                            '$_stickerPrefix${_messageStickers[index]}'),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF0F6FC),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Center(
+                            child: Text(_messageStickers[index],
+                                style: const TextStyle(fontSize: 44)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Center(
+                      child: ElevatedButton.icon(
+                        onPressed: () =>
+                            Navigator.pop(sheetContext, _gifPickerAction),
+                        icon: const Icon(Icons.gif_box_outlined),
+                        label: const Text('בחירת GIF מהמכשיר'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _AttachOption extends StatelessWidget {
@@ -11013,6 +11377,35 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
+  Future<void> _showGroupExpressions() async {
+    final choice = await _showExpressionPicker(context);
+    if (choice == null || !mounted) return;
+    if (choice == _gifPickerAction) {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['gif'],
+        withData: kIsWeb,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final file = result.files.single;
+      await _uploadGroupFile(file.xFile, file.name, 'image');
+      return;
+    }
+    if (choice.startsWith(_stickerPrefix)) {
+      _msgCtrl.text = choice.substring(_stickerPrefix.length);
+      await _send();
+      return;
+    }
+    final selection = _msgCtrl.selection;
+    final start = selection.isValid ? selection.start : _msgCtrl.text.length;
+    final end = selection.isValid ? selection.end : _msgCtrl.text.length;
+    final next = _msgCtrl.text.replaceRange(start, end, choice);
+    _msgCtrl.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + choice.length),
+    );
+  }
+
   void _showAttachMenu() {
     showModalBottomSheet(
       context: context,
@@ -12021,7 +12414,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 ),
                               if (imageSequence.isNotEmpty)
                                 _ConsecutiveImageGrid(
-                                    messages: imageSequence, isMe: isMe)
+                                    messages: imageSequence,
+                                    conversationMessages: _messages,
+                                    isMe: isMe)
                               else
                                 GestureDetector(
                                   onTap: !kIsWeb && msg['fileUrl'] == null
@@ -12076,13 +12471,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                             onTap: () => Navigator.push(
                                                 context,
                                                 MaterialPageRoute(
-                                                    builder: (_) =>
-                                                        ImagePreviewScreen(
-                                                            url: msg['fileUrl']
-                                                                as String,
-                                                            filename: msg[
-                                                                    'fileName']
-                                                                as String?))),
+                                                    builder: (_) => ImagePreviewScreen(
+                                                        url: msg['fileUrl']
+                                                            as String,
+                                                        filename:
+                                                            msg['fileName']
+                                                                as String?,
+                                                        urls: _conversationImageMessages(_messages)
+                                                            .map((item) =>
+                                                                item['fileUrl']
+                                                                    as String)
+                                                            .toList(),
+                                                        filenames:
+                                                            _conversationImageMessages(_messages)
+                                                                .map((item) =>
+                                                                    item['fileName'] as String?)
+                                                                .toList(),
+                                                        dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
+                                                        initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
                                             child: Stack(
                                               children: [
                                                 ClipRRect(
@@ -12174,8 +12580,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         else
                                           Text(
                                             msg['text'] as String? ?? '',
-                                            style: const TextStyle(
-                                                fontSize: 15, height: 1.4),
+                                            style: TextStyle(
+                                                fontSize: _looksLikeSticker(
+                                                        msg['text']
+                                                                as String? ??
+                                                            '')
+                                                    ? 44
+                                                    : 15,
+                                                height: 1.4),
                                             textDirection: TextDirection.rtl,
                                           ),
                                         const SizedBox(height: 4),
@@ -12261,6 +12673,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               child: Row(
                 children: [
+                  IconButton(
+                    tooltip: 'אימוג׳י, GIF ומדבקות',
+                    icon: const Icon(Icons.emoji_emotions_outlined,
+                        color: kPrimary),
+                    onPressed: _showGroupExpressions,
+                  ),
                   IconButton(
                     icon: const Icon(Icons.attach_file, color: kSubtext),
                     onPressed: _showAttachMenu,
