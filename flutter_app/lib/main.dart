@@ -433,8 +433,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.74';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.74.apk';
+const kVersion = '1.2.75';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.75.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -750,10 +750,16 @@ Future<void> _persistRecentImageUrls(
 }
 
 Future<void> _forwardChatMessage(BuildContext context, String token,
-    IO.Socket? socket, Map<String, dynamic> message) async {
-  final moderationStatus = message['status'] as String?;
-  if (moderationStatus == 'pending_scan' ||
-      moderationStatus == 'rejected_scan') {
+        IO.Socket? socket, Map<String, dynamic> message) =>
+    _forwardChatMessages(context, token, socket, [message]);
+
+Future<void> _forwardChatMessages(BuildContext context, String token,
+    IO.Socket? socket, List<Map<String, dynamic>> messages) async {
+  if (messages.isEmpty) return;
+  if (messages.any((message) {
+    final status = message['status'] as String?;
+    return status == 'pending_scan' || status == 'rejected_scan';
+  })) {
     ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('לא ניתן להעביר תמונה שלא אושרה בסריקה')));
     return;
@@ -813,89 +819,109 @@ Future<void> _forwardChatMessage(BuildContext context, String token,
       ),
     );
     if (target == null || !context.mounted) return;
-    var fileUrl = message['fileUrl'] as String?;
-    var fileName = message['fileName'] as String?;
-    var fileType = message['fileType'] as String?;
-    final localPath = message['localPath'] as String?;
-    if (localPath != null || fileUrl != null) {
-      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
-        ..headers['Authorization'] = 'Bearer $token'
-        ..fields[target['kind'] == 'group' ? 'groupId' : 'toUserId'] =
-            target['id'].toString();
-      if (localPath != null) {
-        request.files.add(await http.MultipartFile.fromPath('file', localPath,
-            filename: fileName,
-            contentType: _mimeFromFileName(fileName ?? localPath)));
+    var sentCount = 0;
+    for (final message in messages) {
+      var fileUrl = message['fileUrl'] as String?;
+      var fileName = message['fileName'] as String?;
+      var fileType = message['fileType'] as String?;
+      final localPath = message['localPath'] as String?;
+      if (localPath != null || fileUrl != null) {
+        final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+          ..headers['Authorization'] = 'Bearer $token'
+          ..fields[target['kind'] == 'group' ? 'groupId' : 'toUserId'] =
+              target['id'].toString();
+        if (localPath != null) {
+          request.files.add(await http.MultipartFile.fromPath('file', localPath,
+              filename: fileName,
+              contentType: _mimeFromFileName(fileName ?? localPath)));
+        } else {
+          final source = await http
+              .get(Uri.parse(_absoluteMediaUrl(fileUrl!)))
+              .timeout(const Duration(seconds: 30));
+          if (source.statusCode != 200) {
+            throw Exception('Could not download forwarded file');
+          }
+          final forwardedName = fileName ??
+              Uri.parse(_absoluteMediaUrl(fileUrl)).pathSegments.last;
+          request.files.add(http.MultipartFile.fromBytes(
+              'file', source.bodyBytes,
+              filename: forwardedName,
+              contentType: _mimeFromFileName(forwardedName)));
+        }
+        final upload =
+            await request.send().timeout(const Duration(seconds: 60));
+        final uploadBody = await upload.stream.bytesToString();
+        if (upload.statusCode != 200) {
+          var uploadError = 'העלאת התמונה נכשלה';
+          try {
+            uploadError =
+                (jsonDecode(uploadBody) as Map)['error']?.toString() ??
+                    uploadError;
+          } catch (_) {}
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(uploadError)));
+          }
+          return;
+        }
+        final uploaded = jsonDecode(uploadBody) as Map<String, dynamic>;
+        if (uploaded['status'] == 'rejected') {
+          final reason = uploaded['reason']?.toString() ??
+              'התמונה נחסמה לפי הגדרות הסינון';
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(reason)));
+          }
+          return;
+        }
+        if (uploaded['status'] == 'pending') {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('התמונה נשלחה לסריקה ותועבר לאחר אישור')));
+          }
+          return;
+        }
+        fileUrl = uploaded['url'] as String?;
+        fileName = uploaded['fileName'] as String? ?? fileName;
+        fileType = uploaded['fileType'] as String? ?? 'image';
+      }
+      final payload = <String, dynamic>{
+        'text': fileUrl == null ? (message['text'] as String? ?? '') : null,
+        if (fileUrl != null) 'fileUrl': fileUrl,
+        if (fileUrl != null) 'fileName': fileName,
+        if (fileUrl != null) 'fileType': fileType,
+      };
+      var sent = false;
+      if (target['kind'] == 'user') {
+        final response = await http.post(Uri.parse('$kApi/messages'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json'
+            },
+            body: jsonEncode({...payload, 'toUserId': target['id']}));
+        sent = response.statusCode == 200;
       } else {
-        final source = await http
-            .get(Uri.parse(_absoluteMediaUrl(fileUrl!)))
-            .timeout(const Duration(seconds: 30));
-        if (source.statusCode != 200) {
-          throw Exception('Could not download forwarded file');
-        }
-        final forwardedName =
-            fileName ?? Uri.parse(_absoluteMediaUrl(fileUrl)).pathSegments.last;
-        request.files.add(http.MultipartFile.fromBytes('file', source.bodyBytes,
-            filename: forwardedName,
-            contentType: _mimeFromFileName(forwardedName)));
-      }
-      final upload = await request.send().timeout(const Duration(seconds: 60));
-      final uploadBody = await upload.stream.bytesToString();
-      if (upload.statusCode != 200) {
-        var uploadError = 'העלאת התמונה נכשלה';
-        try {
-          uploadError = (jsonDecode(uploadBody) as Map)['error']?.toString() ??
-              uploadError;
-        } catch (_) {}
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(uploadError)));
-        }
-        return;
-      }
-      final uploaded = jsonDecode(uploadBody) as Map<String, dynamic>;
-      if (uploaded['status'] == 'rejected') {
-        final reason =
-            uploaded['reason']?.toString() ?? 'התמונה נחסמה לפי הגדרות הסינון';
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(reason)));
-        }
-        return;
-      }
-      if (uploaded['status'] == 'pending') {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('התמונה נשלחה לסריקה ותועבר לאחר אישור')));
-        }
-        return;
-      }
-      fileUrl = uploaded['url'] as String?;
-      fileName = uploaded['fileName'] as String? ?? fileName;
-      fileType = uploaded['fileType'] as String? ?? 'image';
-    }
-    final payload = <String, dynamic>{
-      'text': fileUrl == null ? (message['text'] as String? ?? '') : null,
-      if (fileUrl != null) 'fileUrl': fileUrl,
-      if (fileUrl != null) 'fileName': fileName,
-      if (fileUrl != null) 'fileType': fileType,
-    };
-    var sent = false;
-    if (target['kind'] == 'user') {
-      final response = await http.post(Uri.parse('$kApi/messages'),
+        final response = await http.post(
+          Uri.parse('$kApi/groups/${target['id']}/messages'),
           headers: {
             'Authorization': 'Bearer $token',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
           },
-          body: jsonEncode({...payload, 'toUserId': target['id']}));
-      sent = response.statusCode == 200;
-    } else if (socket?.connected == true) {
-      socket!.emit('group:message', {...payload, 'groupId': target['id']});
-      sent = true;
+          body: jsonEncode(payload),
+        );
+        sent = response.statusCode == 200;
+      }
+      if (sent) sentCount++;
     }
     if (context.mounted) {
+      final allSent = sentCount == messages.length;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(sent ? 'ההודעה הועברה' : 'לא ניתן להעביר את ההודעה')));
+        content: Text(allSent
+            ? (messages.length == 1
+                ? 'ההודעה הועברה'
+                : '${messages.length} התמונות הועברו')
+            : 'הועברו $sentCount מתוך ${messages.length} פריטים'),
+      ));
     }
   } catch (error) {
     debugPrint('Forward message failed: $error');
@@ -2768,6 +2794,8 @@ class ImagePreviewScreen extends StatefulWidget {
   final List<String>? urls;
   final List<String?>? filenames;
   final List<String?>? dates;
+  final List<Map<String, dynamic>>? messages;
+  final void Function(Map<String, dynamic>)? onMessageOptions;
   final int initialIndex;
   const ImagePreviewScreen({
     super.key,
@@ -2776,6 +2804,8 @@ class ImagePreviewScreen extends StatefulWidget {
     this.urls,
     this.filenames,
     this.dates,
+    this.messages,
+    this.onMessageOptions,
     this.initialIndex = 0,
   });
   @override
@@ -2962,6 +2992,15 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                         ),
                         tooltip: 'הורדת תמונה',
                       ),
+                      if (widget.onMessageOptions != null &&
+                          _currentIndex < (widget.messages?.length ?? 0))
+                        IconButton(
+                          icon:
+                              const Icon(Icons.more_vert, color: Colors.white),
+                          onPressed: () => widget.onMessageOptions!(
+                              widget.messages![_currentIndex]),
+                          tooltip: 'אפשרויות תמונה',
+                        ),
                       IconButton(
                         icon:
                             const Icon(Icons.zoom_out_map, color: Colors.white),
@@ -8882,7 +8921,17 @@ class _ChatScreenState extends State<ChatScreen> {
                                 _ConsecutiveImageGrid(
                                     messages: imageSequence,
                                     conversationMessages: _messages,
-                                    isMe: isMe)
+                                    isMe: isMe,
+                                    onForwardAll: () => _forwardChatMessages(
+                                        context,
+                                        widget.token,
+                                        widget.socket,
+                                        imageSequence),
+                                    onMessageOptions: (message) =>
+                                        _showMessageOptions(
+                                            message,
+                                            message['from'] ==
+                                                widget.me?['id']))
                               else
                                 GestureDetector(
                                   onTap: !kIsWeb && msg['isFile'] != true
@@ -8899,6 +8948,11 @@ class _ChatScreenState extends State<ChatScreen> {
                                     isMe: isMe,
                                     token: widget.token,
                                     me: widget.me,
+                                    onMessageOptions: (message) =>
+                                        _showMessageOptions(
+                                            message,
+                                            message['from'] ==
+                                                widget.me?['id']),
                                   ),
                                 ),
                             ],
@@ -9532,111 +9586,135 @@ class _ConsecutiveImageGrid extends StatelessWidget {
   final List<Map<String, dynamic>> messages;
   final List<Map<String, dynamic>> conversationMessages;
   final bool isMe;
+  final VoidCallback? onForwardAll;
+  final void Function(Map<String, dynamic>)? onMessageOptions;
 
   const _ConsecutiveImageGrid({
     required this.messages,
     required this.conversationMessages,
     required this.isMe,
+    this.onForwardAll,
+    this.onMessageOptions,
   });
 
   @override
   Widget build(BuildContext context) {
     final visible = messages.take(4).toList();
     final gridHeight = visible.length <= 2 ? 110.0 : 220.0;
-    return Align(
-      alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
-      child: Container(
-        width: 228,
-        margin: const EdgeInsets.symmetric(vertical: 2),
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: isMe ? kOutgoing : kChatBg,
-          borderRadius: BorderRadius.circular(14),
-          border: isMe ? null : Border.all(color: kBorder),
-        ),
-        child: SizedBox(
-          height: gridHeight,
-          child: GridView.builder(
-            physics: const NeverScrollableScrollPhysics(),
-            padding: EdgeInsets.zero,
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 3,
-              mainAxisSpacing: 3,
-            ),
-            itemCount: visible.length,
-            itemBuilder: (_, index) {
-              final message = visible[index];
-              final url = message['fileUrl'] as String;
-              final hiddenCount = messages.length - 3;
-              final conversationImages =
-                  _conversationImageMessages(conversationMessages);
-              final selectedIndex =
-                  _conversationImageIndex(conversationImages, message);
-              return GestureDetector(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ImagePreviewScreen(
-                      url: url,
-                      filename: message['fileName'] as String?,
-                      urls: conversationImages
-                          .map((item) => item['fileUrl'] as String)
-                          .toList(),
-                      filenames: conversationImages
-                          .map((item) => item['fileName'] as String?)
-                          .toList(),
-                      dates: conversationImages
-                          .map((item) => _imageSentAtLabel(item))
-                          .toList(),
-                      initialIndex: selectedIndex,
+    return GestureDetector(
+      onLongPress: onForwardAll == null
+          ? null
+          : () => showModalBottomSheet<void>(
+                context: context,
+                builder: (sheetContext) => SafeArea(
+                  child: ListTile(
+                    leading: const Icon(Icons.forward, color: kPrimary),
+                    title: Text('העבר ${messages.length} תמונות'),
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      onForwardAll!();
+                    },
+                  ),
+                ),
+              ),
+      child: Align(
+        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        child: Container(
+          width: 228,
+          margin: const EdgeInsets.symmetric(vertical: 2),
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: isMe ? kOutgoing : kChatBg,
+            borderRadius: BorderRadius.circular(14),
+            border: isMe ? null : Border.all(color: kBorder),
+          ),
+          child: SizedBox(
+            height: gridHeight,
+            child: GridView.builder(
+              physics: const NeverScrollableScrollPhysics(),
+              padding: EdgeInsets.zero,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 3,
+                mainAxisSpacing: 3,
+              ),
+              itemCount: visible.length,
+              itemBuilder: (_, index) {
+                final message = visible[index];
+                final url = message['fileUrl'] as String;
+                final hiddenCount = messages.length - 3;
+                final conversationImages =
+                    _conversationImageMessages(conversationMessages);
+                final selectedIndex =
+                    _conversationImageIndex(conversationImages, message);
+                return GestureDetector(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ImagePreviewScreen(
+                        url: url,
+                        filename: message['fileName'] as String?,
+                        urls: conversationImages
+                            .map((item) => item['fileUrl'] as String)
+                            .toList(),
+                        filenames: conversationImages
+                            .map((item) => item['fileName'] as String?)
+                            .toList(),
+                        dates: conversationImages
+                            .map((item) => _imageSentAtLabel(item))
+                            .toList(),
+                        messages: conversationImages,
+                        onMessageOptions: onMessageOptions,
+                        initialIndex: selectedIndex,
+                      ),
                     ),
                   ),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(9),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      _PersistentMediaImage(
-                        url: url,
-                        fit: BoxFit.cover,
-                        loadingBuilder: (_) => const ColoredBox(
-                          color: kBorder,
-                          child: Center(
-                            child: CircularProgressIndicator(
-                                color: kPrimary, strokeWidth: 2),
-                          ),
-                        ),
-                        errorBuilder: (_) => const ColoredBox(
-                          color: kBorder,
-                          child: Icon(Icons.broken_image, color: kSubtext),
-                        ),
-                      ),
-                      if (index == 3 && messages.length > 4) ...[
-                        ColoredBox(color: Colors.black.withOpacity(0.48)),
-                        Center(
-                          child: Text(
-                            '+$hiddenCount',
-                            textDirection: TextDirection.ltr,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 30,
-                              fontWeight: FontWeight.bold,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(9),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        _PersistentMediaImage(
+                          url: url,
+                          fit: BoxFit.cover,
+                          loadingBuilder: (_) => const ColoredBox(
+                            color: kBorder,
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                  color: kPrimary, strokeWidth: 2),
                             ),
                           ),
+                          errorBuilder: (_) => const ColoredBox(
+                            color: kBorder,
+                            child: Icon(Icons.broken_image, color: kSubtext),
+                          ),
+                        ),
+                        if (index == 3 && messages.length > 4) ...[
+                          ColoredBox(color: Colors.black.withOpacity(0.48)),
+                          Center(
+                            child: Text(
+                              '+$hiddenCount',
+                              textDirection: TextDirection.ltr,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 30,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                        Positioned(
+                          left: 5,
+                          bottom: 5,
+                          child:
+                              _ImageStatusBadge(message: message, isMe: isMe),
                         ),
                       ],
-                      Positioned(
-                        left: 5,
-                        bottom: 5,
-                        child: _ImageStatusBadge(message: message, isMe: isMe),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -9650,6 +9728,7 @@ class _MessageBubble extends StatelessWidget {
   final bool isMe;
   final String token;
   final Map<String, dynamic>? me;
+  final void Function(Map<String, dynamic>)? onMessageOptions;
 
   const _MessageBubble({
     required this.message,
@@ -9657,6 +9736,7 @@ class _MessageBubble extends StatelessWidget {
     required this.isMe,
     required this.token,
     required this.me,
+    this.onMessageOptions,
   });
 
   Widget _statusIcon() {
@@ -9790,6 +9870,8 @@ class _MessageBubble extends StatelessWidget {
                             dates: conversationImages
                                 .map((item) => _imageSentAtLabel(item))
                                 .toList(),
+                            messages: conversationImages,
+                            onMessageOptions: onMessageOptions,
                             initialIndex: selectedImageIndex,
                           ),
                         )),
@@ -13218,7 +13300,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 _ConsecutiveImageGrid(
                                     messages: imageSequence,
                                     conversationMessages: _messages,
-                                    isMe: isMe)
+                                    isMe: isMe,
+                                    onForwardAll: () => _forwardChatMessages(
+                                        context,
+                                        widget.token,
+                                        widget.socket,
+                                        imageSequence),
+                                    onMessageOptions: _showMessageOptions)
                               else
                                 GestureDetector(
                                   onTap: !kIsWeb && msg['fileUrl'] == null
@@ -13290,6 +13378,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                     item['fileName'] as String?)
                                                                 .toList(),
                                                         dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
+                                                        messages: _conversationImageMessages(_messages),
+                                                        onMessageOptions: _showMessageOptions,
                                                         initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
                                             child: Stack(
                                               children: [
