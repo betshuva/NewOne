@@ -300,8 +300,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.69';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.69.apk';
+const kVersion = '1.2.70';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.70.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -7971,7 +7971,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _showExpressions() async {
-    final choice = await _showExpressionPicker(context);
+    final choice = await _showExpressionPicker(context, widget.token);
     if (choice == null || !mounted) return;
     if (choice == _gifPickerAction) {
       final result = await FilePicker.platform.pickFiles(
@@ -7982,6 +7982,37 @@ class _ChatScreenState extends State<ChatScreen> {
       if (result == null || result.files.isEmpty) return;
       final file = result.files.single;
       await _uploadAndSend(file.xFile, file.name, 'image');
+      return;
+    }
+    if (choice == _personalStickerAction) {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 90,
+      );
+      if (picked != null) {
+        await _uploadAndSend(picked, 'sticker_${picked.name}', 'image');
+      }
+      return;
+    }
+    if (choice.startsWith(_onlineGifPrefix)) {
+      final token = choice.substring(_onlineGifPrefix.length);
+      final response = await http.get(
+        Uri.parse(
+            '$kApi/gifs/download?token=${Uri.encodeQueryComponent(token)}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (response.statusCode != 200) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('הורדת ה-GIF נכשלה')));
+        }
+        return;
+      }
+      final file = XFile.fromData(response.bodyBytes,
+          mimeType: 'image/gif', name: 'tenor.gif');
+      await _uploadAndSend(file, file.name, 'image');
       return;
     }
     if (choice.startsWith(_stickerPrefix)) {
@@ -9673,33 +9704,207 @@ class _MessageBubble extends StatelessWidget {
 }
 
 const _gifPickerAction = '__pick_gif__';
+const _personalStickerAction = '__personal_sticker__';
+const _onlineGifPrefix = '__online_gif__:';
 const _stickerPrefix = '__sticker__:';
-const _messageEmojis = [
-  '😀',
-  '😂',
-  '😍',
-  '🥰',
-  '😊',
-  '😎',
-  '🤩',
-  '🥳',
-  '😢',
-  '😭',
-  '😡',
-  '🤔',
-  '🙏',
-  '👍',
-  '👎',
-  '👏',
-  '❤️',
-  '💙',
-  '💚',
-  '🔥',
-  '✨',
-  '🎉',
-  '🇮🇱',
-  '💪',
-];
+const _emojiCategories = <String, List<String>>{
+  'אחרונים': [],
+  'חיוכים': [
+    '😀',
+    '😃',
+    '😄',
+    '😁',
+    '😆',
+    '😅',
+    '😂',
+    '🤣',
+    '😊',
+    '😇',
+    '🙂',
+    '🙃',
+    '😉',
+    '😌',
+    '😍',
+    '🥰',
+    '😘',
+    '😋',
+    '😎',
+    '🤩',
+    '🥳',
+    '😏',
+    '😢',
+    '😭',
+    '😡',
+    '🤔',
+    '🤗',
+    '🤭',
+    '🫡',
+    '😴'
+  ],
+  'מחוות': [
+    '👍',
+    '👎',
+    '👌',
+    '✌️',
+    '🤞',
+    '🤟',
+    '🤘',
+    '🤙',
+    '👈',
+    '👉',
+    '👆',
+    '👇',
+    '☝️',
+    '✋',
+    '🤚',
+    '🖐️',
+    '👋',
+    '👏',
+    '🙌',
+    '👐',
+    '🤲',
+    '🙏',
+    '✍️',
+    '💪',
+    '🤝',
+    '🫶'
+  ],
+  'לבבות': [
+    '❤️',
+    '🧡',
+    '💛',
+    '💚',
+    '💙',
+    '💜',
+    '🖤',
+    '🤍',
+    '🤎',
+    '💔',
+    '❣️',
+    '💕',
+    '💞',
+    '💓',
+    '💗',
+    '💖',
+    '💘',
+    '💝',
+    '💟'
+  ],
+  'חיות': [
+    '🐶',
+    '🐱',
+    '🐭',
+    '🐹',
+    '🐰',
+    '🦊',
+    '🐻',
+    '🐼',
+    '🐨',
+    '🐯',
+    '🦁',
+    '🐮',
+    '🐷',
+    '🐸',
+    '🐵',
+    '🐔',
+    '🐧',
+    '🐦',
+    '🦋',
+    '🐝',
+    '🐞',
+    '🐢',
+    '🐬',
+    '🕊️'
+  ],
+  'אוכל': [
+    '🍎',
+    '🍊',
+    '🍋',
+    '🍉',
+    '🍇',
+    '🍓',
+    '🍒',
+    '🥑',
+    '🍅',
+    '🥕',
+    '🌽',
+    '🍞',
+    '🥐',
+    '🧀',
+    '🍕',
+    '🍔',
+    '🍟',
+    '🥗',
+    '🍰',
+    '🍫',
+    '☕',
+    '🍷'
+  ],
+  'פעילות': [
+    '⚽',
+    '🏀',
+    '🏈',
+    '⚾',
+    '🎾',
+    '🏐',
+    '🏓',
+    '🏸',
+    '🥊',
+    '🏆',
+    '🎯',
+    '🎮',
+    '🎲',
+    '🎸',
+    '🎤',
+    '🎨',
+    '🚴',
+    '🏃',
+    '🏊',
+    '🧘'
+  ],
+  'טבע': [
+    '☀️',
+    '🌤️',
+    '🌧️',
+    '⛈️',
+    '🌈',
+    '⭐',
+    '🌟',
+    '✨',
+    '🔥',
+    '💧',
+    '🌊',
+    '🌸',
+    '🌹',
+    '🌻',
+    '🌳',
+    '🍀',
+    '🌙',
+    '❄️'
+  ],
+  'סמלים': [
+    '✅',
+    '❌',
+    '❓',
+    '❗',
+    '⚠️',
+    '💯',
+    '🎉',
+    '🎊',
+    '🎁',
+    '💡',
+    '📌',
+    '📞',
+    '💬',
+    '🔔',
+    '🔒',
+    '🔑',
+    '🛡️',
+    '♻️',
+    '✡️',
+    '🇮🇱'
+  ],
+};
 const _messageStickers = [
   '👍',
   '❤️',
@@ -9717,94 +9922,285 @@ const _messageStickers = [
   '☀️',
   '🕊️',
   '🇮🇱',
+  'בוקר טוב ☀️',
+  'תודה רבה 🙏',
+  'כל הכבוד 👏',
+  'מזל טוב 🎉',
+  'שבת שלום 🕯️',
+  'בהצלחה 💪',
 ];
 
-Future<String?> _showExpressionPicker(BuildContext context) {
+Future<String?> _showExpressionPicker(BuildContext context, String token) {
   return showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (sheetContext) => SafeArea(
+    builder: (sheetContext) => _ExpressionPickerSheet(token: token),
+  );
+}
+
+class _ExpressionPickerSheet extends StatefulWidget {
+  final String token;
+  const _ExpressionPickerSheet({required this.token});
+
+  @override
+  State<_ExpressionPickerSheet> createState() => _ExpressionPickerSheetState();
+}
+
+class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
+  String _category = 'חיוכים';
+  String _emojiQuery = '';
+  final _gifSearch = TextEditingController();
+  List<String> _recent = [];
+  List<Map<String, dynamic>> _gifs = [];
+  bool _searchingGifs = false;
+  String? _gifError;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (!mounted) return;
+      setState(() => _recent = prefs.getStringList('recent_emojis') ?? []);
+    });
+  }
+
+  @override
+  void dispose() {
+    _gifSearch.dispose();
+    super.dispose();
+  }
+
+  Future<void> _chooseEmoji(String emoji) async {
+    final updated =
+        [emoji, ..._recent.where((item) => item != emoji)].take(24).toList();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('recent_emojis', updated);
+    if (mounted) Navigator.pop(context, emoji);
+  }
+
+  Future<void> _searchOnlineGifs() async {
+    final query = _gifSearch.text.trim();
+    if (query.isEmpty) return;
+    setState(() {
+      _searchingGifs = true;
+      _gifError = null;
+    });
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/gifs/search?q=${Uri.encodeQueryComponent(query)}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      final payload = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200)
+        throw Exception(payload['error'] ?? 'החיפוש נכשל');
+      if (!mounted) return;
+      setState(() => _gifs =
+          (payload['results'] as List? ?? []).cast<Map<String, dynamic>>());
+    } catch (error) {
+      if (mounted)
+        setState(
+            () => _gifError = error.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _searchingGifs = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final categoryValues = _category == 'אחרונים'
+        ? _recent
+        : (_emojiCategories[_category] ?? const <String>[]);
+    final query = _emojiQuery.trim();
+    final matchingCategories = _emojiCategories.entries
+        .where((entry) => entry.key.contains(query))
+        .expand((entry) => entry.value);
+    final emojis = query.isEmpty
+        ? categoryValues
+        : <String>{
+            ...matchingCategories,
+            ..._emojiCategories.values
+                .expand((items) => items)
+                .where((emoji) => emoji.contains(query)),
+          }.toList();
+    return SafeArea(
       child: DefaultTabController(
         length: 3,
         child: SizedBox(
-          height: 360,
-          child: Column(
-            children: [
-              const TabBar(
-                labelColor: kPrimary,
-                tabs: [
-                  Tab(
-                      icon: Icon(Icons.emoji_emotions_outlined),
-                      text: 'אימוג׳י'),
-                  Tab(icon: Icon(Icons.auto_awesome), text: 'מדבקות'),
-                  Tab(icon: Icon(Icons.gif_box_outlined), text: 'GIF'),
-                ],
-              ),
-              Expanded(
-                child: TabBarView(
-                  children: [
-                    GridView.builder(
-                      padding: const EdgeInsets.all(16),
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 8,
-                      ),
-                      itemCount: _messageEmojis.length,
-                      itemBuilder: (_, index) => InkWell(
-                        borderRadius: BorderRadius.circular(12),
-                        onTap: () =>
-                            Navigator.pop(sheetContext, _messageEmojis[index]),
-                        child: Center(
-                          child: Text(_messageEmojis[index],
-                              style: const TextStyle(fontSize: 28)),
-                        ),
-                      ),
-                    ),
-                    GridView.builder(
-                      padding: const EdgeInsets.all(16),
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 4,
-                        mainAxisSpacing: 10,
-                        crossAxisSpacing: 10,
-                      ),
-                      itemCount: _messageStickers.length,
-                      itemBuilder: (_, index) => InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: () => Navigator.pop(sheetContext,
-                            '$_stickerPrefix${_messageStickers[index]}'),
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF0F6FC),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Center(
-                            child: Text(_messageStickers[index],
-                                style: const TextStyle(fontSize: 44)),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Center(
-                      child: ElevatedButton.icon(
-                        onPressed: () =>
-                            Navigator.pop(sheetContext, _gifPickerAction),
-                        icon: const Icon(Icons.gif_box_outlined),
-                        label: const Text('בחירת GIF מהמכשיר'),
-                      ),
-                    ),
-                  ],
+          height: MediaQuery.of(context).size.height * 0.68,
+          child: Column(children: [
+            const TabBar(labelColor: kPrimary, tabs: [
+              Tab(icon: Icon(Icons.emoji_emotions_outlined), text: 'אימוג׳י'),
+              Tab(icon: Icon(Icons.auto_awesome), text: 'מדבקות'),
+              Tab(icon: Icon(Icons.gif_box_outlined), text: 'GIF'),
+            ]),
+            Expanded(
+                child: TabBarView(children: [
+              Column(children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                  child: TextField(
+                    decoration: const InputDecoration(
+                        hintText: 'חיפוש אימוג׳י...',
+                        prefixIcon: Icon(Icons.search),
+                        isDense: true),
+                    onChanged: (value) => setState(() => _emojiQuery = value),
+                  ),
                 ),
-              ),
-            ],
-          ),
+                SizedBox(
+                    height: 42,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: _emojiCategories.keys
+                          .map((name) => Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 3),
+                                child: ChoiceChip(
+                                    label: Text(name),
+                                    selected: _category == name,
+                                    onSelected: (_) =>
+                                        setState(() => _category = name)),
+                              ))
+                          .toList(),
+                    )),
+                Expanded(
+                    child: emojis.isEmpty
+                        ? const Center(child: Text('אין אימוג׳ים להצגה'))
+                        : GridView.builder(
+                            padding: const EdgeInsets.all(12),
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 8),
+                            itemCount: emojis.length,
+                            itemBuilder: (_, index) => InkWell(
+                              onTap: () => _chooseEmoji(emojis[index]),
+                              child: Center(
+                                  child: Text(emojis[index],
+                                      style: const TextStyle(fontSize: 28))),
+                            ),
+                          )),
+              ]),
+              Column(children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: () =>
+                            Navigator.pop(context, _personalStickerAction),
+                        icon: const Icon(Icons.add_photo_alternate_outlined),
+                        label: const Text('יצירת מדבקה מתמונה — לאחר סריקה'),
+                      )),
+                ),
+                Expanded(
+                    child: GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      mainAxisSpacing: 10,
+                      crossAxisSpacing: 10),
+                  itemCount: _messageStickers.length,
+                  itemBuilder: (_, index) => InkWell(
+                    onTap: () => Navigator.pop(
+                        context, '$_stickerPrefix${_messageStickers[index]}'),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                          color: const Color(0xFFF0F6FC),
+                          borderRadius: BorderRadius.circular(16)),
+                      child: Center(
+                          child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: Text(_messageStickers[index],
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                fontSize:
+                                    _messageStickers[index].runes.length <= 3
+                                        ? 42
+                                        : 18,
+                                fontWeight: FontWeight.w600)),
+                      )),
+                    ),
+                  ),
+                )),
+              ]),
+              Column(children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(children: [
+                    Expanded(
+                        child: TextField(
+                            controller: _gifSearch,
+                            onSubmitted: (_) => _searchOnlineGifs(),
+                            decoration: const InputDecoration(
+                                hintText: 'חיפוש GIF בטוח...',
+                                prefixIcon: Icon(Icons.search)))),
+                    const SizedBox(width: 8),
+                    IconButton(
+                        onPressed: _searchingGifs ? null : _searchOnlineGifs,
+                        icon: _searchingGifs
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.search)),
+                  ]),
+                ),
+                if (_gifError != null)
+                  Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(_gifError!,
+                          style: const TextStyle(color: Colors.red))),
+                Expanded(
+                    child: _gifs.isEmpty
+                        ? Center(
+                            child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                const Text('חפשו GIF או בחרו קובץ מהמכשיר'),
+                                const SizedBox(height: 12),
+                                OutlinedButton.icon(
+                                    onPressed: () => Navigator.pop(
+                                        context, _gifPickerAction),
+                                    icon: const Icon(Icons.folder_open),
+                                    label: const Text('בחירה מהמכשיר')),
+                              ]))
+                        : GridView.builder(
+                            padding: const EdgeInsets.all(10),
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 3,
+                                    mainAxisSpacing: 6,
+                                    crossAxisSpacing: 6),
+                            itemCount: _gifs.length,
+                            itemBuilder: (_, index) {
+                              final gif = _gifs[index];
+                              return InkWell(
+                                onTap: () => Navigator.pop(context,
+                                    '$_onlineGifPrefix${gif['downloadToken']}'),
+                                child: Image.network(
+                                    gif['previewUrl'] as String,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) =>
+                                        const ColoredBox(
+                                            color: kBorder,
+                                            child: Icon(Icons.broken_image))),
+                              );
+                            },
+                          )),
+                const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text('Powered by Tenor • כל GIF נסרק לפני השליחה',
+                        style: TextStyle(fontSize: 11, color: kSubtext))),
+              ]),
+            ])),
+          ]),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _AttachOption extends StatelessWidget {
@@ -11378,7 +11774,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _showGroupExpressions() async {
-    final choice = await _showExpressionPicker(context);
+    final choice = await _showExpressionPicker(context, widget.token);
     if (choice == null || !mounted) return;
     if (choice == _gifPickerAction) {
       final result = await FilePicker.platform.pickFiles(
@@ -11389,6 +11785,37 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (result == null || result.files.isEmpty) return;
       final file = result.files.single;
       await _uploadGroupFile(file.xFile, file.name, 'image');
+      return;
+    }
+    if (choice == _personalStickerAction) {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 90,
+      );
+      if (picked != null) {
+        await _uploadGroupFile(picked, 'sticker_${picked.name}', 'image');
+      }
+      return;
+    }
+    if (choice.startsWith(_onlineGifPrefix)) {
+      final token = choice.substring(_onlineGifPrefix.length);
+      final response = await http.get(
+        Uri.parse(
+            '$kApi/gifs/download?token=${Uri.encodeQueryComponent(token)}'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (response.statusCode != 200) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('הורדת ה-GIF נכשלה')));
+        }
+        return;
+      }
+      final file = XFile.fromData(response.bodyBytes,
+          mimeType: 'image/gif', name: 'tenor.gif');
+      await _uploadGroupFile(file, file.name, 'image');
       return;
     }
     if (choice.startsWith(_stickerPrefix)) {

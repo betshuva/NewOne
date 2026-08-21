@@ -11,6 +11,7 @@ const crypto     = require('crypto');
 const multer     = require('multer');
 const path       = require('path');
 const fs         = require('fs/promises');
+const sharp      = require('sharp');
 const { cert, getApps, initializeApp } = require('firebase-admin/app');
 const { getMessaging } = require('firebase-admin/messaging');
 const { getPool } = require('./db');
@@ -718,18 +719,7 @@ function isPotentiallyAnimatedImage(buffer) {
 }
 
 
-async function scanImage(buffer, options = {}) {
-  if (isPotentiallyAnimatedImage(buffer)) {
-    return {
-      blocked: true,
-      blockedBy: 'animatedImage',
-      reason: 'תמונה מונפשת אינה נתמכת בסריקה ולכן נחסמה',
-      labels: [], faces: [], safeSearch: {}, genderResults: null,
-      classification: null, strictModesty: null, localSafety: null,
-      googleSafeSearch: null,
-    };
-  }
-
+async function scanStaticImage(buffer, options = {}) {
   const localSafetyPromise = classifyLocalSafety(buffer);
   const capture = promise => promise.then(
     value => ({ ok: true, value }),
@@ -888,6 +878,75 @@ async function scanImage(buffer, options = {}) {
   }
 
   return { ...finalCommon, blocked: false, blockedBy: null };
+}
+
+async function scanImage(buffer, options = {}) {
+  if (!isPotentiallyAnimatedImage(buffer))
+    return scanStaticImage(buffer, options);
+
+  let metadata;
+  try {
+    metadata = await sharp(buffer, { animated: true }).metadata();
+  } catch (error) {
+    return {
+      blocked: true,
+      blockedBy: 'animatedImageDecode',
+      reason: 'לא ניתן לפענח את התמונה המונפשת לצורך סריקה',
+      error: error.message,
+    };
+  }
+  const frameCount = Number(metadata.pages || 1);
+  const maxScannableFrames = 12;
+  if (frameCount > maxScannableFrames) {
+    return {
+      blocked: true,
+      blockedBy: 'animatedImageTooManyFrames',
+      reason: `GIF יכול להכיל עד ${maxScannableFrames} פריימים כדי שכל התמונה תיסרק`,
+      frameCount,
+      framesScanned: 0,
+    };
+  }
+
+  const frameResults = [];
+  for (let page = 0; page < frameCount; page++) {
+    let frame;
+    try {
+      frame = await sharp(buffer, { animated: true, page, pages: 1 })
+        .png()
+        .toBuffer();
+    } catch (error) {
+      return {
+        blocked: true,
+        blockedBy: 'animatedImageDecode',
+        reason: `לא ניתן לסרוק את פריים ${page + 1} בתמונה המונפשת`,
+        frameCount,
+        framesScanned: page,
+        error: error.message,
+      };
+    }
+    const result = await scanStaticImage(frame);
+    frameResults.push(result);
+    if (result.blocked) return {
+      ...result,
+      reason: `GIF נחסם בפריים ${page + 1}: ${result.reason || 'תוכן לא מאושר'}`,
+      frameCount,
+      framesScanned: page + 1,
+    };
+    if (result.pending) return {
+      ...result,
+      reason: `סריקת GIF ממתינה בפריים ${page + 1}: ${result.reason || 'שירות הסריקה אינו זמין'}`,
+      frameCount,
+      framesScanned: page + 1,
+    };
+  }
+  return {
+    ...frameResults[0],
+    blocked: false,
+    blockedBy: null,
+    animated: true,
+    frameCount,
+    framesScanned: frameCount,
+  };
 }
 
 async function scanDocument(buffer, mimetype) {
@@ -3293,6 +3352,78 @@ app.post('/api/fcm-token', auth, async (req, res) => {
 });
 
 // ── File Upload ───────────────────────────────────────────────────
+app.get('/api/gifs/search', auth, searchRateLimit, async (req, res) => {
+  const apiKey = process.env.TENOR_API_KEY;
+  if (!apiKey)
+    return res.status(503).json({ error: 'חיפוש GIF טרם הוגדר בשרת' });
+  const query = String(req.query.q || '').trim().slice(0, 80);
+  if (!query) return res.status(400).json({ error: 'יש להזין מילת חיפוש' });
+  try {
+    const url = new URL('https://tenor.googleapis.com/v2/search');
+    url.searchParams.set('key', apiKey);
+    url.searchParams.set('client_key', 'betshuva_messenger');
+    url.searchParams.set('q', query);
+    url.searchParams.set('limit', '20');
+    url.searchParams.set('locale', 'he_IL');
+    url.searchParams.set('country', 'IL');
+    url.searchParams.set('contentfilter', 'high');
+    url.searchParams.set('media_filter', 'gif,tinygif');
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`Tenor ${response.status}`);
+    const payload = await response.json();
+    const results = (payload.results || []).flatMap(item => {
+      const full = item.media_formats?.gif;
+      const preview = item.media_formats?.tinygif || full;
+      if (!full?.url || !preview?.url) return [];
+      const token = jwt.sign(
+        { purpose: 'gif-download', url: full.url, id: String(item.id || '') },
+        JWT_SECRET,
+        { expiresIn: '10m' },
+      );
+      return [{
+        id: String(item.id || ''),
+        description: String(item.content_description || ''),
+        previewUrl: preview.url,
+        width: Number(preview.dims?.[0] || 1),
+        height: Number(preview.dims?.[1] || 1),
+        downloadToken: token,
+      }];
+    });
+    res.json({ results, attribution: 'Tenor' });
+  } catch (error) {
+    console.error('gif search:', error.message);
+    res.status(502).json({ error: 'חיפוש ה-GIF נכשל' });
+  }
+});
+
+app.get('/api/gifs/download', auth, async (req, res) => {
+  try {
+    const decoded = jwt.verify(String(req.query.token || ''), JWT_SECRET);
+    if (decoded.purpose !== 'gif-download') throw new Error('invalid purpose');
+    const gifUrl = new URL(decoded.url);
+    if (gifUrl.protocol !== 'https:' ||
+        !(gifUrl.hostname === 'tenor.com' || gifUrl.hostname.endsWith('.tenor.com')))
+      return res.status(400).json({ error: 'מקור GIF אינו מורשה' });
+    const response = await fetch(gifUrl, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`GIF download ${response.status}`);
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().startsWith('image/gif'))
+      return res.status(415).json({ error: 'הקובץ שהתקבל אינו GIF' });
+    const declaredSize = Number(response.headers.get('content-length') || 0);
+    if (declaredSize > 10 * 1024 * 1024)
+      return res.status(413).json({ error: 'קובץ ה-GIF גדול מדי' });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > 10 * 1024 * 1024)
+      return res.status(413).json({ error: 'קובץ ה-GIF גדול מדי' });
+    res.set('Content-Type', 'image/gif');
+    res.set('Cache-Control', 'private, no-store');
+    res.send(buffer);
+  } catch (error) {
+    console.error('gif download:', error.message);
+    res.status(400).json({ error: 'קישור ה-GIF אינו תקין או שפג תוקפו' });
+  }
+});
+
 app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
