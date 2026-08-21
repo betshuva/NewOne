@@ -4078,9 +4078,9 @@ app.delete('/api/groups/:id/decline', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Groups: invite an unregistered contact (email preferred, SMS fallback) ──
+// ── Groups: invite an unregistered contact (email, SMS, or WhatsApp handoff) ──
 app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) => {
-  const { phone, email, contactName } = req.body;
+  const { phone, email, contactName, delivery } = req.body;
   const cleanPhone = String(phone || '').replace(/\D/g, '');
   const cleanEmail = String(email || '').trim().toLowerCase();
   if (!cleanPhone && !cleanEmail.includes('@'))
@@ -4111,14 +4111,18 @@ app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) =
         [req.params.id, req.user.id, cleanEmail.includes('@') ? cleanEmail : null,
          cleanPhone || null, contactName || null]);
     }
-    await mailer.sendMail({
-      from:    `"בתשובה" <${process.env.EMAIL_FROM}>`,
-      to:      cleanEmail.includes('@') ? cleanEmail : `${cleanPhone}@019sms.co.il`,
-      subject: cleanEmail.includes('@') ? `הזמנה לקבוצה "${groupName}" בבתשובה` : msg,
-      text:    msg,
-    });
+    // WhatsApp is opened by the client so the user can review and send the
+    // prefilled message. Do not also send a duplicate SMS in that flow.
+    if (delivery !== 'whatsapp') {
+      await mailer.sendMail({
+        from:    `"בתשובה" <${process.env.EMAIL_FROM}>`,
+        to:      cleanEmail.includes('@') ? cleanEmail : `${cleanPhone}@019sms.co.il`,
+        subject: cleanEmail.includes('@') ? `הזמנה לקבוצה "${groupName}" בבתשובה` : msg,
+        text:    msg,
+      });
+    }
 
-    res.json({ ok: true });
+    res.json({ ok: true, message: msg });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

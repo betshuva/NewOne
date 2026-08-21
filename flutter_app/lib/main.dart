@@ -26,6 +26,29 @@ import 'media_cache.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
 
+const _appInviteUrl = 'https://betshuva.com/betshuva-app/home.html';
+
+String _whatsAppPhoneNumber(String rawPhone) {
+  var digits = rawPhone.replaceAll(RegExp(r'\D'), '');
+  if (digits.startsWith('00')) digits = digits.substring(2);
+  if (digits.startsWith('0')) digits = '972${digits.substring(1)}';
+  return digits;
+}
+
+Uri _whatsAppUri(String rawPhone, String message) {
+  final phone = _whatsAppPhoneNumber(rawPhone);
+  return Uri.parse(
+    'https://wa.me/$phone?text=${Uri.encodeComponent(message)}',
+  );
+}
+
+Future<bool> _openWhatsApp(String phone, String message) {
+  return launchUrl(
+    _whatsAppUri(phone, message),
+    mode: LaunchMode.externalApplication,
+  );
+}
+
 MediaType _mimeFromFileName(String fileName) {
   switch (fileName.split('.').last.toLowerCase()) {
     case 'jpg':
@@ -300,8 +323,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.71';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.71.apk';
+const kVersion = '1.2.72';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.72.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -5978,25 +6001,33 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           Future<void> invite(Map<String, dynamic> contact) async {
             final email = (contact['email'] ?? '').toString();
             final phone = (contact['phone'] ?? '').toString();
-            final uri = email.contains('@')
-                ? Uri(
-                    scheme: 'mailto',
-                    path: email,
-                    queryParameters: {
-                      'subject': 'הזמנה לבתשובה',
-                      'body':
-                          'הצטרף אליי לאפליקציית בתשובה: https://betshuva.com/betshuva-app/home.html',
-                    },
-                  )
-                : Uri(
-                    scheme: 'sms',
-                    path: phone,
-                    queryParameters: {
-                      'body':
-                          'הצטרף אליי לאפליקציית בתשובה: https://betshuva.com/betshuva-app/home.html',
-                    },
-                  );
-            await launchUrl(uri, mode: LaunchMode.externalApplication);
+            const message = 'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
+            if (phone.trim().isNotEmpty) {
+              final opened = await _openWhatsApp(phone, message);
+              if (!opened) {
+                await Clipboard.setData(const ClipboardData(text: message));
+                if (!dialogContext.mounted) return;
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
+                  const SnackBar(
+                    content: Text('לא ניתן לפתוח את WhatsApp. ההודעה הועתקה.'),
+                  ),
+                );
+              }
+              return;
+            }
+            if (email.contains('@')) {
+              await launchUrl(
+                Uri(
+                  scheme: 'mailto',
+                  path: email,
+                  queryParameters: {
+                    'subject': 'הזמנה לבתשובה',
+                    'body': message,
+                  },
+                ),
+                mode: LaunchMode.externalApplication,
+              );
+            }
           }
 
           return AlertDialog(
@@ -10949,11 +10980,31 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode(
-            {'phone': phone, 'email': email, 'contactName': contactName}),
+        body: jsonEncode({
+          'phone': phone,
+          'email': email,
+          'contactName': contactName,
+          if (phone?.trim().isNotEmpty == true) 'delivery': 'whatsapp',
+        }),
       );
       if (!mounted) return;
       if (res.statusCode == 200) {
+        if (phone?.trim().isNotEmpty == true) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          final message = data['message'] as String? ??
+              'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
+          final opened = await _openWhatsApp(phone!, message);
+          if (!opened) {
+            await Clipboard.setData(ClipboardData(text: message));
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('לא ניתן לפתוח את WhatsApp. ההודעה הועתקה.'),
+              ),
+            );
+          }
+          return;
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('ההזמנה נשלחה ל$contactName')),
         );
@@ -11224,9 +11275,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                           style: TextStyle(fontSize: 11)),
                                       trailing: TextButton.icon(
                                         icon: Icon(
-                                            c['email'] != null
+                                            c['phone'] == null &&
+                                                    c['email'] != null
                                                 ? Icons.email_outlined
-                                                : Icons.sms_outlined,
+                                                : Icons.chat_outlined,
                                             size: 16),
                                         label: const Text('הזמן'),
                                         style: TextButton.styleFrom(
@@ -11285,16 +11337,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         title: Text('הזמן את $contactName'),
         content: Text(
           '$contactName אינו רשום בבתשובה.\n\n'
-          'האם לשלוח ${email != null ? 'אימייל' : 'SMS'} עם הזמנה להצטרף לקבוצה "$groupName"?',
+          'האם לשלוח ${phone?.trim().isNotEmpty == true ? 'הודעת WhatsApp' : 'אימייל'} עם הזמנה להצטרף לקבוצה "$groupName"?',
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
               child: const Text('ביטול')),
           ElevatedButton.icon(
-            icon:
-                Icon(email != null ? Icons.email_outlined : Icons.sms_outlined),
-            label: Text(email != null ? 'שלח אימייל' : 'שלח SMS'),
+            icon: Icon(phone?.trim().isNotEmpty == true
+                ? Icons.chat_outlined
+                : Icons.email_outlined),
+            label: Text(phone?.trim().isNotEmpty == true
+                ? 'פתח WhatsApp'
+                : 'שלח אימייל'),
             style: ElevatedButton.styleFrom(backgroundColor: kPrimary),
             onPressed: () => Navigator.pop(context, true),
           ),
