@@ -90,6 +90,14 @@ CREATE TABLE IF NOT EXISTS message_status (
   PRIMARY KEY (message_id, user_id)
 );
 
+-- הודעות שהוסתרו רק למשתמש מסוים (בצ'אט פרטי או קבוצתי)
+CREATE TABLE IF NOT EXISTS message_user_deletions (
+  message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id, user_id)
+);
+
 -- ── Groups: membership ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS group_members (
   group_id      UUID NOT NULL REFERENCES groups(id),

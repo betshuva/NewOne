@@ -49,6 +49,61 @@ Future<bool> _openWhatsApp(String phone, String message) {
   );
 }
 
+Uri _deviceSmsUri(String phone, String message) => Uri(
+      scheme: 'sms',
+      path: phone,
+      queryParameters: {'body': message},
+    );
+
+Future<String?> _chooseInviteDelivery(BuildContext context,
+    {required bool hasPhone, required bool hasEmail}) {
+  return showModalBottomSheet<String>(
+    context: context,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('איך לשלוח את ההזמנה?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+          if (hasEmail)
+            ListTile(
+              leading: const Icon(Icons.email_outlined),
+              title: const Text('אימייל'),
+              onTap: () => Navigator.pop(sheetContext, 'email'),
+            ),
+          if (hasPhone)
+            ListTile(
+              leading: const Icon(Icons.chat_outlined),
+              title: const Text('WhatsApp'),
+              onTap: () => Navigator.pop(sheetContext, 'whatsapp'),
+            ),
+          if (hasPhone)
+            ListTile(
+              leading: const Icon(Icons.phone_android_outlined),
+              title: const Text('הודעה מהמכשיר שלי'),
+              subtitle: const Text('פתיחת אפליקציית ההודעות במכשיר'),
+              onTap: () => Navigator.pop(sheetContext, 'device_sms'),
+            ),
+          if (hasPhone)
+            ListTile(
+              leading: const Icon(Icons.sms_outlined),
+              title: const Text('SMS ממערכת בתשובה'),
+              subtitle: const Text('המערכת תשלח את ההודעה ישירות'),
+              onTap: () => Navigator.pop(sheetContext, 'system_sms'),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    ),
+  );
+}
+
 MediaType _mimeFromFileName(String fileName) {
   switch (fileName.split('.').last.toLowerCase()) {
     case 'jpg':
@@ -323,8 +378,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.72';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.72.apk';
+const kVersion = '1.2.73';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.73.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -6002,7 +6057,13 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             final email = (contact['email'] ?? '').toString();
             final phone = (contact['phone'] ?? '').toString();
             const message = 'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
-            if (phone.trim().isNotEmpty) {
+            final delivery = await _chooseInviteDelivery(
+              dialogContext,
+              hasPhone: phone.trim().isNotEmpty,
+              hasEmail: email.contains('@'),
+            );
+            if (delivery == null) return;
+            if (delivery == 'whatsapp') {
               final opened = await _openWhatsApp(phone, message);
               if (!opened) {
                 await Clipboard.setData(const ClipboardData(text: message));
@@ -6015,7 +6076,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
               }
               return;
             }
-            if (email.contains('@')) {
+            if (delivery == 'device_sms') {
+              await launchUrl(_deviceSmsUri(phone, message),
+                  mode: LaunchMode.externalApplication);
+              return;
+            }
+            if (delivery == 'email') {
               await launchUrl(
                 Uri(
                   scheme: 'mailto',
@@ -6027,6 +6093,23 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 ),
                 mode: LaunchMode.externalApplication,
               );
+              return;
+            }
+            if (delivery == 'system_sms') {
+              final response = await http.post(
+                Uri.parse('$kApi/invites/send'),
+                headers: {
+                  'Authorization': 'Bearer ${widget.token}',
+                  'Content-Type': 'application/json',
+                },
+                body: jsonEncode({'phone': phone}),
+              );
+              if (!dialogContext.mounted) return;
+              ScaffoldMessenger.of(dialogContext).showSnackBar(SnackBar(
+                content: Text(response.statusCode == 200
+                    ? 'ההזמנה נשלחה ב־SMS'
+                    : 'שליחת ה־SMS נכשלה'),
+              ));
             }
           }
 
@@ -7637,6 +7720,15 @@ class _ChatScreenState extends State<ChatScreen> {
                   });
                 },
               ),
+            if (msg['id']?.toString().startsWith('temp_') != true)
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('מחק אצלי'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _deleteMessage(msg, forEveryone: false);
+                },
+              ),
             if (isMe && msg['id']?.toString().startsWith('temp_') != true)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.red),
@@ -7644,7 +7736,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     style: TextStyle(color: Colors.red)),
                 onTap: () {
                   Navigator.pop(context);
-                  _deleteMessageForEveryone(msg);
+                  _deleteMessage(msg, forEveryone: true);
                 },
               ),
           ],
@@ -7653,12 +7745,15 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Future<void> _deleteMessageForEveryone(Map<String, dynamic> message) async {
+  Future<void> _deleteMessage(Map<String, dynamic> message,
+      {required bool forEveryone}) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('מחיקת הודעה'),
-        content: const Text('למחוק את ההודעה אצל כולם?'),
+        content: Text(forEveryone
+            ? 'למחוק את ההודעה אצל כולם?'
+            : 'למחוק את ההודעה רק אצלך?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -7680,15 +7775,19 @@ class _ChatScreenState extends State<ChatScreen> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'forEveryone': true}),
+        body: jsonEncode({'forEveryone': forEveryone}),
       );
       if (!mounted) return;
       if (response.statusCode == 200) {
         setState(() {
-          message['text'] = '🚫 הודעה נמחקה';
-          message['isFile'] = false;
-          message['fileUrl'] = null;
-          message['fileName'] = null;
+          if (forEveryone) {
+            message['text'] = '🚫 הודעה נמחקה';
+            message['isFile'] = false;
+            message['fileUrl'] = null;
+            message['fileName'] = null;
+          } else {
+            _messages.removeWhere((item) => item['id'] == message['id']);
+          }
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -10972,7 +11071,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _inviteExternalContact(
-      String? phone, String? email, String contactName) async {
+      String? phone, String? email, String contactName, String delivery) async {
     try {
       final res = await http.post(
         Uri.parse('$kApi/groups/$_groupId/invite-sms'),
@@ -10984,29 +11083,36 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'phone': phone,
           'email': email,
           'contactName': contactName,
-          if (phone?.trim().isNotEmpty == true) 'delivery': 'whatsapp',
+          'delivery': delivery,
         }),
       );
       if (!mounted) return;
       if (res.statusCode == 200) {
-        if (phone?.trim().isNotEmpty == true) {
+        if (delivery == 'whatsapp' || delivery == 'device_sms') {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
           final message = data['message'] as String? ??
               'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
-          final opened = await _openWhatsApp(phone!, message);
+          final opened = delivery == 'whatsapp'
+              ? await _openWhatsApp(phone!, message)
+              : await launchUrl(_deviceSmsUri(phone!, message),
+                  mode: LaunchMode.externalApplication);
           if (!opened) {
             await Clipboard.setData(ClipboardData(text: message));
             if (!mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('לא ניתן לפתוח את WhatsApp. ההודעה הועתקה.'),
+                content:
+                    Text('לא ניתן לפתוח את אפליקציית השליחה. ההודעה הועתקה.'),
               ),
             );
           }
           return;
         }
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('ההזמנה נשלחה ל$contactName')),
+          SnackBar(
+              content: Text(delivery == 'system_sms'
+                  ? 'ההזמנה נשלחה ב־SMS ל$contactName'
+                  : 'ההזמנה נשלחה באימייל ל$contactName')),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -11330,35 +11436,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> _confirmAndInvite(
       String? phone, String? email, String contactName) async {
-    final groupName = widget.group['name'] as String? ?? 'הקבוצה';
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('הזמן את $contactName'),
-        content: Text(
-          '$contactName אינו רשום בבתשובה.\n\n'
-          'האם לשלוח ${phone?.trim().isNotEmpty == true ? 'הודעת WhatsApp' : 'אימייל'} עם הזמנה להצטרף לקבוצה "$groupName"?',
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('ביטול')),
-          ElevatedButton.icon(
-            icon: Icon(phone?.trim().isNotEmpty == true
-                ? Icons.chat_outlined
-                : Icons.email_outlined),
-            label: Text(phone?.trim().isNotEmpty == true
-                ? 'פתח WhatsApp'
-                : 'שלח אימייל'),
-            style: ElevatedButton.styleFrom(backgroundColor: kPrimary),
-            onPressed: () => Navigator.pop(context, true),
-          ),
-        ],
-      ),
+    final delivery = await _chooseInviteDelivery(
+      context,
+      hasPhone: phone?.trim().isNotEmpty == true,
+      hasEmail: email?.contains('@') == true,
     );
-    if (confirm == true) {
-      _inviteExternalContact(phone, email, contactName);
-    }
+    if (delivery == null || !mounted) return;
+    _inviteExternalContact(phone, email, contactName, delivery);
   }
 
   void _showMembersDialog() {
@@ -11852,6 +11936,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   });
                 },
               ),
+            if (msg['id']?.toString().startsWith('temp_') != true)
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('מחק אצלי'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _deleteGroupMessage(msg, forEveryone: false);
+                },
+              ),
             if (isMe && msg['id']?.toString().startsWith('temp_') != true)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.red),
@@ -11859,7 +11952,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     style: TextStyle(color: Colors.red)),
                 onTap: () {
                   Navigator.pop(context);
-                  _deleteGroupMessage(msg);
+                  _deleteGroupMessage(msg, forEveryone: true);
                 },
               ),
           ],
@@ -11868,12 +11961,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
-  Future<void> _deleteGroupMessage(Map<String, dynamic> message) async {
+  Future<void> _deleteGroupMessage(Map<String, dynamic> message,
+      {required bool forEveryone}) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('מחיקת הודעה'),
-        content: const Text('למחוק את ההודעה אצל כל חברי הקבוצה?'),
+        content: Text(forEveryone
+            ? 'למחוק את ההודעה אצל כל חברי הקבוצה?'
+            : 'למחוק את ההודעה רק אצלך?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -11895,15 +11991,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'forEveryone': true}),
+        body: jsonEncode({'forEveryone': forEveryone}),
       );
       if (!mounted) return;
       if (response.statusCode == 200) {
         setState(() {
-          message['text'] = '🚫 הודעה נמחקה';
-          message['fileUrl'] = null;
-          message['fileName'] = null;
-          message['fileType'] = 'text';
+          if (forEveryone) {
+            message['text'] = '🚫 הודעה נמחקה';
+            message['fileUrl'] = null;
+            message['fileName'] = null;
+            message['fileType'] = 'text';
+          } else {
+            _messages.removeWhere((item) => item['id'] == message['id']);
+          }
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(

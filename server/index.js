@@ -1205,6 +1205,13 @@ async function migrateDatabase() {
         updated_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (message_id, user_id)
       )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS message_user_deletions (
+        message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        deleted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (message_id, user_id)
+      )`);
 
     // ── Group Members ──────────────────────────────────────────────
     await pool.query(`
@@ -2540,6 +2547,10 @@ app.get('/api/messages/unread', auth, async (req, res) => {
         ON ms.message_id = m.id AND ms.user_id = $1
       WHERE m.recipient_id = $1
         AND m.deleted_for_everyone = FALSE
+        AND NOT EXISTS (
+          SELECT 1 FROM message_user_deletions mud
+          WHERE mud.message_id=m.id AND mud.user_id=$1
+        )
         AND (ms.status IS NULL OR ms.status != 'read')
       GROUP BY m.sender_id
     `, [req.user.id]);
@@ -2564,6 +2575,11 @@ app.get('/api/groups/unread', auth, async (req, res) => {
         ON ms.message_id=m.id AND ms.user_id=$1
       WHERE m.group_id IS NOT NULL
         AND m.sender_id != $1
+        AND m.deleted_for_everyone = FALSE
+        AND NOT EXISTS (
+          SELECT 1 FROM message_user_deletions mud
+          WHERE mud.message_id=m.id AND mud.user_id=$1
+        )
         AND m.created_at >= gm.joined_at
         AND (ms.status IS NULL OR ms.status != 'read')
       GROUP BY m.group_id
@@ -2616,6 +2632,10 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       LEFT JOIN message_status ms ON ms.message_id = m.id
         AND ms.user_id = CASE WHEN m.sender_id=$1 THEN $2 ELSE $1 END
       WHERE m.deleted_for_everyone = FALSE
+        AND NOT EXISTS (
+          SELECT 1 FROM message_user_deletions mud
+          WHERE mud.message_id=m.id AND mud.user_id=$1
+        )
         AND (
           (m.sender_id = $1 AND m.recipient_id = $2 AND m.deleted_for_sender = FALSE)
           OR
@@ -2882,8 +2902,14 @@ app.delete('/api/messages/:id', auth, async (req, res) => {
     const msg = found.rows[0];
     if (!msg) return res.status(404).json({ error: 'הודעה לא נמצאה' });
 
-    if (forEveryone && msg.sender_id === req.user.id) {
-      await pool.query('UPDATE messages SET deleted_for_everyone=TRUE, body=NULL WHERE id=$1', [req.params.id]);
+    if (forEveryone) {
+      if (msg.sender_id !== req.user.id)
+        return res.status(403).json({ error: 'רק שולח ההודעה יכול למחוק אצל כולם' });
+      await pool.query(
+        `UPDATE messages
+         SET deleted_for_everyone=TRUE, body=NULL, file_url=NULL, file_name=NULL
+         WHERE id=$1`,
+        [req.params.id]);
       const sid = onlineUsers.get(msg.recipient_id);
       if (sid) io.to(sid).emit('message:deleted', { id: req.params.id });
       if (msg.group_id) {
@@ -2893,8 +2919,19 @@ app.delete('/api/messages/:id', auth, async (req, res) => {
         });
       }
     } else {
+      if (msg.group_id) {
+        const member = await pool.query(
+          `SELECT 1 FROM group_members
+           WHERE group_id=$1 AND user_id=$2 AND status='member'`,
+          [msg.group_id, req.user.id]);
+        if (!member.rows.length)
+          return res.status(403).json({ error: 'אין הרשאה למחוק הודעה זו' });
+      } else if (msg.sender_id !== req.user.id && msg.recipient_id !== req.user.id) {
+        return res.status(403).json({ error: 'אין הרשאה למחוק הודעה זו' });
+      }
       await pool.query(
-        'UPDATE messages SET deleted_for_sender=TRUE WHERE id=$1 AND sender_id=$2',
+        `INSERT INTO message_user_deletions(message_id,user_id)
+         VALUES($1,$2) ON CONFLICT DO NOTHING`,
         [req.params.id, req.user.id]);
     }
     res.json({ ok: true });
@@ -3855,6 +3892,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
       LEFT JOIN messages r ON m.reply_to_id = r.id
       LEFT JOIN message_status ms ON ms.message_id=m.id AND ms.user_id=$2
       WHERE m.group_id = $1 AND m.deleted_for_everyone = FALSE
+        AND NOT EXISTS (
+          SELECT 1 FROM message_user_deletions mud
+          WHERE mud.message_id=m.id AND mud.user_id=$2
+        )
         AND m.created_at >= (
           SELECT gm.joined_at FROM group_members gm
           WHERE gm.group_id=$1 AND gm.user_id=$2
@@ -4078,12 +4119,30 @@ app.delete('/api/groups/:id/decline', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Send a general invitation to an unregistered contact ─────────
+app.post('/api/invites/send', auth, inviteRateLimit, async (req, res) => {
+  const cleanPhone = String(req.body.phone || '').replace(/\D/g, '');
+  if (!cleanPhone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
+  const msg = `${req.user.name || 'חבר'} מזמין אותך להצטרף לאפליקציית בתשובה: https://betshuva.com/betshuva-app/home.html`;
+  try {
+    await mailer.sendMail({
+      from: `"בתשובה" <${process.env.EMAIL_FROM}>`,
+      to: `${cleanPhone}@019sms.co.il`,
+      subject: msg,
+      text: msg,
+    });
+    res.json({ ok: true, message: msg });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Groups: invite an unregistered contact (email, SMS, or WhatsApp handoff) ──
 app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) => {
   const { phone, email, contactName, delivery } = req.body;
   const cleanPhone = String(phone || '').replace(/\D/g, '');
   const cleanEmail = String(email || '').trim().toLowerCase();
-  if (!cleanPhone && !cleanEmail.includes('@'))
+  if ((delivery === 'email' && !cleanEmail.includes('@')) ||
+      (delivery && delivery !== 'email' && !cleanPhone) ||
+      (!delivery && !cleanPhone && !cleanEmail.includes('@')))
     return res.status(400).json({ error: 'נדרש אימייל או מספר טלפון' });
   try {
     const pool = await getPool();
@@ -4113,11 +4172,12 @@ app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) =
     }
     // WhatsApp is opened by the client so the user can review and send the
     // prefilled message. Do not also send a duplicate SMS in that flow.
-    if (delivery !== 'whatsapp') {
+    if (delivery === 'email' || delivery === 'system_sms' || !delivery) {
+      const sendEmail = delivery === 'email' || (!delivery && cleanEmail.includes('@'));
       await mailer.sendMail({
         from:    `"בתשובה" <${process.env.EMAIL_FROM}>`,
-        to:      cleanEmail.includes('@') ? cleanEmail : `${cleanPhone}@019sms.co.il`,
-        subject: cleanEmail.includes('@') ? `הזמנה לקבוצה "${groupName}" בבתשובה` : msg,
+        to:      sendEmail ? cleanEmail : `${cleanPhone}@019sms.co.il`,
+        subject: sendEmail ? `הזמנה לקבוצה "${groupName}" בבתשובה` : msg,
         text:    msg,
       });
     }
