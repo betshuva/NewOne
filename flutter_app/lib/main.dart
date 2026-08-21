@@ -300,8 +300,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.68';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.68.apk';
+const kVersion = '1.2.69';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.69.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -2737,9 +2737,9 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                 bottom: 0,
                 child: Center(
                   child: IconButton.filled(
-                    tooltip: 'התמונה הקודמת',
-                    onPressed: _currentIndex > 0
-                        ? () => _goToPage(_currentIndex - 1)
+                    tooltip: 'התמונה הבאה',
+                    onPressed: _currentIndex < _urls.length - 1
+                        ? () => _goToPage(_currentIndex + 1)
                         : null,
                     icon: const Icon(Icons.chevron_left),
                   ),
@@ -2751,9 +2751,9 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                 bottom: 0,
                 child: Center(
                   child: IconButton.filled(
-                    tooltip: 'התמונה הבאה',
-                    onPressed: _currentIndex < _urls.length - 1
-                        ? () => _goToPage(_currentIndex + 1)
+                    tooltip: 'התמונה הקודמת',
+                    onPressed: _currentIndex > 0
+                        ? () => _goToPage(_currentIndex - 1)
                         : null,
                     icon: const Icon(Icons.chevron_right),
                   ),

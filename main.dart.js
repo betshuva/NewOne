@@ -48905,7 +48905,7 @@ else n.d4(0,m,o)}n.aB(0)
 return n},
 $S:488}
 A.aUb.prototype={
-$0(){return A.Bd(A.aC("https://betshuva.com/betshuva-app/betshuva-1.2.68.apk",0,null),B.fZ)},
+$0(){return A.Bd(A.aC("https://betshuva.com/betshuva-app/betshuva-1.2.69.apk",0,null),B.fZ)},
 $S:0}
 A.OY.prototype={
 G(a){var s=null,r=A.bgO(new A.fs(4,A.b_(10),B.H1),new A.fs(4,A.b_(10),B.p6),B.f,!0,new A.fs(4,A.b_(10),B.H3))
@@ -49760,9 +49760,9 @@ r=t.p
 k=A.b([A.b4F(k,new A.aJm(m),s.length,new A.aJn(m))],r)
 if(m.y&&s.length>1){q=m.x
 q===$&&A.a()
-p=A.f7(0,A.cx(A.aYy(B.m7,q>0?new A.aJo(m):l,l,"\u05d4\u05ea\u05de\u05d5\u05e0\u05d4 \u05d4\u05e7\u05d5\u05d3\u05de\u05ea"),l,l),l,l,12,l,0,l)
 s=s.length
-o=A.f7(0,A.cx(A.aYy(B.rQ,q<s-1?new A.aJp(m):l,l,"\u05d4\u05ea\u05de\u05d5\u05e0\u05d4 \u05d4\u05d1\u05d0\u05d4"),l,l),l,l,l,12,0,l)
+p=A.f7(0,A.cx(A.aYy(B.m7,q<s-1?new A.aJo(m):l,l,"\u05d4\u05ea\u05de\u05d5\u05e0\u05d4 \u05d4\u05d1\u05d0\u05d4"),l,l),l,l,12,l,0,l)
+o=A.f7(0,A.cx(A.aYy(B.rQ,q>0?new A.aJp(m):l,l,"\u05d4\u05ea\u05de\u05d5\u05e0\u05d4 \u05d4\u05e7\u05d5\u05d3\u05de\u05ea"),l,l),l,l,l,12,0,l)
 n=A.b_(16)
 B.b.J(k,A.b([p,o,A.f7(28,A.cx(A.aw(l,A.S(""+(q+1)+" / "+s,l,l,l,l,B.bE,l,B.a3),B.i,l,l,new A.aY(B.a5,l,l,n,l,l,B.x),l,l,l,B.Ng,l,l,l),l,l),l,l,0,0,l,l)],r))}if(m.y){s=A.b([B.ae,B.G],t.t_)
 q=A.d6(l,l,l,B.PA,l,new A.aJq(a),l,l,l,l,l)
@@ -49815,12 +49815,12 @@ $S:471}
 A.aJo.prototype={
 $0(){var s=this.a,r=s.x
 r===$&&A.a()
-return s.Ve(r-1)},
+return s.Ve(r+1)},
 $S:0}
 A.aJp.prototype={
 $0(){var s=this.a,r=s.x
 r===$&&A.a()
-return s.Ve(r+1)},
+return s.Ve(r-1)},
 $S:0}
 A.aJq.prototype={
 $0(){A.ak(this.a,!1).aF(0,null)
@@ -56701,7 +56701,7 @@ A.aRd.prototype={
 $0(){return A.Bd(A.aC(u.C,0,null),B.fZ)},
 $S:0}
 A.aRe.prototype={
-$0(){return A.bqq(new A.aT(B.cN,A.aYA("icon_source.png",null,64,64),null),"\xa9 2026 \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","\u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","1.2.68",this.a)},
+$0(){return A.bqq(new A.aT(B.cN,A.aYA("icon_source.png",null,64,64),null),"\xa9 2026 \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","\u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","1.2.69",this.a)},
 $S:0}
 A.aRf.prototype={
 $0(){var s=A.cf(new A.aQZ(this.a),null,t.z)
@@ -120041,7 +120041,7 @@ B.a9Q=new A.P("\u05ea\u05de\u05d5\u05e0\u05ea \u05e7\u05d1\u05d5\u05e6\u05d4",nu
 B.S5=new A.kE(null,B.a9Q,null,null,!1,null,null,null,null,null,!0,null,null,!1,null,null,!1,null,null,null,null,null)
 B.Qp=new A.aq(B.iQ,null,B.z,null,null)
 B.a9d=new A.P("\u05d2\u05e8\u05e1\u05d4",null,null,null,null,null,null,null,null,null)
-B.a84=new A.P("1.2.68",null,B.cC,null,null,null,null,null,null,null)
+B.a84=new A.P("1.2.69",null,B.cC,null,null,null,null,null,null,null)
 B.S6=new A.kE(B.Qp,B.a9d,null,B.a84,!1,null,null,null,null,null,!0,null,null,!1,null,null,!1,null,null,null,null,null)
 B.Pl=new A.av(62588,!1)
 B.Q9=new A.aq(B.Pl,null,B.bh,null,null)
@@ -122376,7 +122376,7 @@ B.hE=new A.w(!0,B.ag,null,null,null,null,null,null,null,null,null,null,null,null
 B.a7X=new A.P("\u05de\u05d7\u05d9\u05e7\u05ea \u05d4\u05e0\u05ea\u05d5\u05e0\u05d9\u05dd \u05d5\u05d4\u05d7\u05e9\u05d1\u05d5\u05df",null,B.hE,null,null,null,null,null,null,null)
 B.a7Y=new A.P("\u05d4\u05d7\u05dc",null,B.bE,null,null,null,null,null,null,null)
 B.a8_=new A.P("\u05e2\u05e8\u05d5\u05da",null,B.bE,null,null,null,null,null,null,null)
-B.a80=new A.P("\u05d4\u05d5\u05e8\u05d3\u05ea betshuva-1.2.68.apk  \u2022  \u05d2\u05e8\u05e1\u05d4 1.2.68",null,null,null,null,null,null,null,null,null)
+B.a80=new A.P("\u05d4\u05d5\u05e8\u05d3\u05ea betshuva-1.2.69.apk  \u2022  \u05d2\u05e8\u05e1\u05d4 1.2.69",null,null,null,null,null,null,null,null,null)
 B.a81=new A.P("\u05e9\u05dc\u05d7 \u05e9\u05d5\u05d1 \u05dc\u05de\u05d9\u05d9\u05dc",null,null,null,null,null,null,null,null,null)
 B.a85=new A.P("\u05d4\u05e1\u05e8\u05d4",null,null,null,null,null,null,null,null,null)
 B.a3D=new A.w(!0,B.q,null,null,null,null,11,B.bb,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null)
