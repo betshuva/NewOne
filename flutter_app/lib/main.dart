@@ -27,6 +27,7 @@ import 'media_cache.dart';
 import 'native_video_player.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
+import 'web_capture_picker.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 
@@ -8284,11 +8285,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 _AttachOption(
                   icon: Icons.camera_alt_outlined,
-                  label: 'מצלמה',
+                  label: 'צלם תמונה',
                   color: kPrimaryMid,
                   onTap: () {
                     Navigator.pop(context);
-                    _pickFile(ImageSource.camera);
+                    _capturePhoto();
                   },
                 ),
                 _AttachOption(
@@ -8443,6 +8444,19 @@ class _ChatScreenState extends State<ChatScreen> {
     if (picked != null) await _uploadAndSend(picked, picked.name, 'image');
   }
 
+  Future<void> _capturePhoto() async {
+    final photo = kIsWeb
+        ? await captureWebPhoto()
+        : await ImagePicker().pickImage(
+            source: ImageSource.camera,
+            maxWidth: 1920,
+            maxHeight: 1920,
+            imageQuality: 85,
+          );
+    if (photo == null) return;
+    await _uploadAndSend(photo, photo.name, 'image');
+  }
+
   Future<void> _uploadPrivateImageBatch(List<XFile> files) async {
     if (!mounted || files.isEmpty) return;
     final completed = ValueNotifier<int>(0);
@@ -8499,10 +8513,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _recordVideo() async {
-    final video = await ImagePicker().pickVideo(
-      source: ImageSource.camera,
-      maxDuration: const Duration(seconds: 30),
-    );
+    final video = kIsWeb
+        ? await captureWebVideo()
+        : await ImagePicker().pickVideo(
+            source: ImageSource.camera,
+            maxDuration: const Duration(seconds: 30),
+          );
     if (video == null) return;
     await _uploadAndSend(video, video.name, 'video');
   }
