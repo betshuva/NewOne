@@ -1676,7 +1676,7 @@ const SYSTEM_AI_PROMPT = `אתה העוזר הרשמי של אפליקציית "
 אל תמציא פעולות, אל תבקש סיסמה או קוד אימות, ואל תחשוף מידע על משתמשים אחרים.
 אם השאלה אינה על האפליקציה, הסבר שאתה מסייע רק בנושאי בתשובה.`;
 
-function describeRejectedUpload(row) {
+function describeUploadDecision(row) {
   const details = row.moderation_details || {};
   const classification = details.classification || {};
   const labels = { men: 'גברים', women: 'נשים', children: 'ילדים',
@@ -1687,22 +1687,32 @@ function describeRejectedUpload(row) {
     .map(value => labels[value] || value);
   const type = row.file_type === 'video' ? 'הסרטון' : 'התמונה';
   const recipient = row.recipient_name ? ` ל${row.recipient_name}` : '';
-  const reason = details.reason || 'התוכן לא עבר את כללי הסינון של הנמען';
   const detected = categories.length ? ` זוהו: ${categories.join(', ')}.` : '';
+  if (row.moderation_status === 'approved') {
+    const reason = details.reason ||
+      'לא נמצא אות שחצה את סף החסימה, וסוג התוכן מותר בהגדרות הסינון';
+    return `${type} האחרונ${row.file_type === 'video' ? '' : 'ה'} ששלחת${recipient} עבר${row.file_type === 'video' ? '' : 'ה'} כי ${reason}.${detected} אישור אוטומטי אינו מבטיח שהסיווג מושלם.`;
+  }
+  const reason = details.reason || 'התוכן לא עבר את כללי הסינון של הנמען';
   return `${type} האחרונ${row.file_type === 'video' ? '' : 'ה'} ששלחת${recipient} נחסמ${row.file_type === 'video' ? '' : 'ה'}. הסיבה שנשמרה בסריקה: ${reason}.${detected}`;
 }
 
 async function rejectedUploadContext(pool, userId, question) {
-  if (!/נחסמ|למה.*לא.*עבר|לא.*נשלח/.test(String(question || '')) ||
-      !/תמונ|וידאו|סרטון|קובץ/.test(String(question || ''))) return null;
+  const text = String(question || '');
+  const asksRejected = /נחסמ|למה.*לא.*עבר|לא.*נשלח/.test(text);
+  const asksApproved = /למה.*כן.*עבר|למה.*עבר|אושר|אושרה/.test(text);
+  if ((!asksRejected && !asksApproved) ||
+      !/תמונ|וידאו|סרטון|קובץ/.test(text)) return null;
+  const status = asksApproved ? 'approved' : 'rejected';
   const result = await pool.query(
-    `SELECT sf.file_type,sf.original_name,sf.moderation_details,sf.created_at,
+    `SELECT sf.file_type,sf.original_name,sf.moderation_status,
+            sf.moderation_details,sf.created_at,
             u.name AS recipient_name
      FROM stored_files sf
      LEFT JOIN users u ON u.id::text=sf.context_id::text
      WHERE sf.user_id=$1 AND sf.context_type='chat'
-       AND sf.moderation_status='rejected'
-     ORDER BY sf.created_at DESC LIMIT 10`, [userId]);
+       AND sf.moderation_status=$2
+     ORDER BY sf.created_at DESC LIMIT 10`, [userId, status]);
   if (!result.rows.length) return null;
   const normalizedQuestion = String(question).replace(/\s+/g, '').toLowerCase();
   const requestedType = /תמונ/.test(String(question)) ? 'image'
@@ -1717,7 +1727,7 @@ async function rejectedUploadContext(pool, userId, question) {
 function localSystemAnswer(question, uploadContext = null) {
   const value = String(question || '').trim();
   const q = value.toLowerCase();
-  if (uploadContext) return describeRejectedUpload(uploadContext);
+  if (uploadContext) return describeUploadDecision(uploadContext);
   if (/חבר|איש קשר|להוסיף|הזמ/.test(q))
     return 'כדי להוסיף חבר: לחץ על סמל האדם עם סימן + בראש מסך השיחות, חפש לפי שם, טלפון או אימייל ולחץ „שמור”. אם האדם עדיין לא רשום, לחץ „הזמן”.';
   if (/סינון|חסמ|תמונה|וידאו|סרטון|ילד|גבר|אישה/.test(q))
@@ -1753,7 +1763,7 @@ async function generateSystemAnswer(pool, userId, question) {
       content: row.body || '',
     }));
     const contextPrompt = uploadContext
-      ? `\nנתוני הסריקה האחרונה של המשתמש: ${describeRejectedUpload(uploadContext)}`
+      ? `\nנתוני הסריקה האחרונה של המשתמש: ${describeUploadDecision(uploadContext)}`
       : '';
     const response = await fetch(apiUrl, {
       method: 'POST',
