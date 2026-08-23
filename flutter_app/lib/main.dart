@@ -485,7 +485,9 @@ Future<_FileUploadResult> _uploadFileRequest({
         ? await file.readAsBytes()
         : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
     var contentType = _mimeFromFileName(fileName);
-    if (file is XFile && file.mimeType != null && file.mimeType!.contains('/')) {
+    if (file is XFile &&
+        file.mimeType != null &&
+        file.mimeType!.contains('/')) {
       contentType = MediaType.parse(file.mimeType!.split(';').first);
     }
     final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
@@ -9723,7 +9725,8 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
 
   Future<void> _openExternally() async {
     final uri = Uri.parse(_absoluteMediaUrl(widget.url));
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && mounted) {
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
+        mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('לא ניתן לפתוח את הסרטון בדפדפן')),
       );
@@ -9761,7 +9764,8 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
                   onPressed: _retry,
                   icon: const Icon(Icons.refresh, size: 18),
                   label: const Text('נסה שוב'),
-                  style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+                  style:
+                      OutlinedButton.styleFrom(foregroundColor: Colors.white),
                 ),
                 FilledButton.icon(
                   onPressed: _openExternally,
@@ -10301,7 +10305,10 @@ class _MessageBubble extends StatelessWidget {
             else if (isVideoFile)
               Stack(children: [
                 if (kIsWeb)
-                  NativeWebVideoPlayer(url: _absoluteMediaUrl(fileUrl!))
+                  NativeWebVideoPlayer(
+                    key: ValueKey('video-$fileUrl'),
+                    url: _absoluteMediaUrl(fileUrl!),
+                  )
                 else
                   _ChatVideoPlayer(url: fileUrl!),
                 Positioned(
@@ -10402,14 +10409,17 @@ class _MessageBubble extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(isVideoFile
-                          ? Icons.videocam_outlined
-                          : Icons.insert_drive_file,
-                          size: 20, color: kPrimary),
+                      Icon(
+                          isVideoFile
+                              ? Icons.videocam_outlined
+                              : Icons.insert_drive_file,
+                          size: 20,
+                          color: kPrimary),
                       const SizedBox(width: 6),
                       Flexible(
                         child: Text(
-                          fileName ?? message['text'] as String? ??
+                          fileName ??
+                              message['text'] as String? ??
                               (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
                           style: TextStyle(fontSize: 14, color: textColor),
                           textDirection: TextDirection.rtl,
@@ -14263,8 +14273,8 @@ class _ContentFilterSettingsScreenState
                         TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
               _option('text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
-              _option('video', 'וידאו',
-                  'סרטונים שעברו סריקה וסיווג', Icons.videocam_outlined),
+              _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
+                  Icons.videocam_outlined),
               _option('nonHumanImages', 'תמונות ללא בני אדם',
                   'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
               _option('men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
@@ -14538,7 +14548,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: const Icon(Icons.tune, color: kPrimary),
                   title: const Text('סוגי תוכן מותרים'),
-                  subtitle: const Text('טקסט, וידאו, תמונות, גברים, נשים וילדים'),
+                  subtitle:
+                      const Text('טקסט, וידאו, תמונות, גברים, נשים וילדים'),
                   trailing: const Icon(Icons.chevron_left),
                   onTap: () => Navigator.push(
                       context,

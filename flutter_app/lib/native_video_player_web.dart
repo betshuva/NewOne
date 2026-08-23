@@ -15,26 +15,47 @@ class NativeWebVideoPlayer extends StatefulWidget {
 class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer> {
   static int _nextId = 0;
   late final String _viewType;
+  late final html.VideoElement _video;
 
   @override
   void initState() {
     super.initState();
     _viewType = 'betshuva-video-${_nextId++}';
+    _video = html.VideoElement()
+      ..src = widget.url
+      ..controls = true
+      ..autoplay = false
+      ..preload = 'metadata'
+      ..setAttribute('playsinline', 'true')
+      ..setAttribute('controlsList', 'nodownload')
+      ..style.width = '100%'
+      ..style.height = '100%'
+      ..style.objectFit = 'contain'
+      ..style.backgroundColor = 'black'
+      ..style.borderRadius = '10px';
     ui_web.platformViewRegistry.registerViewFactory(_viewType, (_) {
-      final video = html.VideoElement()
-        ..src = widget.url
-        ..controls = true
-        ..autoplay = false
-        ..preload = 'metadata'
-        ..setAttribute('playsinline', 'true')
-        ..setAttribute('controlsList', 'nodownload')
-        ..style.width = '100%'
-        ..style.height = '100%'
-        ..style.objectFit = 'contain'
-        ..style.backgroundColor = 'black'
-        ..style.borderRadius = '10px';
-      return video;
+      return _video;
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant NativeWebVideoPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _video
+        ..pause()
+        ..src = widget.url
+        ..load();
+    }
+  }
+
+  @override
+  void dispose() {
+    _video
+      ..pause()
+      ..src = ''
+      ..load();
+    super.dispose();
   }
 
   @override
