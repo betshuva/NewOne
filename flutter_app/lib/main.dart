@@ -8446,7 +8446,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _capturePhoto() async {
     final photo = kIsWeb
-        ? await captureWebPhoto()
+        ? await captureWebPhoto(context)
         : await ImagePicker().pickImage(
             source: ImageSource.camera,
             maxWidth: 1920,
@@ -8514,7 +8514,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _recordVideo() async {
     final video = kIsWeb
-        ? await captureWebVideo()
+        ? await captureWebVideo(context)
         : await ImagePicker().pickVideo(
             source: ImageSource.camera,
             maxDuration: const Duration(seconds: 30),
