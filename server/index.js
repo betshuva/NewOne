@@ -1828,41 +1828,81 @@ async function handleSystemAction(pool, userId, question) {
       return 'אין פעולה שממתינה לאישור, או שתוקף האישור פג. יש לבקש את השינוי מחדש.';
     const payload = pending.rows[0].payload;
     const allowedKey = GROUP_FILTER_ACTIONS.some(item => item.key === payload.key);
-    if (pending.rows[0].action !== 'set_group_filter' || !allowedKey)
+    if (!allowedKey)
       return 'הפעולה אינה תקינה ולא בוצע שינוי.';
-    const updated = await pool.query(
-      `UPDATE groups g SET content_filter=jsonb_set(
-         COALESCE(g.content_filter,'{}'::jsonb),ARRAY[$1],to_jsonb($2::boolean),true)
-       WHERE g.id=$3 AND EXISTS (
-         SELECT 1 FROM group_members gm WHERE gm.group_id=g.id
-           AND gm.user_id=$4 AND gm.role='admin' AND gm.status='member'
-       ) RETURNING g.name`,
-      [payload.key, payload.enabled === true, payload.groupId, userId]);
-    if (!updated.rows.length)
-      return 'השינוי לא בוצע: אינך מנהל פעיל של הקבוצה או שהקבוצה כבר אינה קיימת.';
-    return `${payload.enabled ? 'אפשרתי' : 'חסמתי'} ${payload.label} בקבוצה „${updated.rows[0].name}”. השינוי פעיל מעכשיו.`;
+    if (pending.rows[0].action === 'set_group_filter') {
+      const updated = await pool.query(
+        `UPDATE groups g SET content_filter=jsonb_set(
+           COALESCE(g.content_filter,'{}'::jsonb),ARRAY[$1],to_jsonb($2::boolean),true)
+         WHERE g.id=$3 AND EXISTS (
+           SELECT 1 FROM group_members gm WHERE gm.group_id=g.id
+             AND gm.user_id=$4 AND gm.role='admin' AND gm.status='member'
+         ) RETURNING g.name`,
+        [payload.key, payload.enabled === true, payload.groupId, userId]);
+      if (!updated.rows.length)
+        return 'השינוי לא בוצע: אינך מנהל פעיל של הקבוצה או שהקבוצה כבר אינה קיימת.';
+      return `${payload.enabled ? 'אפשרתי' : 'חסמתי'} ${payload.label} בקבוצה „${updated.rows[0].name}”. השינוי פעיל מעכשיו.`;
+    }
+    if (pending.rows[0].action === 'set_contact_filter') {
+      const updated = await pool.query(
+        `UPDATE user_contacts c SET filter_override=jsonb_set(
+           COALESCE(c.filter_override,u.content_filter),ARRAY[$1],
+           to_jsonb($2::boolean),true)
+         FROM users u,users contact_user
+         WHERE c.owner_id=$3 AND c.contact_id=$4
+           AND u.id=c.owner_id AND contact_user.id=c.contact_id
+         RETURNING contact_user.name`,
+        [payload.key, payload.enabled === true, userId, payload.contactId]);
+      if (!updated.rows.length)
+        return 'השינוי לא בוצע: איש הקשר כבר אינו שמור אצלך.';
+      return `${payload.enabled ? 'אפשרתי' : 'חסמתי'} ${payload.label} מאיש הקשר „${updated.rows[0].name}”. השינוי פעיל מעכשיו.`;
+    }
+    return 'הפעולה אינה תקינה ולא בוצע שינוי.';
   }
 
   const asksGroupChange = /קבוצ|רבוצ/.test(text) &&
     /חס(?:ום|ימת|ימה)|אל תאפשר|אפשר|התר/.test(text);
-  if (!asksGroupChange) return null;
+  const asksFilterChange = /חס(?:ום|ימת|ימה)|אל תאפשר|אפשר|התר/.test(text);
+  if (!asksGroupChange && !asksFilterChange) return null;
   const category = GROUP_FILTER_ACTIONS.find(item => item.pattern.test(text));
   if (!category)
-    return 'איזו קטגוריה לשנות בקבוצה? אפשר לבחור נשים, גברים, ילדים, וידאו, טקסט או תמונות ללא בני אדם.';
+    return 'איזו קטגוריה לשנות? אפשר לבחור נשים, גברים, ילדים, וידאו, טקסט או תמונות ללא בני אדם.';
+  const enabled = /(?:^|\s)(אפשר|התר)/.test(text) && !/אל תאפשר/.test(text);
+  const normalized = text.replace(/\s+/g, '').toLowerCase();
+  if (!asksGroupChange) {
+    const contacts = await pool.query(
+      `SELECT u.id,u.name FROM user_contacts c JOIN users u ON u.id=c.contact_id
+       WHERE c.owner_id=$1 AND u.id NOT IN ($2,$3) ORDER BY u.name`,
+      [userId, SYSTEM_USER_ID, SCAN_BOT_ID]);
+    const matches = contacts.rows.filter(contact => normalized.includes(
+      String(contact.name).replace(/\s+/g, '').toLowerCase()));
+    const contact = matches.length === 1 ? matches[0]
+      : contacts.rows.length === 1 ? contacts.rows[0] : null;
+    if (!contact)
+      return contacts.rows.length
+        ? `יש לציין עבור איזה חבר לשנות את הסינון. אנשי הקשר שלך: ${contacts.rows.map(item => `„${item.name}”`).join(', ')}.`
+        : 'לא נמצאו אנשי קשר שמורים לשינוי הסינון.';
+    await pool.query(
+      `INSERT INTO system_ai_pending_actions(user_id,action,payload,expires_at)
+       VALUES($1,'set_contact_filter',$2,now()+INTERVAL '10 minutes')
+       ON CONFLICT(user_id) DO UPDATE SET action=EXCLUDED.action,
+         payload=EXCLUDED.payload,expires_at=EXCLUDED.expires_at,created_at=now()`,
+      [userId, JSON.stringify({ contactId: contact.id, key: category.key,
+        label: category.label, enabled })]);
+    return `הפעולה ממתינה לאישור: ${enabled ? 'לאפשר' : 'לחסום'} ${category.label} מאיש הקשר „${contact.name}”. לביצוע כתוב „אישור”. לביטול כתוב „ביטול”. האישור תקף ל־10 דקות.`;
+  }
   const groups = await pool.query(
     `SELECT g.id,g.name FROM groups g JOIN group_members gm ON gm.group_id=g.id
      WHERE gm.user_id=$1 AND gm.role='admin' AND gm.status='member'
      ORDER BY g.name`, [userId]);
   if (!groups.rows.length)
     return 'לא נמצאה קבוצה שבה יש לך הרשאת מנהל, ולכן לא ניתן לבצע את השינוי.';
-  const normalized = text.replace(/\s+/g, '').toLowerCase();
   const matches = groups.rows.filter(group => normalized.includes(
     String(group.name).replace(/\s+/g, '').toLowerCase()));
   const group = matches.length === 1 ? matches[0]
     : groups.rows.length === 1 ? groups.rows[0] : null;
   if (!group)
     return `יש לציין באיזו קבוצה לבצע את השינוי. הקבוצות שבניהולך: ${groups.rows.map(item => `„${item.name}”`).join(', ')}.`;
-  const enabled = /(?:^|\s)(אפשר|התר)/.test(text) && !/אל תאפשר/.test(text);
   await pool.query(
     `INSERT INTO system_ai_pending_actions(user_id,action,payload,expires_at)
      VALUES($1,'set_group_filter',$2,now()+INTERVAL '10 minutes')
