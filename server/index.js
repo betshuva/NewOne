@@ -1475,6 +1475,13 @@ async function migrateDatabase() {
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ DEFAULT now()
       )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_ai_browse_state (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        browse_type TEXT NOT NULL,
+        next_offset INTEGER NOT NULL DEFAULT 0,
+        expires_at TIMESTAMPTZ NOT NULL
+      )`);
     await pool.query(`DROP TRIGGER IF EXISTS users_add_scan_bot_contact ON users`);
     await pool.query(`DROP FUNCTION IF EXISTS add_scan_bot_contact_for_new_user()`);
     // The scanner remains an internal FK identity for moderation reports, but
@@ -1913,12 +1920,78 @@ async function handleSystemAction(pool, userId, question) {
   return `הפעולה ממתינה לאישור: ${enabled ? 'לאפשר' : 'לחסום'} ${category.label} בקבוצה „${group.name}”. לביצוע כתוב „אישור”. לביטול כתוב „ביטול”. האישור תקף ל־10 דקות.`;
 }
 
+function formatSentMessageRow(row, index) {
+  const target = row.group_name
+    ? `לקבוצה „${row.group_name}”` : `ל${row.recipient_name || 'משתמש'}`;
+  const content = row.body || (row.file_name ? `📎 ${row.file_name}` :
+    row.type === 'video' ? '🎥 סרטון' : row.type === 'image' ? '🖼️ תמונה' : 'קובץ');
+  const short = String(content).replace(/\s+/g, ' ').trim().slice(0, 120);
+  const date = new Intl.DateTimeFormat('he-IL', {
+    timeZone: 'Asia/Jerusalem', day: '2-digit', month: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  }).format(new Date(row.created_at));
+  return `${index + 1}. ${target} · ${date}\n${short}`;
+}
+
+async function sentMessagesPage(pool, userId, offset) {
+  const result = await pool.query(
+    `SELECT m.body,m.type,m.file_name,m.created_at,u.name AS recipient_name,
+            g.name AS group_name
+     FROM messages m
+     LEFT JOIN users u ON u.id=m.recipient_id
+     LEFT JOIN groups g ON g.id=m.group_id
+     WHERE m.sender_id=$1 AND m.deleted_for_everyone=FALSE
+       AND m.deleted_for_sender=FALSE
+       AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3)
+     ORDER BY m.created_at DESC OFFSET $4 LIMIT 6`,
+    [userId, SYSTEM_USER_ID, SCAN_BOT_ID, offset]);
+  const rows = result.rows.slice(0, 5);
+  if (!rows.length) return { answer: offset
+    ? 'אין עוד הודעות ששלחת להצגה.'
+    : 'לא נמצאו הודעות ששלחת.', hasMore: false };
+  return { answer: `ההודעות ששלחת:\n\n${rows.map((row, index) =>
+    formatSentMessageRow(row, offset + index)).join('\n\n')}${result.rows.length > 5
+      ? '\n\nכתוב „הצג עוד” כדי לעבור להודעות הבאות.' : ''}`,
+    hasMore: result.rows.length > 5 };
+}
+
+async function handleMessageBrowsing(pool, userId, question) {
+  const text = String(question || '').trim();
+  const initial = /הודעות.*(?:אחרונ|ששלחתי)|מה שלחתי/.test(text);
+  const more = /^(הצג|תראה|הראה) עוד(?: הודעות)?$/.test(text);
+  if (!initial && !more) return null;
+  let offset = 0;
+  if (more) {
+    const state = await pool.query(
+      `SELECT next_offset FROM system_ai_browse_state
+       WHERE user_id=$1 AND browse_type='sent_messages' AND expires_at>now()`,
+      [userId]);
+    if (!state.rows.length)
+      return 'אין כרגע רשימת הודעות פתוחה. כתוב „הצג את ההודעות האחרונות ששלחתי” כדי להתחיל.';
+    offset = state.rows[0].next_offset;
+  }
+  const page = await sentMessagesPage(pool, userId, offset);
+  if (page.hasMore) {
+    await pool.query(
+      `INSERT INTO system_ai_browse_state(user_id,browse_type,next_offset,expires_at)
+       VALUES($1,'sent_messages',$2,now()+INTERVAL '15 minutes')
+       ON CONFLICT(user_id) DO UPDATE SET browse_type=EXCLUDED.browse_type,
+         next_offset=EXCLUDED.next_offset,expires_at=EXCLUDED.expires_at`,
+      [userId, offset + 5]);
+  } else {
+    await pool.query('DELETE FROM system_ai_browse_state WHERE user_id=$1',
+      [userId]);
+  }
+  return page.answer;
+}
+
 async function createSystemExchange(pool, userId, question) {
   const sent = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body)
      VALUES($1,$2,'text',$3) RETURNING id,created_at`,
     [userId, SYSTEM_USER_ID, question]);
-  const answer = await handleSystemAction(pool, userId, question) ||
+  const answer = await handleMessageBrowsing(pool, userId, question) ||
+    await handleSystemAction(pool, userId, question) ||
     await generateSystemAnswer(pool, userId, question);
   const reply = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body,reply_to_id)

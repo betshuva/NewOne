@@ -73,6 +73,13 @@ CREATE TABLE IF NOT EXISTS system_ai_pending_actions (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS system_ai_browse_state (
+  user_id     UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  browse_type TEXT NOT NULL,
+  next_offset INTEGER NOT NULL DEFAULT 0,
+  expires_at  TIMESTAMPTZ NOT NULL
+);
+
 -- ── Messages ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS messages (
   id                   UUID DEFAULT gen_random_uuid() PRIMARY KEY,
