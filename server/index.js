@@ -1667,6 +1667,83 @@ async function provisionSystemConversation(pool, userId, sendWelcome = true) {
   return result.rows[0] || null;
 }
 
+const SYSTEM_AI_PROMPT = `אתה העוזר הרשמי של אפליקציית "בתשובה" ושמך "הרוצה בתשובה".
+ענה בעברית, בקצרה, בנעימות ובצעדים מעשיים. ענה רק על שימוש באפליקציה.
+עובדות חשובות: מוסיפים חבר דרך סמל אדם עם +, מחפשים שם/טלפון/אימייל ולוחצים שמור;
+תוכן תמונה ווידאו נסרק אוטומטית; הגדרות הסינון נמצאות בהגדרות וניתן להגדיר גם לקבוצה;
+בקבוצה ההגדרה המחמירה מבין סינון הקבוצה והסינון האישי קובעת;
+מחיקת חשבון ונתונים נמצאת בהגדרות; תמיכה: support@betshuva.com.
+אל תמציא פעולות, אל תבקש סיסמה או קוד אימות, ואל תחשוף מידע על משתמשים אחרים.
+אם השאלה אינה על האפליקציה, הסבר שאתה מסייע רק בנושאי בתשובה.`;
+
+function localSystemAnswer(question) {
+  const value = String(question || '').trim();
+  const q = value.toLowerCase();
+  if (/חבר|איש קשר|להוסיף|הזמ/.test(q))
+    return 'כדי להוסיף חבר: לחץ על סמל האדם עם סימן + בראש מסך השיחות, חפש לפי שם, טלפון או אימייל ולחץ „שמור”. אם האדם עדיין לא רשום, לחץ „הזמן”.';
+  if (/סינון|חסמ|תמונה|וידאו|סרטון|ילד|גבר|אישה/.test(q))
+    return 'כל תמונה וסרטון נסרקים אוטומטית. בהגדרות ← סינון תוכן אפשר לבחור אילו קטגוריות לקבל. בקבוצה מנהל קובע סינון קבוצתי, ולכל חבר חל גם הסינון האישי שלו — ההגדרה המחמירה קובעת.';
+  if (/קבוצה|קבוצות/.test(q))
+    return 'במסך „קבוצות” אפשר ליצור קבוצה ולצרף חברים. מנהל הקבוצה יכול לקבוע מי רשאי לשלוח ולהגדיר סינון תוכן דרך תפריט הקבוצה.';
+  if (/מחק|מחיק|חשבון/.test(q))
+    return 'למחיקת החשבון או הנתונים היכנס להגדרות ובחר באפשרות המחיקה המתאימה. המחיקה המלאה היא קבועה, לכן יש לאשר אותה במפורש.';
+  if (/סיסמ|כניסה|אימות|קוד/.test(q))
+    return 'במסך הכניסה אפשר לבחור „שכחתי סיסמה” ולבצע איפוס דרך האימייל. לעולם אל תשלח כאן סיסמה או קוד אימות.';
+  if (/שיחה|הודעה|טלפון|וידאו.*שיחה/.test(q))
+    return 'פתח חבר מרשימת השיחות כדי לשלוח הודעה. בסרגל העליון של השיחה נמצאים כפתורי שיחת הקול והווידאו, בהתאם להרשאות ולזמינות.';
+  if (/מיקום|עיר|מרחק/.test(q))
+    return 'שיתוף מיקום הוא אופציונלי. ניתן לעדכן או למחוק אותו בהגדרות; משתמשים אחרים רואים לכל היותר עיר ומרחק משוער ולא קואורדינטות.';
+  if (/שלום|היי|מי אתה|עזרה/.test(q))
+    return 'שלום 🌿 אני „הרוצה בתשובה”, העוזר של אפליקציית בתשובה. אפשר לשאול אותי על הוספת חברים, קבוצות, סינון תוכן, הודעות, כניסה או הגדרות.';
+  return 'אני מסייע בשאלות על אפליקציית בתשובה. אפשר לשאול למשל איך מוסיפים חבר, משנים סינון, יוצרים קבוצה או מוחקים חשבון. אם הבעיה נמשכת, אפשר לפנות ל־support@betshuva.com.';
+}
+
+async function generateSystemAnswer(pool, userId, question) {
+  const apiUrl = String(process.env.AI_API_URL || '').trim();
+  const apiKey = String(process.env.AI_API_KEY || '').trim();
+  if (!apiUrl || !apiKey) return localSystemAnswer(question);
+  try {
+    const history = await pool.query(
+      `SELECT sender_id,body FROM messages
+       WHERE (sender_id=$1 AND recipient_id=$2)
+          OR (sender_id=$2 AND recipient_id=$1)
+       ORDER BY created_at DESC LIMIT 8`, [userId, SYSTEM_USER_ID]);
+    const messages = history.rows.reverse().map(row => ({
+      role: row.sender_id === SYSTEM_USER_ID ? 'assistant' : 'user',
+      content: row.body || '',
+    }));
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: process.env.AI_MODEL || 'gpt-4.1-mini',
+        temperature: 0.2, max_tokens: 350,
+        messages: [{ role: 'system', content: SYSTEM_AI_PROMPT }, ...messages] }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!response.ok) throw new Error(`AI HTTP ${response.status}`);
+    const data = await response.json();
+    const answer = data.choices?.[0]?.message?.content?.trim();
+    return answer || localSystemAnswer(question);
+  } catch (error) {
+    console.error('system AI:', error.message);
+    return localSystemAnswer(question);
+  }
+}
+
+async function createSystemExchange(pool, userId, question) {
+  const sent = await pool.query(
+    `INSERT INTO messages(sender_id,recipient_id,type,body)
+     VALUES($1,$2,'text',$3) RETURNING id,created_at`,
+    [userId, SYSTEM_USER_ID, question]);
+  const answer = await generateSystemAnswer(pool, userId, question);
+  const reply = await pool.query(
+    `INSERT INTO messages(sender_id,recipient_id,type,body,reply_to_id)
+     VALUES($1,$2,'text',$3,$4) RETURNING id,created_at`,
+    [SYSTEM_USER_ID, userId, answer, sent.rows[0].id]);
+  return { sent: sent.rows[0], reply: reply.rows[0], answer };
+}
+
 // ── Activity logger ───────────────────────────────────────────────
 async function logActivity(userId, action, details = {}, ip = null) {
   try {
@@ -2162,6 +2239,22 @@ io.on('connection', async (socket) => {
     }
     try {
       const pool = await getPool();
+      if (toUserId === SYSTEM_USER_ID) {
+        if (fileUrl || !text) {
+          socket.emit('message:rejected', { toUserId,
+            reason: 'העוזר מקבל כעת שאלות טקסט בלבד' });
+          return;
+        }
+        const exchange = await createSystemExchange(
+          pool, socket.user.id, String(text).slice(0, 2000));
+        socket.emit('chat:message', {
+          id: exchange.reply.id, fromUserId: SYSTEM_USER_ID,
+          fromName: SYSTEM_USER_NAME, text: exchange.answer,
+          replyToId: exchange.sent.id, fileType: 'text',
+          createdAt: exchange.reply.created_at,
+        });
+        return;
+      }
       if (!await teenContactAllowed(pool, socket.user.id, toUserId)) {
         socket.emit('message:rejected', { toUserId,
           reason: 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים' });
@@ -3078,6 +3171,23 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   }
   try {
     const pool = await getPool();
+    if (toUserId === SYSTEM_USER_ID) {
+      if (fileUrl || !text)
+        return res.status(400).json({ error: 'העוזר מקבל כעת שאלות טקסט בלבד' });
+      const exchange = await createSystemExchange(
+        pool, senderId, String(text).slice(0, 2000));
+      const sid = onlineUsers.get(senderId);
+      if (sid) io.to(sid).emit('chat:message', {
+        id: exchange.reply.id, fromUserId: SYSTEM_USER_ID,
+        fromName: SYSTEM_USER_NAME, text: exchange.answer,
+        replyToId: exchange.sent.id, fileType: 'text',
+        createdAt: exchange.reply.created_at,
+      });
+      return res.json({ id: exchange.sent.id,
+        createdAt: exchange.sent.created_at, status: 'read',
+        systemReply: { id: exchange.reply.id, text: exchange.answer,
+          createdAt: exchange.reply.created_at } });
+    }
     if (!await teenContactAllowed(pool, senderId, toUserId)) {
       return res.status(403).json({
         error: 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים',
