@@ -3695,6 +3695,9 @@ class _MainShellContentState extends State<_MainShellContent> {
   final Map<String, Timer> _userTypingTimers = {};
   final List<Map<String, dynamic>> _messageRequests = [];
   bool _showingMessageRequest = false;
+  List<Map<String, dynamic>> _recentSentMessages = [];
+  int _recentSentIndex = -1;
+  bool _recentSentLoading = false;
 
   List<Map<String, dynamic>> _withoutScanBot(List<Map<String, dynamic>> users) {
     final sorted =
@@ -4166,6 +4169,149 @@ class _MainShellContentState extends State<_MainShellContent> {
     );
   }
 
+  Future<void> _browseRecentSent({required bool older}) async {
+    if (_recentSentLoading) return;
+    if (_recentSentMessages.isEmpty) {
+      setState(() => _recentSentLoading = true);
+      try {
+        final response = await http.get(
+          Uri.parse('$kApi/messages/recent-sent?limit=50'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        );
+        if (response.statusCode != 200) throw Exception();
+        final loaded = (jsonDecode(response.body) as List)
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+        if (!mounted) return;
+        setState(() {
+          _recentSentMessages = loaded;
+          _recentSentIndex = loaded.isEmpty ? -1 : 0;
+        });
+        if (loaded.isEmpty && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('לא נמצאו הודעות ששלחת')),
+          );
+        }
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('טעינת ההודעות האחרונות נכשלה')),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _recentSentLoading = false);
+      }
+      return;
+    }
+    setState(() {
+      if (older && _recentSentIndex < _recentSentMessages.length - 1) {
+        _recentSentIndex++;
+      } else if (!older && _recentSentIndex > 0) {
+        _recentSentIndex--;
+      }
+    });
+  }
+
+  String _recentSentText(Map<String, dynamic> message) {
+    final text = (message['body'] ?? '').toString().trim();
+    if (text.isNotEmpty) return text;
+    final fileName = (message['file_name'] ?? '').toString().trim();
+    if (fileName.isNotEmpty) return '📎 $fileName';
+    return message['type'] == 'video'
+        ? '🎥 סרטון'
+        : message['type'] == 'image'
+            ? '🖼️ תמונה'
+            : 'קובץ';
+  }
+
+  Widget _recentSentBrowser() {
+    final hasMessage =
+        _recentSentIndex >= 0 && _recentSentIndex < _recentSentMessages.length;
+    final message = hasMessage ? _recentSentMessages[_recentSentIndex] : null;
+    return SafeArea(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (message != null)
+            Container(
+              width: math.min(330, MediaQuery.sizeOf(context).width - 92),
+              margin: const EdgeInsets.only(left: 6),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.97),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: kBorder),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 8)
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Expanded(
+                        child: Text(
+                      'נשלח ${message['target_type'] == 'group' ? 'לקבוצה' : 'אל'} ${message['target_name'] ?? ''}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, color: kPrimary),
+                    )),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'סגור',
+                      onPressed: () => setState(() => _recentSentIndex = -1),
+                      icon: const Icon(Icons.close, size: 18),
+                    ),
+                  ]),
+                  Text(_recentSentText(message),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      textDirection: TextDirection.rtl),
+                  const SizedBox(height: 3),
+                  Text(
+                      '${_recentSentIndex + 1} מתוך ${_recentSentMessages.length}',
+                      style: const TextStyle(fontSize: 11, color: kSubtext)),
+                ],
+              ),
+            ),
+          Material(
+            color: kPrimary,
+            borderRadius: BorderRadius.circular(24),
+            elevation: 4,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                color: Colors.white,
+                tooltip: 'הודעה קודמת ששלחתי',
+                onPressed: _recentSentLoading
+                    ? null
+                    : () => _browseRecentSent(older: true),
+                icon: _recentSentLoading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.keyboard_arrow_up),
+              ),
+              Container(width: 26, height: 1, color: Colors.white30),
+              IconButton(
+                color: Colors.white,
+                tooltip: 'הודעה חדשה יותר ששלחתי',
+                onPressed: _recentSentLoading || !hasMessage
+                    ? null
+                    : () => _browseRecentSent(older: false),
+                icon: const Icon(Icons.keyboard_arrow_down),
+              ),
+            ]),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final conversations = ConversationsScreen(
@@ -4294,7 +4440,16 @@ class _MainShellContentState extends State<_MainShellContent> {
         : screens[_idx];
 
     return Scaffold(
-      body: body,
+      body: Stack(
+        children: [
+          Positioned.fill(child: body),
+          Positioned(
+            left: 8,
+            top: 88,
+            child: _recentSentBrowser(),
+          ),
+        ],
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _idx,
         onTap: (i) => setState(() => _idx = i),
@@ -14414,8 +14569,12 @@ class ContentFilterSettingsScreen extends StatefulWidget {
   final String? groupId;
   final String? groupName;
   const ContentFilterSettingsScreen(
-      {super.key, required this.token, this.contactId, this.contactName,
-      this.groupId, this.groupName});
+      {super.key,
+      required this.token,
+      this.contactId,
+      this.contactName,
+      this.groupId,
+      this.groupName});
 
   @override
   State<ContentFilterSettingsScreen> createState() =>
@@ -14486,8 +14645,8 @@ class _ContentFilterSettingsScreenState
       final body = _isGroup
           ? {'filter': _filter}
           : _isContact
-          ? (_inherit ? {'inherit': true} : {'filter': _filter})
-          : _filter;
+              ? (_inherit ? {'inherit': true} : {'filter': _filter})
+              : _filter;
       final response = await http.put(Uri.parse('$kApi$path'),
           headers: {
             'Authorization': 'Bearer ${widget.token}',

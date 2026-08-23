@@ -3326,6 +3326,29 @@ app.put('/api/groups/:id/read', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/messages/recent-sent', auth, async (req, res) => {
+  try {
+    const requested = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requested)
+      ? Math.max(1, Math.min(requested, 50)) : 30;
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT m.id,m.body,m.type,m.file_name,m.created_at,
+              COALESCE(g.name,u.name) AS target_name,
+              CASE WHEN m.group_id IS NULL THEN 'chat' ELSE 'group' END AS target_type,
+              COALESCE(m.group_id,m.recipient_id) AS target_id
+       FROM messages m
+       LEFT JOIN users u ON u.id=m.recipient_id
+       LEFT JOIN groups g ON g.id=m.group_id
+       WHERE m.sender_id=$1 AND m.deleted_for_everyone=FALSE
+         AND m.deleted_for_sender=FALSE
+         AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3)
+       ORDER BY m.created_at DESC LIMIT $4`,
+      [req.user.id, SYSTEM_USER_ID, SCAN_BOT_ID, limit]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Messages: load history ─────────────────────────────────────────
 app.get('/api/messages/:userId', auth, async (req, res) => {
   const otherId = req.params.userId;
