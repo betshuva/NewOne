@@ -16,7 +16,9 @@
     .title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
     h2 { margin:0; font-size:19px; }
     .limit { color:var(--muted); font-size:13px; }
-    .text { white-space:pre-wrap; background:#f8fafc; border:1px solid var(--line); border-radius:12px; padding:16px; user-select:text; }
+    .text { white-space:pre-wrap; background:#f8fafc; border:1px solid var(--line); border-radius:12px; padding:16px; user-select:text; outline:none; }
+    .text[contenteditable="true"]:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(23,105,224,.12); background:white; }
+    .edit-note { margin:8px 0 0; color:var(--muted); font-size:13px; }
     button { border:0; border-radius:10px; padding:10px 17px; color:white; background:var(--blue); font-weight:700; cursor:pointer; font-size:15px; }
     button:hover { filter:brightness(.94); }
     button.done { background:#16834b; }
@@ -28,24 +30,24 @@
   <main>
     <header>
       <h1>תיאור האפליקציה בתשובה</h1>
-      <p>טקסט מוכן להעתקה אל Google Play Console</p>
+      <p>לחץ בתוך כל שדה כדי לערוך, ולאחר מכן לחץ על כפתור ההעתקה</p>
     </header>
 
     <section class="card">
       <div class="title-row"><h2>שם האפליקציה</h2><span class="limit">עד 30 תווים</span></div>
-      <div class="text" id="app-name">בתשובה</div>
+      <div class="text" id="app-name" contenteditable="true" role="textbox" aria-label="שם האפליקציה">בתשובה</div>
       <p><button type="button" data-copy="app-name">העתקת השם</button></p>
     </section>
 
     <section class="card">
       <div class="title-row"><h2>תיאור קצר</h2><span class="limit">עד 80 תווים</span></div>
-      <div class="text" id="short-description">אפליקציה להעברת מסרים שבה כל התמונות והסרטונים עוברים סינון תוכן</div>
+      <div class="text" id="short-description" contenteditable="true" role="textbox" aria-label="תיאור קצר">אפליקציה להעברת מסרים שבה כל התמונות והסרטונים עוברים סינון תוכן</div>
       <p><button type="button" data-copy="short-description">העתקת התיאור הקצר</button></p>
     </section>
 
     <section class="card">
       <div class="title-row"><h2>תיאור מלא</h2><span class="limit">עד 4,000 תווים</span></div>
-      <div class="text" id="full-description">בתשובה היא אפליקציה חברתית ישראלית להעברת מסרים ולשיתוף תוכן בסביבה קהילתית ומכבדת.
+      <div class="text" id="full-description" contenteditable="true" role="textbox" aria-label="תיאור מלא">בתשובה היא אפליקציה חברתית ישראלית להעברת מסרים ולשיתוף תוכן בסביבה קהילתית ומכבדת.
 
 באפליקציה ניתן:
 • ליצור פרופיל אישי
