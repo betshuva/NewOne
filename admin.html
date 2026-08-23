@@ -1404,7 +1404,7 @@ function renderImageTestResult(data) {
   const localSafety = renderLocalSafety(data.localSafety || null);
   const googleSafeSearch = renderGoogleSafeSearch(data.googleSafeSearch || null);
   const legacyStage = (title, values) => values ? `<div><strong>${title}</strong><div class="vc-labels" style="margin-top:7px">${Object.entries(values).map(([name,score]) => `<span class="vc-label">${escHtml(name)} ${Math.round(Number(score)*100)}%</span>`).join('')}</div></div>` : '';
-  const stageNames = {life:'שלב 1 — חי, דומם או אדם',subjects:'שלב 2 — אדם, בעל חיים, צמח או חפץ',people:'שלב 3 — גבר, אישה וילדים'};
+  const stageNames = {life:'שלב 1 — חי, דומם או אדם',personRescue:'שלב 1ב — אימות אדם בתמונה',subjects:'שלב 2 — אדם, בעל חיים, צמח או חפץ',people:'שלב 3 — גבר, אישה וילדים'};
   const stageRows = (classification.stages || []).map(item => {
     const decision = Array.isArray(item.decision) ? item.decision.map(value => categoryNames[value] || value).join(', ') : item.decision;
     const scores = item.scores ? Object.entries(item.scores).map(([name,score]) => `<span class="vc-label">${escHtml(name)} ${Math.round(Number(score)*100)}%</span>`).join('') : '';

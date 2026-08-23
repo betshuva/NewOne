@@ -21,8 +21,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 import 'file_download.dart';
 import 'media_cache.dart';
+import 'native_video_player.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
 
@@ -350,11 +352,19 @@ bool _hasImageExtension(String? value) {
       v.endsWith('.webp');
 }
 
+bool _hasVideoExtension(String? value) {
+  if (value == null || value.isEmpty) return false;
+  final v = value.toLowerCase();
+  return v.endsWith('.mp4') || v.endsWith('.webm') || v.endsWith('.mov');
+}
+
 String? _normalizeIncomingFileType(String? fileType,
     {String? fileUrl, String? fileName}) {
   // Extension check takes priority — DB may store 'text' even for image messages
   if (_hasImageExtension(fileUrl) || _hasImageExtension(fileName))
     return 'image';
+  if (_hasVideoExtension(fileUrl) || _hasVideoExtension(fileName))
+    return 'video';
   final t = (fileType ?? '').trim().toLowerCase();
   if (t.isEmpty) return null;
   if (t == 'image' || t.startsWith('image/')) return 'image';
@@ -433,8 +443,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.75';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.75.apk';
+const kVersion = '1.2.76';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.76.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -7003,6 +7013,8 @@ String _conversationPreview(Map<String, dynamic> item) {
       return 'מסמך';
     case 'audio':
       return 'הודעה קולית';
+    case 'video':
+      return 'סרטון וידאו';
     default:
       return item['last_message'] as String? ?? '';
   }
@@ -7016,6 +7028,8 @@ IconData? _conversationPreviewIcon(Map<String, dynamic> item) {
       return Icons.insert_drive_file_outlined;
     case 'audio':
       return Icons.mic_none;
+    case 'video':
+      return Icons.videocam_outlined;
     default:
       return null;
   }
@@ -7258,6 +7272,53 @@ class _CompactMenuItem extends StatelessWidget {
       );
 }
 
+class _AllowedReceivingFilterIcons extends StatelessWidget {
+  final Map<String, bool>? filter;
+
+  const _AllowedReceivingFilterIcons({required this.filter});
+
+  static const _items = <String, (IconData, String)>{
+    'text': (Icons.chat_bubble_outline, 'מאפשרת לקבל הודעות טקסט'),
+    'video': (Icons.videocam_outlined, 'מאפשרת לקבל סרטוני וידאו מסווגים'),
+    'nonHumanImages': (
+      Icons.landscape_outlined,
+      'מאפשרת לקבל תמונות ללא בני אדם'
+    ),
+    'men': (Icons.man, 'מאפשרת לקבל תמונות גברים'),
+    'women': (Icons.woman, 'מאפשרת לקבל תמונות נשים'),
+    'children': (Icons.child_care, 'מאפשרת לקבל תמונות ילדים'),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final allowed =
+        _items.entries.where((entry) => filter?[entry.key] == true).toList();
+    if (allowed.isEmpty) return const SizedBox.shrink();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: allowed
+          .map((entry) => Tooltip(
+                message: entry.value.$2,
+                child: Padding(
+                  padding: const EdgeInsetsDirectional.only(start: 3),
+                  child: Container(
+                    width: 22,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.16),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white54, width: 0.7),
+                    ),
+                    alignment: Alignment.center,
+                    child: Icon(entry.value.$1, size: 15, color: Colors.white),
+                  ),
+                ),
+              ))
+          .toList(),
+    );
+  }
+}
+
 // ── Chat Screen ───────────────────────────────────────────────────
 class ChatScreen extends StatefulWidget {
   final String token;
@@ -7303,6 +7364,7 @@ class _ChatScreenState extends State<ChatScreen> {
   int _recordSeconds = 0;
   Timer? _recordTimer;
   String _voiceFileName = 'voice_message.webm';
+  Map<String, bool>? _recipientReceivingFilter;
 
   @override
   void initState() {
@@ -7315,6 +7377,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     _loadMessages();
+    _loadRecipientReceivingFilter();
     _setupSocket();
     // WebSocket delivery is best-effort (a browser can sleep or reconnect).
     // Quietly reconcile with the server so an incoming message can never stay
@@ -7323,6 +7386,25 @@ class _ChatScreenState extends State<ChatScreen> {
       const Duration(seconds: 4),
       (_) => _loadMessages(silent: true),
     );
+  }
+
+  Future<void> _loadRecipientReceivingFilter() async {
+    if (widget.recipient['id'] == kScanBotId) return;
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/users/${widget.recipient['id']}/receiving-filter'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted || response.statusCode != 200) return;
+      final body = jsonDecode(response.body);
+      final raw = body is Map ? body['filter'] : null;
+      if (raw is! Map) return;
+      setState(() {
+        _recipientReceivingFilter = raw.map(
+          (key, value) => MapEntry(key.toString(), value == true),
+        );
+      });
+    } catch (_) {}
   }
 
   Future<void> _loadMessages({bool silent = false}) async {
@@ -7417,6 +7499,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       ? 'delivered'
                       : 'sent',
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
+      if (map['image_classification'] != null)
+        'classification': map['image_classification'],
       if (map['reply_to_id'] != null)
         'replyTo': {
           'id': map['reply_to_id'],
@@ -7477,6 +7561,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'fileType': fileType,
         'fileUrl': fileUrl,
         'fileName': fileName,
+        if (data['classification'] != null)
+          'classification': data['classification'],
         if (data['replyToId'] != null)
           'replyTo': {'id': data['replyToId'], 'text': data['replyBody'] ?? ''},
       };
@@ -8214,22 +8300,41 @@ class _ChatScreenState extends State<ChatScreen> {
                     _pickDocument();
                   },
                 ),
+                _AttachOption(
+                  icon: Icons.videocam_outlined,
+                  label: 'וידאו',
+                  color: Colors.deepPurple,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _pickVideo();
+                  },
+                ),
+                _AttachOption(
+                  icon: Icons.video_camera_back_outlined,
+                  label: 'צלם וידאו',
+                  color: Colors.redAccent,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _recordVideo();
+                  },
+                ),
               ],
             ),
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: Colors.red.shade50,
+                color: Colors.blue.shade50,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.red.shade200),
+                border: Border.all(color: Colors.blue.shade200),
               ),
               child: Row(children: [
-                Icon(Icons.block, color: Colors.red.shade600, size: 18),
+                Icon(Icons.security_outlined,
+                    color: Colors.blue.shade700, size: 18),
                 const SizedBox(width: 8),
                 const Expanded(
-                  child: Text('שליחת סרטוני וידאו וקישורי YouTube אינה נתמכת',
-                      style: TextStyle(fontSize: 12, color: Colors.red)),
+                  child: Text('סרטונים עד 50MB עוברים סריקה לפני השליחה',
+                      style: TextStyle(fontSize: 12, color: Colors.blue)),
                 ),
               ]),
             ),
@@ -8382,6 +8487,26 @@ class _ChatScreenState extends State<ChatScreen> {
     await _uploadAndSend(f, f.name, 'document');
   }
 
+  Future<void> _pickVideo() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['mp4', 'webm', 'mov'],
+      withData: kIsWeb,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final file = result.files.single;
+    await _uploadAndSend(file.xFile, file.name, 'video');
+  }
+
+  Future<void> _recordVideo() async {
+    final video = await ImagePicker().pickVideo(
+      source: ImageSource.camera,
+      maxDuration: const Duration(seconds: 30),
+    );
+    if (video == null) return;
+    await _uploadAndSend(video, video.name, 'video');
+  }
+
   Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
@@ -8462,6 +8587,8 @@ class _ChatScreenState extends State<ChatScreen> {
               'fileType': fileType,
               'fileUrl': fileUrl,
               'fileName': fileName,
+              if (data['classification'] != null)
+                'classification': data['classification'],
               'scanReason': data['reason'],
             });
           }
@@ -8491,6 +8618,8 @@ class _ChatScreenState extends State<ChatScreen> {
               'fileType': fileType,
               'fileUrl': fileUrl,
               'fileName': fileName,
+              if (data['classification'] != null)
+                'classification': data['classification'],
             });
           }
         });
@@ -8565,6 +8694,8 @@ class _ChatScreenState extends State<ChatScreen> {
               'fileType': fileType,
               'fileUrl': fileUrl,
               'fileName': fileName,
+              if (data['classification'] != null)
+                'classification': data['classification'],
             });
           }
         });
@@ -8692,11 +8823,18 @@ class _ChatScreenState extends State<ChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(recipientName,
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white)),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(recipientName,
+                        style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white)),
+                    _AllowedReceivingFilterIcons(
+                        filter: _recipientReceivingFilter),
+                  ],
+                ),
                 Row(
                   children: [
                     const Icon(Icons.verified_user_outlined,
@@ -9479,6 +9617,170 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
   }
 }
 
+class _ChatVideoPlayer extends StatefulWidget {
+  final String url;
+  const _ChatVideoPlayer({required this.url});
+
+  @override
+  State<_ChatVideoPlayer> createState() => _ChatVideoPlayerState();
+}
+
+class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
+  late VideoPlayerController _controller;
+  late Future<void> _initialization;
+
+  @override
+  void initState() {
+    super.initState();
+    _createController();
+  }
+
+  void _createController() {
+    _controller = VideoPlayerController.networkUrl(
+      Uri.parse(_absoluteMediaUrl(widget.url)),
+    );
+    _initialization = _controller.initialize().then((_) {
+      _controller.setLooping(false);
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatVideoPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _controller.dispose();
+      _createController();
+    }
+  }
+
+  Future<void> _toggle() async {
+    if (!_controller.value.isInitialized) return;
+    if (_controller.value.isPlaying) {
+      await _controller.pause();
+    } else {
+      if (_controller.value.position >= _controller.value.duration) {
+        await _controller.seekTo(Duration.zero);
+      }
+      await _controller.play();
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _retry() async {
+    await _controller.dispose();
+    if (!mounted) return;
+    setState(_createController);
+  }
+
+  Future<void> _openExternally() async {
+    final uri = Uri.parse(_absoluteMediaUrl(widget.url));
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('לא ניתן לפתוח את הסרטון בדפדפן')),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<void>(
+      future: _initialization,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Container(
+            width: 280,
+            constraints: const BoxConstraints(minHeight: 150),
+            padding: const EdgeInsets.all(14),
+            color: Colors.black87,
+            alignment: Alignment.center,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.videocam_off_outlined,
+                  color: Colors.white70, size: 34),
+              const SizedBox(height: 8),
+              const Text('הנגן המובנה לא הצליח לטעון את הסרטון',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white)),
+              const SizedBox(height: 10),
+              Wrap(spacing: 8, alignment: WrapAlignment.center, children: [
+                OutlinedButton.icon(
+                  onPressed: _retry,
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: const Text('נסה שוב'),
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
+                ),
+                FilledButton.icon(
+                  onPressed: _openExternally,
+                  icon: const Icon(Icons.open_in_new, size: 18),
+                  label: const Text('הפעל בדפדפן'),
+                ),
+              ]),
+            ]),
+          );
+        }
+        if (snapshot.connectionState != ConnectionState.done ||
+            !_controller.value.isInitialized) {
+          return Container(
+            width: 260,
+            height: 150,
+            color: Colors.black87,
+            alignment: Alignment.center,
+            child: const CircularProgressIndicator(color: Colors.white),
+          );
+        }
+        final ratio = _controller.value.aspectRatio > 0
+            ? _controller.value.aspectRatio
+            : 16 / 9;
+        return SizedBox(
+          width: 280,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: ColoredBox(
+              color: Colors.black,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                GestureDetector(
+                  onTap: _toggle,
+                  child: Stack(alignment: Alignment.center, children: [
+                    AspectRatio(
+                      aspectRatio: ratio,
+                      child: VideoPlayer(_controller),
+                    ),
+                    if (!_controller.value.isPlaying)
+                      Container(
+                        width: 54,
+                        height: 54,
+                        decoration: const BoxDecoration(
+                            color: Colors.black54, shape: BoxShape.circle),
+                        child: const Icon(Icons.play_arrow,
+                            color: Colors.white, size: 38),
+                      ),
+                  ]),
+                ),
+                VideoProgressIndicator(
+                  _controller,
+                  allowScrubbing: true,
+                  colors: const VideoProgressColors(
+                    playedColor: kPrimaryMid,
+                    bufferedColor: Colors.white38,
+                    backgroundColor: Colors.white12,
+                  ),
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                ),
+              ]),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _ImageStatusBadge extends StatelessWidget {
   final Map<String, dynamic> message;
   final bool isMe;
@@ -9487,7 +9789,17 @@ class _ImageStatusBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final status = message['status'] as String? ?? (isMe ? 'sent' : 'received');
+    var status = message['status'] as String? ?? (isMe ? 'sent' : 'received');
+    final reportText = message['text']?.toString() ?? '';
+    if (reportText.contains('דוח סריקה:')) {
+      if (reportText.contains('תוצאה: ⛔')) {
+        status = 'rejected_scan';
+      } else if (reportText.contains('תוצאה: ✅')) {
+        status = 'scan_approved';
+      } else if (reportText.contains('תוצאה: ⏳')) {
+        status = 'pending_scan';
+      }
+    }
     late final String label;
     late final IconData icon;
     late final Color color;
@@ -9501,6 +9813,11 @@ class _ImageStatusBadge extends StatelessWidget {
         label = 'נחסם';
         icon = Icons.block;
         color = Colors.red;
+        break;
+      case 'scan_approved':
+        label = 'עבר סריקה';
+        icon = Icons.verified_outlined;
+        color = Colors.green.shade700;
         break;
       case 'received':
       case 'delivered':
@@ -9529,6 +9846,78 @@ class _ImageStatusBadge extends StatelessWidget {
         alignment: Alignment.center,
         child: Icon(icon, size: 17, color: color),
       ),
+    );
+  }
+}
+
+class _ImageClassificationBadges extends StatelessWidget {
+  final Map<String, dynamic> message;
+
+  const _ImageClassificationBadges({required this.message});
+
+  static const _labels = <String, String>{
+    'video': 'הסרטון עבר סריקה וסיווג',
+    'men': 'זוהה גבר',
+    'women': 'זוהתה אישה',
+    'children': 'זוהו ילד או ילדה',
+    'nonHumanImages': 'לא זוהו בני אדם',
+    'people': 'זוהו אנשים',
+    'landscape': 'זוהה נוף או תוכן ללא אדם',
+    'uncertain': 'הסיווג אינו ודאי',
+  };
+
+  static const _icons = <String, IconData>{
+    'video': Icons.videocam_outlined,
+    'men': Icons.man,
+    'women': Icons.woman,
+    'children': Icons.child_care,
+    'nonHumanImages': Icons.landscape_outlined,
+    'people': Icons.groups_outlined,
+    'landscape': Icons.landscape_outlined,
+    'uncertain': Icons.help_outline,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final raw = message['classification'];
+    if (raw is! Map) return const SizedBox.shrink();
+    final detected = raw['detectedCategories'];
+    var categories = detected is List
+        ? detected.map((value) => value.toString()).toList()
+        : <String>[];
+    if (categories.isEmpty) {
+      final category = raw['category']?.toString();
+      categories = [
+        if (raw['uncertain'] == true)
+          'uncertain'
+        else if (category != null && category.isNotEmpty)
+          category,
+      ];
+    }
+    categories = categories.where(_icons.containsKey).toSet().toList();
+    if (categories.isEmpty) return const SizedBox.shrink();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: categories
+          .map((category) => Padding(
+                padding: const EdgeInsets.only(left: 3),
+                child: Tooltip(
+                  message: _labels[category]!,
+                  child: Container(
+                    width: 27,
+                    height: 27,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.94),
+                      shape: BoxShape.circle,
+                      boxShadow: const [
+                        BoxShadow(color: Colors.black26, blurRadius: 3),
+                      ],
+                    ),
+                    child: Icon(_icons[category], size: 18, color: kPrimary),
+                  ),
+                ),
+              ))
+          .toList(),
     );
   }
 }
@@ -9599,8 +9988,12 @@ class _ConsecutiveImageGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final visible = messages.take(4).toList();
-    final gridHeight = visible.length <= 2 ? 110.0 : 220.0;
+    final maxVisible = kIsWeb ? 8 : 4;
+    final visible = messages.take(maxVisible).toList();
+    final gridWidth = kIsWeb ? 344.0 : 228.0;
+    final tileExtent = (gridWidth - 8 - 3) / 2;
+    final rowCount = (visible.length / 2).ceil();
+    final gridHeight = rowCount * tileExtent + (rowCount - 1) * 3;
     return GestureDetector(
       onLongPress: onForwardAll == null
           ? null
@@ -9620,7 +10013,7 @@ class _ConsecutiveImageGrid extends StatelessWidget {
       child: Align(
         alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
         child: Container(
-          width: 228,
+          width: gridWidth,
           margin: const EdgeInsets.symmetric(vertical: 2),
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
@@ -9642,7 +10035,7 @@ class _ConsecutiveImageGrid extends StatelessWidget {
               itemBuilder: (_, index) {
                 final message = visible[index];
                 final url = message['fileUrl'] as String;
-                final hiddenCount = messages.length - 3;
+                final hiddenCount = messages.length - (maxVisible - 1);
                 final conversationImages =
                     _conversationImageMessages(conversationMessages);
                 final selectedIndex =
@@ -9689,7 +10082,8 @@ class _ConsecutiveImageGrid extends StatelessWidget {
                             child: Icon(Icons.broken_image, color: kSubtext),
                           ),
                         ),
-                        if (index == 3 && messages.length > 4) ...[
+                        if (index == maxVisible - 1 &&
+                            messages.length > maxVisible) ...[
                           ColoredBox(color: Colors.black.withOpacity(0.48)),
                           Center(
                             child: Text(
@@ -9708,6 +10102,11 @@ class _ConsecutiveImageGrid extends StatelessWidget {
                           bottom: 5,
                           child:
                               _ImageStatusBadge(message: message, isMe: isMe),
+                        ),
+                        Positioned(
+                          right: 5,
+                          top: 5,
+                          child: _ImageClassificationBadges(message: message),
                         ),
                       ],
                     ),
@@ -9775,6 +10174,7 @@ class _MessageBubble extends StatelessWidget {
     );
     final isImageFile = isFile && fileUrl != null && fileType == 'image';
     final isAudioFile = isFile && fileUrl != null && fileType == 'audio';
+    final isVideoFile = isFile && fileUrl != null && fileType == 'video';
     final conversationImages = _conversationImageMessages(conversationMessages);
     final selectedImageIndex =
         _conversationImageIndex(conversationImages, message);
@@ -9850,6 +10250,23 @@ class _MessageBubble extends StatelessWidget {
 
             if (isAudioFile)
               VoiceMessagePlayer(url: fileUrl!, isMe: isMe)
+            else if (isVideoFile)
+              Stack(children: [
+                if (kIsWeb)
+                  NativeWebVideoPlayer(url: _absoluteMediaUrl(fileUrl!))
+                else
+                  _ChatVideoPlayer(url: fileUrl!),
+                Positioned(
+                  right: 7,
+                  top: 7,
+                  child: _ImageClassificationBadges(message: message),
+                ),
+                Positioned(
+                  left: 7,
+                  top: 7,
+                  child: _ImageStatusBadge(message: message, isMe: isMe),
+                ),
+              ])
             else if (isImageFile)
               Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -9906,6 +10323,11 @@ class _MessageBubble extends StatelessWidget {
                           child:
                               _ImageStatusBadge(message: message, isMe: isMe),
                         ),
+                        Positioned(
+                          right: 7,
+                          top: 7,
+                          child: _ImageClassificationBadges(message: message),
+                        ),
                       ],
                     ),
                   ),
@@ -9932,11 +10354,15 @@ class _MessageBubble extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.insert_drive_file, size: 20, color: kPrimary),
+                      Icon(isVideoFile
+                          ? Icons.videocam_outlined
+                          : Icons.insert_drive_file,
+                          size: 20, color: kPrimary),
                       const SizedBox(width: 6),
                       Flexible(
                         child: Text(
-                          fileName ?? message['text'] as String? ?? 'מסמך',
+                          fileName ?? message['text'] as String? ??
+                              (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
                           style: TextStyle(fontSize: 14, color: textColor),
                           textDirection: TextDirection.rtl,
                         ),
@@ -11773,6 +12199,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
       'status': map['message_status'] ?? 'sent',
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
+      if (map['image_classification'] != null)
+        'classification': map['image_classification'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
       'fileUrl': map['file_url'],
       'fileName': map['file_name'],
@@ -11817,6 +12245,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'fileUrl': fileUrl,
         'fileName': fileName,
         'fileType': fileType,
+        if (data['classification'] != null)
+          'classification': data['classification'],
       };
       setState(() {
         final clientMessageId = data['clientMessageId'] as String?;
@@ -12486,9 +12916,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               'isMe': true,
               'status': 'rejected_scan',
               'scanReason': data['reason'],
+              if (data['classification'] != null)
+                'classification': data['classification'],
               'fileType': fileType,
               'fileUrl': fileUrl,
               'fileName': fileName,
+              if (data['classification'] != null)
+                'classification': data['classification'],
             });
           }
         });
@@ -12518,6 +12952,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               'fileType': fileType,
               'fileUrl': fileUrl,
               'fileName': fileName,
+              if (data['classification'] != null)
+                'classification': data['classification'],
             });
           }
         });
@@ -12593,6 +13029,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               'fileType': fileType,
               'fileUrl': fileUrl,
               'fileName': fileName,
+              if (data['classification'] != null)
+                'classification': data['classification'],
             });
           }
         });
@@ -13664,6 +14102,7 @@ class _ContentFilterSettingsScreenState
   bool _inherit = true;
   Map<String, bool> _filter = {
     'text': true,
+    'video': true,
     'nonHumanImages': true,
     'men': true,
     'women': true,
@@ -13776,6 +14215,8 @@ class _ContentFilterSettingsScreenState
                         TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
               _option('text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
+              _option('video', 'וידאו',
+                  'סרטונים שעברו סריקה וסיווג', Icons.videocam_outlined),
               _option('nonHumanImages', 'תמונות ללא בני אדם',
                   'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
               _option('men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
@@ -14049,7 +14490,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   leading: const Icon(Icons.tune, color: kPrimary),
                   title: const Text('סוגי תוכן מותרים'),
-                  subtitle: const Text('טקסט, תמונות, גברים, נשים וילדים'),
+                  subtitle: const Text('טקסט, וידאו, תמונות, גברים, נשים וילדים'),
                   trailing: const Icon(Icons.chevron_left),
                   onTap: () => Navigator.push(
                       context,

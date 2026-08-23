@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
   profile_pic_url     TEXT,
   privacy_pic         TEXT NOT NULL DEFAULT 'all',      -- all | contacts | nobody
   filter_level        TEXT NOT NULL DEFAULT 'standard', -- standard | strict
-  content_filter      JSONB NOT NULL DEFAULT '{"text":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
+  content_filter      JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
   google_id           TEXT,
   latitude            DOUBLE PRECISION,
   longitude           DOUBLE PRECISION,

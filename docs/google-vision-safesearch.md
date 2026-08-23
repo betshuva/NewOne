@@ -25,8 +25,9 @@ added to Flutter, the web bundle, or Git.
    ```
 
 The status is visible in the admin Vision screen. Once a key is configured,
-SafeSearch is enforced: `adult` or `racy` at the configured threshold blocks
-the image. A timeout, quota/authentication error, or missing annotation keeps
+SafeSearch is enforced: `adult` at the configured threshold blocks the image;
+`racy` blocks only at `VERY_LIKELY`, so a standalone `racy: LIKELY` result is
+allowed. A timeout, quota/authentication error, or missing annotation keeps
 the image pending for retry and never approves it. An `UNKNOWN` moderation
 result is rejected immediately because there is no manual-review queue.
 

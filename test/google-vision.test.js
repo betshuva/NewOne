@@ -31,9 +31,23 @@ test('SafeSearch does not block a weak POSSIBLE result by default', () => {
   assert.equal(result.categories.violence, 'VERY_LIKELY');
 });
 
-test('SafeSearch blocks adult or racy at LIKELY by default', () => {
+test('SafeSearch lets racy LIKELY pass but blocks adult LIKELY', () => {
   const result = evaluateSafeSearch({
     adult: 'UNLIKELY', racy: 'LIKELY', violence: 'UNLIKELY',
+    medical: 'UNLIKELY', spoof: 'UNLIKELY',
+  });
+
+  assert.equal(result.blocked, false);
+  assert.deepEqual(result.blockedCategories, []);
+
+  const adult = evaluateSafeSearch({ adult: 'LIKELY', racy: 'UNLIKELY' });
+  assert.equal(adult.blocked, true);
+  assert.deepEqual(adult.blockedCategories, ['adult']);
+});
+
+test('SafeSearch blocks racy only at VERY_LIKELY', () => {
+  const result = evaluateSafeSearch({
+    adult: 'UNLIKELY', racy: 'VERY_LIKELY', violence: 'UNLIKELY',
     medical: 'UNLIKELY', spoof: 'UNLIKELY',
   });
 

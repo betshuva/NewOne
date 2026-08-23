@@ -46,12 +46,21 @@ function evaluateSafeSearch(annotation, threshold = DEFAULT_BLOCK_THRESHOLD) {
   const unknownCategories = MODERATION_CATEGORIES.filter(
     category => categories[category] === 'UNKNOWN',
   );
-  const blockedCategories = MODERATION_CATEGORIES.filter(
-    category => LIKELIHOOD_RANK[categories[category]] >= thresholdRank,
+  // Racy is a broad signal that also fires on ordinary family photos. Let a
+  // standalone LIKELY result pass; only VERY_LIKELY racy content blocks.
+  // Adult keeps the configured threshold and remains independently enforced.
+  const categoryThresholds = {
+    adult: normalizedThreshold,
+    racy: 'VERY_LIKELY',
+  };
+  const blockedCategories = MODERATION_CATEGORIES.filter(category =>
+    LIKELIHOOD_RANK[categories[category]] >=
+      LIKELIHOOD_RANK[categoryThresholds[category]],
   );
   return {
     categories,
     threshold: normalizedThreshold,
+    categoryThresholds,
     blocked: blockedCategories.length > 0,
     blockedCategories,
     uncertain: unknownCategories.length > 0,

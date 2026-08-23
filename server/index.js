@@ -83,13 +83,99 @@ const ALLOWED_TYPES = {
   'audio/webm':  { ext: 'webm', maxMB: 25, dbType: 'audio' },
   'audio/ogg':   { ext: 'ogg',  maxMB: 25, dbType: 'audio' },
   'audio/wav':   { ext: 'wav',  maxMB: 25, dbType: 'audio' },
+  'video/mp4':       { ext: 'mp4',  maxMB: 50, dbType: 'video' },
+  'video/webm':      { ext: 'webm', maxMB: 50, dbType: 'video' },
+  'video/quicktime': { ext: 'mov',  maxMB: 50, dbType: 'video' },
 };
-const BLOCKED_TYPES = ['video/', 'application/x-mpegURL'];
+const BLOCKED_TYPES = ['application/x-mpegURL'];
+const ALLOWED_EXTENSIONS = Object.freeze({
+  mp4: { mime: 'video/mp4', config: ALLOWED_TYPES['video/mp4'] },
+  webm: { mime: 'video/webm', config: ALLOWED_TYPES['video/webm'] },
+  mov: { mime: 'video/quicktime', config: ALLOWED_TYPES['video/quicktime'] },
+});
+
+function resolveAllowedUpload(file) {
+  const byMime = ALLOWED_TYPES[file.mimetype];
+  if (byMime) return { ...byMime, mime: file.mimetype };
+  const extension = path.extname(file.originalname || '')
+    .slice(1).toLowerCase();
+  const byExtension = ALLOWED_EXTENSIONS[extension];
+  if (!byExtension) return null;
+  return { ...byExtension.config, mime: byExtension.mime };
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
+
+const VIDEO_MODERATION_URL = process.env.VIDEO_MODERATION_URL ||
+  'http://127.0.0.1:8080';
+
+function hasStableVideoEvidence(label, labels, findings) {
+  const maximum = Number(labels[label] || 0);
+  if (maximum >= 0.95) return true;
+  const observations = findings
+    .filter(item => item?.label === label)
+    .map(item => ({ confidence: Number(item.confidence || 0),
+      timestamp: Number(item.timestamp_seconds || 0) }));
+  return observations.some(primary => primary.confidence >= 0.80 &&
+    observations.some(support => support !== primary &&
+      support.confidence >= 0.65 &&
+      Math.abs(support.timestamp - primary.timestamp) <= 3));
+}
+
+function videoDetectedCategories(labels, findings) {
+  const categories = ['video'];
+  if (hasStableVideoEvidence('man', labels, findings)) categories.push('men');
+  if (hasStableVideoEvidence('woman', labels, findings)) categories.push('women');
+  if (hasStableVideoEvidence('child', labels, findings)) categories.push('children');
+  if (Number(labels.people || 0) >= 0.55) categories.push('people');
+  if (Number(labels.landscape || 0) >= 0.55 && !categories.includes('people'))
+    categories.push('landscape');
+  return categories;
+}
+
+async function scanVideo(buffer, fileName, mimeType) {
+  try {
+    const form = new FormData();
+    form.append('video', new Blob([buffer], { type: mimeType }), fileName);
+    form.append('sample_interval_seconds',
+      process.env.VIDEO_SAMPLE_INTERVAL_SECONDS || '1');
+    const response = await fetch(`${VIDEO_MODERATION_URL}/analyze`, {
+      method: 'POST', body: form, signal: AbortSignal.timeout(180000),
+    });
+    if (!response.ok)
+      throw new Error(`video moderation returned HTTP ${response.status}`);
+    const result = await response.json();
+    const labels = result.labels && typeof result.labels === 'object'
+      ? result.labels : {};
+    const findings = Array.isArray(result.findings) ? result.findings : [];
+    const detectedCategories = videoDetectedCategories(labels, findings);
+    const classification = {
+      category: 'video', detectedCategories,
+      uncertain: result.decision === 'review', labels,
+      findings,
+      sampledFrames: result.sampled_frames,
+      durationSeconds: result.duration_seconds,
+    };
+    if (result.decision === 'allowed')
+      return { blocked: false, pending: false, classification,
+        reason: result.explanation || 'הסרטון עבר סריקה' };
+    return {
+      blocked: true, pending: false, classification,
+      blockedBy: result.decision === 'review'
+        ? 'video_classification_uncertain' : 'video_safety',
+      reason: result.decision === 'review'
+        ? 'סיווג הסרטון אינו ודאי ולכן הוא לא נשלח'
+        : 'הסרטון נחסם בבדיקת התוכן',
+    };
+  } catch (error) {
+    console.error('scanVideo:', error.message);
+    return { blocked: false, pending: true,
+      reason: 'שירות סריקת הווידאו אינו זמין כרגע', error: error.message };
+  }
+}
 
 function normalizeUploadFileName(name) {
   if (!name || /[\u0590-\u05FF]/.test(name) || !/[\u00C0-\u00FF]/.test(name))
@@ -323,6 +409,7 @@ function recordBlockedChat(userId, context, text, targetId, ip = null) {
 
 const DEFAULT_CONTENT_FILTER = Object.freeze({
   text: true,
+  video: true,
   nonHumanImages: true,
   men: true,
   women: true,
@@ -385,6 +472,14 @@ async function validateApprovedFile(pool, userId, fileUrl, contextType, contextI
   return true;
 }
 
+async function getStoredImageClassification(pool, fileUrl) {
+  if (!fileUrl) return null;
+  const result = await pool.query(
+    `SELECT moderation_details->'classification' AS classification
+     FROM stored_files WHERE public_url=$1 LIMIT 1`, [fileUrl]);
+  return result.rows[0]?.classification || null;
+}
+
 const scanLabelNames = {
   'person or people are visible': 'אדם',
   'animal or plant is visible': 'בעל חיים או צמח',
@@ -403,6 +498,7 @@ function formatScanBotReport(fileName, scanResult, status) {
   if (scanResult?.reason) lines.push(`סיבה: ${scanResult.reason}`);
   const stageTitles = {
     life: 'שלב 1 — חי, דומם או אדם',
+    personRescue: 'שלב 1ב — אימות אדם בתמונה',
     subjects: 'שלב 2 — סוג התוכן',
     people: 'שלב 3 — סוגי האנשים',
   };
@@ -566,11 +662,40 @@ async function classifyImageContent(buffer) {
   lifeStage.personScore = personScore;
   lifeStage.nonPersonScore = nonPersonScore;
 
-  if (nonPersonScore >= 0.70 && nonPersonScore > personScore) {
+  // The broad three-way CLIP prompt can mistake children for animals/plants,
+  // especially when they are small in the frame. Before committing to a
+  // non-human result, use a high-confidence binary person check. A positive
+  // rescue must continue through the normal men/women/children classifier.
+  const initiallyNonHuman = nonPersonScore >= 0.70 && nonPersonScore > personScore;
+  let personRescueStage = null;
+  let personRescued = false;
+  let possiblePerson = false;
+  if (initiallyNonHuman) {
+    personRescueStage = await timed('personRescue', [
+      'a person of any age is visible',
+      'no person is visible',
+    ]);
+    const rescuePersonScore = Number(
+      personRescueStage.scores['a person of any age is visible'] || 0);
+    const rescueNoPersonScore = Number(
+      personRescueStage.scores['no person is visible'] || 0);
+    personRescued = rescuePersonScore >= 0.85 &&
+      rescuePersonScore > rescueNoPersonScore;
+    possiblePerson = rescuePersonScore >= 0.35;
+    personRescueStage.decision = personRescued
+      ? 'person or people are visible' : 'not a person';
+    personRescueStage.confidence = personRescued
+      ? rescuePersonScore : rescueNoPersonScore;
+    personRescueStage.personScore = rescuePersonScore;
+    personRescueStage.nonPersonScore = rescueNoPersonScore;
+  }
+
+  if (initiallyNonHuman && !personRescued && !possiblePerson) {
     return {
       category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
       uncertain: false, life, subjects: null, people: null,
-      stages: [lifeStage], totalDurationMs: Math.round(performance.now() - startedAt),
+      stages: [lifeStage, personRescueStage],
+      totalDurationMs: Math.round(performance.now() - startedAt),
     };
   }
 
@@ -581,27 +706,25 @@ async function classifyImageContent(buffer) {
   const subjectTop = topResult(subjects);
   subjectsStage.decision = subjectTop.label;
   subjectsStage.confidence = subjectTop.score;
-  const personConfirmed = subjectTop.label === 'person or people' &&
-    (subjectTop.score >= 0.70 || (personScore >= 0.70 && subjectTop.score >= 0.60));
-  if (subjectTop.label !== 'person or people' && subjectTop.score >= 0.70) {
+  const personConfirmed = personRescued || (subjectTop.label === 'person or people' &&
+    (subjectTop.score >= 0.70 || (personScore >= 0.70 && subjectTop.score >= 0.60)));
+  if (!personRescued && !possiblePerson &&
+      subjectTop.label !== 'person or people' && subjectTop.score >= 0.70) {
     return {
       category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
       uncertain: false, life, subjects, people: null,
-      stages: [lifeStage, subjectsStage],
+      stages: [lifeStage, ...(personRescueStage ? [personRescueStage] : []), subjectsStage],
       totalDurationMs: Math.round(performance.now() - startedAt),
     };
   }
 
   if (!personConfirmed) {
+    // The broad subject prompt can be indecisive even when a dedicated
+    // person-type prompt identifies a child reliably. Continue as a rescue;
+    // the downstream 0.70 threshold still rejects weak guesses.
     subjectsStage.uncertain = true;
-    return {
-      category: null, detectedCategories: [], uncertain: true,
-      uncertainStage: 'subjects', life, subjects, people: null,
-      stages: [lifeStage, subjectsStage],
-      totalDurationMs: Math.round(performance.now() - startedAt),
-    };
   }
-  subjectsStage.confirmedByLifeStage = subjectTop.score < 0.70;
+  subjectsStage.confirmedByLifeStage = personConfirmed && subjectTop.score < 0.70;
 
   const peopleStartedAt = performance.now();
   const checks = [
@@ -619,10 +742,60 @@ async function classifyImageContent(buffer) {
       detected: Number(scores[present] || 0) >= 0.70 &&
         Number(scores[present] || 0) > Number(scores[absent] || 0) };
   }));
+
+  // A full screenshot can make secondary people tiny compared with text and
+  // interface chrome. If at least one person type was found, scan overlapping
+  // local crops for any missing types. This stays on the local CLIP service;
+  // a higher rescue threshold limits false positives from individual crops.
+  if (results.some(result => result.detected) && results.some(result => !result.detected)) {
+    try {
+      const metadata = await sharp(buffer).metadata();
+      const width = Number(metadata.width || 0);
+      const height = Number(metadata.height || 0);
+      if (width >= 160 && height >= 160) {
+        const cropWidth = Math.max(1, Math.floor(width * 0.60));
+        const cropHeight = Math.max(1, Math.floor(height * 0.60));
+        const cropSpecs = [
+          { left: 0, top: 0, width, height: cropHeight, name: 'top' },
+          { left: 0, top: height - cropHeight, width, height: cropHeight, name: 'bottom' },
+          { left: 0, top: 0, width: cropWidth, height, name: 'left' },
+          { left: width - cropWidth, top: 0, width: cropWidth, height, name: 'right' },
+        ];
+        const cropBuffers = await Promise.all(cropSpecs.map(spec =>
+          sharp(buffer).extract({ left: spec.left, top: spec.top,
+            width: spec.width, height: spec.height }).jpeg({ quality: 88 }).toBuffer()));
+        const rescuePrompts = {
+          men: ['one or more adult men are visible', 'no adult man is visible'],
+          women: ['one or more adult women are visible', 'no adult woman is visible'],
+          children: ['one or more children or teenagers are visible',
+            'no child or teenager is visible'],
+        };
+        await Promise.all(results.filter(result => !result.detected).map(async result => {
+          const [present, absent] = rescuePrompts[result.category];
+          const cropScores = await Promise.all(cropBuffers.map(async (crop, index) => {
+            const scores = await classifyClip(crop, [present, absent]);
+            return { crop: cropSpecs[index].name, scores,
+              confidence: Number(scores[present] || 0) };
+          }));
+          const best = cropScores.sort((a, b) => b.confidence - a.confidence)[0];
+          result.cropRescue = { checked: true, threshold: 0.80,
+            bestCrop: best.crop, confidence: best.confidence, scores: best.scores };
+          if (best.confidence >= 0.80 &&
+              best.confidence > Number(best.scores[absent] || 0)) {
+            result.detected = true;
+            result.confidence = best.confidence;
+          }
+        }));
+      }
+    } catch (error) {
+      console.warn('Person crop rescue:', error.message);
+    }
+  }
   const detectedCategories = results.filter(result => result.detected)
     .map(result => result.category);
   const people = Object.fromEntries(results.map(result => [result.category, {
     detected: result.detected, confidence: result.confidence, scores: result.scores,
+    cropRescue: result.cropRescue || null,
   }]));
   const peopleStage = {
     name: 'people', decision: detectedCategories,
@@ -639,7 +812,8 @@ async function classifyImageContent(buffer) {
     uncertain: detectedCategories.length === 0,
     uncertainStage: detectedCategories.length === 0 ? 'people' : null,
     life, subjects, people,
-    stages: [lifeStage, subjectsStage, peopleStage],
+    stages: [lifeStage, ...(personRescueStage ? [personRescueStage] : []),
+      subjectsStage, peopleStage],
     totalDurationMs: Math.round(performance.now() - startedAt),
   };
 }
@@ -1110,7 +1284,8 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_pic TEXT NOT NULL DEFAULT 'all'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
+    await pool.query(`ALTER TABLE users ALTER COLUMN content_filter SET DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
 
     // ── Allow phone-only / email-only accounts ─────────────────────
     await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
@@ -1934,6 +2109,7 @@ io.on('connection', async (socket) => {
         id: row.id, fromUserId: socket.user.id, fromName: socket.user.name,
         text, replyToId: replyToId || null, createdAt: row.created_at,
         fileUrl, fileName, fileType,
+        classification: await getStoredImageClassification(pool, fileUrl),
       });
       // שליפת שם הנמען לרישום קריא בפעילות
       const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
@@ -2001,6 +2177,7 @@ io.on('connection', async (socket) => {
         fromName:   socket.user.name,
         text,
         fileUrl, fileName, fileType: msgType,
+        classification: await getStoredImageClassification(pool, fileUrl),
         replyToId:  replyToId || null,
         clientMessageId: clientMessageId || null,
         createdAt:  row.created_at,
@@ -2487,6 +2664,20 @@ app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Read-only view of what the recipient currently allows from this sender.
+// This is the same effective policy enforced by image/text delivery.
+app.get('/api/users/:userId/receiving-filter', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const policy = await getEffectiveRecipientFilter(
+      pool, req.params.userId, req.user.id);
+    if (!policy) return res.status(404).json({ error: 'הנמען לא נמצא' });
+    if (!policy.isContact)
+      return res.status(403).json({ error: 'המידע זמין לאנשי קשר בלבד' });
+    res.json({ filter: policy.filter });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
@@ -2625,12 +2816,14 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         r.body        AS reply_body,
         ru.name       AS reply_sender_name,
         CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
-        ms.status AS message_status
+        ms.status AS message_status,
+        sf.moderation_details->'classification' AS image_classification
       FROM messages m
       LEFT JOIN messages r  ON m.reply_to_id = r.id
       LEFT JOIN users ru    ON r.sender_id = ru.id
       LEFT JOIN message_status ms ON ms.message_id = m.id
         AND ms.user_id = CASE WHEN m.sender_id=$1 THEN $2 ELSE $1 END
+      LEFT JOIN stored_files sf ON sf.public_url=m.file_url
       WHERE m.deleted_for_everyone = FALSE
         AND NOT EXISTS (
           SELECT 1 FROM message_user_deletions mud
@@ -2663,6 +2856,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.created_at,
         sf.moderation_status = 'rejected' AS scan_rejected,
         sf.moderation_details->>'reason' AS scan_reason,
+        sf.moderation_details->'classification' AS image_classification,
         CASE WHEN sf.moderation_status='rejected'
           THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status
       FROM stored_files sf
@@ -2761,6 +2955,9 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       replyBody = replyMsg.rows[0]?.body || '';
     }
 
+    const classification = fileUrl
+      ? await getStoredImageClassification(pool, fileUrl) : null;
+
     const sid = onlineUsers.get(toUserId);
     if (sid) {
       await pool.query(
@@ -2771,7 +2968,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       io.to(sid).emit('chat:message', {
         id: row.id, fromUserId: senderId, fromName: req.user.name,
         text, replyToId: replyToId || null, replyBody, createdAt: row.created_at,
-        fileUrl, fileName, fileType: type,
+        fileUrl, fileName, fileType: type, classification,
       });
     }
 
@@ -2785,7 +2982,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       { type: 'chat', fromUserId: senderId });
 
     res.json({ id: row.id, createdAt: row.created_at,
-      status: sid ? 'delivered' : 'sent' });
+      status: sid ? 'delivered' : 'sent', classification });
   } catch (e) {
     console.error('POST /api/messages:', e.message);
     res.status(500).json({ error: e.message });
@@ -3516,12 +3713,15 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
   if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
   file.originalname = normalizeUploadFileName(file.originalname);
 
-  // Block video types
+  // Block streaming playlists; uploaded video files are scanned locally.
   if (BLOCKED_TYPES.some(t => file.mimetype.startsWith(t)))
     return res.status(400).json({ error: 'שליחת סרטוני וידאו אינה מותרת' });
 
-  const allowed = ALLOWED_TYPES[file.mimetype];
+  const allowed = resolveAllowedUpload(file);
   if (!allowed) return res.status(400).json({ error: 'סוג קובץ לא נתמך' });
+  // Browsers sometimes upload selected videos as application/octet-stream.
+  // Only whitelisted extensions reach this point, so use the canonical MIME.
+  file.mimetype = allowed.mime;
   if (req.body.sharedGif === 'true' &&
       (file.mimetype !== 'image/gif' || req.body.rightsConfirmed !== 'true'))
     return res.status(400).json({
@@ -3544,6 +3744,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       if (!recipientPolicy) return res.status(404).json({ error: 'הנמען לא נמצא' });
       if (!recipientPolicy.isContact)
         return res.status(403).json({ error: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
+      if (allowed.dbType === 'video' && recipientPolicy.filter.video !== true)
+        return res.status(403).json({ error: 'סרטוני וידאו חסומים בהגדרות הנמען' });
     }
     if (req.body.groupId) {
       const groupAccess = await pool.query(
@@ -3574,6 +3776,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     let scanResult;
     if (allowed.dbType === 'image')
       scanResult = await scanImage(file.buffer);
+    else if (allowed.dbType === 'video')
+      scanResult = await scanVideo(file.buffer, file.originalname, file.mimetype);
     else if (allowed.dbType === 'document')
       scanResult = await scanDocument(file.buffer, file.mimetype);
 
@@ -3746,7 +3950,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         blockedBy: null }, req.ip);
     res.json({ url, fileName: file.originalname, fileSize: file.size,
       fileType: allowed.dbType, handledByScanBot: scanBotUpload, scanReport,
-      sharedGifId });
+      sharedGifId, classification: scanResult?.classification || null });
   } catch (e) {
     console.error('upload:', e.message);
     res.status(500).json({ error: e.message });
@@ -3942,11 +4146,13 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name, m.reply_to_id, m.created_at,
         u.name AS sender_name,
         r.body AS reply_body,
-        CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read
+        CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
+        sf.moderation_details->'classification' AS image_classification
       FROM messages m
       JOIN users u ON m.sender_id = u.id
       LEFT JOIN messages r ON m.reply_to_id = r.id
       LEFT JOIN message_status ms ON ms.message_id=m.id AND ms.user_id=$2
+      LEFT JOIN stored_files sf ON sf.public_url=m.file_url
       WHERE m.group_id = $1 AND m.deleted_for_everyone = FALSE
         AND NOT EXISTS (
           SELECT 1 FROM message_user_deletions mud
@@ -3978,7 +4184,8 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         0 AS is_read,
         CASE WHEN sf.moderation_status='rejected'
           THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status,
-        sf.moderation_details->>'reason' AS scan_reason
+        sf.moderation_details->>'reason' AS scan_reason,
+        sf.moderation_details->'classification' AS image_classification
       FROM stored_files sf
       JOIN users u ON u.id=sf.user_id
       WHERE sf.context_type='group' AND sf.context_id=$1
@@ -5674,7 +5881,10 @@ async function retryPendingScans() {
             googleSafeSearch: row.prior_moderation_details?.googleSafeSearch || null,
           });
         }
-        else                           scanResult = await scanDocument(buffer, row.mime_type);
+        else if (row.file_type === 'video')
+          scanResult = await scanVideo(buffer, row.file_name, row.mime_type);
+        else
+          scanResult = await scanDocument(buffer, row.mime_type);
 
         if (!scanResult || scanResult.pending) {
           if (scanResult) {
@@ -5734,6 +5944,29 @@ async function retryPendingScans() {
                   strictModesty: scanResult.strictModesty || null,
                   localSafety: scanResult.localSafety || null,
                   googleSafeSearch: scanResult.googleSafeSearch || null }), row.file_url]);
+            });
+            outcomePersisted = true;
+            const sid = onlineUsers.get(row.user_id);
+            if (sid) io.to(sid).emit('scan:rejected', {
+              fileName: row.file_name, fileUrl: row.file_url,
+              groupId: null, toUserId: row.to_user_id, reason,
+            });
+            continue;
+          }
+        }
+
+        if (row.file_type === 'video' && row.to_user_id &&
+            row.to_user_id !== SCAN_BOT_ID) {
+          const policy = await getEffectiveRecipientFilter(
+            pool, row.to_user_id, row.user_id);
+          if (!policy?.isContact || policy.filter.video !== true) {
+            const reason = !policy?.isContact
+              ? 'הנמען עדיין לא אישר אותך כחבר'
+              : 'סרטוני וידאו חסומים בהגדרות הנמען';
+            await completePending(row.id, async client => {
+              await client.query(
+                `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
+                [JSON.stringify({ ...scanResult, reason }), row.file_url]);
             });
             outcomePersisted = true;
             const sid = onlineUsers.get(row.user_id);
