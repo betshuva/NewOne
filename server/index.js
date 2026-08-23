@@ -452,6 +452,22 @@ function imageAllowedByFilter(filter, classification) {
   return filter[category] === true;
 }
 
+function contentAllowedByFilter(filter, type, classification) {
+  const normalized = normalizeContentFilter(filter);
+  if (type === 'text') return normalized.text;
+  if (type === 'video')
+    return normalized.video && imageAllowedByFilter(normalized, classification);
+  if (type === 'image') return imageAllowedByFilter(normalized, classification);
+  return true;
+}
+
+async function getGroupContentFilter(pool, groupId) {
+  const result = await pool.query(
+    'SELECT content_filter FROM groups WHERE id=$1', [groupId]);
+  return result.rows.length
+    ? normalizeContentFilter(result.rows[0].content_filter) : null;
+}
+
 async function validateApprovedFile(pool, userId, fileUrl, contextType, contextId) {
   if (!fileUrl) return true;
   const result = await pool.query(
@@ -1349,9 +1365,11 @@ async function migrateDatabase() {
         is_broadcast    BOOLEAN NOT NULL DEFAULT FALSE,
         send_permission TEXT NOT NULL DEFAULT 'all',
         filter_level    TEXT NOT NULL DEFAULT 'standard',
+        content_filter  JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
         created_at      TIMESTAMPTZ DEFAULT now()
       )`);
     await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
+    await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
 
     // ── Messages ───────────────────────────────────────────────────
     await pool.query(`
@@ -2225,7 +2243,7 @@ io.on('connection', async (socket) => {
     try {
       const pool = await getPool();
       const mem = await pool.query(
-        `SELECT gm.role, g.send_permission FROM group_members gm
+        `SELECT gm.role, g.send_permission, g.content_filter FROM group_members gm
          JOIN groups g ON g.id = gm.group_id
          WHERE gm.group_id = $1 AND gm.user_id = $2 AND gm.status='member'`,
         [groupId, socket.user.id]);
@@ -2237,6 +2255,14 @@ io.on('connection', async (socket) => {
         ? fileType
         : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) ? 'image'
           : fileUrl ? 'document' : 'text');
+
+      const classification = fileUrl
+        ? await getStoredImageClassification(pool, fileUrl) : null;
+      if (!contentAllowedByFilter(member.content_filter, msgType, classification)) {
+        socket.emit('message:rejected', { groupId, clientMessageId,
+          reason: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה' });
+        return;
+      }
 
       if (fileUrl && !await validateApprovedFile(
           pool, socket.user.id, fileUrl, 'group', groupId)) {
@@ -2258,7 +2284,7 @@ io.on('connection', async (socket) => {
         fromName:   socket.user.name,
         text,
         fileUrl, fileName, fileType: msgType,
-        classification: await getStoredImageClassification(pool, fileUrl),
+        classification,
         replyToId:  replyToId || null,
         clientMessageId: clientMessageId || null,
         createdAt:  row.created_at,
@@ -2266,20 +2292,29 @@ io.on('connection', async (socket) => {
       // Always acknowledge the sender directly. This also covers the creator
       // of a brand-new group before their socket has joined the group room.
       socket.emit('group:message', outgoingGroupMessage);
-      socket.to(`group:${groupId}`).emit('group:message', outgoingGroupMessage);
+      const deliveryMembers = await pool.query(
+        `SELECT gm.user_id, u.content_filter FROM group_members gm
+         JOIN users u ON u.id=gm.user_id
+         WHERE gm.group_id=$1 AND gm.status='member'`, [groupId]);
+      for (const recipient of deliveryMembers.rows) {
+        if (recipient.user_id !== socket.user.id && contentAllowedByFilter(
+            recipient.content_filter, msgType, classification))
+          relay(recipient.user_id, 'group:message', outgoingGroupMessage);
+      }
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_group_message',
         { groupId, messageId: row.id, fileName: fileName || null });
       // Push reaches backgrounded apps as well as fully offline devices.
       const grpName = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
       const groupName = grpName.rows[0]?.name || 'קבוצה';
       const allMembers = await pool.query(
-        `SELECT gm.user_id FROM group_members gm
+        `SELECT gm.user_id, u.content_filter FROM group_members gm
          JOIN users u ON u.id=gm.user_id
          WHERE gm.group_id=$1 AND gm.status='member'
            AND u.birth_date <= CURRENT_DATE - INTERVAL '18 years'`, [groupId]);
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-      for (const { user_id } of allMembers.rows) {
-        if (user_id !== socket.user.id) {
+      for (const { user_id, content_filter } of allMembers.rows) {
+        if (user_id !== socket.user.id && contentAllowedByFilter(
+            content_filter, msgType, classification)) {
           sendPush(user_id, `${groupName} • ${socket.user.name}`,
             pushBody, { type: 'group', groupId });
         }
@@ -3905,6 +3940,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     const reportImageScan = allowed.dbType === 'image' &&
       (scanBotUpload || req.body.scanReport === 'true');
     let recipientPolicy = null;
+    let groupFilter = null;
     if (req.body.toUserId) {
       if (!await teenContactAllowed(pool, req.user.id, req.body.toUserId))
         return res.status(403).json({
@@ -3920,7 +3956,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
     if (req.body.groupId) {
       const groupAccess = await pool.query(
-        `SELECT gm.role, g.send_permission FROM group_members gm
+        `SELECT gm.role, g.send_permission, g.content_filter FROM group_members gm
          JOIN groups g ON g.id=gm.group_id
          WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
         [req.body.groupId, req.user.id]);
@@ -3929,6 +3965,9 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
       if (member.send_permission === 'admin' && member.role !== 'admin')
         return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
+      groupFilter = normalizeContentFilter(member.content_filter);
+      if (allowed.dbType === 'video' && groupFilter.video !== true)
+        return res.status(403).json({ error: 'סרטוני וידאו חסומים בהגדרות הקבוצה' });
     }
     // העלאה לאחסון תחילה (גם קבצים חסומים נשמרים לצורך ביקורת אדמין)
     const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
@@ -3978,6 +4017,20 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         fileType: allowed.dbType, status: 'rejected', reason: scanResult.reason,
         classification: scanResult.classification || null,
         handledByScanBot: scanBotUpload, scanReport });
+    }
+
+    if (!scanResult?.pending && groupFilter &&
+        ['image', 'video'].includes(allowed.dbType) &&
+        !contentAllowedByFilter(groupFilter, allowed.dbType,
+          scanResult?.classification)) {
+      const reason = 'סוג התוכן חסום בהגדרות הסינון של הקבוצה';
+      await pool.query(
+        `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1
+         WHERE public_url=$2`,
+        [JSON.stringify({ ...scanResult, reason }), url]);
+      return res.json({ url, fileName: file.originalname, fileSize: file.size,
+        fileType: allowed.dbType, status: 'rejected', reason,
+        classification: scanResult?.classification || null });
     }
 
     // Listings deliberately allow product/object photos only. A listing image
@@ -4227,6 +4280,38 @@ app.get('/api/groups/:id', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/groups/:id/filter-settings', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT g.content_filter, gm.role
+       FROM groups g JOIN group_members gm ON gm.group_id=g.id
+       WHERE g.id=$1 AND gm.user_id=$2 AND gm.status='member'`,
+      [req.params.id, req.user.id]);
+    if (!result.rows.length)
+      return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
+    res.json({ filter: normalizeContentFilter(result.rows[0].content_filter),
+      canEdit: result.rows[0].role === 'admin' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const filter = normalizeContentFilter(req.body.filter || req.body);
+    const updated = await pool.query(
+      `UPDATE groups g SET content_filter=$1
+       WHERE g.id=$2 AND EXISTS (
+         SELECT 1 FROM group_members gm WHERE gm.group_id=g.id
+           AND gm.user_id=$3 AND gm.role='admin' AND gm.status='member'
+       ) RETURNING content_filter`,
+      [JSON.stringify(filter), req.params.id, req.user.id]);
+    if (!updated.rows.length)
+      return res.status(403).json({ error: 'רק מנהל קבוצה יכול לשנות סינון' });
+    res.json({ filter });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Groups: messages ──────────────────────────────────────────────
 app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) => {
   if (req.user.isTeen)
@@ -4246,7 +4331,7 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
   try {
     const pool = await getPool();
     const access = await pool.query(
-      `SELECT gm.role, g.send_permission, g.name AS group_name
+      `SELECT gm.role, g.send_permission, g.name AS group_name, g.content_filter
        FROM group_members gm JOIN groups g ON g.id=gm.group_id
        WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
       [groupId, senderId]);
@@ -4259,6 +4344,13 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       ? fileType
       : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)
         ? 'image' : fileUrl ? 'document' : 'text');
+    const classification = fileUrl
+      ? await getStoredImageClassification(pool, fileUrl) : null;
+    if (!contentAllowedByFilter(member.content_filter, type, classification))
+      return res.status(403).json({
+        error: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה',
+        code: 'GROUP_CONTENT_FILTERED',
+      });
     if (fileUrl && !await validateApprovedFile(
         pool, senderId, fileUrl, 'group', groupId)) {
       return res.status(403).json({
@@ -4282,20 +4374,21 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       fileUrl: fileUrl || null,
       fileName: fileName || null,
       fileType: type,
+      classification,
       replyToId: replyToId || null,
       clientMessageId: clientMessageId || null,
       createdAt: row.created_at,
     };
-    io.to(`group:${groupId}`).emit('group:message', payload);
-
     const allMembers = await pool.query(
-      `SELECT gm.user_id FROM group_members gm
+      `SELECT gm.user_id, u.content_filter FROM group_members gm
        JOIN users u ON u.id=gm.user_id
        WHERE gm.group_id=$1 AND gm.status='member'
          AND u.birth_date <= CURRENT_DATE - INTERVAL '18 years'`, [groupId]);
     const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-    for (const { user_id } of allMembers.rows) {
-      if (user_id !== senderId) {
+    for (const { user_id, content_filter } of allMembers.rows) {
+      if (user_id !== senderId && contentAllowedByFilter(
+          content_filter, type, classification)) {
+        relay(user_id, 'group:message', payload);
         sendPush(user_id, `${member.group_name} • ${req.user.name}`,
           pushBody, { type: 'group', groupId });
       }
@@ -4317,8 +4410,9 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const check = await pool.query(
-      `SELECT 1 FROM group_members
-       WHERE group_id=$1 AND user_id=$2 AND status='member'`,
+      `SELECT u.content_filter FROM group_members gm
+       JOIN users u ON u.id=gm.user_id
+       WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
       [req.params.id, req.user.id]);
     if (!check.rows.length)
       return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
@@ -4377,7 +4471,11 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
       ORDER BY sf.created_at DESC
       LIMIT 50
     `, scanParams);
-    const combined = [...result.rows, ...scans.rows]
+    const personalFilter = normalizeContentFilter(check.rows[0].content_filter);
+    const visibleMessages = result.rows.filter(row =>
+      row.sender_id === req.user.id || contentAllowedByFilter(
+        personalFilter, row.type, row.image_classification));
+    const combined = [...visibleMessages, ...scans.rows]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .slice(-50);
     res.json(combined);

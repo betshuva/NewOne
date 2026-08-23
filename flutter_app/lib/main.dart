@@ -13708,7 +13708,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 subtitle: Text(widget.group['filter_level'] == 'strict'
                     ? 'מחמיר'
                     : 'רגיל'),
-                onTap: () => Navigator.pop(context),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ContentFilterSettingsScreen(
+                        token: widget.token,
+                        groupId: _groupId,
+                        groupName: widget.group['name'] as String?,
+                      ),
+                    ),
+                  );
+                },
               ),
               const Divider(),
             ],
@@ -14399,8 +14411,11 @@ class ContentFilterSettingsScreen extends StatefulWidget {
   final String token;
   final String? contactId;
   final String? contactName;
+  final String? groupId;
+  final String? groupName;
   const ContentFilterSettingsScreen(
-      {super.key, required this.token, this.contactId, this.contactName});
+      {super.key, required this.token, this.contactId, this.contactName,
+      this.groupId, this.groupName});
 
   @override
   State<ContentFilterSettingsScreen> createState() =>
@@ -14422,6 +14437,7 @@ class _ContentFilterSettingsScreenState
   };
 
   bool get _isContact => widget.contactId != null;
+  bool get _isGroup => widget.groupId != null;
 
   @override
   void initState() {
@@ -14431,14 +14447,17 @@ class _ContentFilterSettingsScreenState
 
   Future<void> _load() async {
     try {
-      final path = _isContact
-          ? '/contacts/${widget.contactId}/filter-settings'
-          : '/filter-settings';
+      final path = _isGroup
+          ? '/groups/${widget.groupId}/filter-settings'
+          : _isContact
+              ? '/contacts/${widget.contactId}/filter-settings'
+              : '/filter-settings';
       final response = await http.get(Uri.parse('$kApi$path'),
           headers: {'Authorization': 'Bearer ${widget.token}'});
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode != 200) throw Exception(data['error'] ?? 'שגיאה');
-      final raw = (_isContact ? data['filter'] : data) as Map<String, dynamic>;
+      final raw = ((_isContact || _isGroup) ? data['filter'] : data)
+          as Map<String, dynamic>;
       if (!mounted) return;
       setState(() {
         _inherit = _isContact ? data['inherited'] == true : false;
@@ -14459,10 +14478,14 @@ class _ContentFilterSettingsScreenState
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      final path = _isContact
-          ? '/contacts/${widget.contactId}/filter-settings'
-          : '/filter-settings';
-      final body = _isContact
+      final path = _isGroup
+          ? '/groups/${widget.groupId}/filter-settings'
+          : _isContact
+              ? '/contacts/${widget.contactId}/filter-settings'
+              : '/filter-settings';
+      final body = _isGroup
+          ? {'filter': _filter}
+          : _isContact
           ? (_inherit ? {'inherit': true} : {'filter': _filter})
           : _filter;
       final response = await http.put(Uri.parse('$kApi$path'),
@@ -14503,9 +14526,11 @@ class _ContentFilterSettingsScreenState
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-          title: Text(_isContact
-              ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
-              : 'סינון תוכן כללי')),
+          title: Text(_isGroup
+              ? 'סינון בקבוצה ${widget.groupName ?? ''}'
+              : _isContact
+                  ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
+                  : 'סינון תוכן כללי')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(children: [
@@ -14526,6 +14551,14 @@ class _ContentFilterSettingsScreenState
                     style:
                         TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
+              if (_isGroup)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
+                  child: Text(
+                    'הגדרת הקבוצה קובעת מה ניתן לשלוח לכל הקבוצה. בנוסף, כל חבר ממשיך להיות מוגן לפי הסינון האישי שלו; ההגדרה המחמירה מביניהן היא שקובעת.',
+                    style: TextStyle(color: kSubtext),
+                  ),
+                ),
               _option('text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
               _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
                   Icons.videocam_outlined),

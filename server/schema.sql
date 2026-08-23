@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS groups (
   is_broadcast     BOOLEAN NOT NULL DEFAULT FALSE,   -- שליחה חד-כיוונית
   send_permission  TEXT NOT NULL DEFAULT 'all',      -- all | admin
   filter_level     TEXT NOT NULL DEFAULT 'standard', -- standard | strict
+  content_filter   JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
   created_at       TIMESTAMPTZ DEFAULT now()
 );
 
