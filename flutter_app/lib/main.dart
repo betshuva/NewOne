@@ -430,9 +430,10 @@ const kBorder = Color(0xFFD4E9F7); // divider
 const kSubtext = Color(0xFF8AAFC9); // text-muted
 const kTextDark = Color(0xFF0D2137); // text-primary
 const kReadTick = Color(0xFF229ED9); // WhatsApp-style read double-tick
-const kOutgoing = Color(0xFFDCEEFF); // outgoing bubble — light blue
-const kGroupOutgoing = Color(0xFFDCEEFF); // light background for readable text
-const kChatBg = Color(0xFFEBF5FC); // chat background
+const kOutgoing = Color(0xFFD8EAFE); // outgoing bubble — soft blue
+const kGroupOutgoing = Color(0xFFD8EAFE); // group outgoing bubble
+const kChatBg = Color(0xFFEDF5FD); // ice-blue conversation background
+const kIncoming = Color(0xFFFFFFFF); // incoming bubble
 const kFilterBg = Color(0xFFE8F4FD); // filter banner background
 
 const kServer = 'https://betshuva.com/betshuva-app';
@@ -444,8 +445,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.80';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.80.apk';
+const kVersion = '1.2.81';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.81.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -9249,7 +9250,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final recipientName = widget.recipient['name'] as String? ?? '';
     return Scaffold(
-      backgroundColor: kCard,
+      backgroundColor: kChatBg,
       appBar: AppBar(
         backgroundColor: kPrimary,
         leading: BackButton(
@@ -10478,7 +10479,7 @@ class _ConsecutiveImageGrid extends StatelessWidget {
           margin: const EdgeInsets.symmetric(vertical: 2),
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            color: isMe ? kOutgoing : kChatBg,
+            color: isMe ? kOutgoing : kIncoming,
             borderRadius: BorderRadius.circular(14),
             border: isMe ? null : Border.all(color: kBorder),
           ),
@@ -10667,7 +10668,7 @@ class _MessageBubble extends StatelessWidget {
           maxWidth: MediaQuery.of(context).size.width * 0.72,
         ),
         decoration: BoxDecoration(
-          color: isMe ? kOutgoing : kChatBg,
+          color: isMe ? kOutgoing : kIncoming,
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(14),
             topRight: const Radius.circular(14),
@@ -14002,7 +14003,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   Widget build(BuildContext context) {
     final chat = Scaffold(
-      backgroundColor: kCard,
+      backgroundColor: kChatBg,
       appBar: AppBar(
         backgroundColor: kPrimary,
         leading: BackButton(
@@ -14242,7 +14243,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                             MediaQuery.of(context).size.width *
                                                 0.75),
                                     decoration: BoxDecoration(
-                                      color: isMe ? kGroupOutgoing : kChatBg,
+                                      color: isMe ? kGroupOutgoing : kIncoming,
                                       borderRadius: BorderRadius.circular(12),
                                       boxShadow: [
                                         BoxShadow(
