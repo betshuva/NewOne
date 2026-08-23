@@ -484,11 +484,15 @@ Future<_FileUploadResult> _uploadFileRequest({
     final bytes = file is XFile
         ? await file.readAsBytes()
         : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
+    var contentType = _mimeFromFileName(fileName);
+    if (file is XFile && file.mimeType != null && file.mimeType!.contains('/')) {
+      contentType = MediaType.parse(file.mimeType!.split(';').first);
+    }
     final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
       ..headers['Authorization'] = 'Bearer $token'
       ..fields.addAll(fields)
       ..files.add(http.MultipartFile.fromBytes('file', bytes,
-          filename: fileName, contentType: _mimeFromFileName(fileName)));
+          filename: fileName, contentType: contentType));
     final streamed = await request.send().timeout(const Duration(seconds: 60));
     final body = await streamed.stream.bytesToString();
     Map<String, dynamic> data = const <String, dynamic>{};
@@ -1543,6 +1547,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                           prefixIcon: Icon(Icons.phone_android),
                         ),
                       ),
+                      const SizedBox(height: 14),
+                      const _BetaNotice(),
                       CheckboxListTile(
                         contentPadding: EdgeInsets.zero,
                         value: _ageConfirmed,
@@ -2130,6 +2136,8 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                     ],
                     if (!_isLogin) ...[
+                      const _BetaNotice(),
+                      const SizedBox(height: 6),
                       CheckboxListTile(
                         contentPadding: EdgeInsets.zero,
                         controlAffinity: ListTileControlAffinity.leading,
@@ -3028,6 +3036,30 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
       ),
     );
   }
+}
+
+class _BetaNotice extends StatelessWidget {
+  const _BetaNotice();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEAF5FD),
+          border: Border.all(color: kBorder),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Text(
+          'BETSHUVA מופעלת על ידי יניב אליהו בגרסת בטא פתוחה וללא תשלום. '
+          'השירות נמצא בבדיקה ועלולות להתרחש תקלות, הפסקות זמניות, שינויים '
+          'או אובדן מידע. אין לשמור בשירות מידע שהעותק היחיד שלו נמצא '
+          'באפליקציה. השימוש כפוף לתנאי השימוש ולמדיניות הפרטיות. '
+          'לפניות: support@betshuva.com',
+          textDirection: TextDirection.rtl,
+          style: TextStyle(fontSize: 12, height: 1.45, color: kTextDark),
+        ),
+      );
 }
 
 class _TabBtn extends StatelessWidget {
