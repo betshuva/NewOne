@@ -1335,10 +1335,11 @@ async function migrateDatabase() {
       ON CONFLICT (id) DO UPDATE SET name='סריקה', email=$2,
         email_verified=TRUE, phone_verified=TRUE`, [SCAN_BOT_ID, SCAN_BOT_EMAIL]);
     await pool.query(`
-      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city)
-      VALUES($1,$2,$3,'0000000002',TRUE,TRUE,'מערכת')
+      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,birth_date)
+      VALUES($1,$2,$3,'0000000002',TRUE,TRUE,'מערכת','1900-01-01')
       ON CONFLICT (id) DO UPDATE SET name=$2, email=$3,
-        email_verified=TRUE, phone_verified=TRUE, city='מערכת'`,
+        email_verified=TRUE, phone_verified=TRUE, city='מערכת',
+        birth_date='1900-01-01'`,
       [SYSTEM_USER_ID, SYSTEM_USER_NAME, SYSTEM_USER_EMAIL]);
 
     // Only one verified identity may own a phone number or email address.
@@ -1821,6 +1822,7 @@ async function youthPolicy(pool, ...userIds) {
 }
 
 async function teenContactAllowed(pool, firstId, secondId) {
+  if ([firstId, secondId].includes(SYSTEM_USER_ID)) return true;
   const policies = await youthPolicy(pool, firstId, secondId);
   if (![...policies.values()].some(policy => policy.is_teen)) return true;
   const mutual = await pool.query(
