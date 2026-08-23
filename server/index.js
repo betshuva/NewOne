@@ -1467,6 +1467,14 @@ async function migrateDatabase() {
       SELECT id,$1 FROM users
       WHERE id NOT IN ($1,$2)
       ON CONFLICT DO NOTHING`, [SYSTEM_USER_ID, SCAN_BOT_ID]);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_ai_pending_actions (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      )`);
     await pool.query(`DROP TRIGGER IF EXISTS users_add_scan_bot_contact ON users`);
     await pool.query(`DROP FUNCTION IF EXISTS add_scan_bot_contact_for_new_user()`);
     // The scanner remains an internal FK identity for moderation reports, but
@@ -1794,12 +1802,84 @@ async function generateSystemAnswer(pool, userId, question) {
   }
 }
 
+const GROUP_FILTER_ACTIONS = [
+  { key: 'women', pattern: /נש(?:ים|ה)/, label: 'נשים' },
+  { key: 'men', pattern: /גבר(?:ים)?/, label: 'גברים' },
+  { key: 'children', pattern: /ילד(?:ים|ות)?/, label: 'ילדים' },
+  { key: 'video', pattern: /וידאו|סרטונ/, label: 'וידאו' },
+  { key: 'text', pattern: /טקסט|הודעות טקסט/, label: 'טקסט' },
+  { key: 'nonHumanImages', pattern: /ללא (?:בני )?אדם|נוף|חפצים/, label: 'תמונות ללא בני אדם' },
+];
+
+async function handleSystemAction(pool, userId, question) {
+  const text = String(question || '').trim();
+  if (/^(בטל|ביטול|אל תבצע)/.test(text)) {
+    const removed = await pool.query(
+      'DELETE FROM system_ai_pending_actions WHERE user_id=$1 RETURNING user_id',
+      [userId]);
+    return removed.rows.length ? 'הפעולה בוטלה ולא בוצע שינוי.' : null;
+  }
+  if (/^(אישור|מאשר|כן,? *בצע)/.test(text)) {
+    const pending = await pool.query(
+      `DELETE FROM system_ai_pending_actions
+       WHERE user_id=$1 AND expires_at>now()
+       RETURNING action,payload`, [userId]);
+    if (!pending.rows.length)
+      return 'אין פעולה שממתינה לאישור, או שתוקף האישור פג. יש לבקש את השינוי מחדש.';
+    const payload = pending.rows[0].payload;
+    const allowedKey = GROUP_FILTER_ACTIONS.some(item => item.key === payload.key);
+    if (pending.rows[0].action !== 'set_group_filter' || !allowedKey)
+      return 'הפעולה אינה תקינה ולא בוצע שינוי.';
+    const updated = await pool.query(
+      `UPDATE groups g SET content_filter=jsonb_set(
+         COALESCE(g.content_filter,'{}'::jsonb),ARRAY[$1],to_jsonb($2::boolean),true)
+       WHERE g.id=$3 AND EXISTS (
+         SELECT 1 FROM group_members gm WHERE gm.group_id=g.id
+           AND gm.user_id=$4 AND gm.role='admin' AND gm.status='member'
+       ) RETURNING g.name`,
+      [payload.key, payload.enabled === true, payload.groupId, userId]);
+    if (!updated.rows.length)
+      return 'השינוי לא בוצע: אינך מנהל פעיל של הקבוצה או שהקבוצה כבר אינה קיימת.';
+    return `${payload.enabled ? 'אפשרתי' : 'חסמתי'} ${payload.label} בקבוצה „${updated.rows[0].name}”. השינוי פעיל מעכשיו.`;
+  }
+
+  const asksGroupChange = /קבוצ|רבוצ/.test(text) &&
+    /חס(?:ום|ימת|ימה)|אל תאפשר|אפשר|התר/.test(text);
+  if (!asksGroupChange) return null;
+  const category = GROUP_FILTER_ACTIONS.find(item => item.pattern.test(text));
+  if (!category)
+    return 'איזו קטגוריה לשנות בקבוצה? אפשר לבחור נשים, גברים, ילדים, וידאו, טקסט או תמונות ללא בני אדם.';
+  const groups = await pool.query(
+    `SELECT g.id,g.name FROM groups g JOIN group_members gm ON gm.group_id=g.id
+     WHERE gm.user_id=$1 AND gm.role='admin' AND gm.status='member'
+     ORDER BY g.name`, [userId]);
+  if (!groups.rows.length)
+    return 'לא נמצאה קבוצה שבה יש לך הרשאת מנהל, ולכן לא ניתן לבצע את השינוי.';
+  const normalized = text.replace(/\s+/g, '').toLowerCase();
+  const matches = groups.rows.filter(group => normalized.includes(
+    String(group.name).replace(/\s+/g, '').toLowerCase()));
+  const group = matches.length === 1 ? matches[0]
+    : groups.rows.length === 1 ? groups.rows[0] : null;
+  if (!group)
+    return `יש לציין באיזו קבוצה לבצע את השינוי. הקבוצות שבניהולך: ${groups.rows.map(item => `„${item.name}”`).join(', ')}.`;
+  const enabled = /(?:^|\s)(אפשר|התר)/.test(text) && !/אל תאפשר/.test(text);
+  await pool.query(
+    `INSERT INTO system_ai_pending_actions(user_id,action,payload,expires_at)
+     VALUES($1,'set_group_filter',$2,now()+INTERVAL '10 minutes')
+     ON CONFLICT(user_id) DO UPDATE SET action=EXCLUDED.action,
+       payload=EXCLUDED.payload,expires_at=EXCLUDED.expires_at,created_at=now()`,
+    [userId, JSON.stringify({ groupId: group.id, key: category.key,
+      label: category.label, enabled })]);
+  return `הפעולה ממתינה לאישור: ${enabled ? 'לאפשר' : 'לחסום'} ${category.label} בקבוצה „${group.name}”. לביצוע כתוב „אישור”. לביטול כתוב „ביטול”. האישור תקף ל־10 דקות.`;
+}
+
 async function createSystemExchange(pool, userId, question) {
   const sent = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body)
      VALUES($1,$2,'text',$3) RETURNING id,created_at`,
     [userId, SYSTEM_USER_ID, question]);
-  const answer = await generateSystemAnswer(pool, userId, question);
+  const answer = await handleSystemAction(pool, userId, question) ||
+    await generateSystemAnswer(pool, userId, question);
   const reply = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body,reply_to_id)
      VALUES($1,$2,'text',$3,$4) RETURNING id,created_at`,

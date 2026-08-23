@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS groups (
   created_at       TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS system_ai_pending_actions (
+  user_id    UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  action     TEXT NOT NULL,
+  payload    JSONB NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- ── Messages ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS messages (
   id                   UUID DEFAULT gen_random_uuid() PRIMARY KEY,
