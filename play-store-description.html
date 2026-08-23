@@ -118,6 +118,13 @@
           body: JSON.stringify(values),
         });
         const data = await response.json();
+        if (response.status === 401 || response.status === 403) {
+          localStorage.removeItem('bt_admin_token');
+          localStorage.removeItem('bt_token');
+          status.classList.add('error');
+          status.innerHTML = `${data.error || 'הכניסה פגה'} — <a href="admin.html">כניסה מחדש כמנהל</a>`;
+          return;
+        }
         if (!response.ok) throw new Error(data.error || 'השמירה נכשלה');
         status.textContent = 'השינויים נשמרו בשרת ✓';
       } catch (error) {
