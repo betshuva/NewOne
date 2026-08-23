@@ -25,6 +25,11 @@ const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
 const SCAN_BOT_ID = '00000000-0000-4000-8000-000000000001';
 const SCAN_BOT_EMAIL = 'scan@betshuva.system';
+const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002';
+const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
+const SYSTEM_USER_NAME = 'הרוצה בתשובה';
+const WELCOME_MESSAGE =
+  'ברוך הבא לבתשובה 🌿\n\nשמחים שהצטרפת אלינו. כאן תקבל עדכונים חשובים, הודעות מערכת וטיפים שיעזרו לך להשתמש באפליקציה בבטחה ובנוחות.\n\nמאחלים לך שיחות טובות ומועילות!';
 
 // ── Firebase Cloud Messaging (HTTP v1 via Admin SDK) ──────────────
 let firebaseMessaging = null;
@@ -1329,6 +1334,12 @@ async function migrateDatabase() {
       VALUES($1,'סריקה',$2,'0000000000',TRUE,TRUE,'מערכת')
       ON CONFLICT (id) DO UPDATE SET name='סריקה', email=$2,
         email_verified=TRUE, phone_verified=TRUE`, [SCAN_BOT_ID, SCAN_BOT_EMAIL]);
+    await pool.query(`
+      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city)
+      VALUES($1,$2,$3,'0000000002',TRUE,TRUE,'מערכת')
+      ON CONFLICT (id) DO UPDATE SET name=$2, email=$3,
+        email_verified=TRUE, phone_verified=TRUE, city='מערכת'`,
+      [SYSTEM_USER_ID, SYSTEM_USER_NAME, SYSTEM_USER_EMAIL]);
 
     // Only one verified identity may own a phone number or email address.
     // Unverified drafts may coexist, but a second one can never be verified.
@@ -1450,6 +1461,11 @@ async function migrateDatabase() {
       )`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_override JSONB`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
+    await pool.query(`
+      INSERT INTO user_contacts(owner_id,contact_id)
+      SELECT id,$1 FROM users
+      WHERE id NOT IN ($1,$2)
+      ON CONFLICT DO NOTHING`, [SYSTEM_USER_ID, SCAN_BOT_ID]);
     await pool.query(`DROP TRIGGER IF EXISTS users_add_scan_bot_contact ON users`);
     await pool.query(`DROP FUNCTION IF EXISTS add_scan_bot_contact_for_new_user()`);
     // The scanner remains an internal FK identity for moderation reports, but
@@ -1632,6 +1648,22 @@ async function migrateDatabase() {
         ['blocked_words', JSON.stringify(DEFAULT_BLOCKED_WORDS)]);
     } catch (e) { console.error('Moderation list load error:', e.message); }
 
+}
+
+async function provisionSystemConversation(pool, userId, sendWelcome = true) {
+  if (!userId || [SYSTEM_USER_ID, SCAN_BOT_ID].includes(userId)) return null;
+  await pool.query(
+    `INSERT INTO user_contacts(owner_id,contact_id) VALUES($1,$2)
+     ON CONFLICT DO NOTHING`, [userId, SYSTEM_USER_ID]);
+  if (!sendWelcome) return null;
+  const result = await pool.query(
+    `INSERT INTO messages(sender_id,recipient_id,type,body)
+     SELECT $1,$2,'text',$3
+     WHERE NOT EXISTS (
+       SELECT 1 FROM messages WHERE sender_id=$1 AND recipient_id=$2
+     ) RETURNING id,created_at`,
+    [SYSTEM_USER_ID, userId, WELCOME_MESSAGE]);
+  return result.rows[0] || null;
 }
 
 // ── Activity logger ───────────────────────────────────────────────
@@ -2432,6 +2464,7 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
       [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender,
        agePolicy.birthDate]);
     const user = result.rows[0];
+    await provisionSystemConversation(pool, user.id);
 
     if (hasEmail) {
       const emailToken = crypto.randomBytes(32).toString('hex');
@@ -2621,6 +2654,7 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
       [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null,
        req.body.gender, agePolicy.birthDate]);
     const user  = inserted.rows[0];
+    await provisionSystemConversation(pool, user.id);
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     logActivity(user.id, 'google_register', { email: user.email }, req.ip);
     // הודע לכל המחוברים על משתמש חדש
@@ -4897,6 +4931,34 @@ app.get('/api/admin/activity', adminAuth, async (req, res) => {
       ORDER BY _q._rn
     `, params);
     res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/admin/system-message', adminAuth, async (req, res) => {
+  const message = String(req.body?.message || '').trim();
+  if (!message || message.length > 4000)
+    return res.status(400).json({ error: 'נדרשת הודעה באורך של עד 4,000 תווים' });
+  try {
+    const pool = await getPool();
+    const recipients = await pool.query(
+      `INSERT INTO messages(sender_id,recipient_id,type,body)
+       SELECT $1,id,'text',$2 FROM users
+       WHERE id NOT IN ($1,$3)
+         AND (email_verified=TRUE OR phone_verified=TRUE)
+       RETURNING id,recipient_id,created_at`,
+      [SYSTEM_USER_ID, message, SCAN_BOT_ID]);
+    for (const row of recipients.rows) {
+      relay(row.recipient_id, 'chat:message', {
+        id: row.id, fromUserId: SYSTEM_USER_ID, fromName: SYSTEM_USER_NAME,
+        text: message, fileType: 'text', createdAt: row.created_at,
+      });
+      sendPush(row.recipient_id, SYSTEM_USER_NAME, message,
+        { type: 'chat', fromUserId: SYSTEM_USER_ID });
+    }
+    logActivity(req.user.id, 'send_system_message', {
+      recipientCount: recipients.rowCount,
+    }, req.ip);
+    res.json({ ok: true, recipients: recipients.rowCount });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
