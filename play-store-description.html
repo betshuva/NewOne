@@ -24,7 +24,6 @@
     button.done { background:#16834b; }
     .actions { display:flex; gap:10px; margin:20px 0; }
     .actions button { flex:1; }
-    .secondary { background:#667085; }
     #save-status { min-height:24px; color:#16834b; font-weight:700; text-align:center; }
     #save-status.error { color:#c73535; }
     #save-status a { color:inherit; }
@@ -41,7 +40,6 @@
 
     <div class="actions">
       <button type="button" id="save-all">שמירת השינויים</button>
-      <button type="button" id="restore-all" class="secondary">שחזור הנוסח המקורי</button>
     </div>
     <div id="save-status" aria-live="polite"></div>
 
@@ -82,9 +80,6 @@
   </main>
   <script>
     const editableIds = ['app-name', 'short-description', 'full-description'];
-    const originals = Object.fromEntries(
-      editableIds.map((id) => [id, document.getElementById(id).innerText])
-    );
 
     const status = document.getElementById('save-status');
     const setValues = (values) => {
@@ -129,11 +124,6 @@
         status.classList.add('error');
         status.textContent = error.message;
       }
-    });
-
-    document.getElementById('restore-all').addEventListener('click', () => {
-      editableIds.forEach((id) => { document.getElementById(id).innerText = originals[id]; });
-      status.textContent = 'הנוסח המקורי הוחזר לשדות; לחץ שמירה כדי לשמור אותו בשרת';
     });
 
     document.querySelectorAll('[data-copy]').forEach((button) => {
