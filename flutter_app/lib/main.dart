@@ -445,8 +445,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.81';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.81.apk';
+const kVersion = '1.2.82';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.82.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -1245,7 +1245,7 @@ class _SplashScreenState extends State<SplashScreen>
               ),
               const SizedBox(height: 8),
               Text(
-                'מסר נקי יהודי',
+                'מסר יהודי נקי',
                 style: TextStyle(
                   fontSize: 15,
                   color: Colors.white.withOpacity(0.8),
@@ -4671,8 +4671,8 @@ class _ListingsScreenState extends State<ListingsScreen>
           indicatorColor: Colors.white,
           tabs: const [
             Tab(text: 'הכל'),
-            Tab(text: 'ונתנו — חינם'),
-            Tab(text: 'יד 2')
+            Tab(icon: Icon(Icons.card_giftcard_rounded), text: 'למסירה'),
+            Tab(icon: Icon(Icons.sell_rounded), text: 'למכירה')
           ],
         ),
       ),
@@ -5392,12 +5392,22 @@ class _PostListingScreenState extends State<PostListingScreen> {
           // Type toggle
           Row(children: [
             Expanded(
-                child: _typeBtn('free', 'ונתנו — חינם', const Color(0xFFD1FAE5),
-                    const Color(0xFF065F46))),
+                child: _typeBtn(
+                    'free',
+                    'למסירה',
+                    'חפצים ללא תשלום',
+                    Icons.card_giftcard_rounded,
+                    const Color(0xFFFFF1D6),
+                    const Color(0xFFE07B16))),
             const SizedBox(width: 10),
             Expanded(
-                child: _typeBtn('sale', 'יד 2 — מכירה', const Color(0xFFEDE9FE),
-                    const Color(0xFF5B21B6))),
+                child: _typeBtn(
+                    'sale',
+                    'למכירה',
+                    'מוצרים משומשים וחדשים',
+                    Icons.sell_rounded,
+                    const Color(0xFFE3F2FD),
+                    const Color(0xFF1565A8))),
           ]),
           const SizedBox(height: 16),
           // Images grid (up to 4)
@@ -5544,20 +5554,30 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
-  Widget _typeBtn(String val, String label, Color bg, Color fg) =>
+  Widget _typeBtn(String val, String label, String subtitle, IconData icon,
+          Color bg, Color fg) =>
       GestureDetector(
         onTap: () => setState(() => _type = val),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 13),
           decoration: BoxDecoration(
             color: _type == val ? bg : Colors.white,
             border: Border.all(color: _type == val ? fg : kBorder, width: 2),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(16),
           ),
-          child: Text(label,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                  color: fg, fontWeight: FontWeight.bold, fontSize: 13)),
+          child: Column(children: [
+            Icon(icon, color: fg, size: 30),
+            const SizedBox(height: 5),
+            Text(label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: fg, fontWeight: FontWeight.bold, fontSize: 15)),
+            const SizedBox(height: 2),
+            Text(subtitle,
+                textAlign: TextAlign.center,
+                style:
+                    TextStyle(color: fg.withValues(alpha: 0.82), fontSize: 11)),
+          ]),
         ),
       );
 }
@@ -5744,16 +5764,20 @@ class _EditListingScreenState extends State<EditListingScreen> {
                       Expanded(
                           child: _typeBtn(
                               'free',
-                              'ונתנו — חינם',
-                              const Color(0xFFD1FAE5),
-                              const Color(0xFF065F46))),
+                              'למסירה',
+                              'חפצים ללא תשלום',
+                              Icons.card_giftcard_rounded,
+                              const Color(0xFFFFF1D6),
+                              const Color(0xFFE07B16))),
                       const SizedBox(width: 10),
                       Expanded(
                           child: _typeBtn(
                               'sale',
-                              'יד 2 — מכירה',
-                              const Color(0xFFEDE9FE),
-                              const Color(0xFF5B21B6))),
+                              'למכירה',
+                              'מוצרים משומשים וחדשים',
+                              Icons.sell_rounded,
+                              const Color(0xFFE3F2FD),
+                              const Color(0xFF1565A8))),
                     ]),
                     const SizedBox(height: 16),
                     Text('תמונות (עד 8, ללא אנשים)',
@@ -5896,20 +5920,30 @@ class _EditListingScreenState extends State<EditListingScreen> {
     );
   }
 
-  Widget _typeBtn(String val, String label, Color bg, Color fg) =>
+  Widget _typeBtn(String val, String label, String subtitle, IconData icon,
+          Color bg, Color fg) =>
       GestureDetector(
         onTap: () => setState(() => _type = val),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 13),
           decoration: BoxDecoration(
             color: _type == val ? bg : Colors.white,
             border: Border.all(color: _type == val ? fg : kBorder, width: 2),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(16),
           ),
-          child: Text(label,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                  color: fg, fontWeight: FontWeight.bold, fontSize: 13)),
+          child: Column(children: [
+            Icon(icon, color: fg, size: 30),
+            const SizedBox(height: 5),
+            Text(label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: fg, fontWeight: FontWeight.bold, fontSize: 15)),
+            const SizedBox(height: 2),
+            Text(subtitle,
+                textAlign: TextAlign.center,
+                style:
+                    TextStyle(color: fg.withValues(alpha: 0.82), fontSize: 11)),
+          ]),
         ),
       );
 }
@@ -14671,16 +14705,115 @@ class _ContentFilterSettingsScreenState
     }
   }
 
-  Widget _option(String key, String title, String subtitle, IconData icon) =>
-      SwitchListTile(
-        secondary: Icon(icon, color: kPrimary),
-        title: Text(title),
-        subtitle: Text(subtitle),
-        activeColor: kPrimary,
-        value: _filter[key] == true,
-        onChanged:
-            _inherit ? null : (value) => setState(() => _filter[key] = value),
+  Widget _filterSwitch({
+    required bool value,
+    required ValueChanged<bool>? onChanged,
+  }) =>
+      Switch.adaptive(
+        value: value,
+        onChanged: onChanged,
+        activeTrackColor: kPrimary,
+        activeThumbColor: Colors.white,
+        inactiveTrackColor: const Color(0xFFDCE5ED),
+        inactiveThumbColor: Colors.white,
+        trackOutlineColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? kPrimary
+              : const Color(0xFFB8C8D5),
+        ),
       );
+
+  Widget _option(String key, String title, String subtitle, IconData icon) {
+    final enabled = _filter[key] == true;
+    final canChange = !_inherit;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      child: Material(
+        color: canChange ? kCard : const Color(0xFFF5F7F9),
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap:
+              canChange ? () => setState(() => _filter[key] = !enabled) : null,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: enabled && canChange
+                    ? kPrimary.withValues(alpha: 0.32)
+                    : kBorder,
+              ),
+              boxShadow: canChange
+                  ? const [
+                      BoxShadow(
+                        color: Color(0x0D0D5D91),
+                        blurRadius: 12,
+                        offset: Offset(0, 3),
+                      )
+                    ]
+                  : null,
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: enabled
+                        ? kPrimary.withValues(alpha: 0.12)
+                        : const Color(0xFFF0F3F6),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(icon,
+                      color: enabled ? kPrimary : kSubtext, size: 23),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w700, fontSize: 15)),
+                      const SizedBox(height: 2),
+                      Text(subtitle,
+                          style:
+                              const TextStyle(color: kSubtext, fontSize: 12.5)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: enabled
+                        ? kPrimary.withValues(alpha: 0.10)
+                        : const Color(0xFFF0F3F6),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(enabled ? 'מותר' : 'חסום',
+                      style: TextStyle(
+                          color: enabled ? kPrimary : kSubtext,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700)),
+                ),
+                const SizedBox(width: 6),
+                _filterSwitch(
+                  value: enabled,
+                  onChanged: canChange
+                      ? (value) => setState(() => _filter[key] = value)
+                      : null,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14691,64 +14824,93 @@ class _ContentFilterSettingsScreenState
               : _isContact
                   ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
                   : 'סינון תוכן כללי')),
+      backgroundColor: kBg,
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(children: [
-              if (_isContact) ...[
-                SwitchListTile(
-                  title: const Text('השתמש בהגדרות הכלליות'),
-                  subtitle:
-                      const Text('שינויים עתידיים בהגדרה הכללית יחולו גם כאן'),
-                  value: _inherit,
-                  activeColor: kPrimary,
-                  onChanged: (value) => setState(() => _inherit = value),
-                ),
-                const Divider(height: 1),
-              ],
-              const Padding(
-                padding: EdgeInsets.fromLTRB(18, 18, 18, 8),
-                child: Text('סוגי תוכן מותרים',
-                    style:
-                        TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              ),
-              if (_isGroup)
+          : Center(
+              child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: ListView(children: [
+                if (_isContact) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                    child: Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: const BorderSide(color: kBorder),
+                      ),
+                      child: ListTile(
+                        leading:
+                            const Icon(Icons.sync_rounded, color: kPrimary),
+                        title: const Text('השתמש בהגדרות הכלליות',
+                            style: TextStyle(fontWeight: FontWeight.w700)),
+                        subtitle: const Text(
+                            'שינויים עתידיים בהגדרה הכללית יחולו גם כאן'),
+                        trailing: _filterSwitch(
+                          value: _inherit,
+                          onChanged: (value) =>
+                              setState(() => _inherit = value),
+                        ),
+                        onTap: () => setState(() => _inherit = !_inherit),
+                      ),
+                    ),
+                  ),
+                ],
                 const Padding(
-                  padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
+                  padding: EdgeInsets.fromLTRB(18, 18, 18, 8),
+                  child: Text('סוגי תוכן מותרים',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ),
+                if (_isGroup)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
+                    child: Text(
+                      'הגדרת הקבוצה קובעת מה ניתן לשלוח לכל הקבוצה. בנוסף, כל חבר ממשיך להיות מוגן לפי הסינון האישי שלו; ההגדרה המחמירה מביניהן היא שקובעת.',
+                      style: TextStyle(color: kSubtext),
+                    ),
+                  ),
+                _option(
+                    'text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
+                _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
+                    Icons.videocam_outlined),
+                _option('nonHumanImages', 'תמונות ללא בני אדם',
+                    'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
+                _option(
+                    'men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
+                _option(
+                    'women', 'נשים', 'תמונות שסווגו כתמונות נשים', Icons.woman),
+                _option('children', 'ילדים', 'תמונות שסווגו כתמונות ילדים',
+                    Icons.child_care),
+                const Padding(
+                  padding: EdgeInsets.all(18),
                   child: Text(
-                    'הגדרת הקבוצה קובעת מה ניתן לשלוח לכל הקבוצה. בנוסף, כל חבר ממשיך להיות מוגן לפי הסינון האישי שלו; ההגדרה המחמירה מביניהן היא שקובעת.',
-                    style: TextStyle(color: kSubtext),
+                      'כל התמונות עוברות בדיקת צניעות תמיד, ללא קשר לבחירות כאן.',
+                      style: TextStyle(color: kSubtext)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: FilledButton.icon(
+                    onPressed: _saving ? null : _save,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(15)),
+                      textStyle: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w700),
+                    ),
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.save),
+                    label: const Text('שמור הגדרות'),
                   ),
                 ),
-              _option('text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
-              _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
-                  Icons.videocam_outlined),
-              _option('nonHumanImages', 'תמונות ללא בני אדם',
-                  'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
-              _option('men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
-              _option(
-                  'women', 'נשים', 'תמונות שסווגו כתמונות נשים', Icons.woman),
-              _option('children', 'ילדים', 'תמונות שסווגו כתמונות ילדים',
-                  Icons.child_care),
-              const Padding(
-                padding: EdgeInsets.all(18),
-                child: Text(
-                    'כל התמונות עוברות בדיקת צניעות תמיד, ללא קשר לבחירות כאן.',
-                    style: TextStyle(color: kSubtext)),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(18),
-                child: ElevatedButton.icon(
-                  onPressed: _saving ? null : _save,
-                  icon: _saving
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.save),
-                  label: const Text('שמור הגדרות'),
-                ),
-              ),
-            ]),
+              ]),
+            )),
     );
   }
 }

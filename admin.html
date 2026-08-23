@@ -449,8 +449,8 @@ tr:hover td{background:rgba(33,38,45,.8)}
       <div style="display:flex;gap:8px;align-items:center">
         <select id="lst-filter-type" onchange="loadAdminListings()" style="border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:13px;background:#fff">
           <option value="">כל הסוגים</option>
-          <option value="free">ונתנו — חינם</option>
-          <option value="sale">יד 2 — מכירה</option>
+          <option value="free">למסירה — חפצים ללא תשלום</option>
+          <option value="sale">למכירה — מוצרים משומשים וחדשים</option>
         </select>
         <select id="lst-filter-status" onchange="loadAdminListings()" style="border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:13px;background:#fff">
           <option value="" selected>הכל</option>
@@ -2045,8 +2045,8 @@ async function loadAdminListings() {
     const sale  = data.filter(x=>x.type==='sale').length;
     stats.innerHTML = `
       <div class="lst-stat-box"><span class="lst-stat-num">${total}</span><span class="lst-stat-lbl">סה״כ מודעות</span></div>
-      <div class="lst-stat-box"><span class="lst-stat-num" style="color:#065f46">${free}</span><span class="lst-stat-lbl">ונתנו — חינם</span></div>
-      <div class="lst-stat-box"><span class="lst-stat-num" style="color:#5b21b6">${sale}</span><span class="lst-stat-lbl">יד 2 — מכירה</span></div>`;
+      <div class="lst-stat-box"><span class="lst-stat-num" style="color:#e07b16">${free}</span><span class="lst-stat-lbl">למסירה</span></div>
+      <div class="lst-stat-box"><span class="lst-stat-num" style="color:#1565a8">${sale}</span><span class="lst-stat-lbl">למכירה</span></div>`;
 
     if (!data.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1">אין מודעות</div>'; return; }
 
