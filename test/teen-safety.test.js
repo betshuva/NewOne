@@ -53,6 +53,17 @@ test('legacy accounts without a birth date fail safe instead of being treated as
   assert.doesNotMatch(directory, /birth_date IS NULL\s+OR/);
 });
 
+test('legacy accounts can complete an immutable validated birth date', () => {
+  const route = routeSource("app.put('/api/profile/birth-date'", '// ── Profile: update');
+  assert.match(route, /validateRegistrationAge/);
+  assert.match(route, /birth_date IS NULL/);
+  assert.match(route, /BIRTH_DATE_ALREADY_SET/);
+  assert.match(server, /birthDateMissing: !user\.birth_date/);
+  const flutter = read('flutter_app/lib/main.dart');
+  assert.match(flutter, /class _CompleteBirthDateScreen/);
+  assert.match(flutter, /profile\/birth-date/);
+});
+
 test('teen sockets cannot join, send to, or receive pushes from group rooms', () => {
   assert.match(server, /if \(socket\.user\.isTeen\) throw new Error\('teen_groups_disabled'\)/);
   assert.match(server, /socket\.on\('group:message'[\s\S]*socket\.user\.isTeen/);

@@ -1813,7 +1813,7 @@ app.get('/api/registration-status', async (req, res) => {
     const tokenUser = jwt.verify(token, JWT_SECRET);
     const pool = await getPool();
     const result = await pool.query(
-      'SELECT phone, email_verified, phone_verified FROM users WHERE id=$1', [tokenUser.id]);
+      'SELECT phone, email_verified, phone_verified, birth_date FROM users WHERE id=$1', [tokenUser.id]);
     if (!result.rows.length)
       return res.status(401).json({ error: 'המשתמש אינו קיים' });
     const user = result.rows[0];
@@ -1821,6 +1821,7 @@ app.get('/api/registration-status', async (req, res) => {
       phoneMissing: !user.phone,
       verificationRequired:
         user.email_verified !== true && user.phone_verified !== true,
+      birthDateMissing: !user.birth_date,
     });
   } catch (_) {
     res.status(401).json({ error: 'טוקן לא תקין' });
@@ -3403,6 +3404,32 @@ app.get('/api/profile', auth, async (req, res) => {
        FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
     res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Existing beta accounts may predate mandatory age collection. The date can
+// be supplied once and is then immutable through the public API.
+app.put('/api/profile/birth-date', auth, async (req, res) => {
+  const agePolicy = validateRegistrationAge(req.body?.birthDate);
+  if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
+  try {
+    const pool = await getPool();
+    const updated = await pool.query(
+      `UPDATE users SET birth_date=$1
+       WHERE id=$2 AND birth_date IS NULL
+       RETURNING birth_date`,
+      [agePolicy.birthDate, req.user.id]);
+    if (!updated.rows.length) {
+      const existing = await pool.query('SELECT birth_date FROM users WHERE id=$1', [req.user.id]);
+      if (!existing.rows.length) return res.status(404).json({ error: 'החשבון אינו קיים' });
+      return res.status(409).json({
+        error: 'תאריך הלידה כבר הוגדר. לשינוי יש לפנות לתמיכה',
+        code: 'BIRTH_DATE_ALREADY_SET',
+      });
+    }
+    logActivity(req.user.id, 'complete_birth_date',
+      { isTeen: agePolicy.isTeen }, req.ip);
+    res.json({ ok: true, birthDate: agePolicy.birthDate, isTeen: agePolicy.isTeen });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

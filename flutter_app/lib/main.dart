@@ -444,8 +444,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.77';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.77.apk';
+const kVersion = '1.2.78';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.78.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -3498,7 +3498,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   }
 }
 
-// ── Main Shell (Bottom Nav) ───────────────────────────────────────
+// ── Mandatory age completion for legacy beta accounts ────────────
 class MainShell extends StatefulWidget {
   final String token;
   const MainShell({super.key, required this.token});
@@ -3507,6 +3507,175 @@ class MainShell extends StatefulWidget {
 }
 
 class _MainShellState extends State<MainShell> {
+  late Future<bool> _birthDateReady;
+
+  @override
+  void initState() {
+    super.initState();
+    _birthDateReady = _checkBirthDate();
+  }
+
+  Future<bool> _checkBirthDate() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/registration-status'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) return false;
+      final status = jsonDecode(response.body) as Map<String, dynamic>;
+      return status['birthDateMissing'] != true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<bool>(
+        future: _birthDateReady,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (snapshot.data != true) {
+            return _CompleteBirthDateScreen(
+              token: widget.token,
+              onCompleted: () => setState(() {
+                _birthDateReady = Future.value(true);
+              }),
+            );
+          }
+          return _MainShellContent(token: widget.token);
+        },
+      );
+}
+
+class _CompleteBirthDateScreen extends StatefulWidget {
+  final String token;
+  final VoidCallback onCompleted;
+
+  const _CompleteBirthDateScreen({
+    required this.token,
+    required this.onCompleted,
+  });
+
+  @override
+  State<_CompleteBirthDateScreen> createState() =>
+      _CompleteBirthDateScreenState();
+}
+
+class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen> {
+  DateTime? _birthDate;
+  bool _loading = false;
+  String? _error;
+
+  Future<void> _save() async {
+    if (_birthDate == null) {
+      setState(() => _error = 'יש לבחור תאריך לידה');
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final response = await http
+          .put(
+            Uri.parse('$kApi/profile/birth-date'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({'birthDate': _formatBirthDate(_birthDate!)}),
+          )
+          .timeout(const Duration(seconds: 20));
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        widget.onCompleted();
+      } else {
+        setState(() {
+          _error = data['error'] as String? ?? 'שמירת תאריך הלידה נכשלה';
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _error = 'שגיאת חיבור. נסה שוב.';
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: kBg,
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Column(children: [
+                  const Icon(Icons.shield_outlined, size: 72, color: kPrimary),
+                  const SizedBox(height: 20),
+                  const Text('השלמת הגנת גיל',
+                      style:
+                          TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'כדי להמשיך יש להזין תאריך לידה אמיתי. לא ניתן לשנות אותו באפליקציה לאחר השמירה. בגיל 13–17 יופעל אוטומטית חשבון נוער מוגן.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 24),
+                  _BirthDateField(
+                    value: _birthDate,
+                    onChanged: (value) => setState(() => _birthDate = value),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(_error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.red)),
+                  ],
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _loading ? null : _save,
+                      child: _loading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('שמירה והמשך'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('לסיוע: support@betshuva.com',
+                      style: TextStyle(color: kSubtext)),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+// ── Main Shell (Bottom Nav) ───────────────────────────────────────
+class _MainShellContent extends StatefulWidget {
+  final String token;
+  const _MainShellContent({required this.token});
+  @override
+  State<_MainShellContent> createState() => _MainShellContentState();
+}
+
+class _MainShellContentState extends State<_MainShellContent> {
   int _idx = 0;
   Map<String, dynamic>? _desktopRecipient;
   Map<String, dynamic>? _desktopGroup;
