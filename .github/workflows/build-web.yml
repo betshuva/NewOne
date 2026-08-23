@@ -23,7 +23,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.24.x
+          flutter-version: 3.47.1
           channel: stable
           cache: true
 
@@ -42,9 +42,10 @@ jobs:
           cp -r flutter_app/build/web/assets flutter_app/build/web/canvaskit flutter_app/build/web/icons .
           cp flutter_app/build/web/flutter.js \
              flutter_app/build/web/flutter_bootstrap.js \
-             flutter_app/build/web/flutter_service_worker.js \
              flutter_app/build/web/main.dart.js \
-             flutter_app/build/web/manifest.json \
+             .
+          cp flutter_app/web/firebase-messaging-sw.js \
+             flutter_app/web/manifest.json \
              .
 
       - name: Commit and push if changed

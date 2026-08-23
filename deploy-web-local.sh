@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 flutter_dir="$project_dir/flutter_app"
-flutter_bin="/home/yaniv/flutter-sdk/bin/flutter"
+flutter_bin="${FLUTTER_BIN:-/home/yaniv/flutter-sdks/flutter-3.47.1/bin/flutter}"
 build_dir="$flutter_dir/build/web"
 
 export PATH="/home/yaniv/.local/bin:$PATH"
@@ -24,10 +24,12 @@ cp -a \
   "$build_dir/flutter.js" \
   "$build_dir/index.html" \
   "$build_dir/flutter_bootstrap.js" \
-  "$build_dir/flutter_service_worker.js" \
-  "$build_dir/firebase-messaging-sw.js" \
   "$build_dir/main.dart.js" \
-  "$build_dir/manifest.json" \
   .
+cp -a \
+  "$flutter_dir/web/firebase-messaging-sw.js" \
+  "$flutter_dir/web/manifest.json" \
+  .
+rm -f flutter_service_worker.js
 
 echo "Web deployment completed: https://betshuva.com/betshuva-app/"

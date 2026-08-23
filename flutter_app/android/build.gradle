@@ -13,22 +13,6 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
-// flutter_webrtc 0.11.x supports this project's Flutter engine, but its
-// Android module does not declare that Java compilation consumes the Kotlin
-// encoder wrapper when used with AGP 8. Keep that output on javac's classpath.
-gradle.projectsEvaluated {
-    subprojects { project ->
-        if (project.name == "flutter_webrtc") {
-            def kotlinTask = project.tasks.findByName("compileReleaseKotlin")
-            def javaTask = project.tasks.findByName("compileReleaseJavaWithJavac")
-            if (kotlinTask != null && javaTask != null) {
-                javaTask.dependsOn(kotlinTask)
-                javaTask.classpath += project.files(kotlinTask.destinationDirectory)
-            }
-        }
-    }
-}
-
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }

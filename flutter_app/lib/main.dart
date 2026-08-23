@@ -444,8 +444,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.79';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.79.apk';
+const kVersion = '1.2.80';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.80.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
