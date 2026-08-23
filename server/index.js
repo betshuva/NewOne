@@ -148,6 +148,9 @@ async function scanVideo(buffer, fileName, mimeType) {
     if (!response.ok)
       throw new Error(`video moderation returned HTTP ${response.status}`);
     const result = await response.json();
+    if (!Number.isFinite(Number(result.sampled_frames)) ||
+        Number(result.sampled_frames) < 1)
+      throw new Error('video moderation decoded zero frames');
     const labels = result.labels && typeof result.labels === 'object'
       ? result.labels : {};
     const findings = Array.isArray(result.findings) ? result.findings : [];
