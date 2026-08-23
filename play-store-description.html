@@ -26,6 +26,8 @@
     .actions button { flex:1; }
     .secondary { background:#667085; }
     #save-status { min-height:24px; color:#16834b; font-weight:700; text-align:center; }
+    #save-status.error { color:#c73535; }
+    #save-status a { color:inherit; }
     footer { color:var(--muted); text-align:center; font-size:13px; margin-top:22px; }
     @media (max-width:520px) { main{margin:22px auto}.card{padding:16px}.title-row{align-items:flex-start;flex-direction:column}button{width:100%} }
   </style>
@@ -79,33 +81,59 @@
     <footer>בתשובה — גרסת בטא ללא תשלום</footer>
   </main>
   <script>
-    const storageKey = 'betshuva-play-description-v1';
     const editableIds = ['app-name', 'short-description', 'full-description'];
     const originals = Object.fromEntries(
       editableIds.map((id) => [id, document.getElementById(id).innerText])
     );
 
-    try {
-      const saved = JSON.parse(localStorage.getItem(storageKey));
-      if (saved) editableIds.forEach((id) => {
-        if (typeof saved[id] === 'string') document.getElementById(id).innerText = saved[id];
+    const status = document.getElementById('save-status');
+    const setValues = (values) => {
+      if (typeof values?.appName === 'string') document.getElementById('app-name').innerText = values.appName;
+      if (typeof values?.shortDescription === 'string') document.getElementById('short-description').innerText = values.shortDescription;
+      if (typeof values?.fullDescription === 'string') document.getElementById('full-description').innerText = values.fullDescription;
+    };
+    fetch('api/google-play-description', { cache: 'no-store' })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'הטעינה נכשלה');
+        setValues(data);
+      })
+      .catch((error) => {
+        status.textContent = error.message;
+        status.classList.add('error');
       });
-    } catch (_) {}
 
-    document.getElementById('save-all').addEventListener('click', () => {
-      const values = Object.fromEntries(
-        editableIds.map((id) => [id, document.getElementById(id).innerText.trim()])
-      );
-      localStorage.setItem(storageKey, JSON.stringify(values));
-      const status = document.getElementById('save-status');
-      status.textContent = 'השינויים נשמרו בדפדפן ✓';
-      setTimeout(() => { status.textContent = ''; }, 2500);
+    document.getElementById('save-all').addEventListener('click', async () => {
+      const token = localStorage.getItem('bt_admin_token') || localStorage.getItem('bt_token');
+      status.classList.remove('error');
+      if (!token) {
+        status.classList.add('error');
+        status.innerHTML = 'נדרשת <a href="admin.html">כניסת מנהל</a> לפני השמירה';
+        return;
+      }
+      const values = {
+        appName: document.getElementById('app-name').innerText.trim(),
+        shortDescription: document.getElementById('short-description').innerText.trim(),
+        fullDescription: document.getElementById('full-description').innerText.trim(),
+      };
+      try {
+        const response = await fetch('api/admin/google-play-description', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(values),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'השמירה נכשלה');
+        status.textContent = 'השינויים נשמרו בשרת ✓';
+      } catch (error) {
+        status.classList.add('error');
+        status.textContent = error.message;
+      }
     });
 
     document.getElementById('restore-all').addEventListener('click', () => {
       editableIds.forEach((id) => { document.getElementById(id).innerText = originals[id]; });
-      localStorage.removeItem(storageKey);
-      document.getElementById('save-status').textContent = 'הנוסח המקורי שוחזר';
+      status.textContent = 'הנוסח המקורי הוחזר לשדות; לחץ שמירה כדי לשמור אותו בשרת';
     });
 
     document.querySelectorAll('[data-copy]').forEach((button) => {

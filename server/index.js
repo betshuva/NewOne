@@ -5127,6 +5127,67 @@ async function adminAuth(req, res, next) {
   }
 }
 
+const DEFAULT_GOOGLE_PLAY_DESCRIPTION = {
+  appName: 'בתשובה',
+  shortDescription: 'אפליקציה להעברת מסרים שבה כל התמונות והסרטונים עוברים סינון תוכן',
+  fullDescription: `בתשובה היא אפליקציה חברתית ישראלית להעברת מסרים ולשיתוף תוכן בסביבה קהילתית ומכבדת.
+
+באפליקציה ניתן:
+• ליצור פרופיל אישי
+• להוסיף אנשי קשר
+• לשלוח ולקבל הודעות
+• לשתף תמונות וסרטונים
+• לבצע שיחות קוליות
+• לדווח על תוכן או משתמשים
+• לחסום משתמשים ולנהל את הגדרות הפרטיות
+
+כל התמונות והסרטונים המועלים לאפליקציה עוברים סינון תוכן אוטומטי לפני פרסומם, במטרה לצמצם הפצה של תוכן בלתי הולם. בנוסף זמינים למשתמשים כלי דיווח וחסימה.
+
+האפליקציה נמצאת בגרסת בטא וניתנת לשימוש ללא תשלום. השימוש מיועד לבני 13 ומעלה, ולמשתמשים צעירים מופעלות הגנות נוספות.
+
+השימוש באפליקציה כפוף לתנאי השימוש, למדיניות הפרטיות ולכללי הקהילה של בתשובה.`,
+};
+
+app.get('/api/google-play-description', async (_req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT value FROM app_settings WHERE key_name='google_play_description'`);
+    const saved = result.rows[0]?.value;
+    res.set('Cache-Control', 'no-store');
+    res.json(saved ? JSON.parse(saved) : DEFAULT_GOOGLE_PLAY_DESCRIPTION);
+  } catch (e) {
+    res.status(500).json({ error: 'לא ניתן לטעון את התיאור השמור' });
+  }
+});
+
+app.put('/api/admin/google-play-description', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit')
+    return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const description = {
+    appName: String(req.body?.appName || '').trim(),
+    shortDescription: String(req.body?.shortDescription || '').trim(),
+    fullDescription: String(req.body?.fullDescription || '').trim(),
+  };
+  if (!description.appName || description.appName.length > 30)
+    return res.status(400).json({ error: 'שם האפליקציה חייב להכיל עד 30 תווים' });
+  if (!description.shortDescription || description.shortDescription.length > 80)
+    return res.status(400).json({ error: 'התיאור הקצר חייב להכיל עד 80 תווים' });
+  if (!description.fullDescription || description.fullDescription.length > 4000)
+    return res.status(400).json({ error: 'התיאור המלא חייב להכיל עד 4,000 תווים' });
+  try {
+    const pool = await getPool();
+    await pool.query(
+      `INSERT INTO app_settings (key_name,value) VALUES ('google_play_description',$1)
+       ON CONFLICT (key_name) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [JSON.stringify(description)]);
+    logActivity(req.user.id, 'admin_google_play_description_update', {}, req.ip);
+    res.json({ ok: true, description });
+  } catch (e) {
+    res.status(500).json({ error: 'שמירת התיאור נכשלה' });
+  }
+});
+
 app.get('/admin-members', (_req, res) => res.sendFile(
   require('path').join(__dirname, '..', 'admin-members.html')));
 app.get('/api/admin/members-directory', adminAuth, async (req, res) => {
