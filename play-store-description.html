@@ -22,6 +22,10 @@
     button { border:0; border-radius:10px; padding:10px 17px; color:white; background:var(--blue); font-weight:700; cursor:pointer; font-size:15px; }
     button:hover { filter:brightness(.94); }
     button.done { background:#16834b; }
+    .actions { display:flex; gap:10px; margin:20px 0; }
+    .actions button { flex:1; }
+    .secondary { background:#667085; }
+    #save-status { min-height:24px; color:#16834b; font-weight:700; text-align:center; }
     footer { color:var(--muted); text-align:center; font-size:13px; margin-top:22px; }
     @media (max-width:520px) { main{margin:22px auto}.card{padding:16px}.title-row{align-items:flex-start;flex-direction:column}button{width:100%} }
   </style>
@@ -30,8 +34,14 @@
   <main>
     <header>
       <h1>תיאור האפליקציה בתשובה</h1>
-      <p>לחץ בתוך כל שדה כדי לערוך, ולאחר מכן לחץ על כפתור ההעתקה</p>
+      <p>ערוך את השדות ושמור את הנוסח לשימוש חוזר</p>
     </header>
+
+    <div class="actions">
+      <button type="button" id="save-all">שמירת השינויים</button>
+      <button type="button" id="restore-all" class="secondary">שחזור הנוסח המקורי</button>
+    </div>
+    <div id="save-status" aria-live="polite"></div>
 
     <section class="card">
       <div class="title-row"><h2>שם האפליקציה</h2><span class="limit">עד 30 תווים</span></div>
@@ -69,6 +79,35 @@
     <footer>בתשובה — גרסת בטא ללא תשלום</footer>
   </main>
   <script>
+    const storageKey = 'betshuva-play-description-v1';
+    const editableIds = ['app-name', 'short-description', 'full-description'];
+    const originals = Object.fromEntries(
+      editableIds.map((id) => [id, document.getElementById(id).innerText])
+    );
+
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey));
+      if (saved) editableIds.forEach((id) => {
+        if (typeof saved[id] === 'string') document.getElementById(id).innerText = saved[id];
+      });
+    } catch (_) {}
+
+    document.getElementById('save-all').addEventListener('click', () => {
+      const values = Object.fromEntries(
+        editableIds.map((id) => [id, document.getElementById(id).innerText.trim()])
+      );
+      localStorage.setItem(storageKey, JSON.stringify(values));
+      const status = document.getElementById('save-status');
+      status.textContent = 'השינויים נשמרו בדפדפן ✓';
+      setTimeout(() => { status.textContent = ''; }, 2500);
+    });
+
+    document.getElementById('restore-all').addEventListener('click', () => {
+      editableIds.forEach((id) => { document.getElementById(id).innerText = originals[id]; });
+      localStorage.removeItem(storageKey);
+      document.getElementById('save-status').textContent = 'הנוסח המקורי שוחזר';
+    });
+
     document.querySelectorAll('[data-copy]').forEach((button) => {
       button.addEventListener('click', async () => {
         const text = document.getElementById(button.dataset.copy).innerText;
