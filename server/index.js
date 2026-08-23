@@ -2574,6 +2574,11 @@ io.on('connection', async (socket) => {
          RETURNING id, created_at`,
         [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
       const row = saved.rows[0];
+      await pool.query(
+        `INSERT INTO message_status (message_id, user_id, status)
+         VALUES ($1, $2, 'sent')
+         ON CONFLICT (message_id, user_id) DO NOTHING`,
+        [row.id, toUserId]);
       if (onlineUsers.has(toUserId)) {
         await pool.query(
           `INSERT INTO message_status (message_id, user_id, status)
@@ -3527,6 +3532,14 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
        RETURNING id, created_at`,
       [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null]);
     const row = saved.rows[0];
+
+    // Keep a durable acknowledgement while the recipient is offline. Later
+    // connection/read handlers promote this to "delivered" and "read".
+    await pool.query(
+      `INSERT INTO message_status (message_id, user_id, status)
+       VALUES ($1, $2, 'sent')
+       ON CONFLICT (message_id, user_id) DO NOTHING`,
+      [row.id, toUserId]);
 
     // אם יש תגובה, נשלח גם את טקסט ההודעה הקודמת
     let replyBody = null;
