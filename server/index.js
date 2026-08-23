@@ -1676,9 +1676,48 @@ const SYSTEM_AI_PROMPT = `אתה העוזר הרשמי של אפליקציית "
 אל תמציא פעולות, אל תבקש סיסמה או קוד אימות, ואל תחשוף מידע על משתמשים אחרים.
 אם השאלה אינה על האפליקציה, הסבר שאתה מסייע רק בנושאי בתשובה.`;
 
-function localSystemAnswer(question) {
+function describeRejectedUpload(row) {
+  const details = row.moderation_details || {};
+  const classification = details.classification || {};
+  const labels = { men: 'גברים', women: 'נשים', children: 'ילדים',
+    people: 'אנשים', nonHumanImages: 'תוכן ללא בני אדם', landscape: 'נוף',
+    video: 'וידאו' };
+  const categories = (classification.detectedCategories || [])
+    .filter(value => value !== 'video')
+    .map(value => labels[value] || value);
+  const type = row.file_type === 'video' ? 'הסרטון' : 'התמונה';
+  const recipient = row.recipient_name ? ` ל${row.recipient_name}` : '';
+  const reason = details.reason || 'התוכן לא עבר את כללי הסינון של הנמען';
+  const detected = categories.length ? ` זוהו: ${categories.join(', ')}.` : '';
+  return `${type} האחרונ${row.file_type === 'video' ? '' : 'ה'} ששלחת${recipient} נחסמ${row.file_type === 'video' ? '' : 'ה'}. הסיבה שנשמרה בסריקה: ${reason}.${detected}`;
+}
+
+async function rejectedUploadContext(pool, userId, question) {
+  if (!/נחסמ|למה.*לא.*עבר|לא.*נשלח/.test(String(question || '')) ||
+      !/תמונ|וידאו|סרטון|קובץ/.test(String(question || ''))) return null;
+  const result = await pool.query(
+    `SELECT sf.file_type,sf.original_name,sf.moderation_details,sf.created_at,
+            u.name AS recipient_name
+     FROM stored_files sf
+     LEFT JOIN users u ON u.id::text=sf.context_id::text
+     WHERE sf.user_id=$1 AND sf.context_type='chat'
+       AND sf.moderation_status='rejected'
+     ORDER BY sf.created_at DESC LIMIT 10`, [userId]);
+  if (!result.rows.length) return null;
+  const normalizedQuestion = String(question).replace(/\s+/g, '').toLowerCase();
+  const requestedType = /תמונ/.test(String(question)) ? 'image'
+    : /וידאו|סרטון/.test(String(question)) ? 'video' : null;
+  const matchingType = requestedType
+    ? result.rows.filter(row => row.file_type === requestedType) : result.rows;
+  return matchingType.find(row => row.recipient_name && normalizedQuestion
+    .includes(String(row.recipient_name).replace(/\s+/g, '').toLowerCase())) ||
+    matchingType[0] || result.rows[0];
+}
+
+function localSystemAnswer(question, uploadContext = null) {
   const value = String(question || '').trim();
   const q = value.toLowerCase();
+  if (uploadContext) return describeRejectedUpload(uploadContext);
   if (/חבר|איש קשר|להוסיף|הזמ/.test(q))
     return 'כדי להוסיף חבר: לחץ על סמל האדם עם סימן + בראש מסך השיחות, חפש לפי שם, טלפון או אימייל ולחץ „שמור”. אם האדם עדיין לא רשום, לחץ „הזמן”.';
   if (/סינון|חסמ|תמונה|וידאו|סרטון|ילד|גבר|אישה/.test(q))
@@ -1699,9 +1738,10 @@ function localSystemAnswer(question) {
 }
 
 async function generateSystemAnswer(pool, userId, question) {
+  const uploadContext = await rejectedUploadContext(pool, userId, question);
   const apiUrl = String(process.env.AI_API_URL || '').trim();
   const apiKey = String(process.env.AI_API_KEY || '').trim();
-  if (!apiUrl || !apiKey) return localSystemAnswer(question);
+  if (!apiUrl || !apiKey) return localSystemAnswer(question, uploadContext);
   try {
     const history = await pool.query(
       `SELECT sender_id,body FROM messages
@@ -1712,22 +1752,25 @@ async function generateSystemAnswer(pool, userId, question) {
       role: row.sender_id === SYSTEM_USER_ID ? 'assistant' : 'user',
       content: row.body || '',
     }));
+    const contextPrompt = uploadContext
+      ? `\nנתוני הסריקה האחרונה של המשתמש: ${describeRejectedUpload(uploadContext)}`
+      : '';
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json' },
       body: JSON.stringify({ model: process.env.AI_MODEL || 'gpt-4.1-mini',
         temperature: 0.2, max_tokens: 350,
-        messages: [{ role: 'system', content: SYSTEM_AI_PROMPT }, ...messages] }),
+        messages: [{ role: 'system', content: SYSTEM_AI_PROMPT + contextPrompt }, ...messages] }),
       signal: AbortSignal.timeout(20000),
     });
     if (!response.ok) throw new Error(`AI HTTP ${response.status}`);
     const data = await response.json();
     const answer = data.choices?.[0]?.message?.content?.trim();
-    return answer || localSystemAnswer(question);
+    return answer || localSystemAnswer(question, uploadContext);
   } catch (error) {
     console.error('system AI:', error.message);
-    return localSystemAnswer(question);
+    return localSystemAnswer(question, uploadContext);
   }
 }
 
