@@ -29,3 +29,13 @@ test('JWT authentication has no built-in default secret', () => {
   assert.doesNotMatch(source, /JWT_SECRET\s*\|\|\s*['"][^'"]+['"]/);
   assert.match(source, /if \(!JWT_SECRET\)/);
 });
+
+test('SMTP verifies the remote TLS certificate', () => {
+  assert.doesNotMatch(source, /rejectUnauthorized\s*:\s*false/);
+  assert.match(source, /rejectUnauthorized\s*:\s*true/);
+});
+
+test('server publishes the child safety standards page', () => {
+  assert.match(source, /app\.get\('\/child-safety'/);
+  assert.match(source, /child-safety\.html/);
+});

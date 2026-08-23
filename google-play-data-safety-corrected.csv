@@ -29,7 +29,7 @@ PSL_DATA_TYPES_PERSONAL,PSL_PHONE,true,MULTIPLE_CHOICE,פרטים אישיים /
 PSL_DATA_TYPES_PERSONAL,PSL_RACE_ETHNICITY,,MULTIPLE_CHOICE,פרטים אישיים / קבוצה אתנית
 PSL_DATA_TYPES_PERSONAL,PSL_POLITICAL_RELIGIOUS,,MULTIPLE_CHOICE,פרטים אישיים / תפישות פוליטיות או אמונות דתיות
 PSL_DATA_TYPES_PERSONAL,PSL_SEXUAL_ORIENTATION_GENDER_IDENTITY,,MULTIPLE_CHOICE,פרטים אישיים / נטייה מינית
-PSL_DATA_TYPES_PERSONAL,PSL_OTHER_PERSONAL,,MULTIPLE_CHOICE,פרטים אישיים / מידע אחר
+PSL_DATA_TYPES_PERSONAL,PSL_OTHER_PERSONAL,true,MULTIPLE_CHOICE,פרטים אישיים / מידע אחר
 PSL_DATA_TYPES_FINANCIAL,PSL_CREDIT_DEBIT_BANK_ACCOUNT_NUMBER,,MULTIPLE_CHOICE,מידע פיננסי / פרטי התשלום של המשתמש
 PSL_DATA_TYPES_FINANCIAL,PSL_PURCHASE_HISTORY,,MULTIPLE_CHOICE,מידע פיננסי / היסטוריית רכישות
 PSL_DATA_TYPES_FINANCIAL,PSL_CREDIT_SCORE,,MULTIPLE_CHOICE,מידע פיננסי / דירוגי אשראי
@@ -211,18 +211,18 @@ PSL_DATA_USAGE_RESPONSES:PSL_SEXUAL_ORIENTATION_GENDER_IDENTITY:DATA_USAGE_SHARI
 PSL_DATA_USAGE_RESPONSES:PSL_SEXUAL_ORIENTATION_GENDER_IDENTITY:DATA_USAGE_SHARING_PURPOSE,PSL_ADVERTISING,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (נטייה מינית) / למה נתוני המשתמשים האלה משותפים? יש לבחור בכל האפשרויות הרלוונטיות. / פרסום או שיווק
 PSL_DATA_USAGE_RESPONSES:PSL_SEXUAL_ORIENTATION_GENDER_IDENTITY:DATA_USAGE_SHARING_PURPOSE,PSL_PERSONALIZATION,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (נטייה מינית) / למה נתוני המשתמשים האלה משותפים? יש לבחור בכל האפשרויות הרלוונטיות. / התאמה אישית
 PSL_DATA_USAGE_RESPONSES:PSL_SEXUAL_ORIENTATION_GENDER_IDENTITY:DATA_USAGE_SHARING_PURPOSE,PSL_ACCOUNT_MANAGEMENT,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (נטייה מינית) / למה נתוני המשתמשים האלה משותפים? יש לבחור בכל האפשרויות הרלוונטיות. / ניהול החשבון
-PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:PSL_DATA_USAGE_COLLECTION_AND_SHARING,PSL_DATA_USAGE_ONLY_COLLECTED,,MULTIPLE_CHOICE,"שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה נאספים, משותפים או שניהם? / נאספים"
+PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:PSL_DATA_USAGE_COLLECTION_AND_SHARING,PSL_DATA_USAGE_ONLY_COLLECTED,true,MULTIPLE_CHOICE,"שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה נאספים, משותפים או שניהם? / נאספים"
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:PSL_DATA_USAGE_COLLECTION_AND_SHARING,PSL_DATA_USAGE_ONLY_SHARED,,MULTIPLE_CHOICE,"שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה נאספים, משותפים או שניהם? / משותפים"
-PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:PSL_DATA_USAGE_EPHEMERAL,,,MAYBE_REQUIRED,שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה מעובדים באופן זמני?
+PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:PSL_DATA_USAGE_EPHEMERAL,,false,MAYBE_REQUIRED,שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה מעובדים באופן זמני?
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_USER_CONTROL,PSL_DATA_USAGE_USER_CONTROL_OPTIONAL,,SINGLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה נדרשים באפליקציה שלך או שהמשתמשים יכולים לבחור אם הם יאספו? / המשתמשים יכולים לבחור אם הנתונים האלה ייאספו
-PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_USER_CONTROL,PSL_DATA_USAGE_USER_CONTROL_REQUIRED,,SINGLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה נדרשים באפליקציה שלך או שהמשתמשים יכולים לבחור אם הם יאספו? / איסוף הנתונים נדרש (המשתמשים לא יכולים להשבית את איסוף הנתונים)
-PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_APP_FUNCTIONALITY,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / תכונות האפליקציה
+PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_USER_CONTROL,PSL_DATA_USAGE_USER_CONTROL_REQUIRED,true,SINGLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / האם הנתונים האלה נדרשים באפליקציה שלך או שהמשתמשים יכולים לבחור אם הם יאספו? / איסוף הנתונים נדרש (המשתמשים לא יכולים להשבית את איסוף הנתונים)
+PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_APP_FUNCTIONALITY,true,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / תכונות האפליקציה
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_ANALYTICS,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / Analytics
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_DEVELOPER_COMMUNICATIONS,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / הודעות מהמפתחים
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_FRAUD_PREVENTION_SECURITY,,MULTIPLE_CHOICE,"שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / מניעת הונאות, אבטחה ותאימות"
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_ADVERTISING,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / פרסום או שיווק
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_PERSONALIZATION,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / התאמה אישית
-PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_ACCOUNT_MANAGEMENT,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / ניהול החשבון
+PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_COLLECTION_PURPOSE,PSL_ACCOUNT_MANAGEMENT,true,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה נאספים? יש לבחור בכל האפשרויות הרלוונטיות. / ניהול החשבון
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_SHARING_PURPOSE,PSL_APP_FUNCTIONALITY,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה משותפים? יש לבחור בכל האפשרויות הרלוונטיות. / תכונות האפליקציה
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_SHARING_PURPOSE,PSL_ANALYTICS,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה משותפים? יש לבחור בכל האפשרויות הרלוונטיות. / Analytics
 PSL_DATA_USAGE_RESPONSES:PSL_OTHER_PERSONAL:DATA_USAGE_SHARING_PURPOSE,PSL_DEVELOPER_COMMUNICATIONS,,MULTIPLE_CHOICE,שימוש בנתונים וטיפול בהם (מידע אחר) / למה נתוני המשתמשים האלה משותפים? יש לבחור בכל האפשרויות הרלוונטיות. / הודעות מהמפתחים

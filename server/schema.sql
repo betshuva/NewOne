@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS users (
   terms_accepted_at   TIMESTAMPTZ,
   terms_version       TEXT,
   age_confirmed       BOOLEAN NOT NULL DEFAULT FALSE,
+  gender              TEXT,
+  birth_date          DATE,
   wins                INTEGER NOT NULL DEFAULT 0,
   games_played        INTEGER NOT NULL DEFAULT 0,
   created_at          TIMESTAMPTZ DEFAULT now()

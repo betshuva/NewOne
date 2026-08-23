@@ -1165,7 +1165,7 @@ const mailer = nodemailer.createTransport({
     user: process.env.EMAIL_FROM,
     pass: process.env.EMAIL_APP_PASSWORD,
   },
-  tls: { rejectUnauthorized: false },
+  tls: { rejectUnauthorized: true },
 });
 
 async function sendEmail({ to, subject, html }) {
@@ -1305,6 +1305,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_version TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS age_confirmed BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date DATE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`
@@ -1681,6 +1682,7 @@ app.get('/public-home', (req, res) => res.sendFile(require('path').join(__dirnam
 app.get('/privacy', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'privacy.html')));
 app.get('/terms', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'terms.html')));
 app.get('/delete-account', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'delete-account.html')));
+app.get('/child-safety', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'child-safety.html')));
 app.get('/accessibility', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'accessibility.html')));
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -1732,6 +1734,53 @@ const socketRateCleanup = setInterval(() => {
 }, 5 * 60 * 1000);
 socketRateCleanup.unref();
 
+function parseBirthDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
+  return value;
+}
+
+function ageFromBirthDate(value, now = new Date()) {
+  const birthDate = parseBirthDate(value instanceof Date
+    ? value.toISOString().slice(0, 10) : String(value || ''));
+  if (!birthDate) return null;
+  const [year, month, day] = birthDate.split('-').map(Number);
+  let age = now.getUTCFullYear() - year;
+  const beforeBirthday = now.getUTCMonth() + 1 < month ||
+    (now.getUTCMonth() + 1 === month && now.getUTCDate() < day);
+  if (beforeBirthday) age--;
+  return age;
+}
+
+function validateRegistrationAge(value) {
+  const birthDate = parseBirthDate(value);
+  const age = ageFromBirthDate(birthDate);
+  if (!birthDate || age == null) return { error: 'יש להזין תאריך לידה תקין' };
+  if (age < 13) return { error: 'השירות אינו זמין למי שטרם מלאו לו 13' };
+  if (age > 120) return { error: 'תאריך הלידה אינו תקין' };
+  return { birthDate, age, isTeen: age < 18 };
+}
+
+async function youthPolicy(pool, ...userIds) {
+  const result = await pool.query(
+    `SELECT id, birth_date,
+            (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+     FROM users WHERE id = ANY($1::uuid[])`, [userIds]);
+  return new Map(result.rows.map(row => [row.id, row]));
+}
+
+async function teenContactAllowed(pool, firstId, secondId) {
+  const policies = await youthPolicy(pool, firstId, secondId);
+  if (![...policies.values()].some(policy => policy.is_teen)) return true;
+  const mutual = await pool.query(
+    `SELECT 1
+     FROM user_contacts a
+     JOIN user_contacts b ON b.owner_id=$2 AND b.contact_id=$1
+     WHERE a.owner_id=$1 AND a.contact_id=$2`, [firstId, secondId]);
+  return mutual.rows.length > 0;
+}
+
 async function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
@@ -1739,13 +1788,17 @@ async function auth(req, res, next) {
     req.user = jwt.verify(token, JWT_SECRET);
     const pool = await getPool();
     const result = await pool.query(
-      'SELECT phone, email_verified, phone_verified FROM users WHERE id = $1', [req.user.id]);
+      `SELECT phone, email_verified, phone_verified, birth_date,
+              (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+       FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length)
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
     const registrationComplete = !!result.rows[0].phone &&
       (result.rows[0].email_verified === true || result.rows[0].phone_verified === true);
     if (!registrationComplete && !req.path.endsWith('/link-phone'))
       return res.status(403).json({ error: 'יש להשלים אימות טלפון או אימייל', code: 'VERIFICATION_REQUIRED' });
+    req.user.birthDate = result.rows[0].birth_date;
+    req.user.isTeen = result.rows[0].is_teen === true;
     next();
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין — נא להתחבר מחדש' });
@@ -1811,7 +1864,9 @@ async function authWithDbCheck(req, res, next) {
     req.user = jwt.verify(token, JWT_SECRET);
     const pool = await getPool();
     const exists = await pool.query(
-      'SELECT phone, email_verified, phone_verified FROM users WHERE id = $1', [req.user.id]);
+      `SELECT phone, email_verified, phone_verified, birth_date,
+              (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+       FROM users WHERE id = $1`, [req.user.id]);
     if (!exists.rows.length) {
       console.warn(`[AUTH] ghost session — id:${req.user.id} email:${req.user.email}`);
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
@@ -1821,6 +1876,8 @@ async function authWithDbCheck(req, res, next) {
     if (exists.rows[0].email_verified !== true &&
         exists.rows[0].phone_verified !== true)
       return res.status(403).json({ error: 'יש להשלים אימות טלפון או אימייל', code: 'VERIFICATION_REQUIRED' });
+    req.user.birthDate = exists.rows[0].birth_date;
+    req.user.isTeen = exists.rows[0].is_teen === true;
     next();
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין' });
@@ -1833,7 +1890,9 @@ io.use(async (socket, next) => {
     socket.user = jwt.verify(socket.handshake.auth.token, JWT_SECRET);
     const pool = await getPool();
     const exists = await pool.query(
-      'SELECT phone, email_verified, phone_verified FROM users WHERE id = $1', [socket.user.id]);
+      `SELECT phone, email_verified, phone_verified, birth_date,
+              (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+       FROM users WHERE id = $1`, [socket.user.id]);
     if (!exists.rows.length) {
       console.warn(`[SOCKET] user_not_found — id:${socket.user.id} email:${socket.user.email} name:${socket.user.name}`);
       return next(new Error('user_not_found'));
@@ -1842,6 +1901,8 @@ io.use(async (socket, next) => {
     if (exists.rows[0].email_verified !== true &&
         exists.rows[0].phone_verified !== true)
       return next(new Error('verification_required'));
+    socket.user.birthDate = exists.rows[0].birth_date;
+    socket.user.isTeen = exists.rows[0].is_teen === true;
     next();
   } catch (e) {
     console.warn(`[SOCKET] unauthorized — ${e.message}`);
@@ -1852,9 +1913,11 @@ io.use(async (socket, next) => {
 async function claimExternalGroupInvites(userId) {
   const pool = await getPool();
   const userResult = await pool.query(
-    'SELECT lower(email) AS email, phone FROM users WHERE id=$1', [userId]);
+    `SELECT lower(email) AS email, phone,
+            (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+     FROM users WHERE id=$1`, [userId]);
   const user = userResult.rows[0];
-  if (!user) return;
+  if (!user || user.is_teen) return;
   const invites = await pool.query(
     `SELECT id, group_id, invited_by FROM external_group_invites
      WHERE status='pending'
@@ -1891,6 +1954,9 @@ io.on('connection', async (socket) => {
     }
     try {
       const pool = await getPool();
+      if (!await teenContactAllowed(pool, socket.user.id, toUserId)) {
+        return socket.emit('call:unavailable', { toUserId, reason: 'not_allowed' });
+      }
       const allowed = await pool.query(
         `SELECT 1 FROM user_contacts
          WHERE owner_id=$1 AND contact_id=$2
@@ -2019,6 +2085,7 @@ io.on('connection', async (socket) => {
 
   // Join all group rooms this user belongs to
   try {
+    if (socket.user.isTeen) throw new Error('teen_groups_disabled');
     const pool = await getPool();
     const grps = await pool.query(
       "SELECT group_id FROM group_members WHERE user_id = $1 AND status = 'member'", [socket.user.id]);
@@ -2042,6 +2109,11 @@ io.on('connection', async (socket) => {
     }
     try {
       const pool = await getPool();
+      if (!await teenContactAllowed(pool, socket.user.id, toUserId)) {
+        socket.emit('message:rejected', { toUserId,
+          reason: 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים' });
+        return;
+      }
       // Check if blocked
       const blocked = await pool.query(
         'SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [toUserId, socket.user.id]);
@@ -2136,6 +2208,11 @@ io.on('connection', async (socket) => {
   // ── Group messaging ──────────────────────────────────────────────
   socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType, clientMessageId }) => {
     if ((!text && !fileUrl) || !groupId) return;
+    if (socket.user.isTeen) {
+      socket.emit('message:rejected', { groupId, clientMessageId,
+        reason: 'קבוצות אינן זמינות בחשבון נוער' });
+      return;
+    }
     if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
     if (text && moderateChatText(text).blocked) {
       recordBlockedChat(socket.user.id, 'group_socket', text, groupId,
@@ -2195,8 +2272,10 @@ io.on('connection', async (socket) => {
       const grpName = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
       const groupName = grpName.rows[0]?.name || 'קבוצה';
       const allMembers = await pool.query(
-        `SELECT user_id FROM group_members
-         WHERE group_id=$1 AND status='member'`, [groupId]);
+        `SELECT gm.user_id FROM group_members gm
+         JOIN users u ON u.id=gm.user_id
+         WHERE gm.group_id=$1 AND gm.status='member'
+           AND u.birth_date <= CURRENT_DATE - INTERVAL '18 years'`, [groupId]);
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
       for (const { user_id } of allMembers.rows) {
         if (user_id !== socket.user.id) {
@@ -2208,6 +2287,7 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('group:typing', ({ groupId }) => {
+    if (socket.user.isTeen) return;
     const room = `group:${groupId}`;
     if (!groupId || !socket.rooms.has(room)) return;
     if (!allowSocketEvent(socket, 'typing', 180, 60 * 1000)) return;
@@ -2219,7 +2299,7 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('group:viewed', async ({ groupId }) => {
-    if (!groupId) return;
+    if (!groupId || socket.user.isTeen) return;
     try {
       const pool = await getPool();
       const updated = await pool.query(
@@ -2241,7 +2321,7 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('group:join', async ({ groupId }) => {
-    if (!groupId) return;
+    if (!groupId || socket.user.isTeen) return;
     try {
       const pool = await getPool();
       const member = await pool.query(
@@ -2283,6 +2363,8 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
   if (!name) return res.status(400).json({ error: 'חסר שם' });
   if (!['male', 'female'].includes(gender))
     return res.status(400).json({ error: 'יש לבחור מגדר' });
+  const agePolicy = validateRegistrationAge(req.body.birthDate);
+  if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
   const hasEmail = !!(email && password);
   const hasPhone = !!phone;
   const verifyByEmail = verificationMethod !== 'phone';
@@ -2308,10 +2390,11 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
 
     const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
     const result = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender)
-       VALUES ($1, $2, $3, $4, now(), '2026-08-18', TRUE, $5)
+      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender, birth_date)
+       VALUES ($1, $2, $3, $4, now(), '2026-08-23', TRUE, $5, $6)
        RETURNING id, name, email`,
-      [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender]);
+      [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender,
+       agePolicy.birthDate]);
     const user = result.rows[0];
 
     if (hasEmail) {
@@ -2491,14 +2574,16 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
       return res.status(400).json({ error: 'ליצירת חשבון חדש יש לעבור למסך הרשמה ולאשר תנאים וגיל 13 ומעלה' });
     if (!['male', 'female'].includes(req.body.gender))
       return res.status(400).json({ error: 'יש לבחור מגדר בהרשמה' });
+    const agePolicy = validateRegistrationAge(req.body.birthDate);
+    if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
     console.log(`[GOOGLE] new user — name:${name} email:${email}`);
     const inserted = await pool.query(
       `INSERT INTO users (name, email, email_verified, google_id, profile_pic_url,
-                          terms_accepted_at, terms_version, age_confirmed, gender)
-       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-18', TRUE, $5)
+                          terms_accepted_at, terms_version, age_confirmed, gender, birth_date)
+       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-23', TRUE, $5, $6)
        RETURNING *`,
       [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null,
-       req.body.gender]);
+       req.body.gender, agePolicy.birthDate]);
     const user  = inserted.rows[0];
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     logActivity(user.id, 'google_register', { email: user.email }, req.ip);
@@ -2563,6 +2648,14 @@ app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
        FROM users WHERE id != $1 AND id != $2
        AND (email_verified = TRUE OR phone_verified = TRUE)
        AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
+       AND (
+         (SELECT birth_date FROM users WHERE id=$1) <= CURRENT_DATE - INTERVAL '18 years'
+         OR EXISTS (SELECT 1 FROM user_contacts c WHERE c.owner_id=$1 AND c.contact_id=users.id)
+       )
+       AND (
+         birth_date <= CURRENT_DATE - INTERVAL '18 years'
+         OR EXISTS (SELECT 1 FROM user_contacts c WHERE c.owner_id=$1 AND c.contact_id=users.id)
+       )
        ORDER BY name`, [req.user.id, SCAN_BOT_ID]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2583,6 +2676,14 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
          AND u.id != $5
          AND (u.email_verified = TRUE OR u.phone_verified = TRUE)
          AND u.id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
+         AND (
+           (SELECT birth_date FROM users WHERE id=$1) <= CURRENT_DATE - INTERVAL '18 years'
+           OR EXISTS (SELECT 1 FROM user_contacts c WHERE c.owner_id=$1 AND c.contact_id=u.id)
+         )
+         AND (
+           u.birth_date <= CURRENT_DATE - INTERVAL '18 years'
+           OR EXISTS (SELECT 1 FROM user_contacts c WHERE c.owner_id=$1 AND c.contact_id=u.id)
+         )
          AND (u.name ILIKE $2 OR u.email ILIKE $2 OR ($3 <> '' AND u.phone LIKE $4))
        ORDER BY u.name LIMIT 30`,
       [req.user.id, `%${q}%`, digits, `%${digits}%`, SCAN_BOT_ID]);
@@ -2758,6 +2859,7 @@ app.get('/api/messages/unread', auth, async (req, res) => {
 
 // ── Group messages: unread counts ────────────────────────────────
 app.get('/api/groups/unread', auth, async (req, res) => {
+  if (req.user.isTeen) return res.json({});
   try {
     const pool = await getPool();
     const result = await pool.query(`
@@ -2785,6 +2887,8 @@ app.get('/api/groups/unread', auth, async (req, res) => {
 });
 
 app.put('/api/groups/:id/read', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   try {
     const pool = await getPool();
     await pool.query(`
@@ -2808,6 +2912,12 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
   const before  = req.query.before; // ISO date for pagination
   try {
     const pool = await getPool();
+    if (!await teenContactAllowed(pool, myId, otherId)) {
+      return res.status(403).json({
+        error: 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים',
+        code: 'TEEN_MUTUAL_CONTACT_REQUIRED',
+      });
+    }
     const params = [myId, otherId];
     if (before) params.push(new Date(before));
 
@@ -2896,6 +3006,12 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   }
   try {
     const pool = await getPool();
+    if (!await teenContactAllowed(pool, senderId, toUserId)) {
+      return res.status(403).json({
+        error: 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים',
+        code: 'TEEN_MUTUAL_CONTACT_REQUIRED',
+      });
+    }
     const blocked = await pool.query(
       'SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [toUserId, senderId]);
     if (blocked.rows.length) return res.status(403).json({ error: 'נחסמת על ידי הנמען' });
@@ -3282,7 +3398,8 @@ app.get('/api/profile', auth, async (req, res) => {
     const result = await pool.query(
       `SELECT id, name, email, phone, email_verified, phone_verified,
               city, country, street, house_number, apartment,
-              profile_pic_url, privacy_pic, filter_level
+              profile_pic_url, privacy_pic, filter_level, birth_date,
+              (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
     res.json(result.rows[0]);
@@ -3298,6 +3415,7 @@ app.put('/api/profile', auth, async (req, res) => {
   const validFilter  = ['standard', 'strict'];
   try {
     const pool = await getPool();
+    const teen = req.user.isTeen === true;
     await pool.query(
       `UPDATE users
        SET name=$1, city=$2,
@@ -3305,10 +3423,11 @@ app.put('/api/profile', auth, async (req, res) => {
            privacy_pic=$7, filter_level=$8,
            profile_pic_url=$9
        WHERE id=$10`,
-      [name.trim(), city || null, country || 'ישראל', street || null,
-       house_number || null, apartment || null,
-       validPrivacy.includes(privacy_pic) ? privacy_pic : 'all',
-       validFilter.includes(filter_level) ? filter_level : 'standard',
+      [name.trim(), teen ? null : city || null, teen ? null : country || 'ישראל',
+       teen ? null : street || null, teen ? null : house_number || null,
+       teen ? null : apartment || null,
+       teen ? 'contacts' : (validPrivacy.includes(privacy_pic) ? privacy_pic : 'all'),
+       teen ? 'strict' : (validFilter.includes(filter_level) ? filter_level : 'standard'),
        profile_pic_url || null, req.user.id]);
     logActivity(req.user.id, 'update_profile', { name: name.trim(), city, country }, req.ip);
     res.json({ ok: true });
@@ -3370,6 +3489,8 @@ async function reverseGeocodeHebrew(lat, lng) {
 }
 
 app.put('/api/location', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'שיתוף מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
   const { latitude, longitude } = req.body;
   if (latitude == null || longitude == null) return res.status(400).json({ error: 'נדרש מיקום' });
   if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return res.status(400).json({ error: 'מיקום לא תקין' });
@@ -3397,6 +3518,8 @@ app.delete('/api/location', auth, async (req, res) => {
 
 // ── Location: get nearby users (by radius and/or city) ───────────
 app.get('/api/users/nearby', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'חיפוש לפי מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
   const { city, radius } = req.query;
   if (!city && !radius) return res.status(400).json({ error: 'נדרש עיר או רדיוס' });
   try {
@@ -3462,6 +3585,8 @@ app.get('/api/cities', auth, async (req, res) => {
 // ── Listings ──────────────────────────────────────────────────────
 
 app.post('/api/listings', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   const { type, title, description, price, city, latitude, longitude, image_url, image_urls, category } = req.body;
   const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
@@ -3497,6 +3622,7 @@ app.post('/api/listings', auth, async (req, res) => {
 });
 
 app.get('/api/listings', auth, async (req, res) => {
+  if (req.user.isTeen) return res.json([]);
   const { type, category, city, radius, status, page = 1, mine } = req.query;
   const pageSize = 20;
   const offset   = (parseInt(page) - 1) * pageSize;
@@ -3558,6 +3684,8 @@ app.get('/api/listings', auth, async (req, res) => {
 });
 
 app.get('/api/listings/:id', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   try {
     const pool = await getPool();
     // register unique view (ignore if already viewed) — only bump the counter when the insert actually happened
@@ -3586,6 +3714,8 @@ app.get('/api/listings/:id', auth, async (req, res) => {
 });
 
 app.post('/api/listings/:id/contact', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   try {
     const pool = await getPool();
     await pool.query('UPDATE listings SET contact_count = contact_count + 1 WHERE id=$1', [req.params.id]);
@@ -3594,6 +3724,8 @@ app.post('/api/listings/:id/contact', auth, async (req, res) => {
 });
 
 app.put('/api/listings/:id/status', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   const { status } = req.body;
   const valid = ['active', 'sold', 'expired'];
   if (!valid.includes(status)) return res.status(400).json({ error: 'סטטוס לא תקין' });
@@ -3606,6 +3738,8 @@ app.put('/api/listings/:id/status', auth, async (req, res) => {
 });
 
 app.put('/api/listings/:id', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   const { type, title, description, price, city, category, image_urls } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const validTypes = ['free', 'sale'];
@@ -3712,6 +3846,8 @@ app.post('/api/gifs/:id/use', auth, async (req, res) => {
 });
 
 app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req, res) => {
+  if (req.user.isTeen && req.body.groupId)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'לא נשלח קובץ' });
   file.originalname = normalizeUploadFileName(file.originalname);
@@ -3743,6 +3879,11 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       (scanBotUpload || req.body.scanReport === 'true');
     let recipientPolicy = null;
     if (req.body.toUserId) {
+      if (!await teenContactAllowed(pool, req.user.id, req.body.toUserId))
+        return res.status(403).json({
+          error: 'חשבונות נוער יכולים לשלוח קבצים רק לאנשי קשר שאושרו משני הצדדים',
+          code: 'TEEN_MUTUAL_CONTACT_REQUIRED',
+        });
       recipientPolicy = await getEffectiveRecipientFilter(pool, req.body.toUserId, req.user.id);
       if (!recipientPolicy) return res.status(404).json({ error: 'הנמען לא נמצא' });
       if (!recipientPolicy.isContact)
@@ -3962,6 +4103,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
 
 // ── Groups: list mine ─────────────────────────────────────────────
 app.get('/api/groups', auth, async (req, res) => {
+  if (req.user.isTeen) return res.json([]);
   try {
     const pool = await getPool();
     const result = await pool.query(`
@@ -4005,6 +4147,8 @@ app.get('/api/groups', auth, async (req, res) => {
 
 // ── Groups: create ────────────────────────────────────────────────
 app.post('/api/groups', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות עדיין בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const { name, description } = req.body;
   if (!name) return res.status(400).json({ error: 'נדרש שם קבוצה' });
   try {
@@ -4033,6 +4177,8 @@ app.post('/api/groups', auth, async (req, res) => {
 
 // ── Groups: details + members ─────────────────────────────────────
 app.get('/api/groups/:id', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות עדיין בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   try {
     const pool = await getPool();
     const mem = await pool.query(
@@ -4056,6 +4202,8 @@ app.get('/api/groups/:id', auth, async (req, res) => {
 
 // ── Groups: messages ──────────────────────────────────────────────
 app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות עדיין בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const groupId = req.params.id;
   const senderId = req.user.id;
   const { text, replyToId, fileUrl, fileName, fileType, clientMessageId } = req.body || {};
@@ -4114,8 +4262,10 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
     io.to(`group:${groupId}`).emit('group:message', payload);
 
     const allMembers = await pool.query(
-      `SELECT user_id FROM group_members
-       WHERE group_id=$1 AND status='member'`, [groupId]);
+      `SELECT gm.user_id FROM group_members gm
+       JOIN users u ON u.id=gm.user_id
+       WHERE gm.group_id=$1 AND gm.status='member'
+         AND u.birth_date <= CURRENT_DATE - INTERVAL '18 years'`, [groupId]);
     const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
     for (const { user_id } of allMembers.rows) {
       if (user_id !== senderId) {
@@ -4134,6 +4284,8 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
 });
 
 app.get('/api/groups/:id/messages', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const before = req.query.before;
   try {
     const pool = await getPool();
@@ -4207,6 +4359,8 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
 
 // ── Groups: invite a registered user (admin) ─────────────────
 app.post('/api/groups/:id/members', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ error: 'נדרש userId' });
   try {
@@ -4216,6 +4370,9 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
       `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
       [req.params.id, req.user.id]);
     if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
+    const invitedPolicy = await youthPolicy(pool, userId);
+    if (invitedPolicy.get(userId)?.is_teen)
+      return res.status(403).json({ error: 'לא ניתן לצרף חשבון נוער לקבוצה', code: 'TEEN_GROUPS_DISABLED' });
 
     // Check existing membership
     const existing = await pool.query(
@@ -4262,6 +4419,8 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
 
 // ── Groups: remove member (admin) ────────────────────────────────
 app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   try {
     const pool = await getPool();
     const isAdmin = await pool.query(
@@ -4276,6 +4435,8 @@ app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
 
 // ── Groups: invite registered user (redirect to pending logic) ─────
 app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   // Delegate to the same add-as-pending logic as POST /members
   req.url = `/api/groups/${req.params.id}/members`;
   // Just forward by calling the members handler inline
@@ -4287,6 +4448,9 @@ app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
       `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
       [req.params.id, req.user.id]);
     if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
+    const invitedPolicy = await youthPolicy(pool, userId);
+    if (invitedPolicy.get(userId)?.is_teen)
+      return res.status(403).json({ error: 'לא ניתן לצרף חשבון נוער לקבוצה', code: 'TEEN_GROUPS_DISABLED' });
 
     const existing = await pool.query(
       `SELECT status FROM group_members WHERE group_id=$1 AND user_id=$2`, [req.params.id, userId]);
@@ -4324,6 +4488,8 @@ app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
 
 // ── Groups: accept pending invite (join) ──────────────────────────
 app.post('/api/groups/:id/join', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   try {
     const pool = await getPool();
 
@@ -4403,6 +4569,8 @@ app.post('/api/invites/send', auth, inviteRateLimit, async (req, res) => {
 
 // ── Groups: invite an unregistered contact (email, SMS, or WhatsApp handoff) ──
 app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const { phone, email, contactName, delivery } = req.body;
   const cleanPhone = String(phone || '').replace(/\D/g, '');
   const cleanEmail = String(email || '').trim().toLowerCase();
@@ -4464,6 +4632,8 @@ app.delete('/api/groups/:id/leave', auth, async (req, res) => {
 
 // ── Groups: delete group permanently (admin only) ────────────────
 app.delete('/api/groups/:id', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const groupId = req.params.id;
   let client;
   try {
@@ -4510,6 +4680,8 @@ app.delete('/api/groups/:id', auth, async (req, res) => {
 
 // ── Groups: update settings (admin) ──────────────────────────────
 app.put('/api/groups/:id', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const { name, description, send_permission, filter_level, is_broadcast, profile_pic_url } = req.body;
   if (!name) return res.status(400).json({ error: 'נדרש שם' });
   try {
@@ -4530,6 +4702,8 @@ app.put('/api/groups/:id', auth, async (req, res) => {
 
 // ── Groups: update profile picture (admin) ───────────────────────
 app.put('/api/groups/:id/photo', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   try {
     const pool = await getPool();
     const updated = await pool.query(
@@ -4702,6 +4876,8 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
         return res.status(400).json({ error: 'יש לאשר תנאים וגיל 13 ומעלה' });
       if (!['male', 'female'].includes(gender))
         return res.status(400).json({ error: 'יש לבחור מגדר' });
+      const agePolicy = validateRegistrationAge(req.body.birthDate);
+      if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
     }
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -4720,7 +4896,8 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
   otpStore.set(clean, { code, expires, name: cleanName, email: cleanEmail,
     acceptedTerms: req.body.acceptedTerms === true,
     ageConfirmed: req.body.ageConfirmed === true,
-    gender: ['male', 'female'].includes(gender) ? gender : null });
+    gender: ['male', 'female'].includes(gender) ? gender : null,
+    birthDate: parseBirthDate(req.body.birthDate) });
   try {
     await sendEmail({
       to:      `${clean}@019sms.co.il`,
@@ -4774,14 +4951,16 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
         }
         if (!['male', 'female'].includes(entry.gender))
           return res.status(400).json({ error: 'יש לבחור מגדר' });
+        const agePolicy = validateRegistrationAge(entry.birthDate);
+        if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
         otpStore.delete(clean);
         const hash   = await bcrypt.hash(`otp_${clean}`, 10);
         const result = await pool.query(
           `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified,
-                              terms_accepted_at, terms_version, age_confirmed, gender)
-           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-18', TRUE, $5)
+                              terms_accepted_at, terms_version, age_confirmed, gender, birth_date)
+           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-23', TRUE, $5, $6)
            RETURNING id, name, email`,
-          [userName, userEmail, clean, hash, entry.gender]);
+          [userName, userEmail, clean, hash, entry.gender, agePolicy.birthDate]);
         user = result.rows[0];
         // הודע לכל המחוברים על משתמש חדש
         req.app.get('io').emit('users:new', {
@@ -5070,15 +5249,23 @@ async function deleteStoredFile(url) {
   try {
     const marker = `${UPLOAD_PUBLIC_BASE}/`;
     const pos = url.indexOf(marker);
-    if (pos < 0) return;
+    if (pos < 0) {
+      console.error('deleteStoredFile: unsupported storage URL:', url);
+      return false;
+    }
     const relativePath = url.slice(pos + marker.length).split('/').map(decodeURIComponent).join(path.sep);
     const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
-    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) return;
+    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) {
+      console.error('deleteStoredFile: rejected path outside upload root:', url);
+      return false;
+    }
     await fs.unlink(absolutePath).catch(e => { if (e.code !== 'ENOENT') throw e; });
     const pool = await getPool();
     await pool.query('DELETE FROM stored_files WHERE public_url=$1', [url]);
+    return true;
   } catch (e) {
     console.error('deleteStoredFile:', url, e.message);
+    return false;
   }
 }
 
@@ -5131,7 +5318,9 @@ app.delete('/api/account', auth, async (req, res) => {
     await client.query('DELETE FROM audit_log WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM user_reports WHERE reporter_id=$1', [uid]);
     await client.query('UPDATE user_reports SET reviewed_by=NULL WHERE reviewed_by=$1', [uid]);
-    await client.query('DELETE FROM stored_files WHERE user_id=$1', [uid]);
+    // Keep file metadata until physical deletion succeeds. Deleting the user
+    // sets user_id to NULL (ON DELETE SET NULL), so a failed file deletion is
+    // visible and can be retried instead of being silently orphaned.
     await client.query('DELETE FROM users WHERE id=$1', [uid]);
     await client.query('COMMIT');
   } catch (e) {
@@ -5142,11 +5331,13 @@ app.delete('/api/account', auth, async (req, res) => {
     client.release();
   }
 
-  await Promise.all([...new Set(fileUrls)].map(url => deleteStoredFile(url)));
+  const fileResults = await Promise.all(
+    [...new Set(fileUrls)].map(url => deleteStoredFile(url)));
+  const filesPending = fileResults.filter(deleted => !deleted).length;
   const sid = onlineUsers.get(uid);
   if (sid) io.sockets.sockets.get(sid)?.disconnect(true);
   onlineUsers.delete(uid);
-  res.json({ ok: true });
+  res.json({ ok: true, filesPending });
 });
 
 // Delete the user's content and personal profile while keeping the login
@@ -5196,7 +5387,7 @@ app.delete('/api/account/data', auth, async (req, res) => {
     await client.query('DELETE FROM audit_log WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM user_reports WHERE reporter_id=$1', [uid]);
     await client.query('UPDATE user_reports SET reviewed_by=NULL WHERE reviewed_by=$1', [uid]);
-    await client.query('DELETE FROM stored_files WHERE user_id=$1', [uid]);
+    // File rows are removed by deleteStoredFile only after physical deletion.
     await client.query(`UPDATE users SET
       name='משתמש', city=NULL, country=NULL,
       street=NULL, house_number=NULL, apartment=NULL, profile_pic_url=NULL,
@@ -5212,8 +5403,10 @@ app.delete('/api/account/data', auth, async (req, res) => {
     client.release();
   }
 
-  await Promise.all([...new Set(fileUrls)].map(url => deleteStoredFile(url)));
-  res.json({ ok: true });
+  const fileResults = await Promise.all(
+    [...new Set(fileUrls)].map(url => deleteStoredFile(url)));
+  const filesPending = fileResults.filter(deleted => !deleted).length;
+  res.json({ ok: true, filesPending });
 });
 
 app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {

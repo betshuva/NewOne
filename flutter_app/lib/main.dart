@@ -1283,6 +1283,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
   String? _gender;
+  DateTime? _birthDate;
   String? _error;
   final _googleSignIn = GoogleSignIn(
     clientId: kIsWeb ? kGoogleWebClientId : null,
@@ -1319,6 +1320,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               'acceptedTerms': _acceptedTerms,
               'ageConfirmed': _ageConfirmed,
               'gender': _gender,
+              'birthDate':
+                  _birthDate == null ? null : _formatBirthDate(_birthDate!),
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1378,6 +1381,10 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
           _error = 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה');
       return;
     }
+    if (_birthDate == null) {
+      setState(() => _error = 'יש לבחור תאריך לידה');
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -1393,6 +1400,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               'acceptedTerms': true,
               'ageConfirmed': true,
               'gender': _gender,
+              'birthDate': _formatBirthDate(_birthDate!),
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1523,6 +1531,12 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                           helperText: 'חובה בהרשמה חדשה בלבד',
                           prefixIcon: Icon(Icons.person_outline),
                         ),
+                      ),
+                      const SizedBox(height: 14),
+                      _BirthDateField(
+                        value: _birthDate,
+                        onChanged: (value) =>
+                            setState(() => _birthDate = value),
                       ),
                       const SizedBox(height: 14),
                       DropdownButtonFormField<String>(
@@ -1683,6 +1697,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
   String? _gender;
+  DateTime? _birthDate;
   String _verificationMethod = 'email';
   String? _error;
 
@@ -1733,6 +1748,8 @@ class _AuthScreenState extends State<AuthScreen> {
               'acceptedTerms': _acceptedTerms,
               'ageConfirmed': _ageConfirmed,
               'gender': _gender,
+              'birthDate':
+                  _birthDate == null ? null : _formatBirthDate(_birthDate!),
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1815,6 +1832,10 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() => _error = 'יש לבחור מגדר');
         return;
       }
+      if (_birthDate == null) {
+        setState(() => _error = 'יש לבחור תאריך לידה');
+        return;
+      }
       if (email.isEmpty || !email.contains('@')) {
         setState(() => _error = 'נא להזין כתובת אימייל תקינה');
         return;
@@ -1893,6 +1914,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 'acceptedTerms': true,
                 'ageConfirmed': true,
                 'gender': _gender,
+                'birthDate': _formatBirthDate(_birthDate!),
               }),
             )
             .timeout(const Duration(seconds: 30));
@@ -2061,6 +2083,12 @@ class _AuthScreenState extends State<AuthScreen> {
                         decoration: const InputDecoration(
                             labelText: 'שם מלא',
                             prefixIcon: Icon(Icons.person_outline)),
+                      ),
+                      const SizedBox(height: 14),
+                      _BirthDateField(
+                        value: _birthDate,
+                        onChanged: (value) =>
+                            setState(() => _birthDate = value),
                       ),
                       const SizedBox(height: 14),
                       DropdownButtonFormField<String>(
@@ -3038,6 +3066,46 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
       ),
     );
   }
+}
+
+String _formatBirthDate(DateTime value) =>
+    '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+
+class _BirthDateField extends StatelessWidget {
+  final DateTime? value;
+  final ValueChanged<DateTime> onChanged;
+
+  const _BirthDateField({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: () async {
+          final now = DateTime.now();
+          final latestEligibleDate =
+              DateTime(now.year - 13, now.month, now.day);
+          final selected = await showDatePicker(
+            context: context,
+            initialDate: value ?? DateTime(now.year - 18, now.month, now.day),
+            firstDate: DateTime(now.year - 120),
+            lastDate: latestEligibleDate,
+            helpText: 'בחירת תאריך לידה',
+          );
+          if (selected != null) onChanged(selected);
+        },
+        child: InputDecorator(
+          decoration: const InputDecoration(
+            labelText: 'תאריך לידה',
+            helperText: 'נדרש גיל 13+. בגיל 13–17 מופעלות הגנות נוער.',
+            prefixIcon: Icon(Icons.cake_outlined),
+          ),
+          child: Text(
+            value == null
+                ? 'יש לבחור תאריך'
+                : '${value!.day.toString().padLeft(2, '0')}/${value!.month.toString().padLeft(2, '0')}/${value!.year}',
+            textDirection: TextDirection.ltr,
+          ),
+        ),
+      );
 }
 
 class _BetaNotice extends StatelessWidget {
@@ -14404,7 +14472,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: const Text('ביטול')),
           TextButton(
               onPressed: () => Navigator.pop(context, 'data'),
-              child: const Text('מחיקת כל הנתונים')),
+              child: const Text('מחיקת תוכן ופרטי פרופיל')),
           TextButton(
               onPressed: () => Navigator.pop(context, 'account'),
               child: const Text('מחיקת הנתונים והחשבון',
@@ -14420,10 +14488,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (context) => AlertDialog(
         title: Text(choice == 'account'
             ? 'מחיקת הנתונים והחשבון לצמיתות'
-            : 'מחיקת כל הנתונים'),
+            : 'מחיקת תוכן ופרטי פרופיל'),
         content: Text(choice == 'account'
             ? 'כל הנתונים והחשבון יימחקו ולא יהיה ניתן להתחבר אליו שוב.'
-            : 'ההודעות, הקבצים, המיקום ופרטי הפרופיל יימחקו, אך החשבון ופרטי ההתחברות יישארו פעילים.'),
+            : 'ההודעות, הקבצים, המיקום ופרטי הפרופיל יימחקו. האימייל, הטלפון, פרטי האימות וההתחברות והסכמות השימוש יישארו כדי שהחשבון ימשיך לפעול.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -14450,15 +14518,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
               {'confirmation': deletingAccount ? 'DELETE' : 'DELETE_DATA'}));
       if (!mounted) return;
       if (response.statusCode == 200) {
+        var filesPending = 0;
+        try {
+          filesPending = jsonDecode(response.body)['filesPending'] as int? ?? 0;
+        } catch (_) {}
         if (deletingAccount) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.remove('token');
+          if (filesPending > 0 && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(
+                    'החשבון נמחק. $filesPending קבצים ממתינים להשלמת מחיקה.')));
+          }
           widget.onLogout();
         } else {
           await widget.onProfileChanged();
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('כל הנתונים נמחקו בהצלחה')));
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(filesPending > 0
+                    ? 'התוכן ופרטי הפרופיל נמחקו. $filesPending קבצים ממתינים להשלמת מחיקה.'
+                    : 'התוכן ופרטי הפרופיל נמחקו בהצלחה')));
           }
         }
       } else {
@@ -14720,7 +14799,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: TextButton.icon(
               onPressed: _deleteAccount,
               icon: const Icon(Icons.delete_forever, color: Colors.red),
-              label: const Text('מחיקת נתונים או חשבון',
+              label: const Text('מחיקת תוכן, פרופיל או חשבון',
                   style: TextStyle(color: Colors.red)),
             ),
           ),

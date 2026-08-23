@@ -33,7 +33,7 @@ jobs:
 
       - name: Build Web
         working-directory: flutter_app
-        run: flutter build web --release --base-href "/"
+        run: flutter build web --release --base-href "/betshuva-app/"
 
       - name: Sync web build to repo root
         run: |

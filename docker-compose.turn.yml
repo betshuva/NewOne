@@ -1,0 +1,27 @@
+services:
+  turn:
+    image: coturn/coturn:4.16.0-r0
+    container_name: betshuva-turn
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env.turn
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        exec turnserver --listening-ip=0.0.0.0 --listening-port=3478
+        --external-ip=178.105.240.236 --realm=betshuva.com --fingerprint
+        --use-auth-secret --static-auth-secret="$${TURN_SECRET}"
+        --min-port=49160 --max-port=49200 --stale-nonce=600
+        --user-quota=12 --total-quota=1200 --max-bps=2000000
+        --no-cli --no-multicast-peers --no-tcp-relay
+        --denied-peer-ip=0.0.0.0-0.255.255.255
+        --denied-peer-ip=10.0.0.0-10.255.255.255
+        --denied-peer-ip=100.64.0.0-100.127.255.255
+        --denied-peer-ip=127.0.0.0-127.255.255.255
+        --denied-peer-ip=169.254.0.0-169.254.255.255
+        --denied-peer-ip=172.16.0.0-172.31.255.255
+        --denied-peer-ip=192.168.0.0-192.168.255.255
+        --denied-peer-ip=224.0.0.0-255.255.255.255
+    tmpfs:
+      - /var/lib/coturn

@@ -6,3 +6,4 @@ firebase-service-account.json
 .android-sdk/
 flutter_linux.tar.xz
 uploads/
+tmp/
