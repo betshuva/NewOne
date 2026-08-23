@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>תיאור האפליקציה בתשובה ל-Google Play</title>
+  <style>
+    :root { color-scheme: light; --blue:#1769e0; --ink:#172033; --muted:#667085; --line:#dce3ee; --bg:#f5f8fc; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font-family:Arial,"Noto Sans Hebrew",sans-serif; line-height:1.65; }
+    main { width:min(860px,calc(100% - 28px)); margin:40px auto; }
+    header { margin-bottom:24px; }
+    h1 { margin:0 0 6px; font-size:clamp(26px,5vw,38px); }
+    header p { margin:0; color:var(--muted); }
+    .card { background:white; border:1px solid var(--line); border-radius:18px; padding:22px; margin:16px 0; box-shadow:0 8px 28px rgba(25,52,90,.06); }
+    .title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    h2 { margin:0; font-size:19px; }
+    .limit { color:var(--muted); font-size:13px; }
+    .text { white-space:pre-wrap; background:#f8fafc; border:1px solid var(--line); border-radius:12px; padding:16px; user-select:text; }
+    button { border:0; border-radius:10px; padding:10px 17px; color:white; background:var(--blue); font-weight:700; cursor:pointer; font-size:15px; }
+    button:hover { filter:brightness(.94); }
+    button.done { background:#16834b; }
+    footer { color:var(--muted); text-align:center; font-size:13px; margin-top:22px; }
+    @media (max-width:520px) { main{margin:22px auto}.card{padding:16px}.title-row{align-items:flex-start;flex-direction:column}button{width:100%} }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>תיאור האפליקציה בתשובה</h1>
+      <p>טקסט מוכן להעתקה אל Google Play Console</p>
+    </header>
+
+    <section class="card">
+      <div class="title-row"><h2>שם האפליקציה</h2><span class="limit">עד 30 תווים</span></div>
+      <div class="text" id="app-name">בתשובה</div>
+      <p><button type="button" data-copy="app-name">העתקת השם</button></p>
+    </section>
+
+    <section class="card">
+      <div class="title-row"><h2>תיאור קצר</h2><span class="limit">עד 80 תווים</span></div>
+      <div class="text" id="short-description">קהילה להעברת מסרים שבה כל התמונות והסרטונים עוברים סינון תוכן</div>
+      <p><button type="button" data-copy="short-description">העתקת התיאור הקצר</button></p>
+    </section>
+
+    <section class="card">
+      <div class="title-row"><h2>תיאור מלא</h2><span class="limit">עד 4,000 תווים</span></div>
+      <div class="text" id="full-description">בתשובה היא אפליקציה חברתית ישראלית להעברת מסרים ולשיתוף תוכן בסביבה קהילתית ומכבדת.
+
+באפליקציה ניתן:
+• ליצור פרופיל אישי
+• להוסיף אנשי קשר
+• לשלוח ולקבל הודעות
+• לשתף תמונות וסרטונים
+• לבצע שיחות קוליות ושיחות וידאו
+• לדווח על תוכן או משתמשים
+• לחסום משתמשים ולנהל את הגדרות הפרטיות
+
+כל התמונות והסרטונים המועלים לאפליקציה עוברים סינון תוכן אוטומטי לפני פרסומם, במטרה לצמצם הפצה של תוכן בלתי הולם. בנוסף זמינים למשתמשים כלי דיווח וחסימה.
+
+האפליקציה נמצאת בגרסת בטא וניתנת לשימוש ללא תשלום. השימוש מיועד לבני 13 ומעלה, ולמשתמשים צעירים מופעלות הגנות נוספות.
+
+השימוש באפליקציה כפוף לתנאי השימוש, למדיניות הפרטיות ולכללי הקהילה של בתשובה.</div>
+      <p><button type="button" data-copy="full-description">העתקת התיאור המלא</button></p>
+    </section>
+
+    <footer>בתשובה — גרסת בטא ללא תשלום</footer>
+  </main>
+  <script>
+    document.querySelectorAll('[data-copy]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const text = document.getElementById(button.dataset.copy).innerText;
+        await navigator.clipboard.writeText(text);
+        const original = button.textContent;
+        button.textContent = 'הועתק ✓';
+        button.classList.add('done');
+        setTimeout(() => { button.textContent = original; button.classList.remove('done'); }, 1800);
+      });
+    });
+  </script>
+</body>
+</html>
