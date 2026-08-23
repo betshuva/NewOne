@@ -1686,7 +1686,11 @@ function describeUploadDecision(row) {
     .filter(value => value !== 'video')
     .map(value => labels[value] || value);
   const type = row.file_type === 'video' ? 'הסרטון' : 'התמונה';
-  const recipient = row.recipient_name ? ` ל${row.recipient_name}` : '';
+  const recipient = row.target_name
+    ? row.context_type === 'group'
+      ? ` לקבוצה „${row.target_name}”`
+      : ` ל${row.target_name}`
+    : '';
   const detected = categories.length ? ` זוהו: ${categories.join(', ')}.` : '';
   if (row.moderation_status === 'approved') {
     const reason = details.reason ||
@@ -1705,23 +1709,29 @@ async function rejectedUploadContext(pool, userId, question) {
       !/תמונ|וידאו|סרטון|קובץ/.test(text)) return null;
   const status = asksApproved ? 'approved' : 'rejected';
   const result = await pool.query(
-    `SELECT sf.file_type,sf.original_name,sf.moderation_status,
+    `SELECT sf.file_type,sf.original_name,sf.moderation_status,sf.context_type,
             sf.moderation_details,sf.created_at,
-            u.name AS recipient_name
+            CASE WHEN sf.context_type='group' THEN g.name ELSE u.name END AS target_name
      FROM stored_files sf
-     LEFT JOIN users u ON u.id::text=sf.context_id::text
-     WHERE sf.user_id=$1 AND sf.context_type='chat'
+     LEFT JOIN users u ON sf.context_type='chat'
+       AND u.id::text=sf.context_id::text
+     LEFT JOIN groups g ON sf.context_type='group'
+       AND g.id::text=sf.context_id::text
+     WHERE sf.user_id=$1 AND sf.context_type IN ('chat','group')
        AND sf.moderation_status=$2
-     ORDER BY sf.created_at DESC LIMIT 10`, [userId, status]);
+     ORDER BY sf.created_at DESC LIMIT 50`, [userId, status]);
   if (!result.rows.length) return null;
   const normalizedQuestion = String(question).replace(/\s+/g, '').toLowerCase();
   const requestedType = /תמונ/.test(String(question)) ? 'image'
     : /וידאו|סרטון/.test(String(question)) ? 'video' : null;
   const matchingType = requestedType
     ? result.rows.filter(row => row.file_type === requestedType) : result.rows;
-  return matchingType.find(row => row.recipient_name && normalizedQuestion
-    .includes(String(row.recipient_name).replace(/\s+/g, '').toLowerCase())) ||
-    matchingType[0] || result.rows[0];
+  const asksGroup = /קבוצ/.test(text);
+  const matchingContext = asksGroup
+    ? matchingType.filter(row => row.context_type === 'group') : matchingType;
+  return matchingContext.find(row => row.target_name && normalizedQuestion
+    .includes(String(row.target_name).replace(/\s+/g, '').toLowerCase())) ||
+    matchingContext[0] || matchingType[0] || result.rows[0];
 }
 
 function localSystemAnswer(question, uploadContext = null) {
