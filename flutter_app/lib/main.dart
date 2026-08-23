@@ -6350,12 +6350,22 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             }
           }
 
+          final media = MediaQuery.of(dialogContext);
+          final availableHeight =
+              media.size.height - media.viewInsets.bottom - 48;
+          final contentHeight = math.max(
+            220.0,
+            math.min(520.0, availableHeight - 150),
+          );
           return AlertDialog(
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+            contentPadding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             title: const Text('חיפוש ושמירת חבר'),
             content: SizedBox(
-              width: 430,
+              width: math.min(520, media.size.width - 56),
+              height: contentHeight,
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 children: [
                   TextField(
                     controller: searchController,
@@ -6390,41 +6400,48 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                   if (error != null && !loading)
                     Text(error!, style: const TextStyle(color: kSubtext)),
                   if (!loading && results.isNotEmpty)
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 320),
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: results.length,
-                        itemBuilder: (_, index) {
-                          final user = results[index];
-                          final deviceOnly = user['device_only'] == true;
-                          final saved = user['saved'] == true;
-                          return ListTile(
-                            leading: UserAvatar(
-                              picUrl: user['profile_pic_url'] as String?,
-                              name: user['name'] as String? ?? '',
-                            ),
-                            title: Text((user['device_name'] ?? user['name'])
-                                .toString()),
-                            subtitle: Text(
-                              (user['phone'] as String?)?.isNotEmpty == true
-                                  ? user['phone'] as String
-                                  : user['email'] as String? ?? '',
-                            ),
-                            trailing: deviceOnly
-                                ? TextButton(
-                                    onPressed: () => invite(user),
-                                    child: const Text('הזמן'),
-                                  )
-                                : saved
-                                    ? const Icon(Icons.check_circle,
-                                        color: Colors.green)
-                                    : TextButton(
-                                        onPressed: () => save(user),
-                                        child: const Text('שמור'),
-                                      ),
-                          );
-                        },
+                    Expanded(
+                      child: Scrollbar(
+                        thumbVisibility: true,
+                        child: ListView.builder(
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
+                          padding: const EdgeInsets.only(bottom: 8),
+                          itemCount: results.length,
+                          itemBuilder: (_, index) {
+                            final user = results[index];
+                            final deviceOnly = user['device_only'] == true;
+                            final saved = user['saved'] == true;
+                            return ListTile(
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
+                              horizontalTitleGap: 10,
+                              leading: UserAvatar(
+                                picUrl: user['profile_pic_url'] as String?,
+                                name: user['name'] as String? ?? '',
+                              ),
+                              title: Text((user['device_name'] ?? user['name'])
+                                  .toString()),
+                              subtitle: Text(
+                                (user['phone'] as String?)?.isNotEmpty == true
+                                    ? user['phone'] as String
+                                    : user['email'] as String? ?? '',
+                              ),
+                              trailing: deviceOnly
+                                  ? TextButton(
+                                      onPressed: () => invite(user),
+                                      child: const Text('הזמן'),
+                                    )
+                                  : saved
+                                      ? const Icon(Icons.check_circle,
+                                          color: Colors.green)
+                                      : TextButton(
+                                          onPressed: () => save(user),
+                                          child: const Text('שמור'),
+                                        ),
+                            );
+                          },
+                        ),
                       ),
                     ),
                 ],
