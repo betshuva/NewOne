@@ -445,8 +445,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.82';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.82.apk';
+const kVersion = '1.2.83';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.83.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -4339,7 +4339,7 @@ class _MainShellContentState extends State<_MainShellContent> {
                     padding: const EdgeInsets.symmetric(horizontal: 5),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: const Color(0xFF25D366),
+                      color: kPrimaryMid,
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(color: Colors.white, width: 1.5),
                     ),
@@ -7731,7 +7731,7 @@ class _UnreadBadge extends StatelessWidget {
         height: 24,
         child: Container(
           decoration: const BoxDecoration(
-            color: Color(0xFF25D366),
+            color: kPrimaryMid,
             shape: BoxShape.circle,
           ),
           alignment: Alignment.center,
@@ -10769,22 +10769,26 @@ class _MessageBubble extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (message['replyTo'] != null)
-              Container(
-                margin: const EdgeInsets.only(bottom: 6),
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: replyBg,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border(
-                    right: BorderSide(color: replyBorder, width: 3),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: replyBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border(
+                      right: BorderSide(color: replyBorder, width: 3),
+                    ),
                   ),
-                ),
-                child: Text(
-                  (message['replyTo'] as Map)['text'] as String,
-                  style: TextStyle(fontSize: 12, color: timeColor),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textDirection: TextDirection.rtl,
+                  child: Text(
+                    (message['replyTo'] as Map)['text'] as String,
+                    style: TextStyle(fontSize: 12, color: timeColor),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textDirection: TextDirection.rtl,
+                    textAlign: TextAlign.right,
+                  ),
                 ),
               ),
 
@@ -10882,6 +10886,7 @@ class _MessageBubble extends StatelessWidget {
                       style: const TextStyle(
                           fontSize: 14, height: 1.45, color: textColor),
                       textDirection: TextDirection.rtl,
+                      textAlign: TextAlign.right,
                     ),
                   ],
                 ],
@@ -10933,6 +10938,7 @@ class _MessageBubble extends StatelessWidget {
                     height: 1.45,
                     color: textColor),
                 textDirection: TextDirection.rtl,
+                textAlign: TextAlign.right,
               ),
 
             // כרטיסיית קישור למודעה
