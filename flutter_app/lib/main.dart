@@ -4315,6 +4315,49 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   @override
   Widget build(BuildContext context) {
+    final totalUnreadMessages = _unreadCounts.values
+        .where((count) => count > 0)
+        .fold<int>(0, (total, count) => total + count);
+    final totalUnreadGroups = _groupUnreadCounts.values
+        .where((count) => count > 0)
+        .fold<int>(0, (total, count) => total + count);
+
+    Widget navigationIcon(IconData icon, int unreadCount) => Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Icon(icon),
+            if (unreadCount > 0)
+              Positioned.directional(
+                textDirection: Directionality.of(context),
+                top: -9,
+                end: -13,
+                child: Semantics(
+                  label: '$unreadCount הודעות שלא נקראו',
+                  child: Container(
+                    constraints:
+                        const BoxConstraints(minWidth: 20, minHeight: 20),
+                    padding: const EdgeInsets.symmetric(horizontal: 5),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF25D366),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white, width: 1.5),
+                    ),
+                    child: Text(
+                      unreadCount > 99 ? '99+' : '$unreadCount',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        height: 1,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+
     final conversations = ConversationsScreen(
       users: _users,
       token: widget.token,
@@ -4459,23 +4502,24 @@ class _MainShellContentState extends State<_MainShellContent> {
         backgroundColor: Colors.white,
         elevation: 8,
         type: BottomNavigationBarType.fixed,
-        items: const [
+        items: [
           BottomNavigationBarItem(
-            icon: Icon(Icons.chat_bubble_outline),
-            activeIcon: Icon(Icons.chat_bubble),
+            icon:
+                navigationIcon(Icons.chat_bubble_outline, totalUnreadMessages),
+            activeIcon: navigationIcon(Icons.chat_bubble, totalUnreadMessages),
             label: 'שיחות',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.group_outlined),
-            activeIcon: Icon(Icons.group),
+            icon: navigationIcon(Icons.group_outlined, totalUnreadGroups),
+            activeIcon: navigationIcon(Icons.group, totalUnreadGroups),
             label: 'קבוצות',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.storefront_outlined),
             activeIcon: Icon(Icons.storefront),
             label: 'מודעות',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.settings_outlined),
             activeIcon: Icon(Icons.settings),
             label: 'הגדרות',
