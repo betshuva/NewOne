@@ -462,8 +462,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.93';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.93.apk';
+const kVersion = '1.2.94';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.94.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -1894,6 +1894,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                             style: TextStyle(fontSize: 13)),
                       ),
                     ] else ...[
+                      const _SmsCodeWaitingAnimation(),
                       TextField(
                         controller: _otpCtrl,
                         autofillHints: const [AutofillHints.oneTimeCode],
@@ -2026,61 +2027,72 @@ class _SmsCodeWaitingAnimationState extends State<_SmsCodeWaitingAnimation>
         border: Border.all(color: const Color(0xFFB9DCF4)),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Row(children: [
-        SizedBox(
-          width: 66,
-          height: 66,
-          child: AnimatedBuilder(
-            animation: _controller,
-            builder: (context, child) {
-              final value = Curves.easeInOut.transform(_controller.value);
-              return Stack(alignment: Alignment.center, children: [
-                Container(
-                  width: 52 + (value * 12),
-                  height: 52 + (value * 12),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: kPrimary.withValues(alpha: .08 + value * .08),
-                  ),
-                ),
-                Transform.scale(scale: .92 + value * .08, child: child),
-                PositionedDirectional(
-                  end: 0,
-                  bottom: 2 + value * 3,
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: const BoxDecoration(
-                      color: kPrimary,
+      child: Column(children: [
+        Row(children: [
+          SizedBox(
+            width: 66,
+            height: 66,
+            child: AnimatedBuilder(
+              animation: _controller,
+              builder: (context, child) {
+                final value = Curves.easeInOut.transform(_controller.value);
+                return Stack(alignment: Alignment.center, children: [
+                  Container(
+                    width: 52 + (value * 12),
+                    height: 52 + (value * 12),
+                    decoration: BoxDecoration(
                       shape: BoxShape.circle,
+                      color: kPrimary.withValues(alpha: .08 + value * .08),
                     ),
-                    child: const Icon(Icons.sms_rounded,
-                        color: Colors.white, size: 14),
                   ),
-                ),
-              ]);
-            },
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(13),
-              child: Image.asset('icon_source.png', width: 44, height: 44),
+                  Transform.scale(scale: .92 + value * .08, child: child),
+                  PositionedDirectional(
+                    end: value * 5,
+                    bottom: 2 + value * 5,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                        color: kPrimary,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.sms_rounded,
+                          color: Colors.white, size: 14),
+                    ),
+                  ),
+                ]);
+              },
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(13),
+                child: Image.asset('icon_source.png', width: 44, height: 44),
+              ),
             ),
           ),
-        ),
-        const SizedBox(width: 12),
-        const Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('ממתינים לקוד ה־SMS',
-                  style: TextStyle(
-                      color: kPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w800)),
-              SizedBox(height: 4),
-              Text(
-                  'הקוד נשלח ועשוי להגיע בתוך מספר שניות. השאר במסך זה והזן אותו כשיתקבל.',
-                  style:
-                      TextStyle(color: kSubtext, fontSize: 12.5, height: 1.4)),
-            ],
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('ממתינים לקוד ה־SMS…',
+                    style: TextStyle(
+                        color: kPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800)),
+                SizedBox(height: 4),
+                Text(
+                    'המסך פעיל. הקוד עשוי להגיע בתוך מספר שניות—יש להזין אותו מיד כשיתקבל.',
+                    style: TextStyle(
+                        color: kSubtext, fontSize: 12.5, height: 1.4)),
+              ],
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: const LinearProgressIndicator(
+            minHeight: 4,
+            color: kPrimary,
+            backgroundColor: Color(0xFFD8EBF8),
           ),
         ),
       ]),
@@ -3813,6 +3825,7 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
                           ),
                         ),
                       ] else ...[
+                        const _SmsCodeWaitingAnimation(),
                         Text('נשלח קוד SMS ל-${_phoneCtrl.text}',
                             style:
                                 const TextStyle(color: kSubtext, fontSize: 13)),
@@ -4590,6 +4603,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
                     ]),
                   ),
                   const SizedBox(height: 28),
+                  const _SmsCodeWaitingAnimation(),
                   const Text('אימות טלפון',
                       style: TextStyle(
                           fontSize: 16,
@@ -5258,6 +5272,42 @@ class _MainShellContentState extends State<_MainShellContent> {
     });
   }
 
+  Future<void> _openMarketplaceConversation(
+      Map<String, dynamic> recipient) async {
+    await _loadUsers();
+    if (!mounted) return;
+    final recipientId = recipient['id']?.toString();
+    final refreshed = _users.where(
+      (user) => user['id']?.toString() == recipientId,
+    );
+    setState(() {
+      _idx = 0;
+      _desktopRecipient = refreshed.isNotEmpty
+          ? refreshed.first
+          : Map<String, dynamic>.from(recipient);
+      _desktopGroup = null;
+      _openGroupMembersOnSelect = false;
+    });
+    if (MediaQuery.sizeOf(context).width < 900) {
+      final selectedRecipient = _desktopRecipient!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            token: widget.token,
+            me: _me,
+            recipient: selectedRecipient,
+            socket: _socket,
+            onVoiceCall: () => _voiceCalls?.startCall(
+              selectedRecipient['id'] as String,
+              selectedRecipient['name']?.toString() ?? 'משתמש',
+            ),
+          ),
+        ));
+      });
+    }
+  }
+
   void _handleNotificationOpen(RemoteMessage? msg) {
     if (msg == null || !mounted) return;
     final fromUserId = msg.data['fromUserId'] as String?;
@@ -5560,7 +5610,12 @@ class _MainShellContentState extends State<_MainShellContent> {
     final screens = [
       conversations,
       groups,
-      ListingsScreen(token: widget.token, me: _me, socket: _socket),
+      ListingsScreen(
+        token: widget.token,
+        me: _me,
+        socket: _socket,
+        onConversationStarted: _openMarketplaceConversation,
+      ),
       SettingsScreen(
           me: _me,
           token: widget.token,
@@ -5729,6 +5784,68 @@ class _DesktopGroupWelcome extends StatelessWidget {
 }
 
 // ── Listings Screen ───────────────────────────────────────────────
+class _BrandAppBarTitle extends StatelessWidget {
+  final Map<String, dynamic>? me;
+
+  const _BrandAppBarTitle({required this.me});
+
+  @override
+  Widget build(BuildContext context) {
+    final name = me?['name'] as String? ?? '';
+    final picUrl = me?['profile_pic_url'] as String?;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'בסיעתא דשמיא  •  ${fullHebrewDate(DateTime.now())}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.white70, fontSize: 10),
+        ),
+        const SizedBox(height: 3),
+        Row(
+          children: [
+            if (picUrl != null)
+              UserAvatar(radius: 17, picUrl: picUrl, name: name)
+            else
+              _magenDavid(size: 34),
+            const SizedBox(width: 9),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('בתשובה',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 19,
+                            height: 1.05,
+                            fontWeight: FontWeight.w700)),
+                    SizedBox(width: 7),
+                    Text('תוכן יהודי נקי',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            height: 1.05,
+                            fontWeight: FontWeight.w700)),
+                  ],
+                ),
+                if (name.isNotEmpty)
+                  Text(name,
+                      style: const TextStyle(
+                          color: Colors.white70, fontSize: 11, height: 1.1)),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 const _kCategories = [
   'הכל',
   'רכב',
@@ -5741,48 +5858,221 @@ const _kCategories = [
   'אחר'
 ];
 
+const _kIsraeliLocations = [
+  'כל הארץ',
+  'אזור המרכז',
+  'אזור ירושלים',
+  'אזור הצפון',
+  'אזור הדרום',
+  'אזור השרון',
+  'ירושלים',
+  'תל אביב-יפו',
+  'חיפה',
+  'ראשון לציון',
+  'פתח תקווה',
+  'אשדוד',
+  'נתניה',
+  'באר שבע',
+  'בני ברק',
+  'חולון',
+  'רמת גן',
+  'אשקלון',
+  'רחובות',
+  'בית שמש',
+  'כפר סבא',
+  'הרצליה',
+  'חדרה',
+  'מודיעין',
+  'לוד',
+  'רמלה',
+  'רעננה',
+  'גבעתיים',
+  'הוד השרון',
+  'קריית גת',
+  'נהריה',
+  'עכו',
+  'טבריה',
+  'צפת',
+  'עפולה',
+  'נצרת',
+  'כרמיאל',
+  'קריית שמונה',
+  'אילת',
+  'יבנה',
+  'נס ציונה',
+  'אריאל',
+  'מעלה אדומים',
+  'קריית ארבע',
+];
+
+String _listingPublishedAt(dynamic value, {bool compact = false}) {
+  final parsed = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+  if (parsed == null) return '';
+  final day = parsed.day.toString().padLeft(2, '0');
+  final month = parsed.month.toString().padLeft(2, '0');
+  if (compact) return '$day/$month/${parsed.year.toString().substring(2)}';
+  final hour = parsed.hour.toString().padLeft(2, '0');
+  final minute = parsed.minute.toString().padLeft(2, '0');
+  return 'פורסם ב־$day/$month/${parsed.year} בשעה $hour:$minute';
+}
+
+class _LocationAutocompleteField extends StatefulWidget {
+  final TextEditingController controller;
+  final String label;
+  final String? hint;
+  const _LocationAutocompleteField({
+    required this.controller,
+    this.label = 'עיר או אזור',
+    this.hint,
+  });
+
+  @override
+  State<_LocationAutocompleteField> createState() =>
+      _LocationAutocompleteFieldState();
+}
+
+class _LocationAutocompleteFieldState
+    extends State<_LocationAutocompleteField> {
+  final _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RawAutocomplete<String>(
+        textEditingController: widget.controller,
+        focusNode: _focusNode,
+        displayStringForOption: (option) => option,
+        optionsBuilder: (value) {
+          final query = value.text.trim();
+          if (query.isEmpty) return _kIsraeliLocations.take(10);
+          return _kIsraeliLocations
+              .where((location) => location.contains(query));
+        },
+        onSelected: (option) => widget.controller.text = option,
+        fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
+            TextField(
+          controller: controller,
+          focusNode: focusNode,
+          textDirection: TextDirection.rtl,
+          onSubmitted: (_) => onSubmitted(),
+          decoration: InputDecoration(
+            labelText: widget.label,
+            hintText: widget.hint,
+            prefixIcon: const Icon(Icons.location_city_outlined),
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        optionsViewBuilder: (context, onSelected, options) => Align(
+          alignment: Alignment.topRight,
+          child: Material(
+            elevation: 8,
+            borderRadius: BorderRadius.circular(10),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260, maxWidth: 420),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: options.length,
+                itemBuilder: (_, index) {
+                  final option = options.elementAt(index);
+                  return ListTile(
+                    dense: true,
+                    leading: Icon(
+                      option.startsWith('אזור') || option == 'כל הארץ'
+                          ? Icons.map_outlined
+                          : Icons.location_on_outlined,
+                      color: kPrimary,
+                    ),
+                    title: Text(option, textDirection: TextDirection.rtl),
+                    onTap: () => onSelected(option),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
 class ListingsScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
   final IO.Socket? socket;
+  final Future<void> Function(Map<String, dynamic> recipient)?
+      onConversationStarted;
   const ListingsScreen(
-      {super.key, required this.token, required this.me, required this.socket});
+      {super.key,
+      required this.token,
+      required this.me,
+      required this.socket,
+      this.onConversationStarted});
   @override
   State<ListingsScreen> createState() => _ListingsScreenState();
 }
 
-class _ListingsScreenState extends State<ListingsScreen>
-    with SingleTickerProviderStateMixin {
-  late TabController _tab;
+class _ListingsScreenState extends State<ListingsScreen> {
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
   String _typeFilter = 'all'; // all / free / sale
   String _catFilter = 'הכל';
   String _cityFilter = '';
+  String _queryFilter = '';
+  final _searchCtrl = TextEditingController();
+  Timer? _searchDebounce;
+  double? _minPrice;
+  double? _maxPrice;
+  String _sortFilter = 'newest';
   double _radius = 0; // 0 = no radius filter
   Map<String, dynamic>? _selectedItem;
+  bool _showPostForm = false;
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 3, vsync: this);
-    _tab.addListener(() {
-      if (!_tab.indexIsChanging) {
-        _typeFilter = _tab.index == 0
-            ? 'all'
-            : _tab.index == 1
-                ? 'free'
-                : 'sale';
-        _load();
-      }
-    });
     _load();
   }
 
   @override
   void dispose() {
-    _tab.dispose();
+    _searchDebounce?.cancel();
+    _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged(String value) {
+    setState(() {});
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
+      _queryFilter = value.trim();
+      _load();
+    });
+  }
+
+  void _setQuickType(String type) {
+    if (_typeFilter == type) return;
+    setState(() => _typeFilter = type);
+    _load();
+  }
+
+  void _clearAllFilters() {
+    _searchDebounce?.cancel();
+    _searchCtrl.clear();
+    setState(() {
+      _typeFilter = 'all';
+      _catFilter = 'הכל';
+      _cityFilter = '';
+      _queryFilter = '';
+      _minPrice = null;
+      _maxPrice = null;
+      _sortFilter = 'newest';
+      _radius = 0;
+    });
+    _load();
   }
 
   Future<void> _load() async {
@@ -5793,6 +6083,10 @@ class _ListingsScreenState extends State<ListingsScreen>
       if (_typeFilter != 'all') params['type'] = _typeFilter;
       if (_catFilter != 'הכל') params['category'] = _catFilter;
       if (_cityFilter.isNotEmpty) params['city'] = _cityFilter;
+      if (_queryFilter.isNotEmpty) params['q'] = _queryFilter;
+      if (_minPrice != null) params['minPrice'] = _minPrice.toString();
+      if (_maxPrice != null) params['maxPrice'] = _maxPrice.toString();
+      if (_sortFilter != 'newest') params['sort'] = _sortFilter;
       if (_radius > 0) params['radius'] = _radius.toStringAsFixed(0);
       final uri = Uri.parse('$kApi/listings').replace(queryParameters: params);
       final res = await http
@@ -5816,6 +6110,13 @@ class _ListingsScreenState extends State<ListingsScreen>
   }
 
   void _openPost() async {
+    if (MediaQuery.sizeOf(context).width >= 900) {
+      setState(() {
+        _selectedItem = null;
+        _showPostForm = true;
+      });
+      return;
+    }
     final ok = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
@@ -5833,7 +6134,10 @@ class _ListingsScreenState extends State<ListingsScreen>
 
   Future<void> _openDetail(Map<String, dynamic> item) async {
     if (MediaQuery.sizeOf(context).width >= 900) {
-      setState(() => _selectedItem = item);
+      setState(() {
+        _selectedItem = item;
+        _showPostForm = false;
+      });
       return;
     }
     final updated = await Navigator.push<bool>(
@@ -5843,7 +6147,8 @@ class _ListingsScreenState extends State<ListingsScreen>
               item: item,
               token: widget.token,
               me: widget.me,
-              socket: widget.socket),
+              socket: widget.socket,
+              onConversationStarted: widget.onConversationStarted),
         ));
     if (updated == true) await _load();
   }
@@ -5855,35 +6160,7 @@ class _ListingsScreenState extends State<ListingsScreen>
       appBar: AppBar(
         backgroundColor: kPrimary,
         toolbarHeight: 72,
-        title: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'בסיעתא דשמיא  •  ${fullHebrewDate(DateTime.now())}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white70, fontSize: 10),
-            ),
-            const SizedBox(height: 4),
-            const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('לוח מודעות',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold)),
-                SizedBox(width: 7),
-                Text('תוכן יהודי נקי',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700)),
-              ],
-            ),
-          ],
-        ),
+        title: _BrandAppBarTitle(me: widget.me),
         actions: [
           IconButton(
             icon: const Icon(Icons.format_list_bulleted, color: Colors.white),
@@ -5894,81 +6171,73 @@ class _ListingsScreenState extends State<ListingsScreen>
                   builder: (_) => MyListingsScreen(token: widget.token),
                 )),
           ),
-          IconButton(
-              icon: const Icon(Icons.add, color: Colors.white),
-              onPressed: _openPost),
+          TextButton.icon(
+            onPressed: _openPost,
+            icon: const Icon(Icons.add_business_outlined,
+                color: Colors.white, size: 20),
+            label: const Text('פרסום מתקדם',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
         ],
-        bottom: TabBar(
-          controller: _tab,
-          labelColor: Colors.white,
-          unselectedLabelColor: Colors.white70,
-          indicatorColor: Colors.white,
-          tabs: const [
-            Tab(text: 'הכל'),
-            Tab(icon: Icon(Icons.card_giftcard_rounded), text: 'למסירה'),
-            Tab(icon: Icon(Icons.sell_rounded), text: 'למכירה')
-          ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(112),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+            child: Column(children: [
+              TextField(
+                controller: _searchCtrl,
+                onChanged: _onSearchChanged,
+                textDirection: TextDirection.rtl,
+                decoration: InputDecoration(
+                  hintText: 'חיפוש במודעות... ',
+                  prefixIcon: const Icon(Icons.search, size: 21),
+                  suffixIcon: _searchCtrl.text.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'נקה חיפוש',
+                          icon: const Icon(Icons.close, size: 19),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            setState(() => _queryFilter = '');
+                            _load();
+                          },
+                        ),
+                  filled: true,
+                  fillColor: Colors.white,
+                  isDense: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 7),
+              Row(children: [
+                _quickFilterChip('all', 'הכול'),
+                const SizedBox(width: 5),
+                _quickFilterChip('free', 'למסירה'),
+                const SizedBox(width: 5),
+                _quickFilterChip('sale', 'למכירה'),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: _showFilterSheet,
+                  icon: Icon(Icons.tune,
+                      size: 18,
+                      color: _hasAdvancedFilters
+                          ? const Color(0xFFFFD180)
+                          : Colors.white),
+                  label: Text(
+                    _hasAdvancedFilters ? 'סינון פעיל' : 'סינון',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+              ]),
+            ]),
+          ),
         ),
       ),
       body: Column(children: [
-        // ── Filters ─────────────────────────────────────────────────
-        Container(
-          color: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(children: [
-            Expanded(
-              child: SizedBox(
-                height: 34,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _kCategories.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 6),
-                  itemBuilder: (_, i) {
-                    final c = _kCategories[i];
-                    final sel = c == _catFilter;
-                    return GestureDetector(
-                      onTap: () {
-                        setState(() => _catFilter = c);
-                        _load();
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: sel ? kPrimary : const Color(0xFFE8F4FD),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(c,
-                            style: TextStyle(
-                                fontSize: 13,
-                                color: sel ? Colors.white : kPrimary,
-                                fontWeight: FontWeight.w600)),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            GestureDetector(
-              onTap: _showFilterSheet,
-              child: Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: _cityFilter.isNotEmpty || _radius > 0
-                      ? kPrimary
-                      : const Color(0xFFE8F4FD),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(Icons.tune,
-                    size: 20,
-                    color: _cityFilter.isNotEmpty || _radius > 0
-                        ? Colors.white
-                        : kPrimary),
-              ),
-            ),
-          ]),
-        ),
         // ── List ────────────────────────────────────────────────────
         Expanded(
           child: _loading
@@ -5979,12 +6248,22 @@ class _ListingsScreenState extends State<ListingsScreen>
                       Icon(Icons.storefront_outlined,
                           size: 64, color: kSubtext),
                       const SizedBox(height: 12),
-                      Text('אין מודעות כרגע',
+                      Text(
+                          _hasAdvancedFilters
+                              ? 'לא נמצאו מודעות לפי הסינון'
+                              : 'אין מודעות כרגע',
                           style: TextStyle(color: kSubtext, fontSize: 16)),
                       const SizedBox(height: 8),
-                      TextButton(
-                          onPressed: _openPost,
-                          child: const Text('פרסם ראשון!')),
+                      if (_hasAdvancedFilters)
+                        ElevatedButton.icon(
+                          onPressed: _clearAllFilters,
+                          icon: const Icon(Icons.filter_alt_off_outlined),
+                          label: const Text('נקה את כל המסננים'),
+                        )
+                      else
+                        TextButton(
+                            onPressed: _openPost,
+                            child: const Text('פרסם ראשון!')),
                     ]))
                   : RefreshIndicator(
                       onRefresh: _load,
@@ -6003,7 +6282,7 @@ class _ListingsScreenState extends State<ListingsScreen>
         onPressed: _openPost,
         backgroundColor: kPrimary,
         icon: const Icon(Icons.add, color: Colors.white),
-        label: const Text('פרסם מודעה', style: TextStyle(color: Colors.white)),
+        label: const Text('פרסום מתקדם', style: TextStyle(color: Colors.white)),
       ),
     );
     if (MediaQuery.sizeOf(context).width < 900) return listPane;
@@ -6011,24 +6290,83 @@ class _ListingsScreenState extends State<ListingsScreen>
       SizedBox(width: 410, child: listPane),
       const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFD9DEE1)),
       Expanded(
-        child: _selectedItem == null
-            ? const _DesktopListingWelcome()
-            : ListingDetailScreen(
-                key: ValueKey(_selectedItem!['id']),
-                item: _selectedItem!,
+        child: _showPostForm
+            ? PostListingScreen(
                 token: widget.token,
                 me: widget.me,
-                socket: widget.socket,
                 embedded: true,
-                onClose: () => setState(() => _selectedItem = null),
-                onUpdated: _load,
-              ),
+                onClose: () => setState(() => _showPostForm = false),
+                onPublished: () async {
+                  setState(() => _showPostForm = false);
+                  await _load();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('המודעה פורסמה בהצלחה')));
+                  }
+                },
+              )
+            : _selectedItem == null
+                ? const _DesktopListingWelcome()
+                : ListingDetailScreen(
+                    key: ValueKey(_selectedItem!['id']),
+                    item: _selectedItem!,
+                    token: widget.token,
+                    me: widget.me,
+                    socket: widget.socket,
+                    embedded: true,
+                    onClose: () => setState(() => _selectedItem = null),
+                    onUpdated: _load,
+                    onConversationStarted: widget.onConversationStarted,
+                  ),
       ),
     ]);
   }
 
+  bool get _hasAdvancedFilters =>
+      _typeFilter != 'all' ||
+      _catFilter != 'הכל' ||
+      _cityFilter.isNotEmpty ||
+      _queryFilter.isNotEmpty ||
+      _minPrice != null ||
+      _maxPrice != null ||
+      _radius > 0 ||
+      _sortFilter != 'newest';
+
+  Widget _quickFilterChip(String value, String label) {
+    final selected = _typeFilter == value;
+    return Material(
+      color: selected ? Colors.white : const Color(0xFF17679D),
+      borderRadius: BorderRadius.circular(9),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(9),
+        onTap: () => _setQuickType(value),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.55)),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                color: selected ? kPrimary : Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              )),
+        ),
+      ),
+    );
+  }
+
   void _showFilterSheet() {
     final cityCtrl = TextEditingController(text: _cityFilter);
+    final queryCtrl = TextEditingController(text: _queryFilter);
+    final minPriceCtrl = TextEditingController(
+        text: _minPrice == null ? '' : _minPrice!.toStringAsFixed(0));
+    final maxPriceCtrl = TextEditingController(
+        text: _maxPrice == null ? '' : _maxPrice!.toStringAsFixed(0));
+    String tmpType = _typeFilter;
+    String tmpCategory = _catFilter;
+    String tmpSort = _sortFilter;
     double tmpRadius = _radius;
     showModalBottomSheet(
         context: context,
@@ -6041,65 +6379,162 @@ class _ListingsScreenState extends State<ListingsScreen>
                         left: 20,
                         right: 20,
                         top: 20),
-                    child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('סינון',
-                              style: TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 16),
-                          TextField(
-                            controller: cityCtrl,
-                            textDirection: TextDirection.rtl,
-                            decoration: const InputDecoration(
-                                labelText: 'עיר',
-                                prefixIcon: Icon(Icons.location_city)),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                              'רדיוס: ${tmpRadius == 0 ? "ללא" : "${tmpRadius.toInt()} ק״מ"}'),
-                          Slider(
-                            value: tmpRadius,
-                            min: 0,
-                            max: 100,
-                            divisions: 10,
-                            activeColor: kPrimary,
-                            onChanged: (v) => setS(() => tmpRadius = v),
-                          ),
-                          const SizedBox(height: 12),
-                          Row(children: [
-                            Expanded(
-                                child: OutlinedButton(
-                              onPressed: () {
-                                setState(() {
-                                  _cityFilter = '';
-                                  _radius = 0;
-                                });
-                                Navigator.pop(ctx);
-                                _load();
-                              },
-                              child: const Text('נקה'),
-                            )),
-                            const SizedBox(width: 12),
-                            Expanded(
-                                child: ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                  backgroundColor: kPrimary),
-                              onPressed: () {
-                                setState(() {
-                                  _cityFilter = cityCtrl.text.trim();
-                                  _radius = tmpRadius;
-                                });
-                                Navigator.pop(ctx);
-                                _load();
-                              },
-                              child: const Text('החל',
-                                  style: TextStyle(color: Colors.white)),
-                            )),
+                    child: SingleChildScrollView(
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('חיפוש מתקדם',
+                                style: TextStyle(
+                                    fontSize: 18, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 16),
+                            TextField(
+                              controller: queryCtrl,
+                              textDirection: TextDirection.rtl,
+                              decoration: const InputDecoration(
+                                  labelText: 'מה מחפשים?',
+                                  hintText: 'שם או תיאור המוצר',
+                                  prefixIcon: Icon(Icons.search)),
+                            ),
+                            const SizedBox(height: 12),
+                            DropdownButtonFormField<String>(
+                              value: tmpType,
+                              decoration: const InputDecoration(
+                                  labelText: 'סוג מודעה',
+                                  prefixIcon: Icon(Icons.sell_outlined)),
+                              items: const [
+                                DropdownMenuItem(
+                                    value: 'all', child: Text('הכול')),
+                                DropdownMenuItem(
+                                    value: 'free',
+                                    child: Text('למסירה ללא תשלום')),
+                                DropdownMenuItem(
+                                    value: 'sale', child: Text('למכירה')),
+                              ],
+                              onChanged: (value) =>
+                                  setS(() => tmpType = value ?? 'all'),
+                            ),
+                            const SizedBox(height: 12),
+                            DropdownButtonFormField<String>(
+                              value: tmpCategory,
+                              decoration: const InputDecoration(
+                                  labelText: 'קטגוריה',
+                                  prefixIcon: Icon(Icons.category_outlined)),
+                              items: _kCategories
+                                  .map((category) => DropdownMenuItem(
+                                      value: category, child: Text(category)))
+                                  .toList(),
+                              onChanged: (value) =>
+                                  setS(() => tmpCategory = value ?? 'הכל'),
+                            ),
+                            const SizedBox(height: 12),
+                            Row(children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: minPriceCtrl,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                      labelText: 'מחיר מינימום',
+                                      prefixText: '₪ '),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: TextField(
+                                  controller: maxPriceCtrl,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                      labelText: 'מחיר מקסימום',
+                                      prefixText: '₪ '),
+                                ),
+                              ),
+                            ]),
+                            const SizedBox(height: 12),
+                            _LocationAutocompleteField(
+                              controller: cityCtrl,
+                              label: 'עיר או אזור',
+                              hint: 'התחל להקליד ובחר מהרשימה',
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                                'רדיוס: ${tmpRadius == 0 ? "ללא" : "${tmpRadius.toInt()} ק״מ"}'),
+                            Slider(
+                              value: tmpRadius,
+                              min: 0,
+                              max: 100,
+                              divisions: 10,
+                              activeColor: kPrimary,
+                              onChanged: (v) => setS(() => tmpRadius = v),
+                            ),
+                            const SizedBox(height: 8),
+                            DropdownButtonFormField<String>(
+                              value: tmpSort,
+                              decoration: const InputDecoration(
+                                  labelText: 'מיון תוצאות',
+                                  prefixIcon: Icon(Icons.sort)),
+                              items: const [
+                                DropdownMenuItem(
+                                    value: 'newest',
+                                    child: Text('החדשות ביותר')),
+                                DropdownMenuItem(
+                                    value: 'price_asc',
+                                    child: Text('מחיר: מהנמוך לגבוה')),
+                                DropdownMenuItem(
+                                    value: 'price_desc',
+                                    child: Text('מחיר: מהגבוה לנמוך')),
+                              ],
+                              onChanged: (value) =>
+                                  setS(() => tmpSort = value ?? 'newest'),
+                            ),
+                            const SizedBox(height: 12),
+                            Row(children: [
+                              Expanded(
+                                  child: OutlinedButton(
+                                onPressed: () {
+                                  setState(() {
+                                    _cityFilter = '';
+                                    _queryFilter = '';
+                                    _searchCtrl.clear();
+                                    _typeFilter = 'all';
+                                    _catFilter = 'הכל';
+                                    _minPrice = null;
+                                    _maxPrice = null;
+                                    _sortFilter = 'newest';
+                                    _radius = 0;
+                                  });
+                                  Navigator.pop(ctx);
+                                  _load();
+                                },
+                                child: const Text('נקה'),
+                              )),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                  child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                    backgroundColor: kPrimary),
+                                onPressed: () {
+                                  setState(() {
+                                    _cityFilter = cityCtrl.text.trim();
+                                    _queryFilter = queryCtrl.text.trim();
+                                    _searchCtrl.text = _queryFilter;
+                                    _typeFilter = tmpType;
+                                    _catFilter = tmpCategory;
+                                    _minPrice = double.tryParse(
+                                        minPriceCtrl.text.trim());
+                                    _maxPrice = double.tryParse(
+                                        maxPriceCtrl.text.trim());
+                                    _sortFilter = tmpSort;
+                                    _radius = tmpRadius;
+                                  });
+                                  Navigator.pop(ctx);
+                                  _load();
+                                },
+                                child: const Text('החל',
+                                    style: TextStyle(color: Colors.white)),
+                              )),
+                            ]),
+                            const SizedBox(height: 16),
                           ]),
-                          const SizedBox(height: 16),
-                        ]),
+                    ),
                   ));
         });
   }
@@ -6195,6 +6630,19 @@ class _ListingCard extends StatelessWidget {
                       if (item['category'] != null)
                         Text(item['category'],
                             style: TextStyle(fontSize: 12, color: kSubtext)),
+                      const Spacer(),
+                      if (_listingPublishedAt(item['created_at'], compact: true)
+                          .isNotEmpty)
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.calendar_today_outlined,
+                              size: 12, color: kSubtext),
+                          const SizedBox(width: 3),
+                          Text(
+                            _listingPublishedAt(item['created_at'],
+                                compact: true),
+                            style: TextStyle(fontSize: 11, color: kSubtext),
+                          ),
+                        ]),
                     ]),
                     const SizedBox(height: 6),
                     Text(item['title'] ?? '',
@@ -6486,7 +6934,17 @@ class _MyListingCard extends StatelessWidget {
 class PostListingScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
-  const PostListingScreen({super.key, required this.token, required this.me});
+  final bool embedded;
+  final VoidCallback? onClose;
+  final Future<void> Function()? onPublished;
+  const PostListingScreen({
+    super.key,
+    required this.token,
+    required this.me,
+    this.embedded = false,
+    this.onClose,
+    this.onPublished,
+  });
   @override
   State<PostListingScreen> createState() => _PostListingScreenState();
 }
@@ -6495,10 +6953,16 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final _titleCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
+  final _quantityCtrl = TextEditingController(text: '1');
+  final _pickupCtrl = TextEditingController();
   late final _cityCtrl =
       TextEditingController(text: widget.me?['city'] as String? ?? '');
-  String _type = 'free';
   String _category = 'אחר';
+  String _condition = 'good';
+  String _deliveryMethod = 'pickup';
+  int _expiryDays = 30;
+  bool _negotiable = false;
+  bool _showPhone = false;
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   bool _saving = false;
@@ -6595,20 +7059,44 @@ class _PostListingScreenState extends State<PostListingScreen> {
           .showSnackBar(const SnackBar(content: Text('נדרשת כותרת')));
       return;
     }
+    if (_descCtrl.text.trim().length < 10) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('יש להוסיף תיאור ברור של לפחות 10 תווים')));
+      return;
+    }
+    final priceText = _priceCtrl.text.trim();
+    final parsedPrice = priceText.isEmpty ? 0.0 : double.tryParse(priceText);
+    if (parsedPrice == null || parsedPrice < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('יש להזין מחיר תקין, 0 או יותר')));
+      return;
+    }
+    final listingType = parsedPrice == 0 ? 'free' : 'sale';
+    if (_cityCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('יש להזין עיר או אזור')));
+      return;
+    }
     setState(() => _saving = true);
     try {
       final urls = _imageUrls.where((u) => u != null).toList();
       final city = _cityCtrl.text.trim();
       final body = <String, dynamic>{
-        'type': _type,
+        'type': listingType,
         'title': _titleCtrl.text.trim(),
         'description': _descCtrl.text.trim(),
         'category': _category,
+        'item_condition': _condition,
+        'negotiable': listingType == 'sale' && _negotiable,
+        'quantity': int.tryParse(_quantityCtrl.text) ?? 1,
+        'delivery_method': _deliveryMethod,
+        'pickup_details': _pickupCtrl.text.trim(),
+        'contact_phone_visible': _showPhone,
+        'expires_in_days': _expiryDays,
         if (city.isNotEmpty) 'city': city,
         if (urls.isNotEmpty) 'image_urls': urls,
       };
-      if (_type == 'sale')
-        body['price'] = double.tryParse(_priceCtrl.text) ?? 0;
+      body['price'] = parsedPrice;
       final res = await http
           .post(
             Uri.parse('$kApi/listings'),
@@ -6621,7 +7109,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
           .timeout(const Duration(seconds: 30));
       if (!mounted) return;
       if (res.statusCode == 200) {
-        Navigator.pop(context, true);
+        if (widget.embedded) {
+          await widget.onPublished?.call();
+        } else {
+          Navigator.pop(context, true);
+        }
         return;
       }
       var message = 'פרסום המודעה נכשל';
@@ -6650,6 +7142,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _titleCtrl.dispose();
     _descCtrl.dispose();
     _priceCtrl.dispose();
+    _quantityCtrl.dispose();
+    _pickupCtrl.dispose();
     _cityCtrl.dispose();
     super.dispose();
   }
@@ -6659,118 +7153,198 @@ class _PostListingScreenState extends State<PostListingScreen> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: kPrimary,
-        title: const Text('פרסום מודעה', style: TextStyle(color: Colors.white)),
-        leading: BackButton(color: Colors.white),
+        title: const Text('פרסום מתקדם', style: TextStyle(color: Colors.white)),
+        leading: BackButton(
+          color: Colors.white,
+          onPressed: widget.onClose ?? () => Navigator.pop(context),
+        ),
       ),
-      body: Center(
+      body: Align(
+        alignment: widget.embedded ? Alignment.topCenter : Alignment.topLeft,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 820),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Type toggle
-                  Row(children: [
-                    Expanded(
-                        child: _typeBtn(
-                            'free',
-                            'למסירה',
-                            'חפצים ללא תשלום',
-                            Icons.card_giftcard_rounded,
-                            const Color(0xFFFFF1D6),
-                            const Color(0xFFE07B16))),
-                    const SizedBox(width: 10),
-                    Expanded(
-                        child: _typeBtn(
-                            'sale',
-                            'למכירה',
-                            'מוצרים משומשים וחדשים',
-                            Icons.sell_rounded,
-                            const Color(0xFFE3F2FD),
-                            const Color(0xFF1565A8))),
-                  ]),
-                  const SizedBox(height: 16),
-                  // Images grid (up to 4)
-                  Text('תמונות (עד 8, ללא אנשים)',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: kSubtext,
-                          fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 8),
-                  GridView.count(
-                    crossAxisCount: 4,
-                    crossAxisSpacing: 8,
-                    mainAxisSpacing: 8,
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    children: List.generate(8, (i) => _imageSlot(i)),
-                  ),
-                  const SizedBox(height: 16),
-                  // Title
-                  TextField(
-                      controller: _titleCtrl,
-                      textDirection: TextDirection.rtl,
-                      decoration: const InputDecoration(
-                          labelText: 'כותרת המודעה *',
-                          border: OutlineInputBorder())),
-                  const SizedBox(height: 12),
-                  // Description
-                  TextField(
-                      controller: _descCtrl,
-                      textDirection: TextDirection.rtl,
-                      maxLines: 3,
-                      decoration: const InputDecoration(
-                          labelText: 'תיאור', border: OutlineInputBorder())),
-                  const SizedBox(height: 12),
-                  // Price (sale only)
-                  if (_type == 'sale') ...[
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Container(
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              border: Border(right: BorderSide(color: kBorder)),
+            ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Title
+                    TextField(
+                        controller: _titleCtrl,
+                        textDirection: TextDirection.rtl,
+                        decoration: const InputDecoration(
+                            labelText: 'כותרת המודעה *',
+                            border: OutlineInputBorder())),
+                    const SizedBox(height: 12),
+                    // Description
+                    TextField(
+                        controller: _descCtrl,
+                        textDirection: TextDirection.rtl,
+                        maxLines: 3,
+                        decoration: const InputDecoration(
+                            labelText: 'תיאור מפורט *',
+                            hintText:
+                                'מצב המוצר, מידות, גיל, פגמים וכל פרט חשוב',
+                            border: OutlineInputBorder())),
+                    const SizedBox(height: 12),
                     TextField(
                         controller: _priceCtrl,
                         keyboardType: TextInputType.number,
                         decoration: const InputDecoration(
-                            labelText: 'מחיר (₪)',
+                            labelText: 'מחיר (₪) — 0 למסירה',
+                            hintText: '0',
+                            helperText: 'מחיר 0 יסווג את המודעה כמסירה',
                             border: OutlineInputBorder(),
                             prefixText: '₪ ')),
                     const SizedBox(height: 12),
-                  ],
-                  // Category
-                  DropdownButtonFormField<String>(
-                    value: _category,
-                    decoration: const InputDecoration(
-                        labelText: 'קטגוריה', border: OutlineInputBorder()),
-                    items: _kCategories
-                        .skip(1)
-                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                        .toList(),
-                    onChanged: (v) => setState(() => _category = v!),
-                  ),
-                  const SizedBox(height: 12),
-                  // City
-                  TextField(
-                    controller: _cityCtrl,
-                    textDirection: TextDirection.rtl,
-                    decoration: const InputDecoration(
-                      labelText: 'עיר',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.location_city_outlined),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('המחיר גמיש'),
+                      subtitle: const Text('רלוונטי כאשר המחיר גדול מאפס'),
+                      value: _negotiable,
+                      onChanged: (value) => setState(() => _negotiable = value),
                     ),
-                  ),
-                  const SizedBox(height: 24),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                        backgroundColor: kPrimary,
-                        padding: const EdgeInsets.symmetric(vertical: 14)),
-                    onPressed: _saving ? null : _submit,
-                    child: _saving
-                        ? const CircularProgressIndicator(color: Colors.white)
-                        : const Text('פרסם',
-                            style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold)),
-                  ),
-                ]),
+                    const SizedBox(height: 4),
+                    // Category
+                    DropdownButtonFormField<String>(
+                      value: _category,
+                      decoration: const InputDecoration(
+                          labelText: 'קטגוריה', border: OutlineInputBorder()),
+                      items: _kCategories
+                          .skip(1)
+                          .map(
+                              (c) => DropdownMenuItem(value: c, child: Text(c)))
+                          .toList(),
+                      onChanged: (v) => setState(() => _category = v!),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: _condition,
+                      decoration: const InputDecoration(
+                          labelText: 'מצב המוצר *',
+                          prefixIcon: Icon(Icons.verified_outlined),
+                          border: OutlineInputBorder()),
+                      items: const [
+                        DropdownMenuItem(value: 'new', child: Text('חדש')),
+                        DropdownMenuItem(
+                            value: 'like_new', child: Text('כמו חדש')),
+                        DropdownMenuItem(value: 'good', child: Text('מצב טוב')),
+                        DropdownMenuItem(
+                            value: 'fair', child: Text('מצב סביר')),
+                        DropdownMenuItem(
+                            value: 'for_parts', child: Text('לתיקון / לחלקים')),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _condition = value ?? 'good'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _quantityCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                          labelText: 'כמות',
+                          prefixIcon: Icon(Icons.numbers),
+                          border: OutlineInputBorder()),
+                    ),
+                    const SizedBox(height: 12),
+                    // City
+                    _LocationAutocompleteField(
+                      controller: _cityCtrl,
+                      label: 'עיר או אזור *',
+                      hint: 'התחל להקליד ובחר מהרשימה',
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: _deliveryMethod,
+                      decoration: const InputDecoration(
+                          labelText: 'אופן קבלה *',
+                          prefixIcon: Icon(Icons.local_shipping_outlined),
+                          border: OutlineInputBorder()),
+                      items: const [
+                        DropdownMenuItem(
+                            value: 'pickup', child: Text('איסוף עצמי')),
+                        DropdownMenuItem(
+                            value: 'delivery', child: Text('משלוח')),
+                        DropdownMenuItem(
+                            value: 'both', child: Text('איסוף עצמי או משלוח')),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _deliveryMethod = value ?? 'pickup'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _pickupCtrl,
+                      textDirection: TextDirection.rtl,
+                      maxLines: 2,
+                      decoration: const InputDecoration(
+                          labelText: 'פרטי איסוף או משלוח',
+                          hintText: 'לדוגמה: איסוף בשעות הערב, קומה ללא מעלית',
+                          border: OutlineInputBorder()),
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('הצגת מספר הטלפון במודעה'),
+                      subtitle:
+                          const Text('כבוי כברירת מחדל; תמיד אפשר לפנות בצ׳אט'),
+                      value: _showPhone,
+                      onChanged: (value) => setState(() => _showPhone = value),
+                    ),
+                    DropdownButtonFormField<int>(
+                      value: _expiryDays,
+                      decoration: const InputDecoration(
+                          labelText: 'משך פרסום',
+                          prefixIcon: Icon(Icons.schedule_outlined),
+                          border: OutlineInputBorder()),
+                      items: const [
+                        DropdownMenuItem(value: 7, child: Text('7 ימים')),
+                        DropdownMenuItem(value: 14, child: Text('14 ימים')),
+                        DropdownMenuItem(value: 30, child: Text('30 ימים')),
+                        DropdownMenuItem(value: 60, child: Text('60 ימים')),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _expiryDays = value ?? 30),
+                    ),
+                    const SizedBox(height: 24),
+                    const Divider(),
+                    const SizedBox(height: 12),
+                    Text('הוספת תמונות',
+                        style: TextStyle(
+                            fontSize: 17,
+                            color: kTextDark,
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Text('ניתן להוסיף עד 8 תמונות, ללא אנשים',
+                        style: TextStyle(fontSize: 13, color: kSubtext)),
+                    const SizedBox(height: 10),
+                    GridView.count(
+                      crossAxisCount: 4,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      children: List.generate(8, (i) => _imageSlot(i)),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: kPrimary,
+                          padding: const EdgeInsets.symmetric(vertical: 14)),
+                      onPressed: _saving ? null : _submit,
+                      child: _saving
+                          ? const CircularProgressIndicator(color: Colors.white)
+                          : const Text('פרסם',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold)),
+                    ),
+                  ]),
+            ),
           ),
         ),
       ),
@@ -6839,33 +7413,6 @@ class _PostListingScreenState extends State<PostListingScreen> {
       ),
     );
   }
-
-  Widget _typeBtn(String val, String label, String subtitle, IconData icon,
-          Color bg, Color fg) =>
-      GestureDetector(
-        onTap: () => setState(() => _type = val),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 13),
-          decoration: BoxDecoration(
-            color: _type == val ? bg : Colors.white,
-            border: Border.all(color: _type == val ? fg : kBorder, width: 2),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(children: [
-            Icon(icon, color: fg, size: 30),
-            const SizedBox(height: 5),
-            Text(label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: fg, fontWeight: FontWeight.bold, fontSize: 15)),
-            const SizedBox(height: 2),
-            Text(subtitle,
-                textAlign: TextAlign.center,
-                style:
-                    TextStyle(color: fg.withValues(alpha: 0.82), fontSize: 11)),
-          ]),
-        ),
-      );
 }
 
 // ── Edit Listing Screen ───────────────────────────────────────────
@@ -6883,7 +7430,6 @@ class _EditListingScreenState extends State<EditListingScreen> {
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
   final _cityCtrl = TextEditingController();
-  String _type = 'free';
   String _category = 'אחר';
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
@@ -6916,11 +7462,11 @@ class _EditListingScreenState extends State<EditListingScreen> {
       final imgs = List<String>.from(item['images'] ??
           (item['image_url'] != null ? [item['image_url']] : []));
       setState(() {
-        _type = item['type'] as String? ?? 'free';
         _category = item['category'] as String? ?? 'אחר';
         _titleCtrl.text = item['title'] as String? ?? '';
         _descCtrl.text = item['description'] as String? ?? '';
-        _priceCtrl.text = item['price'] != null ? item['price'].toString() : '';
+        _priceCtrl.text =
+            item['price'] != null ? item['price'].toString() : '0';
         _cityCtrl.text = item['city'] as String? ?? '';
         for (int i = 0; i < 8; i++) {
           _imageUrls[i] = i < imgs.length ? imgs[i] : null;
@@ -7000,16 +7546,17 @@ class _EditListingScreenState extends State<EditListingScreen> {
     try {
       final urls = _imageUrls.where((u) => u != null).toList();
       final city = _cityCtrl.text.trim();
+      final parsedPrice = double.tryParse(_priceCtrl.text.trim()) ?? 0;
+      final listingType = parsedPrice <= 0 ? 'free' : 'sale';
       final body = <String, dynamic>{
-        'type': _type,
+        'type': listingType,
         'title': _titleCtrl.text.trim(),
         'description': _descCtrl.text.trim(),
         'category': _category,
         if (city.isNotEmpty) 'city': city,
         'image_urls': urls,
+        'price': parsedPrice,
       };
-      if (_type == 'sale')
-        body['price'] = double.tryParse(_priceCtrl.text) ?? 0;
       final res = await http.put(
         Uri.parse('$kApi/listings/${widget.listingId}'),
         headers: {
@@ -7049,26 +7596,6 @@ class _EditListingScreenState extends State<EditListingScreen> {
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Row(children: [
-                          Expanded(
-                              child: _typeBtn(
-                                  'free',
-                                  'למסירה',
-                                  'חפצים ללא תשלום',
-                                  Icons.card_giftcard_rounded,
-                                  const Color(0xFFFFF1D6),
-                                  const Color(0xFFE07B16))),
-                          const SizedBox(width: 10),
-                          Expanded(
-                              child: _typeBtn(
-                                  'sale',
-                                  'למכירה',
-                                  'מוצרים משומשים וחדשים',
-                                  Icons.sell_rounded,
-                                  const Color(0xFFE3F2FD),
-                                  const Color(0xFF1565A8))),
-                        ]),
-                        const SizedBox(height: 16),
                         Text('תמונות (עד 8, ללא אנשים)',
                             style: TextStyle(
                                 fontSize: 13,
@@ -7099,16 +7626,15 @@ class _EditListingScreenState extends State<EditListingScreen> {
                                 labelText: 'תיאור',
                                 border: OutlineInputBorder())),
                         const SizedBox(height: 12),
-                        if (_type == 'sale') ...[
-                          TextField(
-                              controller: _priceCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                  labelText: 'מחיר (₪)',
-                                  border: OutlineInputBorder(),
-                                  prefixText: '₪ ')),
-                          const SizedBox(height: 12),
-                        ],
+                        TextField(
+                            controller: _priceCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                                labelText: 'מחיר (₪) — 0 למסירה',
+                                helperText: 'מחיר 0 יסווג את המודעה כמסירה',
+                                border: OutlineInputBorder(),
+                                prefixText: '₪ ')),
+                        const SizedBox(height: 12),
                         DropdownButtonFormField<String>(
                           value: _category,
                           decoration: const InputDecoration(
@@ -7214,36 +7740,30 @@ class _EditListingScreenState extends State<EditListingScreen> {
       ),
     );
   }
-
-  Widget _typeBtn(String val, String label, String subtitle, IconData icon,
-          Color bg, Color fg) =>
-      GestureDetector(
-        onTap: () => setState(() => _type = val),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 13),
-          decoration: BoxDecoration(
-            color: _type == val ? bg : Colors.white,
-            border: Border.all(color: _type == val ? fg : kBorder, width: 2),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(children: [
-            Icon(icon, color: fg, size: 30),
-            const SizedBox(height: 5),
-            Text(label,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: fg, fontWeight: FontWeight.bold, fontSize: 15)),
-            const SizedBox(height: 2),
-            Text(subtitle,
-                textAlign: TextAlign.center,
-                style:
-                    TextStyle(color: fg.withValues(alpha: 0.82), fontSize: 11)),
-          ]),
-        ),
-      );
 }
 
 // ── Listing Detail Screen ─────────────────────────────────────────
+class _ListingDetailBadge extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _ListingDetailBadge({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xFFE8F4FD),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kBorder),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 17, color: kPrimary),
+          const SizedBox(width: 6),
+          Text(text, style: const TextStyle(fontSize: 13)),
+        ]),
+      );
+}
+
 class ListingDetailScreen extends StatefulWidget {
   final Map<String, dynamic> item;
   final String token;
@@ -7252,6 +7772,8 @@ class ListingDetailScreen extends StatefulWidget {
   final bool embedded;
   final VoidCallback? onClose;
   final Future<void> Function()? onUpdated;
+  final Future<void> Function(Map<String, dynamic> recipient)?
+      onConversationStarted;
   const ListingDetailScreen(
       {super.key,
       required this.item,
@@ -7260,14 +7782,13 @@ class ListingDetailScreen extends StatefulWidget {
       required this.socket,
       this.embedded = false,
       this.onClose,
-      this.onUpdated});
+      this.onUpdated,
+      this.onConversationStarted});
   @override
   State<ListingDetailScreen> createState() => _ListingDetailScreenState();
 }
 
 class _ListingDetailScreenState extends State<ListingDetailScreen> {
-  late final PageController _pageCtrl = PageController();
-  int _pageIdx = 0;
   late String _status;
 
   @override
@@ -7283,14 +7804,115 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     return single != null ? [single] : [];
   }
 
-  void _showImagePage(int page, int count) {
-    if (count < 2) return;
-    final target = page.clamp(0, count - 1);
-    _pageCtrl.animateToPage(
-      target,
-      duration: const Duration(milliseconds: 250),
-      curve: Curves.easeOut,
+  Future<void> _openImageViewer(List<String> images, int initialIndex) async {
+    final controller = PageController(initialPage: initialIndex);
+    var currentIndex = initialIndex;
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setViewerState) => Dialog.fullscreen(
+          backgroundColor: Colors.black,
+          child: SafeArea(
+            child: Stack(children: [
+              PageView.builder(
+                controller: controller,
+                itemCount: images.length,
+                onPageChanged: (index) =>
+                    setViewerState(() => currentIndex = index),
+                itemBuilder: (_, index) => InteractiveViewer(
+                  minScale: 1,
+                  maxScale: 5,
+                  child: Center(
+                    child: _PersistentMediaImage(
+                      url: images[index],
+                      fit: BoxFit.contain,
+                      loadingBuilder: (_) => const Center(
+                        child: CircularProgressIndicator(color: Colors.white),
+                      ),
+                      errorBuilder: (_) => const Icon(
+                        Icons.broken_image_outlined,
+                        color: Colors.white70,
+                        size: 72,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              PositionedDirectional(
+                top: 12,
+                start: 12,
+                child: IconButton.filled(
+                  tooltip: 'סגור',
+                  onPressed: () => Navigator.pop(dialogContext),
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black54,
+                  ),
+                ),
+              ),
+              PositionedDirectional(
+                top: 18,
+                end: 18,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Text(
+                    '${currentIndex + 1} / ${images.length}',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+              ),
+              if (images.length > 1 && currentIndex > 0)
+                Positioned(
+                  left: 16,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(
+                    child: IconButton.filled(
+                      tooltip: 'התמונה הקודמת',
+                      onPressed: () => controller.previousPage(
+                        duration: const Duration(milliseconds: 250),
+                        curve: Curves.easeOut,
+                      ),
+                      icon: const Icon(Icons.chevron_left,
+                          color: Colors.white, size: 34),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                      ),
+                    ),
+                  ),
+                ),
+              if (images.length > 1 && currentIndex < images.length - 1)
+                Positioned(
+                  right: 16,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(
+                    child: IconButton.filled(
+                      tooltip: 'התמונה הבאה',
+                      onPressed: () => controller.nextPage(
+                        duration: const Duration(milliseconds: 250),
+                        curve: Curves.easeOut,
+                      ),
+                      icon: const Icon(Icons.chevron_right,
+                          color: Colors.white, size: 34),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black54,
+                      ),
+                    ),
+                  ),
+                ),
+            ]),
+          ),
+        ),
+      ),
     );
+    controller.dispose();
   }
 
   String _listingDefaultMessage() {
@@ -7304,19 +7926,26 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   }
 
   void _openChat() {
+    final recipient = <String, dynamic>{
+      'id': widget.item['seller_id'],
+      'name': widget.item['seller_name'],
+      'profile_pic_url': widget.item['seller_pic']
+    };
     Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => ChatScreen(
             token: widget.token,
-            recipient: {
-              'id': widget.item['seller_id'],
-              'name': widget.item['seller_name'],
-              'profile_pic_url': widget.item['seller_pic']
-            },
+            recipient: recipient,
             me: widget.me,
             socket: widget.socket,
             initialText: _listingDefaultMessage(),
+            listingId: widget.item['id']?.toString(),
+            onMessageSent: () {
+              final callback = widget.onConversationStarted;
+              Navigator.of(context).popUntil((route) => route.isFirst);
+              callback?.call(recipient);
+            },
           ),
         ));
   }
@@ -7378,16 +8007,22 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   }
 
   @override
-  void dispose() {
-    _pageCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final isFree = widget.item['type'] == 'free';
     final isOwner = widget.me?['id'] == widget.item['seller_id'];
-    final images = _images;
+    final images = _images.take(8).toList(growable: false);
+    const conditionLabels = {
+      'new': 'חדש',
+      'like_new': 'כמו חדש',
+      'good': 'מצב טוב',
+      'fair': 'מצב סביר',
+      'for_parts': 'לתיקון / לחלקים',
+    };
+    const deliveryLabels = {
+      'pickup': 'איסוף עצמי',
+      'delivery': 'משלוח',
+      'both': 'איסוף עצמי או משלוח',
+    };
     final galleryHeight =
         (MediaQuery.sizeOf(context).width * 0.56).clamp(280.0, 520.0);
     return Scaffold(
@@ -7425,70 +8060,80 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           if (images.isNotEmpty)
-            Stack(children: [
-              SizedBox(
-                height: galleryHeight,
-                child: PageView.builder(
-                  controller: _pageCtrl,
-                  itemCount: images.length,
-                  onPageChanged: (i) => setState(() => _pageIdx = i),
-                  itemBuilder: (_, i) => Container(
-                    color: Colors.black,
-                    alignment: Alignment.center,
-                    child: _PersistentMediaImage(
-                      url: images[i],
-                      width: double.infinity,
-                      height: double.infinity,
-                      fit: BoxFit.contain,
-                      errorBuilder: (_) =>
-                          Container(color: const Color(0xFFE8F4FD)),
+            images.length == 1
+                ? SizedBox(
+                    height: galleryHeight,
+                    child: InkWell(
+                      onTap: () => _openImageViewer(images, 0),
+                      child: _PersistentMediaImage(
+                        url: images.first,
+                        width: double.infinity,
+                        height: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_) =>
+                            Container(color: const Color(0xFFE8F4FD)),
+                      ),
                     ),
-                  ),
-                ),
-              ),
-              if (images.length > 1)
-                Positioned.fill(
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      IconButton.filledTonal(
-                        onPressed: () => _showImagePage(
-                            (_pageIdx - 1 + images.length) % images.length,
-                            images.length),
-                        icon: const Icon(Icons.chevron_left),
-                      ),
-                      IconButton.filledTonal(
-                        onPressed: () => _showImagePage(
-                            (_pageIdx + 1) % images.length, images.length),
-                        icon: const Icon(Icons.chevron_right),
-                      ),
-                    ],
-                  ),
-                ),
-              if (images.length > 1)
-                Positioned(
-                  bottom: 10,
-                  left: 0,
-                  right: 0,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(images.length, (i) {
-                      return GestureDetector(
-                        onTap: () => _showImagePage(i, images.length),
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 4),
-                          width: _pageIdx == i ? 18 : 9,
-                          height: 9,
-                          decoration: BoxDecoration(
-                              color:
-                                  _pageIdx == i ? Colors.white : Colors.white60,
-                              borderRadius: BorderRadius.circular(5)),
+                  )
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      final galleryWidth =
+                          math.min(constraints.maxWidth - 16, 1050.0);
+                      final tileWidth = (galleryWidth - 17) / 4;
+                      final rows = (images.length / 4).ceil();
+                      return Align(
+                        alignment: Alignment.topRight,
+                        child: SizedBox(
+                          width: galleryWidth,
+                          child: Container(
+                            margin: const EdgeInsets.fromLTRB(8, 8, 8, 2),
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: kBorder),
+                            ),
+                            child: SizedBox(
+                              height: rows * tileWidth + (rows - 1) * 3,
+                              child: GridView.builder(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                padding: EdgeInsets.zero,
+                                itemCount: images.length,
+                                gridDelegate:
+                                    const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 4,
+                                  crossAxisSpacing: 3,
+                                  mainAxisSpacing: 3,
+                                ),
+                                itemBuilder: (_, i) => Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(9),
+                                    onTap: () => _openImageViewer(images, i),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(9),
+                                      child: _PersistentMediaImage(
+                                        url: images[i],
+                                        width: double.infinity,
+                                        height: double.infinity,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_) => Container(
+                                            color: const Color(0xFFE8F4FD),
+                                            child: Icon(
+                                                Icons.broken_image_outlined,
+                                                color: kSubtext)),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       );
-                    }),
-                  ),
-                ),
-            ])
+                    },
+                  )
           else
             Container(
                 height: galleryHeight,
@@ -7537,6 +8182,61 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                 Text(widget.item['description'],
                     style:
                         TextStyle(fontSize: 15, color: kTextDark, height: 1.6)),
+              ],
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _ListingDetailBadge(
+                    icon: Icons.verified_outlined,
+                    text: conditionLabels[widget.item['item_condition']] ??
+                        'מצב טוב',
+                  ),
+                  _ListingDetailBadge(
+                    icon: Icons.inventory_2_outlined,
+                    text: 'כמות: ${widget.item['quantity'] ?? 1}',
+                  ),
+                  _ListingDetailBadge(
+                    icon: Icons.local_shipping_outlined,
+                    text: deliveryLabels[widget.item['delivery_method']] ??
+                        'איסוף עצמי',
+                  ),
+                  if (!isFree && widget.item['negotiable'] == true)
+                    const _ListingDetailBadge(
+                      icon: Icons.handshake_outlined,
+                      text: 'מחיר גמיש',
+                    ),
+                  if (_listingPublishedAt(widget.item['created_at']).isNotEmpty)
+                    _ListingDetailBadge(
+                      icon: Icons.calendar_today_outlined,
+                      text: _listingPublishedAt(widget.item['created_at']),
+                    ),
+                ],
+              ),
+              if ((widget.item['pickup_details'] ?? '')
+                  .toString()
+                  .trim()
+                  .isNotEmpty) ...[
+                const SizedBox(height: 12),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.info_outline, color: kPrimary),
+                  title: const Text('פרטי איסוף או משלוח'),
+                  subtitle: Text(widget.item['pickup_details'].toString()),
+                ),
+              ],
+              if ((widget.item['seller_phone'] ?? '')
+                  .toString()
+                  .trim()
+                  .isNotEmpty) ...[
+                const SizedBox(height: 6),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.phone_outlined, color: kPrimary),
+                  title: const Text('טלפון ליצירת קשר'),
+                  subtitle: Text(widget.item['seller_phone'].toString()),
+                ),
               ],
               const SizedBox(height: 20),
               // Seller info
@@ -8387,7 +9087,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                           SizedBox(width: 7),
                           Text('תוכן יהודי נקי',
                               style: TextStyle(
-                                  fontSize: 13,
+                                  fontSize: 10,
                                   fontWeight: FontWeight.w700,
                                   color: Colors.white,
                                   height: 1.1)),
@@ -9236,6 +9936,8 @@ class ChatScreen extends StatefulWidget {
   final Map<String, dynamic> recipient;
   final IO.Socket? socket;
   final String? initialText;
+  final String? listingId;
+  final VoidCallback? onMessageSent;
   final bool embedded;
   final VoidCallback? onClose;
   final VoidCallback? onVoiceCall;
@@ -9247,6 +9949,8 @@ class ChatScreen extends StatefulWidget {
     required this.recipient,
     required this.socket,
     this.initialText,
+    this.listingId,
+    this.onMessageSent,
     this.embedded = false,
     this.onClose,
     this.onVoiceCall,
@@ -9747,6 +10451,7 @@ class _ChatScreenState extends State<ChatScreen> {
           body: jsonEncode({
             'toUserId': widget.recipient['id'],
             'text': text,
+            if (widget.listingId != null) 'listingId': widget.listingId,
             if (replySnapshot != null) 'replyToId': replySnapshot['id'],
           }),
         );
@@ -9766,6 +10471,10 @@ class _ChatScreenState extends State<ChatScreen> {
               _messages[idx]['status'] = data['status'] ?? 'sent';
             }
           });
+          if (widget.listingId != null && widget.onMessageSent != null) {
+            widget.onMessageSent!.call();
+            return;
+          }
         } else {
           setState(() {
             final idx = _messages.indexWhere((m) => m['id'] == tempId);
@@ -10669,7 +11378,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 content: Column(mainAxisSize: MainAxisSize.min, children: [
                   const CircularProgressIndicator(color: kPrimary),
                   const SizedBox(height: 16),
-                  Text('$fileName\nעובר סריקת צניעות והעלאה...'),
+                  Text('$fileName\nעובר בדיקת תוכן לא ראוי והעלאה...'),
                 ]),
               ),
             ),
@@ -10986,11 +11695,6 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.videocam_outlined, color: Colors.white),
-            onPressed: null,
-            tooltip: 'שיחת וידאו אינה זמינה עדיין',
-          ),
           IconButton(
             icon: const Icon(Icons.phone_outlined, color: Colors.white),
             onPressed: widget.recipient['id'] == kScanBotId
@@ -12287,7 +12991,7 @@ class _MessageBubble extends StatelessWidget {
         return const Icon(Icons.done_all, size: 14, color: kPrimaryMid);
       case 'pending_scan':
         return const Tooltip(
-          message: 'בהמתנה לסריקת צניעות',
+          message: 'בהמתנה לבדיקת תוכן לא ראוי',
           child:
               Icon(Icons.hourglass_top, size: 14, color: Colors.orangeAccent),
         );
@@ -13406,36 +14110,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
       backgroundColor: kBg,
       appBar: AppBar(
         toolbarHeight: 72,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'בסיעתא דשמיא  •  ${fullHebrewDate(DateTime.now())}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white70, fontSize: 10),
-            ),
-            const SizedBox(height: 4),
-            const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('קבוצות',
-                    style:
-                        TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
-                SizedBox(width: 7),
-                Text('תוכן יהודי נקי',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700)),
-              ],
-            ),
-            if ((widget.me?['name'] as String? ?? '').isNotEmpty)
-              Text(widget.me!['name'] as String,
-                  style: const TextStyle(fontSize: 11, color: Colors.white70)),
-          ],
-        ),
+        title: _BrandAppBarTitle(me: widget.me),
         actions: [
           IconButton(
             icon: const Icon(Icons.group_add),
@@ -15136,7 +15811,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 content: Column(mainAxisSize: MainAxisSize.min, children: [
                   const CircularProgressIndicator(color: kPrimary),
                   const SizedBox(height: 16),
-                  Text('$fileName\nעובר סריקת צניעות והעלאה...'),
+                  Text('$fileName\nעובר בדיקת תוכן לא ראוי והעלאה...'),
                 ]),
               ),
             ),
@@ -17349,7 +18024,7 @@ class _ContentFilterSettingsScreenState
                   const Padding(
                     padding: EdgeInsets.all(18),
                     child: Text(
-                        'כל התמונות עוברות בדיקת צניעות תמיד, ללא קשר לבחירות כאן.',
+                        'כל התמונות עוברות בדיקת תוכן לא ראוי תמיד, ללא קשר לבחירות כאן.',
                         style: TextStyle(color: kSubtext)),
                   ),
                   Padding(
@@ -17402,10 +18077,66 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _strictFilter = false;
-  bool _hidePicture = false;
   bool _notifications = true;
   bool _readReceipts = true;
+  bool _savingPreferences = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _notifications = widget.me?['notifications_enabled'] as bool? ?? true;
+    _readReceipts = widget.me?['read_receipts_enabled'] as bool? ?? true;
+  }
+
+  Future<void> _savePreferences({
+    bool? notificationsEnabled,
+    bool? readReceiptsEnabled,
+  }) async {
+    if (_savingPreferences) return;
+    final previousNotifications = _notifications;
+    final previousReceipts = _readReceipts;
+    setState(() {
+      _savingPreferences = true;
+      if (notificationsEnabled != null) _notifications = notificationsEnabled;
+      if (readReceiptsEnabled != null) _readReceipts = readReceiptsEnabled;
+    });
+    try {
+      final response = await http.patch(
+        Uri.parse('$kApi/profile/preferences'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          if (notificationsEnabled != null)
+            'notificationsEnabled': notificationsEnabled,
+          if (readReceiptsEnabled != null)
+            'readReceiptsEnabled': readReceiptsEnabled,
+        }),
+      );
+      if (response.statusCode != 200) throw Exception('שמירת ההגדרה נכשלה');
+      final saved = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _notifications =
+            saved['notifications_enabled'] as bool? ?? _notifications;
+        _readReceipts =
+            saved['read_receipts_enabled'] as bool? ?? _readReceipts;
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('ההגדרה נשמרה')));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _notifications = previousNotifications;
+        _readReceipts = previousReceipts;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('לא ניתן לשמור את ההגדרה')));
+    } finally {
+      if (mounted) setState(() => _savingPreferences = false);
+    }
+  }
 
   Future<void> _shareLocation() async {
     final approved = await showDialog<bool>(
@@ -17590,254 +18321,263 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         ),
       ),
-      body: ListView(
-        children: [
-          // Profile header
-          InkWell(
-            onTap: () async {
-              final changed = await Navigator.push<bool>(
-                context,
-                MaterialPageRoute(
-                    builder: (_) =>
-                        ProfileScreen(me: widget.me, token: widget.token)),
-              );
-              if (changed == true) await widget.onProfileChanged();
-            },
-            child: Container(
-              color: kCard,
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  UserAvatar(
-                    radius: 32,
-                    picUrl: widget.me?['profile_pic_url'] as String?,
-                    name: name,
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+      body: Align(
+        alignment: Alignment.topRight,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 410),
+          child: Material(
+            color: kBg,
+            child: ListView(
+              children: [
+                // Profile header
+                InkWell(
+                  onTap: () async {
+                    final changed = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => ProfileScreen(
+                              me: widget.me, token: widget.token)),
+                    );
+                    if (changed == true) await widget.onProfileChanged();
+                  },
+                  child: Container(
+                    color: kCard,
+                    padding: const EdgeInsets.all(20),
+                    child: Row(
                       children: [
-                        Text(name,
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold)),
-                        const Text('ערוך פרופיל',
-                            style: TextStyle(color: kSubtext, fontSize: 13)),
+                        UserAvatar(
+                          radius: 32,
+                          picUrl: widget.me?['profile_pic_url'] as String?,
+                          name: name,
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(name,
+                                  style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold)),
+                              const Text('ערוך פרופיל',
+                                  style:
+                                      TextStyle(color: kSubtext, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_left, color: kSubtext),
                       ],
                     ),
                   ),
-                  const Icon(Icons.chevron_left, color: kSubtext),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
+                ),
+                const SizedBox(height: 8),
 
-          // Modesty settings
-          const _SectionHeader(title: 'הגדרות צניעות'),
-          Container(
-            color: kCard,
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.tune, color: kPrimary),
-                  title: const Text('סוגי תוכן מותרים'),
-                  subtitle:
-                      const Text('טקסט, תמונות, גברים, נשים, ילדים ווידאו'),
-                  trailing: const Icon(Icons.chevron_left),
-                  onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ContentFilterSettingsScreen(
-                          token: widget.token,
-                        ),
-                      )),
-                ),
-                const Divider(height: 1, indent: 16),
-                SwitchListTile(
-                  activeColor: kPrimary,
-                  title: const Text('סינון תוכן מחמיר (Strict)'),
-                  subtitle: const Text('חסימה מרבית של תוכן'),
-                  value: _strictFilter,
-                  onChanged: (v) => setState(() => _strictFilter = v),
-                ),
-                const Divider(height: 1, indent: 16),
-                SwitchListTile(
-                  activeColor: kPrimary,
-                  title: const Text('הסתר תמונת פרופיל'),
-                  subtitle: const Text('לא יראו את תמונתך'),
-                  value: _hidePicture,
-                  onChanged: (v) => setState(() => _hidePicture = v),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // Notifications
-          const _SectionHeader(title: 'התראות'),
-          Container(
-            color: kCard,
-            child: Column(
-              children: [
-                SwitchListTile(
-                  activeColor: kPrimary,
-                  title: const Text('התראות Push'),
-                  value: _notifications,
-                  onChanged: (v) => setState(() => _notifications = v),
-                ),
-                const Divider(height: 1, indent: 16),
-                SwitchListTile(
-                  activeColor: kPrimary,
-                  title: const Text('אישורי קריאה'),
-                  subtitle: const Text('שלח אישור כשנקראת הודעה'),
-                  value: _readReceipts,
-                  onChanged: (v) => setState(() => _readReceipts = v),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // Privacy
-          const _SectionHeader(title: 'פרטיות'),
-          Container(
-            color: kCard,
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.block, color: kSubtext),
-                  title: const Text('משתמשים חסומים'),
-                  trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                  onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) =>
-                              BlockedUsersScreen(token: widget.token))),
-                ),
-                const Divider(height: 1, indent: 16),
-                ListTile(
-                  leading: const Icon(Icons.lock_outline, color: kSubtext),
-                  title: const Text('מדיניות פרטיות'),
-                  trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                  onTap: () => launchUrl(Uri.parse('$kServer/privacy'),
-                      mode: LaunchMode.externalApplication),
-                ),
-                const Divider(height: 1, indent: 16),
-                ListTile(
-                  leading:
-                      const Icon(Icons.location_on_outlined, color: kPrimary),
-                  title: const Text('שיתוף מיקום'),
-                  subtitle: const Text('כבוי כברירת מחדל; נדרש אישור מפורש'),
-                  trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                  onTap: _shareLocation,
-                ),
-                ListTile(
-                  leading:
-                      const Icon(Icons.location_off_outlined, color: kSubtext),
-                  title: const Text('מחיקת מיקום שמור'),
-                  onTap: _clearLocation,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // About
-          const _SectionHeader(title: 'אודות'),
-          Container(
-            color: kCard,
-            child: Column(
-              children: [
-                const ListTile(
-                  leading: Icon(Icons.info_outline, color: kSubtext),
-                  title: Text('גרסה'),
-                  trailing: Text(kVersion, style: TextStyle(color: kSubtext)),
-                ),
-                const Divider(height: 1, indent: 16),
-                const ListTile(
-                  leading: Icon(Icons.verified_outlined, color: kAccent),
-                  title: Text('בתשובה Messenger'),
-                  subtitle: Text('מסרים לקהילה הישראלית'),
-                ),
-                const Divider(height: 1, indent: 16),
-                ListTile(
-                  leading:
-                      const Icon(Icons.description_outlined, color: kSubtext),
-                  title: const Text('רישיונות קוד פתוח'),
-                  subtitle: const Text('Flutter וספריות צד שלישי'),
-                  trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                  onTap: () => showLicensePage(
-                    context: context,
-                    applicationName: 'בתשובה',
-                    applicationVersion: kVersion,
-                    applicationIcon: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child:
-                          Image.asset('icon_source.png', width: 64, height: 64),
-                    ),
-                    applicationLegalese: '© 2026 בתשובה',
+                // Modesty settings
+                const _SectionHeader(title: 'הגדרות תוכן לא ראוי'),
+                Container(
+                  color: kCard,
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.tune, color: kPrimary),
+                        title: const Text('סוגי תוכן מותרים'),
+                        subtitle: const Text(
+                            'טקסט, תמונות, גברים, נשים, ילדים ווידאו'),
+                        trailing: const Icon(Icons.chevron_left),
+                        onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ContentFilterSettingsScreen(
+                                token: widget.token,
+                              ),
+                            )),
+                      ),
+                    ],
                   ),
                 ),
+                const SizedBox(height: 8),
+
+                // Notifications
+                const _SectionHeader(title: 'התראות'),
+                Container(
+                  color: kCard,
+                  child: Column(
+                    children: [
+                      SwitchListTile(
+                        activeColor: kPrimary,
+                        title: const Text('התראות Push'),
+                        value: _notifications,
+                        onChanged: _savingPreferences
+                            ? null
+                            : (v) => _savePreferences(notificationsEnabled: v),
+                      ),
+                      const Divider(height: 1, indent: 16),
+                      SwitchListTile(
+                        activeColor: kPrimary,
+                        title: const Text('אישורי קריאה'),
+                        subtitle: const Text('שלח אישור כשנקראת הודעה'),
+                        value: _readReceipts,
+                        onChanged: _savingPreferences
+                            ? null
+                            : (v) => _savePreferences(readReceiptsEnabled: v),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+
+                // Privacy
+                const _SectionHeader(title: 'פרטיות'),
+                Container(
+                  color: kCard,
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.block, color: kSubtext),
+                        title: const Text('משתמשים חסומים'),
+                        trailing:
+                            const Icon(Icons.chevron_left, color: kSubtext),
+                        onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) =>
+                                    BlockedUsersScreen(token: widget.token))),
+                      ),
+                      const Divider(height: 1, indent: 16),
+                      ListTile(
+                        leading:
+                            const Icon(Icons.lock_outline, color: kSubtext),
+                        title: const Text('מדיניות פרטיות'),
+                        trailing:
+                            const Icon(Icons.chevron_left, color: kSubtext),
+                        onTap: () => launchUrl(Uri.parse('$kServer/privacy'),
+                            mode: LaunchMode.externalApplication),
+                      ),
+                      const Divider(height: 1, indent: 16),
+                      ListTile(
+                        leading: const Icon(Icons.location_on_outlined,
+                            color: kPrimary),
+                        title: const Text('שיתוף מיקום'),
+                        subtitle:
+                            const Text('כבוי כברירת מחדל; נדרש אישור מפורש'),
+                        trailing:
+                            const Icon(Icons.chevron_left, color: kSubtext),
+                        onTap: _shareLocation,
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.location_off_outlined,
+                            color: kSubtext),
+                        title: const Text('מחיקת מיקום שמור'),
+                        onTap: _clearLocation,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+
+                // About
+                const _SectionHeader(title: 'אודות'),
+                Container(
+                  color: kCard,
+                  child: Column(
+                    children: [
+                      const ListTile(
+                        leading: Icon(Icons.info_outline, color: kSubtext),
+                        title: Text('גרסה'),
+                        trailing:
+                            Text(kVersion, style: TextStyle(color: kSubtext)),
+                      ),
+                      const Divider(height: 1, indent: 16),
+                      const ListTile(
+                        leading: Icon(Icons.verified_outlined, color: kAccent),
+                        title: Text('בתשובה Messenger'),
+                        subtitle: Text('מסרים לקהילה הישראלית'),
+                      ),
+                      const Divider(height: 1, indent: 16),
+                      ListTile(
+                        leading: const Icon(Icons.description_outlined,
+                            color: kSubtext),
+                        title: const Text('רישיונות קוד פתוח'),
+                        subtitle: const Text('Flutter וספריות צד שלישי'),
+                        trailing:
+                            const Icon(Icons.chevron_left, color: kSubtext),
+                        onTap: () => showLicensePage(
+                          context: context,
+                          applicationName: 'בתשובה',
+                          applicationVersion: kVersion,
+                          applicationIcon: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Image.asset('icon_source.png',
+                                width: 64, height: 64),
+                          ),
+                          applicationLegalese: '© 2026 בתשובה',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+
+                // Admin Panel (visible only to admins)
+                if (widget.adminPerm != null) ...[
+                  const _SectionHeader(title: 'ניהול'),
+                  Container(
+                    color: kCard,
+                    child: ListTile(
+                      leading: const Icon(Icons.admin_panel_settings,
+                          color: kPrimary),
+                      title: const Text('לוח ניהול'),
+                      subtitle: Text(
+                          widget.adminPerm == 'edit'
+                              ? 'הרשאת עריכה'
+                              : 'הרשאת צפייה',
+                          style: const TextStyle(fontSize: 12)),
+                      trailing: const Icon(Icons.chevron_left, color: kSubtext),
+                      onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => AdminScreen(
+                                  token: widget.token,
+                                  perm: widget.adminPerm!))),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+
+                const SizedBox(height: 8),
+
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: TextButton.icon(
+                    onPressed: _deleteAccount,
+                    icon: const Icon(Icons.delete_forever, color: Colors.red),
+                    label: const Text('איפוס נתונים או מחיקת פרופיל וחשבון',
+                        style: TextStyle(color: Colors.red)),
+                  ),
+                ),
+
+                // Logout
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: OutlinedButton.icon(
+                    onPressed: widget.onLogout,
+                    icon: const Icon(Icons.logout, color: Colors.red),
+                    label: const Text('יציאה',
+                        style: TextStyle(color: Colors.red, fontSize: 16)),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.red),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
               ],
             ),
           ),
-          const SizedBox(height: 8),
-
-          // Admin Panel (visible only to admins)
-          if (widget.adminPerm != null) ...[
-            const _SectionHeader(title: 'ניהול'),
-            Container(
-              color: kCard,
-              child: ListTile(
-                leading:
-                    const Icon(Icons.admin_panel_settings, color: kPrimary),
-                title: const Text('לוח ניהול'),
-                subtitle: Text(
-                    widget.adminPerm == 'edit' ? 'הרשאת עריכה' : 'הרשאת צפייה',
-                    style: const TextStyle(fontSize: 12)),
-                trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => AdminScreen(
-                            token: widget.token, perm: widget.adminPerm!))),
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-
-          const SizedBox(height: 8),
-
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: TextButton.icon(
-              onPressed: _deleteAccount,
-              icon: const Icon(Icons.delete_forever, color: Colors.red),
-              label: const Text('איפוס נתונים או מחיקת פרופיל וחשבון',
-                  style: TextStyle(color: Colors.red)),
-            ),
-          ),
-
-          // Logout
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: OutlinedButton.icon(
-              onPressed: widget.onLogout,
-              icon: const Icon(Icons.logout, color: Colors.red),
-              label: const Text('יציאה',
-                  style: TextStyle(color: Colors.red, fontSize: 16)),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.red),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-        ],
+        ),
       ),
     );
   }
@@ -18151,7 +18891,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 const SizedBox(height: 6),
                 const Center(
-                  child: Text('לחץ לשינוי תמונה • תעבור סריקת צניעות',
+                  child: Text('לחץ לשינוי תמונה • תעבור בדיקת תוכן לא ראוי',
                       style: TextStyle(fontSize: 12, color: kSubtext)),
                 ),
                 const SizedBox(height: 28),

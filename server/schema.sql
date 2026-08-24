@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
   profile_pic_url     TEXT,
   privacy_pic         TEXT NOT NULL DEFAULT 'all',      -- all | contacts | nobody
   filter_level        TEXT NOT NULL DEFAULT 'standard', -- standard | strict
+  notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   content_filter      JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
   google_id           TEXT,
   latitude            DOUBLE PRECISION,
@@ -323,6 +325,12 @@ CREATE TABLE IF NOT EXISTS listings (
   longitude      DOUBLE PRECISION,
   image_url      TEXT,
   category       TEXT,
+  item_condition TEXT NOT NULL DEFAULT 'good',
+  negotiable     BOOLEAN NOT NULL DEFAULT FALSE,
+  quantity       INTEGER NOT NULL DEFAULT 1,
+  delivery_method TEXT NOT NULL DEFAULT 'pickup',
+  pickup_details TEXT,
+  contact_phone_visible BOOLEAN NOT NULL DEFAULT FALSE,
   status         TEXT NOT NULL DEFAULT 'active', -- active | sold | expired
   view_count     INTEGER NOT NULL DEFAULT 0,
   contact_count  INTEGER NOT NULL DEFAULT 0,

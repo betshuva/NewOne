@@ -1,7 +1,7 @@
 name: betshuva
 description: BETSHUVA Messenger - אפליקציית מסרים לקהילה הישראלית
 publish_to: 'none'
-version: 1.2.93+213
+version: 1.2.94+214
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

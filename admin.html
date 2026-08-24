@@ -311,7 +311,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
     <div class="sb-item" id="sb-vision-item" onclick="showVisionPanel()">🔬 תוצאות Vision</div>
     <div class="sb-item" id="sb-image-test-item" onclick="showImageTestPanel()">🧪 בדיקת תמונה</div>
-    <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות צניעות</div>
+    <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות תוכן לא ראוי</div>
     <div class="sb-item" id="sb-moderation-item" onclick="showModerationPanel()">🛡 רשימות חסימה</div>
     <div class="sb-item" id="sb-perm-item" onclick="showPermPanel()">🔐 הרשאות</div>
     <div class="sb-item" id="sb-listings-item" onclick="showListingsPanel()">🛍 מודעות</div>
@@ -398,7 +398,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <!-- Scan Panel -->
   <div id="scan-panel">
     <div class="main-head">
-      <h1>🔍 סריקות צניעות</h1>
+      <h1>🔍 סריקות תוכן לא ראוי</h1>
       <button class="btn-sm" onclick="loadScanPanel(activeScanTab,scanOffset)">🔄 רענן</button>
     </div>
     <div class="scan-tabs">
@@ -1045,7 +1045,7 @@ function renderLocalSafety(localSafety) {
       <span class="vc-label">סף NSFW: ${threshold}%</span>
       <span class="vc-label">זמן: ${Number(localSafety.durationMs || 0)}ms</span>
     </div>
-    <div style="margin-top:7px;color:var(--orange);font-size:11px">המודל בודק NSFW כללי בלבד. הוא אינו יודע לקבוע צניעות לבוש מחמירה ואינו מאשר תמונה; החלטת הצניעות מתקבלת בבדיקה הנפרדת.</div>
+    <div style="margin-top:7px;color:var(--orange);font-size:11px">המודל בודק NSFW כללי בלבד. הוא אינו קובע לבדו אם התוכן ראוי ואינו מאשר תמונה; ההחלטה מתקבלת בבדיקה הנפרדת.</div>
   </div>`;
 }
 

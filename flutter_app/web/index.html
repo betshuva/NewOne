@@ -35,25 +35,27 @@
 </head>
 <body>
   <script>
-    // Remove stale Flutter workers/caches after deployments, while preserving
-    // the dedicated Firebase Messaging worker used for background push.
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(registrations => {
-        registrations.forEach(registration => {
+    // Finish removing stale Flutter workers/caches before loading the app.
+    // The Firebase worker is kept because it is used for background push.
+    window.betshuvaWebReady = (async () => {
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map(registration => {
           const script = registration.active?.scriptURL ||
               registration.waiting?.scriptURL ||
               registration.installing?.scriptURL || '';
-          if (!script.includes('firebase-messaging-sw.js')) {
-            registration.unregister();
-          }
-        });
-      });
-    }
-    if ('caches' in window) {
-      caches.keys().then(keys => keys.forEach(key => {
-        if (!key.toLowerCase().includes('firebase')) caches.delete(key);
-      }));
-    }
+          return script.includes('firebase-messaging-sw.js')
+              ? Promise.resolve(true)
+              : registration.unregister();
+        }));
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys
+            .filter(key => !key.toLowerCase().includes('firebase'))
+            .map(key => caches.delete(key)));
+      }
+    })();
   </script>
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -81,6 +83,12 @@
       });
     };
   </script>
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    window.betshuvaWebReady.finally(() => {
+      const bootstrap = document.createElement('script');
+      bootstrap.src = `flutter_bootstrap.js?v=${Date.now()}`;
+      document.body.appendChild(bootstrap);
+    });
+  </script>
 </body>
 </html>

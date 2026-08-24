@@ -46,7 +46,10 @@ function getFirebaseMessaging() {
 async function sendPush(userId, title, body, data = {}) {
   try {
     const pool   = await getPool();
-    const result = await pool.query('SELECT token FROM fcm_tokens WHERE user_id = $1', [userId]);
+    const result = await pool.query(
+      `SELECT f.token FROM fcm_tokens f
+       JOIN users u ON u.id=f.user_id
+       WHERE f.user_id=$1 AND u.notifications_enabled=TRUE`, [userId]);
     const tokens = result.rows.map(row => row.token).filter(Boolean);
     if (!tokens.length) return;
     const response = await getFirebaseMessaging().sendEachForMulticast({
@@ -588,7 +591,7 @@ function formatScanBotReport(fileName, scanResult, status) {
     .filter(label => ['nudity', 'adult sexual content', 'lingerie or revealing clothing']
       .includes(label.name))
     .map(label => `${label.name} ${label.score}%`);
-  if (modesty.length) lines.push(`בדיקת צניעות: ${modesty.join(' · ')}`);
+  if (modesty.length) lines.push(`בדיקת תוכן לא ראוי: ${modesty.join(' · ')}`);
   const localSafety = scanResult?.localSafety;
   if (localSafety?.available) {
     const normal = Math.round(Number(localSafety.scores?.normal || 0) * 1000) / 10;
@@ -597,7 +600,7 @@ function formatScanBotReport(fileName, scanResult, status) {
       : localSafety.decision === 'review' ? 'חשד ל־NSFW' : 'לא זוהה NSFW';
     lines.push(`בדיקת תוכן מיני מפורש FalconsAI: ${localDecision} · ללא NSFW ${normal}% · NSFW ${nsfw}% ` +
       `(${localSafety.durationMs || 0}ms)`);
-    lines.push('מידע נוסף בלבד: המודל אינו קובע צניעות לבוש ואינו משפיע על ההחלטה');
+    lines.push('מידע נוסף בלבד: המודל אינו קובע לבדו אם התוכן ראוי ואינו משפיע על ההחלטה');
   } else if (localSafety) {
     lines.push('בדיקת תוכן מיני מפורש FalconsAI: לא זמינה — לא השפיעה על ההחלטה');
   }
@@ -1046,7 +1049,7 @@ async function scanStaticImage(buffer, options = {}) {
       ...common(googleNotRun('skipped_local_block')),
       blocked: true,
       blockedBy: localBlockedBy,
-      reason: 'התמונה נחסמה — תוכן לא צנוע',
+      reason: 'התמונה נחסמה — תוכן לא ראוי',
     };
   }
 
@@ -1082,7 +1085,7 @@ async function scanStaticImage(buffer, options = {}) {
       ...finalCommon,
       blocked: true,
       blockedBy: 'googleSafeSearch',
-      reason: 'התמונה נחסמה — Google SafeSearch זיהה תוכן לא צנוע',
+      reason: 'התמונה נחסמה — Google SafeSearch זיהה תוכן לא ראוי',
     };
   }
 
@@ -1300,6 +1303,8 @@ async function migrateDatabase() {
         profile_pic_url     TEXT,
         privacy_pic         TEXT NOT NULL DEFAULT 'all',
         filter_level        TEXT NOT NULL DEFAULT 'standard',
+        notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE,
         google_id           TEXT,
         latitude            DOUBLE PRECISION,
         longitude           DOUBLE PRECISION,
@@ -1338,6 +1343,8 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_pic TEXT NOT NULL DEFAULT 'all'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
     await pool.query(`ALTER TABLE users ALTER COLUMN content_filter SET DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
 
@@ -2526,7 +2533,7 @@ async function claimAppInvite(userId, inviteId = null) {
       `UPDATE users SET referral_count=referral_count+1 WHERE id=$1
        RETURNING referral_count`, [invite.invited_by]);
     const count = countResult.rows[0]?.referral_count || 1;
-    const body = `כל הכבוד! ${user.name} הצטרף/ה לבתשובה בעקבות ההזמנה שלך ונוסף/ה כחבר/ה. עד היום החזרת בתשובה ${count} חברים.`;
+    const body = `חדשות משמחות 🎉 ההרשמה של ${user.name} לבתשובה הושלמה באמצעות ההזמנה שלך, וכעת אתם חברים באפליקציה. עד היום צירפת לבתשובה ${count} משתמשים חדשים. תודה שעזרת לעוד אנשים להצטרף!`;
     const messageResult = await client.query(
       `INSERT INTO messages(sender_id,recipient_id,type,body)
        VALUES($1,$2,'text',$3) RETURNING id,created_at`,
@@ -2772,8 +2779,13 @@ io.on('connection', async (socket) => {
         return;
       }
       const accepted = await pool.query(
-        'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
-        [toUserId, socket.user.id]);
+        `SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2
+         UNION ALL
+         SELECT 1 FROM messages
+         WHERE ((sender_id=$1 AND recipient_id=$2)
+             OR (sender_id=$2 AND recipient_id=$1))
+           AND group_id IS NULL AND deleted_for_everyone=FALSE
+         LIMIT 1`, [toUserId, socket.user.id]);
       if (!accepted.rows.length) {
         if (msgType !== 'text' || fileUrl) {
           socket.emit('message:rejected', { toUserId, reason: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
@@ -3398,9 +3410,12 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
               last_msg.type AS last_message_type,
               last_msg.created_at AS last_message_at,
               (last_msg.sender_id = $1) AS last_message_is_mine,
-              last_msg.status AS last_message_status
-       FROM user_contacts c
-       JOIN users u ON u.id = c.contact_id
+              CASE WHEN last_msg.sender_id=$1 AND u.read_receipts_enabled=FALSE
+                   AND last_msg.status='read' THEN 'delivered'
+                   ELSE last_msg.status END AS last_message_status
+       FROM users u
+       LEFT JOIN user_contacts c
+         ON c.owner_id=$1 AND c.contact_id=u.id
        LEFT JOIN LATERAL (
          SELECT m.body, m.type, m.created_at, m.sender_id, ms.status
          FROM messages m
@@ -3414,8 +3429,16 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
          ORDER BY m.created_at DESC
          LIMIT 1
        ) last_msg ON TRUE
-       WHERE c.owner_id = $1
-       AND u.id <> $2
+       WHERE u.id <> $1 AND u.id <> $2
+       AND (
+         c.owner_id IS NOT NULL OR EXISTS (
+           SELECT 1 FROM messages conversation_message
+           WHERE conversation_message.group_id IS NULL
+             AND conversation_message.deleted_for_everyone=FALSE
+             AND ((conversation_message.sender_id=$1 AND conversation_message.recipient_id=u.id)
+               OR (conversation_message.sender_id=u.id AND conversation_message.recipient_id=$1))
+         )
+       )
        AND u.id NOT IN (
          SELECT blocked_id FROM blocked_users WHERE blocker_id = $1
        )
@@ -3762,12 +3785,17 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         m.reply_to_id, m.created_at,
         r.body        AS reply_body,
         ru.name       AS reply_sender_name,
-        CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
-        ms.status AS message_status,
+        CASE WHEN ms.status = 'read' AND NOT
+          (m.sender_id=$1 AND receipt_user.read_receipts_enabled=FALSE)
+          THEN 1 ELSE 0 END AS is_read,
+        CASE WHEN ms.status='read' AND m.sender_id=$1
+                  AND receipt_user.read_receipts_enabled=FALSE
+             THEN 'delivered' ELSE ms.status END AS message_status,
         sf.moderation_details->'classification' AS image_classification
       FROM messages m
       LEFT JOIN messages r  ON m.reply_to_id = r.id
       LEFT JOIN users ru    ON r.sender_id = ru.id
+      LEFT JOIN users receipt_user ON receipt_user.id=$2
       LEFT JOIN message_status ms ON ms.message_id = m.id
         AND ms.user_id = CASE WHEN m.sender_id=$1 THEN $2 ELSE $1 END
       LEFT JOIN stored_files sf ON sf.public_url=m.file_url
@@ -3827,7 +3855,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
 // יישמרו גם כש-socket לא מחובר (למשל כשפותחים צ'אט ממסך מודעה).
 app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   const senderId = req.user.id;
-  const { toUserId, text, replyToId, fileUrl, fileName, fileType } = req.body || {};
+  const { toUserId, text, replyToId, fileUrl, fileName, fileType, listingId } = req.body || {};
   if (!toUserId || (!text && !fileUrl)) {
     return res.status(400).json({ error: 'חסר נמען או תוכן' });
   }
@@ -3878,10 +3906,19 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       return res.status(403).json({ error: 'הקובץ לא עבר סריקה ואישור עבור נמען זה' });
     }
 
+    const marketplaceInquiry = listingId ? await pool.query(
+      `SELECT 1 FROM listings
+       WHERE id=$1 AND user_id=$2 AND status='active' AND expires_at>now()`,
+      [listingId, toUserId]) : { rows: [] };
     const accepted = await pool.query(
-      'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
-      [toUserId, senderId]);
-    if (!accepted.rows.length) {
+      `SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2
+       UNION ALL
+       SELECT 1 FROM messages
+       WHERE ((sender_id=$1 AND recipient_id=$2)
+           OR (sender_id=$2 AND recipient_id=$1))
+         AND group_id IS NULL AND deleted_for_everyone=FALSE
+       LIMIT 1`, [toUserId, senderId]);
+    if (!accepted.rows.length && !marketplaceInquiry.rows.length) {
       if (type !== 'text' || fileUrl)
         return res.status(403).json({ error: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
       const request = await pool.query(
@@ -3960,7 +3997,8 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       { type: 'chat', fromUserId: senderId });
 
     res.json({ id: row.id, createdAt: row.created_at,
-      status: sid ? 'delivered' : 'sent', classification });
+      status: sid ? 'delivered' : 'sent', classification,
+      marketplaceInquiry: marketplaceInquiry.rows.length > 0 });
   } catch (e) {
     console.error('POST /api/messages:', e.message);
     res.status(500).json({ error: e.message });
@@ -4058,8 +4096,12 @@ app.put('/api/messages/read', auth, async (req, res) => {
         [id, req.user.id]);
     }
 
+    const preference = await pool.query(
+      'SELECT read_receipts_enabled FROM users WHERE id=$1', [req.user.id]);
+    const receiptsEnabled = preference.rows[0]?.read_receipts_enabled !== false;
     const sid = onlineUsers.get(senderId);
-    if (sid) io.to(sid).emit('messages:read', { by: req.user.id });
+    if (receiptsEnabled && sid)
+      io.to(sid).emit('messages:read', { by: req.user.id });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4258,9 +4300,34 @@ app.get('/api/profile', auth, async (req, res) => {
       `SELECT id, name, email, phone, email_verified, phone_verified,
               city, country, street, house_number, apartment,
               profile_pic_url, privacy_pic, filter_level, birth_date,
+              notifications_enabled, read_receipts_enabled,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
+    res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Profile: notification and privacy preferences ────────────────
+app.patch('/api/profile/preferences', auth, async (req, res) => {
+  const notificationsEnabled = req.body?.notificationsEnabled;
+  const readReceiptsEnabled = req.body?.readReceiptsEnabled;
+  if (notificationsEnabled === undefined && readReceiptsEnabled === undefined)
+    return res.status(400).json({ error: 'לא נשלחה הגדרה לעדכון' });
+  if ((notificationsEnabled !== undefined && typeof notificationsEnabled !== 'boolean') ||
+      (readReceiptsEnabled !== undefined && typeof readReceiptsEnabled !== 'boolean'))
+    return res.status(400).json({ error: 'ערך ההגדרה אינו תקין' });
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `UPDATE users SET
+         notifications_enabled=COALESCE($1, notifications_enabled),
+         read_receipts_enabled=COALESCE($2, read_receipts_enabled)
+       WHERE id=$3
+       RETURNING notifications_enabled, read_receipts_enabled`,
+      [notificationsEnabled ?? null, readReceiptsEnabled ?? null, req.user.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'החשבון אינו קיים' });
+    logActivity(req.user.id, 'update_preferences', result.rows[0], req.ip);
     res.json(result.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -4472,11 +4539,26 @@ app.get('/api/cities', auth, async (req, res) => {
 app.post('/api/listings', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
-  const { type, title, description, price, city, latitude, longitude, image_url, image_urls, category } = req.body;
+  const { type, title, description, price, city, latitude, longitude,
+          image_url, image_urls, category, item_condition, negotiable,
+          quantity, delivery_method, pickup_details,
+          contact_phone_visible, expires_in_days } = req.body;
   const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
+  if (title.trim().length > 120) return res.status(400).json({ error: 'הכותרת ארוכה מדי' });
+  if (!description?.trim() || description.trim().length < 10)
+    return res.status(400).json({ error: 'נדרש תיאור מפורט של לפחות 10 תווים' });
+  if (price != null && (!Number.isFinite(Number(price)) || Number(price) < 0))
+    return res.status(400).json({ error: 'המחיר חייב להיות 0 או יותר' });
+  const normalizedPrice = Number(price) || 0;
+  const normalizedType = normalizedPrice > 0 ? 'sale' : 'free';
   const validTypes = ['free', 'sale'];
   const validCats  = ['רכב','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
+  const validConditions = ['new','like_new','good','fair','for_parts'];
+  const validDelivery = ['pickup','delivery','both'];
+  const parsedQuantity = Math.max(1, Math.min(999, Number.parseInt(quantity, 10) || 1));
+  const expiryDays = [7,14,30,60].includes(Number(expires_in_days))
+    ? Number(expires_in_days) : 30;
   try {
     const pool = await getPool();
     // use user's stored location if not provided
@@ -4488,12 +4570,20 @@ app.post('/api/listings', auth, async (req, res) => {
       listCity = listCity || me.rows[0]?.city;
     }
     const result = await pool.query(
-      `INSERT INTO listings (user_id,type,title,description,price,city,latitude,longitude,image_url,category)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO listings
+       (user_id,type,title,description,price,city,latitude,longitude,image_url,category,
+        item_condition,negotiable,quantity,delivery_method,pickup_details,
+        contact_phone_visible,expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+               now() + ($17::text || ' days')::interval)
        RETURNING id`,
-      [req.user.id, validTypes.includes(type) ? type : 'free', title.trim(), description || null,
-       type === 'sale' ? (price ?? 0) : null, listCity || null, lat || null, lng || null,
-       allImages[0] || null, validCats.includes(category) ? category : 'אחר']);
+      [req.user.id, normalizedType, title.trim(), description || null,
+       normalizedType === 'sale' ? normalizedPrice : null, listCity || null, lat || null, lng || null,
+       allImages[0] || null, validCats.includes(category) ? category : 'אחר',
+       validConditions.includes(item_condition) ? item_condition : 'good',
+       normalizedType === 'sale' && negotiable === true, parsedQuantity,
+       validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
+       pickup_details?.trim() || null, contact_phone_visible === true, expiryDays]);
     const listingId = result.rows[0].id;
     if (allImages.length) {
       for (let i = 0; i < allImages.length; i++) {
@@ -4508,7 +4598,8 @@ app.post('/api/listings', auth, async (req, res) => {
 
 app.get('/api/listings', auth, async (req, res) => {
   if (req.user.isTeen) return res.json([]);
-  const { type, category, city, radius, status, page = 1, mine } = req.query;
+  const { type, category, city, radius, status, page = 1, mine,
+          q, minPrice, maxPrice, sort = 'newest' } = req.query;
   const pageSize = 20;
   const offset   = (parseInt(page) - 1) * pageSize;
   const rowFrom  = offset + 1;
@@ -4526,7 +4617,29 @@ app.get('/api/listings', auth, async (req, res) => {
 
     if (type)     where += ` AND l.type=${addParam(type)}`;
     if (category) where += ` AND l.category=${addParam(category)}`;
-    if (city)     where += ` AND l.city=${addParam(city)}`;
+    if (city && city !== 'כל הארץ') {
+      const areaCities = {
+        'אזור המרכז': ['תל אביב-יפו','ראשון לציון','פתח תקווה','בני ברק','חולון','רמת גן','רחובות','לוד','רמלה','גבעתיים','מודיעין','נס ציונה'],
+        'אזור ירושלים': ['ירושלים','בית שמש','מעלה אדומים','מודיעין','קריית ארבע'],
+        'אזור הצפון': ['חיפה','נהריה','עכו','טבריה','צפת','עפולה','נצרת','כרמיאל','קריית שמונה'],
+        'אזור הדרום': ['באר שבע','אשדוד','אשקלון','קריית גת','אילת'],
+        'אזור השרון': ['נתניה','כפר סבא','הרצליה','חדרה','רעננה','הוד השרון'],
+      };
+      if (areaCities[city])
+        where += ` AND l.city=ANY(${addParam(areaCities[city])}::text[])`;
+      else
+        where += ` AND l.city=${addParam(city)}`;
+    }
+    if (q && String(q).trim()) {
+      const search = addParam(`%${String(q).trim()}%`);
+      where += ` AND (l.title ILIKE ${search} OR l.description ILIKE ${search})`;
+    }
+    const parsedMinPrice = Number(minPrice);
+    const parsedMaxPrice = Number(maxPrice);
+    if (minPrice !== undefined && Number.isFinite(parsedMinPrice) && parsedMinPrice >= 0)
+      where += ` AND l.price >= ${addParam(parsedMinPrice)}`;
+    if (maxPrice !== undefined && Number.isFinite(parsedMaxPrice) && parsedMaxPrice >= 0)
+      where += ` AND l.price <= ${addParam(parsedMaxPrice)}`;
 
     let distExpr = 'NULL';
     if (radius) {
@@ -4540,11 +4653,19 @@ app.get('/api/listings', auth, async (req, res) => {
       }
     }
 
+    const orderBy = sort === 'price_asc'
+      ? 'l.price ASC NULLS LAST, l.created_at DESC'
+      : sort === 'price_desc'
+        ? 'l.price DESC NULLS LAST, l.created_at DESC'
+        : 'l.created_at DESC';
     const result = await pool.query(`
       SELECT id, type, title, description, price, city,
              image_url, images, category, status, created_at,
+             item_condition, negotiable, quantity, delivery_method,
+             pickup_details, contact_phone_visible,
              view_count, contact_count,
-             seller_id, seller_name, seller_pic, dist AS distance_km
+             seller_id, seller_name, seller_pic, seller_phone,
+             dist AS distance_km
       FROM (
         SELECT l.id, l.type, l.title, l.description, l.price, l.city,
                l.image_url,
@@ -4554,11 +4675,14 @@ app.get('/api/listings', auth, async (req, res) => {
                  CASE WHEN l.image_url IS NOT NULL THEN ARRAY[l.image_url]
                       ELSE ARRAY[]::text[] END
                ) AS images,
-               l.category, l.status, l.created_at,
+               l.category, l.status, l.created_at, l.item_condition,
+               l.negotiable, l.quantity, l.delivery_method,
+               l.pickup_details, l.contact_phone_visible,
                l.view_count, l.contact_count, l.latitude, l.longitude,
                u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
+               CASE WHEN l.contact_phone_visible THEN u.phone ELSE NULL END AS seller_phone,
                ${distExpr} AS dist,
-               ROW_NUMBER() OVER (ORDER BY l.created_at DESC) AS _rn
+               ROW_NUMBER() OVER (ORDER BY ${orderBy}) AS _rn
         FROM listings l JOIN users u ON u.id = l.user_id
         WHERE ${where}
       ) AS _q
@@ -4586,7 +4710,9 @@ app.get('/api/listings/:id', auth, async (req, res) => {
         [req.params.id, req.user.id]);
     } catch (_) {}
     const result = await pool.query(
-      `SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic, u.id AS seller_id
+      `SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic,
+              u.id AS seller_id,
+              CASE WHEN l.contact_phone_visible THEN u.phone ELSE NULL END AS seller_phone
        FROM listings l JOIN users u ON u.id = l.user_id WHERE l.id=$1`, [req.params.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
     const item = result.rows[0];
@@ -4627,9 +4753,9 @@ app.put('/api/listings/:id', auth, async (req, res) => {
     return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   const { type, title, description, price, city, category, image_urls } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
-  const validTypes = ['free', 'sale'];
   const validCats  = ['רכב','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
-  const safeType   = validTypes.includes(type) ? type : 'free';
+  const normalizedPrice = Number(price) || 0;
+  const safeType   = normalizedPrice > 0 ? 'sale' : 'free';
   const safeCat    = validCats.includes(category) ? category : 'אחר';
   const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 8) : [];
   try {
@@ -4643,7 +4769,7 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       `UPDATE listings SET type=$1, title=$2, description=$3,
        price=$4, city=$5, category=$6, image_url=$7
        WHERE id=$8 AND user_id=$9`,
-      [safeType, title.trim(), description || null, safeType === 'sale' ? (price ?? 0) : null,
+      [safeType, title.trim(), description || null, safeType === 'sale' ? normalizedPrice : null,
        city || null, safeCat, allImages[0] || null, req.params.id, req.user.id]);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'לא נמצא' });
     await pool.query('DELETE FROM listing_images WHERE listing_id=$1', [req.params.id]);
@@ -7594,6 +7720,12 @@ async function initPendingTable() {
         longitude    DOUBLE PRECISION NULL,
         image_url    TEXT NULL,
         category     TEXT NULL,
+        item_condition TEXT NOT NULL DEFAULT 'good',
+        negotiable BOOLEAN NOT NULL DEFAULT FALSE,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        delivery_method TEXT NOT NULL DEFAULT 'pickup',
+        pickup_details TEXT NULL,
+        contact_phone_visible BOOLEAN NOT NULL DEFAULT FALSE,
         status       TEXT NOT NULL DEFAULT 'active',
         created_at   TIMESTAMPTZ DEFAULT now(),
         expires_at   TIMESTAMPTZ DEFAULT now() + interval '30 days'
@@ -7602,6 +7734,12 @@ async function initPendingTable() {
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT now() + interval '30 days'`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_count INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_condition TEXT NOT NULL DEFAULT 'good'`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS negotiable BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS quantity INTEGER NOT NULL DEFAULT 1`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'pickup'`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS pickup_details TEXT`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_phone_visible BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS listing_views (
         listing_id  UUID NOT NULL,
