@@ -28,6 +28,7 @@ const SCAN_BOT_EMAIL = 'scan@betshuva.system';
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002';
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
 const SYSTEM_USER_NAME = 'מדריך בתשובה';
+const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
 const WELCOME_MESSAGE =
   'ברוך הבא לבתשובה 🌿\n\nשמחים שהצטרפת אלינו. כאן תקבל עדכונים חשובים, הודעות מערכת וטיפים שיעזרו לך להשתמש באפליקציה בבטחה ובנוחות.\n\nכך מוסיפים חברים:\n1. לחץ על סמל הוספת החבר (אדם עם סימן +) בחלק העליון של מסך השיחות.\n2. חפש לפי שם, מספר טלפון או כתובת אימייל.\n3. לחץ על „שמור” ליד האדם הרצוי.\n4. החבר יופיע ברשימת השיחות ותוכל לפתוח איתו שיחה.\n\nאם איש הקשר עדיין לא רשום, לחץ על „הזמן” כדי לשלוח לו קישור הצטרפות.\n\nמאחלים לך שיחות טובות ומועילות!';
 
@@ -423,6 +424,23 @@ const DEFAULT_CONTENT_FILTER = Object.freeze({
   women: true,
   children: true,
 });
+const NEW_ACCOUNT_CONTENT_FILTER = Object.freeze({
+  text: true,
+  video: false,
+  nonHumanImages: false,
+  men: false,
+  women: false,
+  children: false,
+});
+
+function requestedRegistrationFilter(body) {
+  if (body?.contentFilterConfirmed !== true) return null;
+  const value = body?.contentFilter;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!Object.keys(NEW_ACCOUNT_CONTENT_FILTER)
+    .every(key => typeof value[key] === 'boolean')) return null;
+  return normalizeContentFilter(value, NEW_ACCOUNT_CONTENT_FILTER);
+}
 
 function normalizeContentFilter(value, fallback = DEFAULT_CONTENT_FILTER) {
   const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -1277,6 +1295,7 @@ async function migrateDatabase() {
         location_updated_at TIMESTAMPTZ,
         wins                INTEGER NOT NULL DEFAULT 0,
         games_played        INTEGER NOT NULL DEFAULT 0,
+        referral_count      INTEGER NOT NULL DEFAULT 0,
         created_at          TIMESTAMPTZ DEFAULT now()
       )`);
 
@@ -1329,6 +1348,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date DATE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`
       INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city)
       VALUES($1,'סריקה',$2,'0000000000',TRUE,TRUE,'מערכת')
@@ -1451,6 +1471,21 @@ async function migrateDatabase() {
       )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS external_group_invites_email_idx ON external_group_invites(lower(email)) WHERE status='pending'`);
     await pool.query(`CREATE INDEX IF NOT EXISTS external_group_invites_phone_idx ON external_group_invites(phone) WHERE status='pending'`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_invites (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        invited_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT,
+        phone TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        claimed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        claimed_at TIMESTAMPTZ,
+        CHECK (email IS NOT NULL OR phone IS NOT NULL)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS app_invites_email_idx ON app_invites(lower(email)) WHERE status='pending'`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS app_invites_phone_idx ON app_invites(phone) WHERE status='pending'`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS app_invites_claimed_user_idx ON app_invites(claimed_by) WHERE status='claimed'`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_contacts (
@@ -2320,11 +2355,94 @@ async function claimExternalGroupInvites(userId) {
   }
 }
 
+async function claimAppInvite(userId) {
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const userResult = await client.query(
+      `SELECT id,name,lower(email) AS email,phone,email_verified,phone_verified
+       FROM users WHERE id=$1 FOR UPDATE`, [userId]);
+    const user = userResult.rows[0];
+    if (!user || (user.email_verified !== true && user.phone_verified !== true)) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const inviteResult = await client.query(
+      `SELECT id,invited_by FROM app_invites
+       WHERE status='pending' AND invited_by<>$1
+         AND (($2<>'' AND lower(email)=$2) OR ($3<>'' AND phone=$3))
+       ORDER BY created_at ASC
+       FOR UPDATE SKIP LOCKED LIMIT 1`,
+      [userId, user.email || '', user.phone || '']);
+    if (!inviteResult.rows.length) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const invite = inviteResult.rows[0];
+    const alreadyClaimed = await client.query(
+      `SELECT 1 FROM app_invites WHERE claimed_by=$1 AND status='claimed'`,
+      [userId]);
+    if (alreadyClaimed.rows.length) {
+      await client.query(
+        `UPDATE app_invites SET status='duplicate' WHERE id=$1`, [invite.id]);
+      await client.query('COMMIT');
+      return null;
+    }
+    await client.query(
+      `INSERT INTO user_contacts(owner_id,contact_id)
+       VALUES($1,$2),($2,$1) ON CONFLICT DO NOTHING`,
+      [invite.invited_by, userId]);
+    await client.query(
+      `UPDATE app_invites SET status='claimed',claimed_by=$1,claimed_at=now()
+       WHERE id=$2`, [userId, invite.id]);
+    await client.query(
+      `UPDATE app_invites SET status='duplicate'
+       WHERE status='pending' AND id<>$1
+         AND (($2<>'' AND lower(email)=$2) OR ($3<>'' AND phone=$3))`,
+      [invite.id, user.email || '', user.phone || '']);
+    const countResult = await client.query(
+      `UPDATE users SET referral_count=referral_count+1 WHERE id=$1
+       RETURNING referral_count`, [invite.invited_by]);
+    const count = countResult.rows[0]?.referral_count || 1;
+    const body = `כל הכבוד! ${user.name} הצטרף/ה לבתשובה בעקבות ההזמנה שלך ונוסף/ה כחבר/ה. עד היום החזרת בתשובה ${count} חברים.`;
+    const messageResult = await client.query(
+      `INSERT INTO messages(sender_id,recipient_id,type,body)
+       VALUES($1,$2,'text',$3) RETURNING id,created_at`,
+      [SYSTEM_USER_ID, invite.invited_by, body]);
+    await client.query('COMMIT');
+
+    const message = messageResult.rows[0];
+    const sid = onlineUsers.get(invite.invited_by);
+    if (sid) {
+      io.to(sid).emit('chat:message', {
+        id: message.id,
+        fromUserId: SYSTEM_USER_ID,
+        fromName: SYSTEM_USER_NAME,
+        text: body,
+        fileType: 'text',
+        createdAt: message.created_at,
+      });
+    }
+    sendPush(invite.invited_by, SYSTEM_USER_NAME, body,
+      { type: 'referral_credit', referredUserId: userId });
+    return { inviterId: invite.invited_by, count };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (error.code !== '23505') throw error;
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
 io.on('connection', async (socket) => {
   onlineUsers.set(socket.user.id, socket.id);
   io.emit('users:online', [...onlineUsers.keys()]);
   claimExternalGroupInvites(socket.user.id).catch(e =>
     console.error('claimExternalGroupInvites:', e.message));
+  claimAppInvite(socket.user.id).catch(e =>
+    console.error('claimAppInvite:', e.message));
 
   // Register call signaling before asynchronous chat initialization so a
   // client can safely call as soon as it receives the call:ready event.
@@ -2779,6 +2897,9 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
   const { name, password, phone, clientType, verificationMethod, gender } = req.body;
   if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
     return res.status(400).json({ error: 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה' });
+  const registrationFilter = requestedRegistrationFilter(req.body);
+  if (!registrationFilter)
+    return res.status(400).json({ error: 'יש לבחור ולאשר את הגדרות הסינון' });
   // Copying an address from RTL text can add invisible bidi controls. They
   // are formatting characters, not part of an email address.
   const email = typeof req.body.email === 'string'
@@ -2814,11 +2935,11 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
 
     const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
     const result = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender, birth_date)
-       VALUES ($1, $2, $3, $4, now(), '2026-08-23', TRUE, $5, $6)
+      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter)
+       VALUES ($1, $2, $3, $4, now(), '2026-08-23', TRUE, $5, $6, $7)
        RETURNING id, name, email`,
       [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender,
-       agePolicy.birthDate]);
+       agePolicy.birthDate, JSON.stringify(registrationFilter)]);
     const user = result.rows[0];
     await provisionSystemConversation(pool, user.id);
 
@@ -2873,6 +2994,7 @@ app.post('/api/login', authRateLimit, credentialRateLimit, async (req, res) => {
     if (!user.email_verified && !user.phone_verified)
       return res.status(403).json({ error: 'יש לאמת את הטלפון או האימייל תחילה', code: 'VERIFICATION_REQUIRED' });
 
+    await provisionSystemConversation(pool, user.id);
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     const { password_hash, ...safeUser } = user;
     logActivity(user.id, 'login', { email: user.email }, req.ip);
@@ -2997,6 +3119,9 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
     // 3. Create new user
     if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
       return res.status(400).json({ error: 'ליצירת חשבון חדש יש לעבור למסך הרשמה ולאשר תנאים וגיל 13 ומעלה' });
+    const registrationFilter = requestedRegistrationFilter(req.body);
+    if (!registrationFilter)
+      return res.status(400).json({ error: 'יש לבחור ולאשר את הגדרות הסינון' });
     if (!['male', 'female'].includes(req.body.gender))
       return res.status(400).json({ error: 'יש לבחור מגדר בהרשמה' });
     const agePolicy = validateRegistrationAge(req.body.birthDate);
@@ -3004,11 +3129,11 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
     console.log(`[GOOGLE] new user — name:${name} email:${email}`);
     const inserted = await pool.query(
       `INSERT INTO users (name, email, email_verified, google_id, profile_pic_url,
-                          terms_accepted_at, terms_version, age_confirmed, gender, birth_date)
-       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-23', TRUE, $5, $6)
+                          terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter)
+       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-23', TRUE, $5, $6, $7)
        RETURNING *`,
       [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null,
-       req.body.gender, agePolicy.birthDate]);
+       req.body.gender, agePolicy.birthDate, JSON.stringify(registrationFilter)]);
     const user  = inserted.rows[0];
     await provisionSystemConversation(pool, user.id);
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
@@ -3029,6 +3154,10 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
 app.get('/api/users', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
+    // Keep the built-in guide available even for legacy accounts or after a
+    // contact cleanup. Provisioning is idempotent and sends the welcome only
+    // when no previous guide message exists.
+    await provisionSystemConversation(pool, req.user.id);
     const result = await pool.query(
       `SELECT u.id, u.name, u.profile_pic_url, u.city, u.phone, u.email,
               c.filter_override, c.pinned_at,
@@ -3070,8 +3199,11 @@ app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT id, name, profile_pic_url, city, phone, email
-       FROM users WHERE id != $1 AND id != $2
+      `SELECT id, name, profile_pic_url, city, phone, email,
+              EXISTS(SELECT 1 FROM user_contacts c
+                     WHERE c.owner_id=$1 AND c.contact_id=users.id) AS saved
+       FROM users WHERE id != $1 AND id != $2 AND id != $3 AND id != $4
+       AND NOT (name = 'משתמש' AND gender IS NULL)
        AND (email_verified = TRUE OR phone_verified = TRUE)
        AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
        AND (
@@ -3082,7 +3214,12 @@ app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
          birth_date <= CURRENT_DATE - INTERVAL '18 years'
          OR EXISTS (SELECT 1 FROM user_contacts c WHERE c.owner_id=$1 AND c.contact_id=users.id)
        )
-       ORDER BY name`, [req.user.id, SCAN_BOT_ID]);
+       ORDER BY name`, [
+        req.user.id,
+        SCAN_BOT_ID,
+        SYSTEM_USER_ID,
+        GOOGLE_PLAY_REVIEWER_ID,
+      ]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3100,6 +3237,9 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
        FROM users u
        WHERE u.id != $1
          AND u.id != $5
+         AND u.id != $6
+         AND u.id != $7
+         AND NOT (u.name = 'משתמש' AND u.gender IS NULL)
          AND (u.email_verified = TRUE OR u.phone_verified = TRUE)
          AND u.id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id=$1)
          AND (
@@ -3112,7 +3252,15 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
          )
          AND (u.name ILIKE $2 OR u.email ILIKE $2 OR ($3 <> '' AND u.phone LIKE $4))
        ORDER BY u.name LIMIT 30`,
-      [req.user.id, `%${q}%`, digits, `%${digits}%`, SCAN_BOT_ID]);
+      [
+        req.user.id,
+        `%${q}%`,
+        digits,
+        `%${digits}%`,
+        SCAN_BOT_ID,
+        SYSTEM_USER_ID,
+        GOOGLE_PLAY_REVIEWER_ID,
+      ]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3125,7 +3273,10 @@ app.post('/api/contacts/save/:userId', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const exists = await pool.query(
-      'SELECT 1 FROM users WHERE id=$1 AND (email_verified=TRUE OR phone_verified=TRUE)',
+      `SELECT 1 FROM users
+       WHERE id=$1
+         AND NOT (name = 'משתמש' AND gender IS NULL)
+         AND (email_verified=TRUE OR phone_verified=TRUE)`,
       [req.params.userId]);
     if (!exists.rows.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
     await pool.query(
@@ -3248,6 +3399,7 @@ app.post('/api/contacts/match', auth, async (req, res) => {
       `SELECT id, name, profile_pic_url, phone, email
        FROM users
        WHERE (phone = ANY($2::text[]) OR lower(email) = ANY($3::text[]))
+         AND NOT (name = 'משתמש' AND gender IS NULL)
          AND (email_verified = TRUE OR phone_verified = TRUE)
          AND id != $1
          AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = $1)`,
@@ -5115,11 +5267,49 @@ app.delete('/api/groups/:id/decline', auth, async (req, res) => {
 });
 
 // ── Send a general invitation to an unregistered contact ─────────
+app.post('/api/invites/prepare', auth, inviteRateLimit, async (req, res) => {
+  const cleanPhone = String(req.body.phone || '').replace(/\D/g, '');
+  const cleanEmail = String(req.body.email || '').trim().toLowerCase();
+  if (!cleanPhone && !cleanEmail.includes('@'))
+    return res.status(400).json({ error: 'נדרש מספר טלפון או אימייל' });
+  try {
+    const pool = await getPool();
+    const existingUser = await pool.query(
+      `SELECT 1 FROM users
+       WHERE ($1<>'' AND phone=$1) OR ($2<>'' AND lower(email)=$2)
+       LIMIT 1`, [cleanPhone, cleanEmail.includes('@') ? cleanEmail : '']);
+    if (existingUser.rows.length)
+      return res.status(409).json({ error: 'החבר כבר רשום באפליקציה' });
+    const existingInvite = await pool.query(
+      `SELECT id FROM app_invites
+       WHERE invited_by=$1 AND status='pending'
+         AND (($2<>'' AND phone=$2) OR ($3<>'' AND lower(email)=$3))
+       LIMIT 1`,
+      [req.user.id, cleanPhone, cleanEmail.includes('@') ? cleanEmail : '']);
+    if (!existingInvite.rows.length) {
+      await pool.query(
+        `INSERT INTO app_invites(invited_by,email,phone) VALUES($1,$2,$3)`,
+        [req.user.id, cleanEmail.includes('@') ? cleanEmail : null,
+         cleanPhone || null]);
+    }
+    const link = 'https://betshuva.com/betshuva-app/invite-v2.html';
+    const message = `${req.user.name || 'חבר'} מזמין אותך להצטרף לאפליקציית בתשובה: ${link}`;
+    res.json({ ok: true, message, link });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/invites/send', auth, inviteRateLimit, async (req, res) => {
   const cleanPhone = String(req.body.phone || '').replace(/\D/g, '');
   if (!cleanPhone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
   const msg = `${req.user.name || 'חבר'} מזמין אותך להצטרף לאפליקציית בתשובה: https://betshuva.com/betshuva-app/home.html`;
   try {
+    const pool = await getPool();
+    await pool.query(
+      `INSERT INTO app_invites(invited_by,phone)
+       SELECT $1,$2 WHERE NOT EXISTS (
+         SELECT 1 FROM app_invites
+         WHERE invited_by=$1 AND phone=$2 AND status='pending'
+       )`, [req.user.id, cleanPhone]);
     await mailer.sendMail({
       from: `"בתשובה" <${process.env.EMAIL_FROM}>`,
       to: `${cleanPhone}@019sms.co.il`,
@@ -5469,6 +5659,8 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
         return res.status(400).json({ error: 'יש לבחור מגדר' });
       const agePolicy = validateRegistrationAge(req.body.birthDate);
       if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
+      if (!requestedRegistrationFilter(req.body))
+        return res.status(400).json({ error: 'יש לבחור ולאשר את הגדרות הסינון' });
     }
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -5484,15 +5676,22 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
   }
   const code    = Math.floor(100000 + Math.random() * 900000).toString();
   const expires = Date.now() + 5 * 60 * 1000;
+  const appSignature = typeof req.body.appSignature === 'string' &&
+    /^[A-Za-z0-9+/]{11}$/.test(req.body.appSignature)
+      ? req.body.appSignature
+      : null;
   otpStore.set(clean, { code, expires, name: cleanName, email: cleanEmail,
     acceptedTerms: req.body.acceptedTerms === true,
     ageConfirmed: req.body.ageConfirmed === true,
     gender: ['male', 'female'].includes(gender) ? gender : null,
-    birthDate: parseBirthDate(req.body.birthDate) });
+    birthDate: parseBirthDate(req.body.birthDate),
+    contentFilter: requestedRegistrationFilter(req.body) });
   try {
     await sendEmail({
       to:      `${clean}@019sms.co.il`,
-      subject: `קוד האימות שלך לבתשובה: ${code}`,
+      subject: appSignature
+        ? `<#> קוד האימות שלך לבתשובה: ${code} ${appSignature}`
+        : `קוד האימות שלך לבתשובה: ${code}`,
       html:    '',
     });
     res.json({ ok: true });
@@ -5548,10 +5747,11 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
         const hash   = await bcrypt.hash(`otp_${clean}`, 10);
         const result = await pool.query(
           `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified,
-                              terms_accepted_at, terms_version, age_confirmed, gender, birth_date)
-           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-23', TRUE, $5, $6)
+                              terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter)
+           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-23', TRUE, $5, $6, $7)
            RETURNING id, name, email`,
-          [userName, userEmail, clean, hash, entry.gender, agePolicy.birthDate]);
+          [userName, userEmail, clean, hash, entry.gender, agePolicy.birthDate,
+           JSON.stringify(entry.contentFilter || NEW_ACCOUNT_CONTENT_FILTER)]);
         user = result.rows[0];
         // הודע לכל המחוברים על משתמש חדש
         req.app.get('io').emit('users:new', {
@@ -5559,6 +5759,7 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
         });
       }
     }
+    await provisionSystemConversation(pool, user.id);
     const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
     logActivity(user.id, 'otp_login', { phone: clean }, null);
     res.json({ token, user });
@@ -5961,6 +6162,7 @@ app.delete('/api/account', auth, async (req, res) => {
     await client.query('UPDATE groups SET creator_id=NULL WHERE creator_id=$1', [uid]);
     await client.query('DELETE FROM external_group_invites WHERE invited_by=$1', [uid]);
     await client.query('UPDATE external_group_invites SET claimed_by=NULL WHERE claimed_by=$1', [uid]);
+    await client.query('DELETE FROM app_invites WHERE invited_by=$1 OR claimed_by=$1', [uid]);
     await client.query('DELETE FROM blocked_users WHERE blocker_id=$1 OR blocked_id=$1', [uid]);
     await client.query('DELETE FROM user_contacts WHERE owner_id=$1 OR contact_id=$1', [uid]);
     await client.query('DELETE FROM admin_permissions WHERE user_id=$1', [uid]);
@@ -6031,6 +6233,7 @@ app.delete('/api/account/data', auth, async (req, res) => {
     await client.query('UPDATE groups SET creator_id=NULL WHERE creator_id=$1', [uid]);
     await client.query('DELETE FROM external_group_invites WHERE invited_by=$1', [uid]);
     await client.query('UPDATE external_group_invites SET claimed_by=NULL WHERE claimed_by=$1', [uid]);
+    await client.query('DELETE FROM app_invites WHERE invited_by=$1 OR claimed_by=$1', [uid]);
     await client.query('DELETE FROM blocked_users WHERE blocker_id=$1 OR blocked_id=$1', [uid]);
     await client.query('DELETE FROM user_contacts WHERE owner_id=$1 OR contact_id=$1', [uid]);
     await client.query('DELETE FROM games WHERE player1_id=$1 OR player2_id=$1', [uid]);

@@ -10,6 +10,7 @@ import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:smart_auth/smart_auth.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -445,8 +446,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.83';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.83.apk';
+const kVersion = '1.2.85';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.85.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -1269,6 +1270,245 @@ class _SplashScreenState extends State<SplashScreen>
 }
 
 // ── Phone Auth Screen (OTP via SMS) ──────────────────────────────
+Map<String, bool> _newAccountFilter() => {
+      'text': true,
+      'video': false,
+      'nonHumanImages': false,
+      'men': false,
+      'women': false,
+      'children': false,
+    };
+
+class _RegistrationFilterSelector extends StatelessWidget {
+  final Map<String, bool> filter;
+  final bool confirmed;
+  final ValueChanged<Map<String, bool>> onChanged;
+  final ValueChanged<bool> onConfirmed;
+
+  const _RegistrationFilterSelector({
+    required this.filter,
+    required this.confirmed,
+    required this.onChanged,
+    required this.onConfirmed,
+  });
+
+  static const _items = <String, (String, IconData)>{
+    'text': ('טקסט', Icons.chat_bubble_outline),
+    'video': ('וידאו', Icons.videocam_outlined),
+    'nonHumanImages': ('טבע וחיות', Icons.landscape_outlined),
+    'men': ('גברים', Icons.man),
+    'women': ('נשים', Icons.woman),
+    'children': ('ילדים', Icons.child_care),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedCount = filter.values.where((value) => value).length;
+    final safeDefault = filter['text'] == true &&
+        _items.keys
+            .where((key) => key != 'text')
+            .every((key) => filter[key] != true);
+    return Container(
+      margin: const EdgeInsets.only(top: 18),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+            color: confirmed ? kPrimaryMid : const Color(0xFFC8DDEA),
+            width: confirmed ? 1.8 : 1.2),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x120D5D91), blurRadius: 16, offset: Offset(0, 4)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: kPrimary.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: const Icon(Icons.shield_outlined, color: kPrimary),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('מה תרצה לקבל?',
+                      style:
+                          TextStyle(fontSize: 15, fontWeight: FontWeight.w800)),
+                  Text('אפשר לשנות זאת אחר כך בהגדרות',
+                      style: TextStyle(color: kSubtext, fontSize: 12)),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F3FA),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text('$selectedCount נבחרו',
+                  style: const TextStyle(
+                      color: kPrimary,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700)),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => onChanged(_newAccountFilter()),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: safeDefault
+                    ? kPrimary.withValues(alpha: 0.09)
+                    : const Color(0xFFF5F8FA),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: safeDefault ? kPrimaryMid : kBorder),
+              ),
+              child: Row(children: [
+                Icon(
+                    safeDefault
+                        ? Icons.check_circle_rounded
+                        : Icons.radio_button_unchecked,
+                    color: safeDefault ? kPrimary : kSubtext,
+                    size: 22),
+                const SizedBox(width: 9),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('טקסט בלבד — ברירת מחדל בטוחה',
+                          style: TextStyle(
+                              fontSize: 13, fontWeight: FontWeight.w700)),
+                      Text('תמונות, חיות ווידאו חסומים',
+                          style: TextStyle(color: kSubtext, fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text('או התאמה אישית:',
+              style: TextStyle(color: kSubtext, fontSize: 12)),
+          const SizedBox(height: 7),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: _items.entries.map((entry) {
+              final selected = filter[entry.key] == true;
+              return FilterChip(
+                selected: selected,
+                showCheckmark: true,
+                avatar: Icon(entry.value.$2,
+                    size: 18, color: selected ? kPrimary : kSubtext),
+                label: Text(entry.value.$1),
+                labelStyle: TextStyle(
+                    color: selected ? kPrimary : kTextDark,
+                    fontSize: 12,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500),
+                selectedColor: const Color(0xFFE1F1FC),
+                backgroundColor: const Color(0xFFF5F8FA),
+                side: BorderSide(color: selected ? kPrimaryMid : kBorder),
+                onSelected: (value) => onChanged({
+                  ...filter,
+                  entry.key: value,
+                }),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: confirmed ? null : () => onConfirmed(true),
+              icon: Icon(confirmed
+                  ? Icons.check_circle_rounded
+                  : Icons.verified_user_outlined),
+              label:
+                  Text(confirmed ? 'בחירת הסינון אושרה' : 'אישור בחירת הסינון'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: confirmed ? Colors.white : kPrimary,
+                backgroundColor: confirmed ? kPrimary : Colors.white,
+                disabledForegroundColor: Colors.white,
+                disabledBackgroundColor: kPrimary,
+                side: const BorderSide(color: kPrimary),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RegistrationProgress extends StatelessWidget {
+  final int current;
+  const _RegistrationProgress({required this.current});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Row(
+          children: [
+            _step(1, 'פרטים וסינון'),
+            Expanded(
+              child: Container(
+                height: 2,
+                margin: const EdgeInsets.symmetric(horizontal: 8),
+                color: current >= 2 ? kPrimaryMid : kBorder,
+              ),
+            ),
+            _step(2, 'אימות'),
+          ],
+        ),
+      );
+
+  Widget _step(int number, String label) {
+    final active = current >= number;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 25,
+          height: 25,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: active ? kPrimary : Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: active ? kPrimary : kBorder),
+          ),
+          child: Text('$number',
+              style: TextStyle(
+                  color: active ? Colors.white : kSubtext,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(width: 6),
+        Text(label,
+            style: TextStyle(
+                color: active ? kPrimary : kSubtext,
+                fontSize: 11,
+                fontWeight: active ? FontWeight.w700 : FontWeight.w500)),
+      ],
+    );
+  }
+}
+
 class PhoneAuthScreen extends StatefulWidget {
   const PhoneAuthScreen({super.key});
   @override
@@ -1283,6 +1523,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   bool _loading = false;
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
+  bool _filterConfirmed = false;
+  Map<String, bool> _registrationFilter = _newAccountFilter();
   String? _gender;
   DateTime? _birthDate;
   String? _error;
@@ -1290,6 +1532,27 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     clientId: kIsWeb ? kGoogleWebClientId : null,
     serverClientId: kIsWeb ? null : kGoogleWebClientId,
   );
+
+  bool get _supportsAutomaticSms =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  Future<String?> _startAutomaticSmsReading() async {
+    if (!_supportsAutomaticSms) return null;
+    final signatureResult = await SmartAuth.instance.getAppSignature();
+    if (!signatureResult.hasData) return null;
+    unawaited(_readAndVerifySmsCode());
+    return signatureResult.requireData;
+  }
+
+  Future<void> _readAndVerifySmsCode() async {
+    final result = await SmartAuth.instance.getSmsWithRetrieverApi();
+    if (!mounted || !result.hasData) return;
+    final code = result.requireData.code;
+    if (code == null || !RegExp(r'^\d{6}$').hasMatch(code)) return;
+    _otpCtrl.text = code;
+    setState(() => _otpSent = true);
+    await _verifyOtp();
+  }
 
   Future<void> _signInWithGoogle() async {
     setState(() {
@@ -1323,6 +1586,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               'gender': _gender,
               'birthDate':
                   _birthDate == null ? null : _formatBirthDate(_birthDate!),
+              'contentFilter': _registrationFilter,
+              'contentFilterConfirmed': _filterConfirmed,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1365,6 +1630,9 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
 
   @override
   void dispose() {
+    if (_supportsAutomaticSms) {
+      unawaited(SmartAuth.instance.removeSmsRetrieverApiListener());
+    }
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
     _otpCtrl.dispose();
@@ -1386,11 +1654,16 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       setState(() => _error = 'יש לבחור תאריך לידה');
       return;
     }
+    if (!_filterConfirmed) {
+      setState(() => _error = 'יש לבחור ולאשר את הגדרות הסינון');
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
+      final appSignature = await _startAutomaticSmsReading();
       final res = await http
           .post(
             Uri.parse('$kApi/send-otp'),
@@ -1402,6 +1675,9 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
               'ageConfirmed': true,
               'gender': _gender,
               'birthDate': _formatBirthDate(_birthDate!),
+              'contentFilter': _registrationFilter,
+              'contentFilterConfirmed': _filterConfirmed,
+              if (appSignature != null) 'appSignature': appSignature,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1521,7 +1797,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                       style: const TextStyle(fontSize: 15, color: kSubtext),
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: 36),
+                    const SizedBox(height: 22),
+                    _RegistrationProgress(current: _otpSent ? 2 : 1),
                     if (!_otpSent) ...[
                       TextField(
                         controller: _nameCtrl,
@@ -1566,6 +1843,16 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                       ),
                       const SizedBox(height: 14),
                       const _BetaNotice(),
+                      _RegistrationFilterSelector(
+                        filter: _registrationFilter,
+                        confirmed: _filterConfirmed,
+                        onChanged: (value) => setState(() {
+                          _registrationFilter = value;
+                          _filterConfirmed = false;
+                        }),
+                        onConfirmed: (value) =>
+                            setState(() => _filterConfirmed = value),
+                      ),
                       CheckboxListTile(
                         contentPadding: EdgeInsets.zero,
                         value: _ageConfirmed,
@@ -1586,6 +1873,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                     ] else ...[
                       TextField(
                         controller: _otpCtrl,
+                        autofillHints: const [AutofillHints.oneTimeCode],
                         keyboardType: TextInputType.number,
                         maxLength: 6,
                         textAlign: TextAlign.center,
@@ -1685,7 +1973,9 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
 // ── Auth Screen (Login / Register) ───────────────────────────────
 class AuthScreen extends StatefulWidget {
   final String? initialEmail;
-  const AuthScreen({super.key, this.initialEmail});
+  final bool initialRegistration;
+  const AuthScreen(
+      {super.key, this.initialEmail, this.initialRegistration = false});
   @override
   State<AuthScreen> createState() => _AuthScreenState();
 }
@@ -1697,6 +1987,10 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _verificationRequired = false;
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
+  bool _filterConfirmed = false;
+  int _registrationStep = 0;
+  String _registrationMethod = 'email';
+  Map<String, bool> _registrationFilter = _newAccountFilter();
   String? _gender;
   DateTime? _birthDate;
   String _verificationMethod = 'email';
@@ -1715,6 +2009,7 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   void initState() {
     super.initState();
+    _isLogin = !widget.initialRegistration;
     _emailCtrl.text = widget.initialEmail ?? '';
   }
 
@@ -1751,6 +2046,8 @@ class _AuthScreenState extends State<AuthScreen> {
               'gender': _gender,
               'birthDate':
                   _birthDate == null ? null : _formatBirthDate(_birthDate!),
+              'contentFilter': _registrationFilter,
+              'contentFilterConfirmed': _filterConfirmed,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1837,6 +2134,10 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() => _error = 'יש לבחור תאריך לידה');
         return;
       }
+      if (!_filterConfirmed) {
+        setState(() => _error = 'יש לבחור ולאשר את הגדרות הסינון');
+        return;
+      }
       if (email.isEmpty || !email.contains('@')) {
         setState(() => _error = 'נא להזין כתובת אימייל תקינה');
         return;
@@ -1916,6 +2217,8 @@ class _AuthScreenState extends State<AuthScreen> {
                 'ageConfirmed': true,
                 'gender': _gender,
                 'birthDate': _formatBirthDate(_birthDate!),
+                'contentFilter': _registrationFilter,
+                'contentFilterConfirmed': _filterConfirmed,
               }),
             )
             .timeout(const Duration(seconds: 30));
@@ -2001,8 +2304,454 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  void _registrationError(String message) {
+    setState(() => _error = message);
+  }
+
+  void _nextRegistrationStep() {
+    if (_registrationStep == 1) {
+      if (_registrationMethod == 'email') {
+        final email = _emailCtrl.text.trim();
+        final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+        if (email.isEmpty || !email.contains('@')) {
+          _registrationError('נא להזין כתובת אימייל תקינה');
+          return;
+        }
+        if (phone.length < 9) {
+          _registrationError('נא להזין מספר טלפון תקין');
+          return;
+        }
+        if (_passCtrl.text.length < 6) {
+          _registrationError('הסיסמה חייבת להיות לפחות 6 תווים');
+          return;
+        }
+      }
+    }
+    if (_registrationStep == 2) {
+      if (_nameCtrl.text.trim().isEmpty) {
+        _registrationError('נא להזין שם מלא');
+        return;
+      }
+      if (_birthDate == null) {
+        _registrationError('יש לבחור תאריך לידה');
+        return;
+      }
+      if (_gender == null) {
+        _registrationError('יש לבחור מגדר');
+        return;
+      }
+    }
+    if (_registrationStep == 3 && !_filterConfirmed) {
+      _registrationError('יש לאשר את בחירת הסינון');
+      return;
+    }
+    setState(() {
+      _error = null;
+      _registrationStep = (_registrationStep + 1).clamp(0, 4);
+    });
+  }
+
+  Future<void> _finishRegistration() async {
+    if (!_ageConfirmed || !_acceptedTerms) {
+      _registrationError(
+          'יש לאשר גיל 13 ומעלה ואת תנאי השימוש ומדיניות הפרטיות');
+      return;
+    }
+    if (_registrationMethod == 'google') {
+      await _signInWithGoogle();
+      return;
+    }
+    setState(() {
+      _choosingVerification = true;
+      _error = null;
+    });
+    await _submit();
+  }
+
+  Widget _registrationMethodCard({
+    required String method,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    final selected = _registrationMethod == method;
+    return InkWell(
+      onTap: () => setState(() => _registrationMethod = method),
+      borderRadius: BorderRadius.circular(16),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFFE7F3FC) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+              color: selected ? kPrimary : kBorder, width: selected ? 2 : 1.2),
+        ),
+        child: Row(children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: selected ? kPrimary : const Color(0xFFF0F5F8),
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: Icon(icon, color: selected ? Colors.white : kPrimary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 2),
+                Text(subtitle,
+                    style: const TextStyle(color: kSubtext, fontSize: 12)),
+              ],
+            ),
+          ),
+          Icon(
+              selected
+                  ? Icons.check_circle_rounded
+                  : Icons.radio_button_unchecked_rounded,
+              color: selected ? kPrimary : kSubtext),
+        ]),
+      ),
+    );
+  }
+
+  Widget _registrationStepContent() {
+    switch (_registrationStep) {
+      case 0:
+        return Column(children: [
+          const Text('איך תרצה להירשם?',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          const Text('בחר דרך אחת. ניתן להשלים את התהליך בתוך דקות.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: kSubtext, fontSize: 12.5)),
+          const SizedBox(height: 20),
+          _registrationMethodCard(
+              method: 'google',
+              icon: Icons.g_mobiledata_rounded,
+              title: 'הרשמה באמצעות Google',
+              subtitle: 'מהיר ומאובטח — ללא יצירת סיסמה נוספת'),
+          const SizedBox(height: 12),
+          _registrationMethodCard(
+              method: 'email',
+              icon: Icons.alternate_email_rounded,
+              title: 'הרשמה באימייל',
+              subtitle: 'יצירת חשבון עם אימייל, טלפון וסיסמה'),
+        ]);
+      case 1:
+        if (_registrationMethod == 'google') {
+          return const Column(children: [
+            Icon(Icons.verified_user_rounded, size: 62, color: kPrimary),
+            SizedBox(height: 14),
+            Text('אימות משתמש עם Google',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            SizedBox(height: 10),
+            Text(
+              'בסיום ההרשמה ייפתח חלון Google לאימות זהותך.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: kSubtext, fontSize: 14, height: 1.5),
+            ),
+          ]);
+        }
+        return Column(children: [
+          const Text('אימות משתמש',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          const Text('הזן פרטי התחברות ואבטחה',
+              style: TextStyle(color: kSubtext, fontSize: 12.5)),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _phoneCtrl,
+            keyboardType: TextInputType.phone,
+            textDirection: TextDirection.ltr,
+            decoration: const InputDecoration(
+                labelText: 'מספר טלפון',
+                hintText: '05X-XXX-XXXX',
+                prefixIcon: Icon(Icons.phone_android)),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _emailCtrl,
+            keyboardType: TextInputType.emailAddress,
+            textDirection: TextDirection.ltr,
+            decoration: const InputDecoration(
+                labelText: 'כתובת אימייל',
+                prefixIcon: Icon(Icons.email_outlined)),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _passCtrl,
+            obscureText: true,
+            textDirection: TextDirection.ltr,
+            decoration: const InputDecoration(
+                labelText: 'סיסמה — לפחות 6 תווים',
+                prefixIcon: Icon(Icons.lock_outline)),
+          ),
+        ]);
+      case 2:
+        return Column(children: [
+          const Text('השלמת פרטים',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _nameCtrl,
+            textDirection: TextDirection.rtl,
+            decoration: const InputDecoration(
+                labelText: 'שם מלא', prefixIcon: Icon(Icons.person_outline)),
+          ),
+          const SizedBox(height: 12),
+          _BirthDateField(
+              value: _birthDate,
+              onChanged: (value) => setState(() => _birthDate = value)),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            value: _gender,
+            decoration: const InputDecoration(
+                labelText: 'מגדר', prefixIcon: Icon(Icons.wc_outlined)),
+            items: const [
+              DropdownMenuItem(value: 'male', child: Text('זכר')),
+              DropdownMenuItem(value: 'female', child: Text('נקבה')),
+            ],
+            onChanged: (value) => setState(() => _gender = value),
+          ),
+        ]);
+      case 3:
+        const filterItems = <String, (String, IconData)>{
+          'text': ('טקסט', Icons.chat_bubble_outline),
+          'video': ('וידאו', Icons.videocam_outlined),
+          'nonHumanImages': ('תמונות ללא בני אדם', Icons.landscape_outlined),
+          'men': ('גברים', Icons.man),
+          'women': ('נשים', Icons.woman),
+          'children': ('ילדים', Icons.child_care),
+        };
+        return Column(children: [
+          const Text('בחירת סינון',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          const Text('בחר אילו סוגי תוכן תרצה לקבל',
+              style: TextStyle(color: kSubtext, fontSize: 12.5)),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
+            children: filterItems.entries.map((entry) {
+              final selected = _registrationFilter[entry.key] == true;
+              return FilterChip(
+                selected: selected,
+                avatar: Icon(entry.value.$2, size: 18),
+                label: Text(entry.value.$1),
+                onSelected: (value) => setState(() {
+                  _registrationFilter = {
+                    ..._registrationFilter,
+                    entry.key: value
+                  };
+                  _filterConfirmed = false;
+                }),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 18),
+          FilledButton.icon(
+            onPressed: () => setState(() => _filterConfirmed = true),
+            icon: Icon(_filterConfirmed
+                ? Icons.check_circle_rounded
+                : Icons.shield_outlined),
+            label: Text(
+                _filterConfirmed ? 'בחירת הסינון אושרה' : 'אישור בחירת הסינון'),
+          ),
+        ]);
+      default:
+        return Column(children: [
+          const Text('אישור וסיום',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 12),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _ageConfirmed,
+            onChanged: (value) => setState(() => _ageConfirmed = value == true),
+            title: const Text('אני בן/בת 13 ומעלה'),
+          ),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _acceptedTerms,
+            onChanged: (value) =>
+                setState(() => _acceptedTerms = value == true),
+            title: const Text(
+                'קראתי ואני מסכים/ה לתנאי השימוש ולמדיניות הפרטיות',
+                style: TextStyle(fontSize: 13)),
+          ),
+          if (_registrationMethod == 'email') ...[
+            const SizedBox(height: 8),
+            const Text('שליחת קוד אימות באמצעות:'),
+            const SizedBox(height: 8),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'email', label: Text('אימייל')),
+                ButtonSegment(value: 'phone', label: Text('SMS')),
+              ],
+              selected: {_verificationMethod},
+              onSelectionChanged: (values) =>
+                  setState(() => _verificationMethod = values.first),
+            ),
+          ] else ...[
+            const SizedBox(height: 10),
+            const Text('בלחיצה על סיום ייפתח חלון האימות של Google',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: kSubtext, fontSize: 12.5)),
+          ],
+        ]);
+    }
+  }
+
+  Widget _buildRegistrationWizard() {
+    return Scaffold(
+      backgroundColor: kIsWeb ? const Color(0xFFF2F7FB) : kBg,
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Container(
+              height: double.infinity,
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              padding: const EdgeInsets.fromLTRB(22, 14, 22, 14),
+              decoration: BoxDecoration(
+                color: kBg,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: kIsWeb
+                    ? const [
+                        BoxShadow(color: Color(0x1A0D4F82), blurRadius: 24)
+                      ]
+                    : null,
+              ),
+              child: Column(children: [
+                Row(children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child:
+                        Image.asset('icon_source.png', width: 46, height: 46),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('בתשובה',
+                            style: TextStyle(
+                                color: kPrimary,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800)),
+                        Text('הרשמה שלב אחר שלב',
+                            style: TextStyle(color: kSubtext, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() {
+                      _isLogin = true;
+                      _error = null;
+                    }),
+                    child: const Text('כניסה'),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                Row(
+                  children: List.generate(
+                      5,
+                      (index) => Expanded(
+                            child: Container(
+                              height: 5,
+                              margin: EdgeInsets.only(left: index == 4 ? 0 : 5),
+                              decoration: BoxDecoration(
+                                color: index <= _registrationStep
+                                    ? kPrimary
+                                    : kBorder,
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                            ),
+                          )),
+                ),
+                const SizedBox(height: 6),
+                Text('שלב ${_registrationStep + 1} מתוך 5',
+                    style: const TextStyle(color: kSubtext, fontSize: 11)),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      child: SizedBox(
+                        key: ValueKey(_registrationStep),
+                        width: double.infinity,
+                        child: _registrationStepContent(),
+                      ),
+                    ),
+                  ),
+                ),
+                if (_error != null)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(8),
+                    margin: const EdgeInsets.only(bottom: 8),
+                    decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(9)),
+                    child: Text(_error!,
+                        textAlign: TextAlign.center,
+                        style:
+                            const TextStyle(color: Colors.red, fontSize: 12)),
+                  ),
+                Row(children: [
+                  if (_registrationStep > 0)
+                    OutlinedButton(
+                      onPressed: _loading
+                          ? null
+                          : () => setState(() {
+                                _registrationStep--;
+                                _error = null;
+                              }),
+                      child: const Text('חזרה'),
+                    ),
+                  if (_registrationStep > 0) const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: _loading
+                          ? null
+                          : (_registrationStep == 4
+                              ? _finishRegistration
+                              : _nextRegistrationStep),
+                      child: _loading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white))
+                          : Text(_registrationStep == 4
+                              ? (_registrationMethod == 'google'
+                                  ? 'סיום והרשמה עם Google'
+                                  : 'יצירת חשבון ושליחת אימות')
+                              : 'המשך'),
+                    ),
+                  ),
+                ]),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (!_isLogin) return _buildRegistrationWizard();
     return Scaffold(
       backgroundColor: kIsWeb ? const Color(0xFFF2F7FB) : kBg,
       body: SafeArea(
@@ -2077,6 +2826,9 @@ class _AuthScreenState extends State<AuthScreen> {
                       ]),
                     ),
                     const SizedBox(height: 24),
+                    if (!_isLogin)
+                      _RegistrationProgress(
+                          current: _choosingVerification ? 2 : 1),
                     if (!_isLogin) ...[
                       TextField(
                         controller: _nameCtrl,
@@ -2167,6 +2919,16 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                     ],
                     if (!_isLogin) ...[
+                      _RegistrationFilterSelector(
+                        filter: _registrationFilter,
+                        confirmed: _filterConfirmed,
+                        onChanged: (value) => setState(() {
+                          _registrationFilter = value;
+                          _filterConfirmed = false;
+                        }),
+                        onConfirmed: (value) =>
+                            setState(() => _filterConfirmed = value),
+                      ),
                       const _BetaNotice(),
                       const SizedBox(height: 6),
                       CheckboxListTile(
@@ -2275,8 +3037,8 @@ class _AuthScreenState extends State<AuthScreen> {
                                 _isLogin
                                     ? 'כניסה'
                                     : _choosingVerification
-                                        ? 'שלח אימות'
-                                        : 'המשך',
+                                        ? 'יצירת חשבון ושליחת אימות'
+                                        : 'המשך לשלב האימות',
                                 style: const TextStyle(
                                     fontSize: 16, fontWeight: FontWeight.bold)),
                       ),
@@ -2346,8 +3108,32 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
   bool _loading = false;
   String? _error;
 
+  bool get _supportsAutomaticSms =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  Future<String?> _startAutomaticSmsReading() async {
+    if (!_supportsAutomaticSms) return null;
+    final signatureResult = await SmartAuth.instance.getAppSignature();
+    if (!signatureResult.hasData) return null;
+    unawaited(_readAndVerifySmsCode());
+    return signatureResult.requireData;
+  }
+
+  Future<void> _readAndVerifySmsCode() async {
+    final result = await SmartAuth.instance.getSmsWithRetrieverApi();
+    if (!mounted || !result.hasData) return;
+    final code = result.requireData.code;
+    if (code == null || !RegExp(r'^\d{6}$').hasMatch(code)) return;
+    _otpCtrl.text = code;
+    setState(() => _sentOtp = true);
+    await _verify();
+  }
+
   @override
   void dispose() {
+    if (_supportsAutomaticSms) {
+      unawaited(SmartAuth.instance.removeSmsRetrieverApiListener());
+    }
     _phoneCtrl.dispose();
     _otpCtrl.dispose();
     super.dispose();
@@ -2400,6 +3186,7 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
       return;
     }
     try {
+      final appSignature = await _startAutomaticSmsReading();
       final res = await http
           .post(
             Uri.parse('$kApi/send-otp'),
@@ -2407,7 +3194,10 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
               'Content-Type': 'application/json',
               'Authorization': 'Bearer ${widget.token}',
             },
-            body: jsonEncode({'phone': phone}),
+            body: jsonEncode({
+              'phone': phone,
+              if (appSignature != null) 'appSignature': appSignature,
+            }),
           )
           .timeout(const Duration(seconds: 20));
       if (res.statusCode == 200) {
@@ -2543,6 +3333,7 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
               const SizedBox(height: 16),
               TextField(
                 controller: _otpCtrl,
+                autofillHints: const [AutofillHints.oneTimeCode],
                 keyboardType: TextInputType.number,
                 textDirection: TextDirection.ltr,
                 maxLength: 6,
@@ -4069,14 +4860,18 @@ class _MainShellContentState extends State<_MainShellContent> {
           msg.contains('phone_required')) {
         _requirePhoneSetup(
             requireVerification: msg.contains('verification_required'));
-      } else if (msg.contains('user_not_found') ||
-          msg.contains('unauthorized')) {
+      } else if (msg.contains('user_not_found')) {
+        _forceLogout(showRegistration: true);
+      } else if (msg.contains('unauthorized')) {
         _forceLogout();
       }
     });
 
     // אדמין מחק את המשתמש בזמן שהוא מחובר
-    _socket!.on('force_logout', (_) => _forceLogout());
+    _socket!.on('force_logout', (data) {
+      final reason = data is Map ? data['reason']?.toString() ?? '' : '';
+      _forceLogout(showRegistration: reason.contains('נמחק'));
+    });
     _socket!.on('message:request', (data) {
       if (!mounted || data is! Map) return;
       final request = Map<String, dynamic>.from(data);
@@ -4129,29 +4924,41 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _logout() async {
+    await _leaveAccount(showRegistration: false);
+  }
+
+  Future<void> _logoutAfterAccountDeletion() async {
+    await _leaveAccount(showRegistration: true);
+  }
+
+  Future<void> _leaveAccount({required bool showRegistration}) async {
     _socket?.disconnect();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('token');
     if (!mounted) return;
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const AuthScreen()),
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(
+          builder: (_) => AuthScreen(initialRegistration: showRegistration)),
+      (_) => false,
     );
   }
 
-  void _forceLogout() {
+  void _forceLogout({bool showRegistration = false}) {
     _socket?.disconnect();
     SharedPreferences.getInstance().then((prefs) => prefs.remove('token'));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('הפגישה פגה — נא להתחבר מחדש'),
-        backgroundColor: Colors.orange,
-        duration: Duration(seconds: 3),
+      SnackBar(
+        content: Text(showRegistration
+            ? 'החשבון נמחק — ניתן להירשם מחדש'
+            : 'הפגישה פגה — נא להתחבר מחדש'),
+        backgroundColor: showRegistration ? Colors.blue : Colors.orange,
+        duration: const Duration(seconds: 3),
       ),
     );
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const AuthScreen()),
+      MaterialPageRoute(
+          builder: (_) => AuthScreen(initialRegistration: showRegistration)),
       (route) => false,
     );
   }
@@ -4411,6 +5218,7 @@ class _MainShellContentState extends State<_MainShellContent> {
           me: _me,
           token: widget.token,
           onLogout: _logout,
+          onAccountDeleted: _logoutAfterAccountDeletion,
           onProfileChanged: _loadMyProfile,
           adminPerm: _adminPerm),
     ];
@@ -6612,20 +7420,83 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       }
     }
     if (!mounted) return;
+    final directoryResults = <Map<String, dynamic>>[];
+
+    List<Map<String, dynamic>> mergeAndSort(
+      Iterable<Map<String, dynamic>> primary,
+      Iterable<Map<String, dynamic>> secondary,
+    ) {
+      final merged = <Map<String, dynamic>>[];
+      for (final item in [...primary, ...secondary]) {
+        final key = item['id']?.toString() ??
+            '${item['phone'] ?? ''}|${item['email'] ?? ''}';
+        if (!merged.any((existing) =>
+            (existing['id']?.toString() ??
+                '${existing['phone'] ?? ''}|${existing['email'] ?? ''}') ==
+            key)) {
+          merged.add(item);
+        }
+      }
+      merged.sort((a, b) {
+        final aName = (a['device_name'] ?? a['name'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+        final bName = (b['device_name'] ?? b['name'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+        return aName.compareTo(bName);
+      });
+      return merged;
+    }
+
+    var initialResults = mergeAndSort(deviceResults, directoryResults);
     final searchController = TextEditingController();
     Timer? searchDebounce;
-    var results = List<Map<String, dynamic>>.from(deviceResults);
+    var results = List<Map<String, dynamic>>.from(initialResults);
     var loading = false;
+    var directoryLoading = true;
+    var directoryLoadStarted = false;
     String? error;
     await showDialog(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) {
+          if (!directoryLoadStarted) {
+            directoryLoadStarted = true;
+            Future<void>(() async {
+              try {
+                final response = await http.get(
+                  Uri.parse('$kApi/users/directory'),
+                  headers: {'Authorization': 'Bearer ${widget.token}'},
+                );
+                if (response.statusCode == 200) {
+                  directoryResults
+                    ..clear()
+                    ..addAll((jsonDecode(response.body) as List)
+                        .cast<Map<String, dynamic>>());
+                }
+              } catch (_) {
+                // Search remains available even if the initial directory
+                // cannot be loaded.
+              }
+              if (!dialogContext.mounted) return;
+              setDialogState(() {
+                directoryLoading = false;
+                initialResults = mergeAndSort(deviceResults, directoryResults);
+                if (searchController.text.trim().isEmpty) {
+                  results = List<Map<String, dynamic>>.from(initialResults);
+                }
+              });
+            });
+          }
+
           Future<void> search() async {
             final query = searchController.text.trim();
             if (query.isEmpty) {
               setDialogState(() {
-                results = List<Map<String, dynamic>>.from(deviceResults);
+                results = List<Map<String, dynamic>>.from(initialResults);
                 error = null;
               });
               return;
@@ -6655,17 +7526,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 ].whereType<Object>().join(' ').toLowerCase();
                 return haystack.contains(lowerQuery);
               });
-              final merged = <Map<String, dynamic>>[];
-              for (final item in [...localMatches, ...serverResults]) {
-                final key = item['id']?.toString() ??
-                    '${item['phone'] ?? ''}|${item['email'] ?? ''}';
-                if (!merged.any((existing) =>
-                    (existing['id']?.toString() ??
-                        '${existing['phone'] ?? ''}|${existing['email'] ?? ''}') ==
-                    key)) {
-                  merged.add(item);
-                }
-              }
+              final merged = mergeAndSort(localMatches, serverResults);
               setDialogState(() {
                 loading = false;
                 results = merged;
@@ -6696,17 +7557,51 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           Future<void> invite(Map<String, dynamic> contact) async {
             final email = (contact['email'] ?? '').toString();
             final phone = (contact['phone'] ?? '').toString();
-            const message = 'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
             final delivery = await _chooseInviteDelivery(
               dialogContext,
               hasPhone: phone.trim().isNotEmpty,
               hasEmail: email.contains('@'),
             );
             if (delivery == null) return;
+            var message = 'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
+            if (delivery != 'system_sms') {
+              try {
+                final prepareResponse = await http.post(
+                  Uri.parse('$kApi/invites/prepare'),
+                  headers: {
+                    'Authorization': 'Bearer ${widget.token}',
+                    'Content-Type': 'application/json',
+                  },
+                  body: jsonEncode({'phone': phone, 'email': email}),
+                );
+                if (prepareResponse.statusCode != 200) {
+                  if (!dialogContext.mounted) return;
+                  var reason = 'לא ניתן להכין את ההזמנה';
+                  try {
+                    reason = (jsonDecode(prepareResponse.body)
+                            as Map<String, dynamic>)['error']
+                        .toString();
+                  } catch (_) {}
+                  ScaffoldMessenger.of(dialogContext)
+                      .showSnackBar(SnackBar(content: Text(reason)));
+                  return;
+                }
+                message = (jsonDecode(prepareResponse.body)
+                            as Map<String, dynamic>)['message']
+                        ?.toString() ??
+                    message;
+              } catch (_) {
+                if (!dialogContext.mounted) return;
+                ScaffoldMessenger.of(dialogContext).showSnackBar(
+                  const SnackBar(content: Text('לא ניתן להכין את ההזמנה')),
+                );
+                return;
+              }
+            }
             if (delivery == 'whatsapp') {
               final opened = await _openWhatsApp(phone, message);
               if (!opened) {
-                await Clipboard.setData(const ClipboardData(text: message));
+                await Clipboard.setData(ClipboardData(text: message));
                 if (!dialogContext.mounted) return;
                 ScaffoldMessenger.of(dialogContext).showSnackBar(
                   const SnackBar(
@@ -6790,6 +7685,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     onSubmitted: (_) => search(),
                   ),
                   const SizedBox(height: 12),
+                  if (directoryLoading && !loading)
+                    const LinearProgressIndicator(minHeight: 2),
                   if (contactsPermissionDenied && !kIsWeb)
                     const Padding(
                       padding: EdgeInsets.only(bottom: 8),
@@ -6912,6 +7809,19 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         final g = jsonDecode(res.body) as Map<String, dynamic>;
         widget.socket?.emit('group:join', {'groupId': g['id']});
         await _loadGroups(force: true);
+        if (!mounted) return;
+        await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ContentFilterSettingsScreen(
+              token: widget.token,
+              groupId: g['id']?.toString(),
+              groupName: g['name'] as String?,
+              requireSave: true,
+            ),
+          ),
+        );
+        if (!mounted) return;
         if (widget.onGroupSelected != null &&
             MediaQuery.sizeOf(context).width >= 900) {
           widget.onGroupSelected!(g, true);
@@ -7797,8 +8707,10 @@ class _CompactMenuItem extends StatelessWidget {
 
 class _AllowedReceivingFilterIcons extends StatelessWidget {
   final Map<String, bool>? filter;
+  final bool forGroup;
 
-  const _AllowedReceivingFilterIcons({required this.filter});
+  const _AllowedReceivingFilterIcons(
+      {required this.filter, this.forGroup = false});
 
   static const _items = <String, (IconData, String)>{
     'text': (Icons.chat_bubble_outline, 'מאפשרת לקבל הודעות טקסט'),
@@ -7821,7 +8733,7 @@ class _AllowedReceivingFilterIcons extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: allowed
           .map((entry) => Tooltip(
-                message: entry.value.$2,
+                message: forGroup ? 'הקבוצה ${entry.value.$2}' : entry.value.$2,
                 child: Padding(
                   padding: const EdgeInsetsDirectional.only(start: 3),
                   child: Container(
@@ -8174,7 +9086,13 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       setState(() {
         final idx = _messages.indexWhere((m) => m['id'] == data['id']);
-        if (idx != -1) _messages[idx]['text'] = '🚫 הודעה נמחקה';
+        if (idx != -1) {
+          _messages[idx]['text'] = '🚫 הודעה נמחקה';
+          _messages[idx]['isFile'] = false;
+          _messages[idx]['fileUrl'] = null;
+          _messages[idx]['fileName'] = null;
+          _messages[idx]['fileType'] = 'text';
+        }
       });
     });
 
@@ -8533,6 +9451,7 @@ class _ChatScreenState extends State<ChatScreen> {
             message['isFile'] = false;
             message['fileUrl'] = null;
             message['fileName'] = null;
+            message['fileType'] = 'text';
           } else {
             _messages.removeWhere((item) => item['id'] == message['id']);
           }
@@ -10800,6 +11719,9 @@ class _MessageBubble extends StatelessWidget {
                   NativeWebVideoPlayer(
                     key: ValueKey('video-$fileUrl'),
                     url: _absoluteMediaUrl(fileUrl!),
+                    onOptions: onMessageOptions == null
+                        ? null
+                        : () => onMessageOptions!(message),
                   )
                 else
                   _ChatVideoPlayer(url: fileUrl!),
@@ -12045,6 +12967,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   int _recordSeconds = 0;
   Timer? _recordTimer;
   String _voiceFileName = 'voice_message.webm';
+  Map<String, bool>? _groupReceivingFilter;
 
   String get _groupId => widget.group['id'] as String;
 
@@ -12061,6 +12984,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       widget.socket?.emit('group:viewed', {'groupId': _groupId});
       _loadMessages();
       _loadMembers();
+      _loadGroupReceivingFilter();
     } else {
       // Do not reveal cached group content before an invitation is accepted.
       _loading = false;
@@ -12074,6 +12998,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
       }
     }
+  }
+
+  Future<void> _loadGroupReceivingFilter() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/groups/$_groupId/filter-settings'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted || response.statusCode != 200) return;
+      final body = jsonDecode(response.body);
+      final raw = body is Map ? body['filter'] : null;
+      if (raw is! Map) return;
+      setState(() {
+        _groupReceivingFilter = raw.map(
+          (key, value) => MapEntry(key.toString(), value == true),
+        );
+      });
+    } catch (_) {}
   }
 
   Future<void> _loadMembers() async {
@@ -13873,7 +14815,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               subtitle: Text('${_members.length} חברים'),
               onTap: () {
                 Navigator.pop(context);
-                _showMembersDialog();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ContentFilterSettingsScreen(
+                      token: widget.token,
+                      groupId: _groupId,
+                      groupName: widget.group['name'] as String?,
+                      groupPhotoUrl: widget.group['profile_pic_url'] as String?,
+                      groupMembers: _members,
+                      onAddGroupMember: _isAdmin ? _showAddMemberDialog : null,
+                      onManageGroupMembers: _showMembersDialog,
+                      onChangeGroupPhoto: _isAdmin ? _changeGroupPhoto : null,
+                    ),
+                  ),
+                );
               },
             ),
             ListTile(
@@ -13957,6 +14913,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         token: widget.token,
                         groupId: _groupId,
                         groupName: widget.group['name'] as String?,
+                        groupPhotoUrl:
+                            widget.group['profile_pic_url'] as String?,
+                        groupMembers: _members,
+                        onAddGroupMember: _showAddMemberDialog,
+                        onManageGroupMembers: _showMembersDialog,
+                        onChangeGroupPhoto: _changeGroupPhoto,
                       ),
                     ),
                   );
@@ -13982,8 +14944,43 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _handleGroupMenuAction(String action) async {
     switch (action) {
       case 'info':
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ContentFilterSettingsScreen(
+              token: widget.token,
+              groupId: _groupId,
+              groupName: widget.group['name'] as String?,
+              groupPhotoUrl: widget.group['profile_pic_url'] as String?,
+              groupMembers: _members,
+              onAddGroupMember: _isAdmin ? _showAddMemberDialog : null,
+              onManageGroupMembers: _showMembersDialog,
+              onChangeGroupPhoto: _isAdmin ? _changeGroupPhoto : null,
+            ),
+          ),
+        );
+        await _loadGroupReceivingFilter();
+        break;
       case 'members':
         _showMembersDialog();
+        break;
+      case 'filter':
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ContentFilterSettingsScreen(
+              token: widget.token,
+              groupId: _groupId,
+              groupName: widget.group['name'] as String?,
+              groupPhotoUrl: widget.group['profile_pic_url'] as String?,
+              groupMembers: _members,
+              onAddGroupMember: _isAdmin ? _showAddMemberDialog : null,
+              onManageGroupMembers: _showMembersDialog,
+              onChangeGroupPhoto: _isAdmin ? _changeGroupPhoto : null,
+            ),
+          ),
+        );
+        await _loadGroupReceivingFilter();
         break;
       case 'search':
         _searchGroupMessages();
@@ -14105,9 +15102,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(widget.group['name'] as String,
-                      style: const TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.bold)),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          widget.group['name'] as String,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      _AllowedReceivingFilterIcons(
+                        filter: _groupReceivingFilter,
+                        forGroup: true,
+                      ),
+                    ],
+                  ),
                   Text(
                       _isTyping
                           ? '$_typingName מקליד...'
@@ -14158,6 +15169,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     height: 40,
                     child:
                         _CompactMenuItem(Icons.groups_outlined, 'ניהול חברים')),
+              if (_isAdmin)
+                const PopupMenuItem(
+                    value: 'filter',
+                    height: 40,
+                    child: _CompactMenuItem(
+                        Icons.shield_outlined, 'הגדרות סינון')),
               const PopupMenuDivider(height: 8),
               if (!_isAdmin)
                 const PopupMenuItem(
@@ -14653,13 +15670,25 @@ class ContentFilterSettingsScreen extends StatefulWidget {
   final String? contactName;
   final String? groupId;
   final String? groupName;
+  final String? groupPhotoUrl;
+  final List<Map<String, dynamic>> groupMembers;
+  final VoidCallback? onAddGroupMember;
+  final VoidCallback? onManageGroupMembers;
+  final VoidCallback? onChangeGroupPhoto;
+  final bool requireSave;
   const ContentFilterSettingsScreen(
       {super.key,
       required this.token,
       this.contactId,
       this.contactName,
       this.groupId,
-      this.groupName});
+      this.groupName,
+      this.groupPhotoUrl,
+      this.groupMembers = const [],
+      this.onAddGroupMember,
+      this.onManageGroupMembers,
+      this.onChangeGroupPhoto,
+      this.requireSave = false});
 
   @override
   State<ContentFilterSettingsScreen> createState() =>
@@ -14670,6 +15699,7 @@ class _ContentFilterSettingsScreenState
     extends State<ContentFilterSettingsScreen> {
   bool _loading = true;
   bool _saving = false;
+  bool _saved = false;
   bool _inherit = true;
   Map<String, bool> _filter = {
     'text': true,
@@ -14744,7 +15774,11 @@ class _ContentFilterSettingsScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('הגדרות הסינון נשמרו')),
       );
-      Navigator.pop(context, true);
+      _saved = true;
+      setState(() {});
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.pop(context, true);
+      });
     } catch (e) {
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
@@ -14758,20 +15792,53 @@ class _ContentFilterSettingsScreenState
   Widget _filterSwitch({
     required bool value,
     required ValueChanged<bool>? onChanged,
-  }) =>
-      Switch.adaptive(
-        value: value,
-        onChanged: onChanged,
-        activeTrackColor: kPrimary,
-        activeThumbColor: Colors.white,
-        inactiveTrackColor: const Color(0xFFDCE5ED),
-        inactiveThumbColor: Colors.white,
-        trackOutlineColor: WidgetStateProperty.resolveWith(
-          (states) => states.contains(WidgetState.selected)
-              ? kPrimary
-              : const Color(0xFFB8C8D5),
+  }) {
+    final enabled = onChanged != null;
+    return Semantics(
+      checked: value,
+      enabled: enabled,
+      button: true,
+      child: InkWell(
+        onTap: enabled ? () => onChanged(!value) : null,
+        borderRadius: BorderRadius.circular(9),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: value
+                ? (enabled ? kPrimary : kPrimary.withValues(alpha: 0.42))
+                : (enabled ? Colors.white : const Color(0xFFF0F3F6)),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: value
+                  ? (enabled ? kPrimary : kPrimary.withValues(alpha: 0.38))
+                  : const Color(0xFFABC3D5),
+              width: 2,
+            ),
+            boxShadow: value && enabled
+                ? const [
+                    BoxShadow(
+                      color: Color(0x351B6CA8),
+                      blurRadius: 8,
+                      offset: Offset(0, 3),
+                    ),
+                  ]
+                : null,
+          ),
+          alignment: Alignment.center,
+          child: AnimatedScale(
+            duration: const Duration(milliseconds: 180),
+            scale: value ? 1 : 0,
+            curve: Curves.easeOutBack,
+            child: const Icon(Icons.check_rounded,
+                color: Colors.white, size: 23, weight: 700),
+          ),
         ),
-      );
+      ),
+    );
+  }
 
   Widget _option(String key, String title, String subtitle, IconData icon) {
     final enabled = _filter[key] == true;
@@ -14865,102 +15932,285 @@ class _ContentFilterSettingsScreenState
     );
   }
 
+  Widget _groupOverview() {
+    final members = widget.groupMembers.take(6).toList();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      child: Column(children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: kBorder),
+            boxShadow: const [
+              BoxShadow(
+                  color: Color(0x120D5D91),
+                  blurRadius: 14,
+                  offset: Offset(0, 4)),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('מאפייני הקבוצה',
+                  style: TextStyle(
+                      color: kPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800)),
+              const SizedBox(height: 12),
+              Row(children: [
+                Stack(children: [
+                  UserAvatar(
+                    radius: 28,
+                    picUrl: widget.groupPhotoUrl,
+                    name: widget.groupName ?? 'קבוצה',
+                  ),
+                  if (widget.onChangeGroupPhoto != null)
+                    Positioned(
+                      left: 0,
+                      bottom: 0,
+                      child: InkWell(
+                        onTap: widget.onChangeGroupPhoto,
+                        child: Container(
+                          width: 22,
+                          height: 22,
+                          decoration: const BoxDecoration(
+                              color: kPrimary, shape: BoxShape.circle),
+                          child: const Icon(Icons.camera_alt_outlined,
+                              size: 13, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                ]),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(widget.groupName ?? 'קבוצה',
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.w800)),
+                      Text('${widget.groupMembers.length} חברים',
+                          style:
+                              const TextStyle(color: kSubtext, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                if (widget.onChangeGroupPhoto != null)
+                  IconButton(
+                    tooltip: 'עריכת תמונת הקבוצה',
+                    onPressed: widget.onChangeGroupPhoto,
+                    icon: const Icon(Icons.edit_outlined,
+                        color: kSubtext, size: 20),
+                  ),
+              ]),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: kBorder),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Expanded(
+                  child: Text('חברי הקבוצה',
+                      style: TextStyle(
+                          color: kPrimary,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800)),
+                ),
+                if (widget.onManageGroupMembers != null)
+                  TextButton(
+                    onPressed: widget.onManageGroupMembers,
+                    child: const Text('ניהול'),
+                  ),
+              ]),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 58,
+                child: Row(children: [
+                  if (widget.onAddGroupMember != null) ...[
+                    InkWell(
+                      onTap: widget.onAddGroupMember,
+                      borderRadius: BorderRadius.circular(25),
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE8F3FA),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: kBorder),
+                        ),
+                        child: const Icon(Icons.add, color: kPrimary),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: members.length,
+                      separatorBuilder: (_, __) => const SizedBox(width: 8),
+                      itemBuilder: (_, index) {
+                        final member = members[index];
+                        return UserAvatar(
+                          radius: 24,
+                          picUrl: member['profile_pic_url'] as String?,
+                          name: member['name']?.toString() ?? 'חבר',
+                        );
+                      },
+                    ),
+                  ),
+                ]),
+              ),
+            ],
+          ),
+        ),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-          title: Text(_isGroup
-              ? 'סינון בקבוצה ${widget.groupName ?? ''}'
-              : _isContact
-                  ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
-                  : 'סינון תוכן כללי')),
-      backgroundColor: kBg,
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Center(
-              child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: ListView(children: [
-                if (_isContact) ...[
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-                    child: Card(
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                        side: const BorderSide(color: kBorder),
-                      ),
-                      child: ListTile(
-                        leading:
-                            const Icon(Icons.sync_rounded, color: kPrimary),
-                        title: const Text('השתמש בהגדרות הכלליות',
-                            style: TextStyle(fontWeight: FontWeight.w700)),
-                        subtitle: const Text(
-                            'שינויים עתידיים בהגדרה הכללית יחולו גם כאן'),
-                        trailing: _filterSwitch(
-                          value: _inherit,
-                          onChanged: (value) =>
-                              setState(() => _inherit = value),
+    return PopScope(
+      canPop: !widget.requireSave || _saved,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && widget.requireSave) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(const SnackBar(
+                content: Text('יש לבחור ולשמור את סינון הקבוצה')));
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+            title: Text(_isGroup
+                ? 'הגדרות הקבוצה'
+                : _isContact
+                    ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
+                    : 'סינון תוכן כללי')),
+        backgroundColor: kBg,
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : Center(
+                child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: ListView(children: [
+                  if (_isGroup) _groupOverview(),
+                  if (_isContact) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                      child: Card(
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          side: const BorderSide(color: kBorder),
                         ),
-                        onTap: () => setState(() => _inherit = !_inherit),
+                        child: ListTile(
+                          leading:
+                              const Icon(Icons.sync_rounded, color: kPrimary),
+                          title: const Text('השתמש בהגדרות הכלליות',
+                              style: TextStyle(fontWeight: FontWeight.w700)),
+                          subtitle: const Text(
+                              'שינויים עתידיים בהגדרה הכללית יחולו גם כאן'),
+                          trailing: _filterSwitch(
+                            value: _inherit,
+                            onChanged: (value) =>
+                                setState(() => _inherit = value),
+                          ),
+                          onTap: () => setState(() => _inherit = !_inherit),
+                        ),
                       ),
                     ),
+                  ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+                    child: Row(children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: kPrimary.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child:
+                            const Icon(Icons.shield_outlined, color: kPrimary),
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('סוגי תוכן מותרים',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 16)),
+                            Text('גלול למטה כדי לראות את כל האפשרויות',
+                                style:
+                                    TextStyle(color: kSubtext, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    ]),
                   ),
-                ],
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(18, 18, 18, 8),
-                  child: Text('סוגי תוכן מותרים',
-                      style:
-                          TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                ),
-                if (_isGroup)
+                  if (_isGroup)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
+                      child: Text(
+                        'הגדרת הקבוצה קובעת מה ניתן לשלוח לכל הקבוצה. בנוסף, כל חבר ממשיך להיות מוגן לפי הסינון האישי שלו; ההגדרה המחמירה מביניהן היא שקובעת.',
+                        style: TextStyle(color: kSubtext),
+                      ),
+                    ),
+                  _option(
+                      'text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
+                  _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
+                      Icons.videocam_outlined),
+                  _option('nonHumanImages', 'תמונות ללא בני אדם',
+                      'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
+                  _option(
+                      'men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
+                  _option('women', 'נשים', 'תמונות שסווגו כתמונות נשים',
+                      Icons.woman),
+                  _option('children', 'ילדים', 'תמונות שסווגו כתמונות ילדים',
+                      Icons.child_care),
                   const Padding(
-                    padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
+                    padding: EdgeInsets.all(18),
                     child: Text(
-                      'הגדרת הקבוצה קובעת מה ניתן לשלוח לכל הקבוצה. בנוסף, כל חבר ממשיך להיות מוגן לפי הסינון האישי שלו; ההגדרה המחמירה מביניהן היא שקובעת.',
-                      style: TextStyle(color: kSubtext),
+                        'כל התמונות עוברות בדיקת צניעות תמיד, ללא קשר לבחירות כאן.',
+                        style: TextStyle(color: kSubtext)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: FilledButton.icon(
+                      onPressed: _saving ? null : _save,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(15)),
+                        textStyle: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700),
+                      ),
+                      icon: _saving
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.save),
+                      label: const Text('שמור הגדרות'),
                     ),
                   ),
-                _option(
-                    'text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
-                _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
-                    Icons.videocam_outlined),
-                _option('nonHumanImages', 'תמונות ללא בני אדם',
-                    'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
-                _option(
-                    'men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
-                _option(
-                    'women', 'נשים', 'תמונות שסווגו כתמונות נשים', Icons.woman),
-                _option('children', 'ילדים', 'תמונות שסווגו כתמונות ילדים',
-                    Icons.child_care),
-                const Padding(
-                  padding: EdgeInsets.all(18),
-                  child: Text(
-                      'כל התמונות עוברות בדיקת צניעות תמיד, ללא קשר לבחירות כאן.',
-                      style: TextStyle(color: kSubtext)),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(18),
-                  child: FilledButton.icon(
-                    onPressed: _saving ? null : _save,
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(52),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(15)),
-                      textStyle: const TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w700),
-                    ),
-                    icon: _saving
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.save),
-                    label: const Text('שמור הגדרות'),
-                  ),
-                ),
-              ]),
-            )),
+                ]),
+              )),
+      ),
     );
   }
 }
@@ -14970,6 +16220,7 @@ class SettingsScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
   final String token;
   final VoidCallback onLogout;
+  final Future<void> Function() onAccountDeleted;
   final Future<void> Function() onProfileChanged;
   final String? adminPerm;
   const SettingsScreen(
@@ -14977,6 +16228,7 @@ class SettingsScreen extends StatefulWidget {
       required this.me,
       required this.token,
       required this.onLogout,
+      required this.onAccountDeleted,
       required this.onProfileChanged,
       this.adminPerm});
   @override
@@ -15056,17 +16308,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (context) => AlertDialog(
         title: const Text('מה ברצונך למחוק?'),
         content: const Text(
-            'יש לבחור אחת משתי האפשרויות. הפעולה אינה ניתנת לביטול.'),
+            'מחיקת הפרופיל והחשבון תחזיר למסך ההרשמה. איפוס נתונים ישאיר את חשבון ההתחברות פעיל.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text('ביטול')),
           TextButton(
               onPressed: () => Navigator.pop(context, 'data'),
-              child: const Text('מחיקת תוכן ופרטי פרופיל')),
+              child: const Text('איפוס נתונים — החשבון נשאר')),
           TextButton(
               onPressed: () => Navigator.pop(context, 'account'),
-              child: const Text('מחיקת הנתונים והחשבון',
+              child: const Text('מחיקת הפרופיל והחשבון → הרשמה',
                   style: TextStyle(color: Colors.red))),
         ],
       ),
@@ -15078,19 +16330,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text(choice == 'account'
-            ? 'מחיקת הנתונים והחשבון לצמיתות'
-            : 'מחיקת תוכן ופרטי פרופיל'),
+            ? 'מחיקת הפרופיל והחשבון לצמיתות'
+            : 'איפוס נתונים'),
         content: Text(choice == 'account'
-            ? 'כל הנתונים והחשבון יימחקו ולא יהיה ניתן להתחבר אליו שוב.'
-            : 'ההודעות, הקבצים, המיקום ופרטי הפרופיל יימחקו. האימייל, הטלפון, פרטי האימות וההתחברות והסכמות השימוש יישארו כדי שהחשבון ימשיך לפעול.'),
+            ? 'כל הנתונים והחשבון יימחקו, תתבצע יציאה ותועבר/י למסך הרשמה חדשה.'
+            : 'ההודעות, הקבצים, המיקום ופרטי הפרופיל יאופסו. האימייל, הטלפון וחשבון ההתחברות יישארו פעילים, ולאחר הפעולה תישאר/י מחובר/ת.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
               child: const Text('ביטול')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child:
-                const Text('אישור מחיקה', style: TextStyle(color: Colors.red)),
+            child: Text(
+                choice == 'account' ? 'מחק והעבר להרשמה' : 'אישור איפוס',
+                style: const TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -15121,7 +16374,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 content: Text(
                     'החשבון נמחק. $filesPending קבצים ממתינים להשלמת מחיקה.')));
           }
-          widget.onLogout();
+          await widget.onAccountDeleted();
         } else {
           await widget.onProfileChanged();
           if (mounted) {
@@ -15390,7 +16643,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: TextButton.icon(
               onPressed: _deleteAccount,
               icon: const Icon(Icons.delete_forever, color: Colors.red),
-              label: const Text('מחיקת תוכן, פרופיל או חשבון',
+              label: const Text('איפוס נתונים או מחיקת פרופיל וחשבון',
                   style: TextStyle(color: Colors.red)),
             ),
           ),

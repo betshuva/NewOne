@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
   birth_date          DATE,
   wins                INTEGER NOT NULL DEFAULT 0,
   games_played        INTEGER NOT NULL DEFAULT 0,
+  referral_count      INTEGER NOT NULL DEFAULT 0,
   created_at          TIMESTAMPTZ DEFAULT now()
 );
 
@@ -136,6 +137,20 @@ CREATE TABLE IF NOT EXISTS user_contacts (
   created_at     TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (owner_id, contact_id),
   CHECK (owner_id <> contact_id)
+);
+
+-- Invitations to the app. Credit is granted only after the invited identity
+-- verifies the phone number or email address used by the inviter.
+CREATE TABLE IF NOT EXISTS app_invites (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  invited_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT,
+  phone TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  claimed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
+  CHECK (email IS NOT NULL OR phone IS NOT NULL)
 );
 
 -- ── Blocked Users ──────────────────────────────────────────────────

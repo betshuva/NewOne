@@ -1,7 +1,7 @@
 name: betshuva
 description: BETSHUVA Messenger - אפליקציית מסרים לקהילה הישראלית
 publish_to: 'none'
-version: 1.2.83+203
+version: 1.2.86+206
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -28,6 +28,7 @@ dependencies:
   flutter_webrtc: 1.6.0
   permission_handler: ^11.3.1
   video_player: ^2.9.5
+  smart_auth: ^3.2.0
 
 dependency_overrides:
   record_platform_interface: 1.2.0
