@@ -22,6 +22,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:video_player/video_player.dart';
 import 'file_download.dart';
 import 'media_cache.dart';
@@ -29,6 +32,7 @@ import 'native_video_player.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
 import 'web_capture_picker.dart';
+import 'web_otp.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 
@@ -449,6 +453,7 @@ const kFilterBg = Color(0xFFE8F4FD); // filter banner background
 
 const kServer = 'https://betshuva.com/betshuva-app';
 const kApi = '$kServer/api';
+final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 // Socket.IO treats any path in the connection URL as a *namespace*, not a URL
 // prefix — so it must be given the bare origin plus an explicit `path` option
 // (see kSocketPath below), or it'll try to handshake at "/socket.io/" on the
@@ -456,8 +461,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.87';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.87.apk';
+const kVersion = '1.2.89';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.89.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -1186,6 +1191,17 @@ class _SplashScreenState extends State<SplashScreen>
         if (!mounted) return;
         if (response.statusCode == 200) {
           final status = jsonDecode(response.body) as Map<String, dynamic>;
+          if (status['registrationIncomplete'] == true) {
+            await prefs.remove('token');
+            if (!mounted) return;
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const AuthScreen(initialRegistration: true),
+              ),
+            );
+            return;
+          }
           if (status['phoneMissing'] == true ||
               status['verificationRequired'] == true) {
             Navigator.pushReplacement(
@@ -1593,6 +1609,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                   _birthDate == null ? null : _formatBirthDate(_birthDate!),
               'contentFilter': _registrationFilter,
               'contentFilterConfirmed': _filterConfirmed,
+              if (kPendingInviteId != null) 'inviteId': kPendingInviteId,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -1976,6 +1993,100 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
 }
 
 // ── Auth Screen (Login / Register) ───────────────────────────────
+class _SmsCodeWaitingAnimation extends StatefulWidget {
+  const _SmsCodeWaitingAnimation();
+
+  @override
+  State<_SmsCodeWaitingAnimation> createState() =>
+      _SmsCodeWaitingAnimationState();
+}
+
+class _SmsCodeWaitingAnimationState extends State<_SmsCodeWaitingAnimation>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1500),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0F8FE),
+        border: Border.all(color: const Color(0xFFB9DCF4)),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(children: [
+        SizedBox(
+          width: 66,
+          height: 66,
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (context, child) {
+              final value = Curves.easeInOut.transform(_controller.value);
+              return Stack(alignment: Alignment.center, children: [
+                Container(
+                  width: 52 + (value * 12),
+                  height: 52 + (value * 12),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: kPrimary.withValues(alpha: .08 + value * .08),
+                  ),
+                ),
+                Transform.scale(scale: .92 + value * .08, child: child),
+                PositionedDirectional(
+                  end: 0,
+                  bottom: 2 + value * 3,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: kPrimary,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.sms_rounded,
+                        color: Colors.white, size: 14),
+                  ),
+                ),
+              ]);
+            },
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(13),
+              child: Image.asset('icon_source.png', width: 44, height: 44),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        const Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('ממתינים לקוד ה־SMS',
+                  style: TextStyle(
+                      color: kPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800)),
+              SizedBox(height: 4),
+              Text(
+                  'הקוד נשלח ועשוי להגיע בתוך מספר שניות. השאר במסך זה והזן אותו כשיתקבל.',
+                  style:
+                      TextStyle(color: kSubtext, fontSize: 12.5, height: 1.4)),
+            ],
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
 class AuthScreen extends StatefulWidget {
   final String? initialEmail;
   final bool initialRegistration;
@@ -2017,6 +2128,27 @@ class _AuthScreenState extends State<AuthScreen> {
     serverClientId: kIsWeb ? null : kGoogleWebClientId,
   );
 
+  bool get _supportsRegistrationSmsRetriever =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  Future<String?> _startRegistrationSmsReading() async {
+    if (!_supportsRegistrationSmsRetriever) return null;
+    final signature = await SmartAuth.instance.getAppSignature();
+    if (!signature.hasData) return null;
+    unawaited(_readRegistrationSmsCode());
+    return signature.requireData;
+  }
+
+  Future<void> _readRegistrationSmsCode() async {
+    final result = await SmartAuth.instance.getSmsWithRetrieverApi();
+    if (!mounted || !result.hasData) return;
+    final code = result.requireData.code;
+    if (code == null || !RegExp(r'^\d{6}$').hasMatch(code)) return;
+    _registrationCodeCtrl.text = code;
+    setState(() => _registrationCodeSent = true);
+    await _verifyRegistrationCode();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2057,6 +2189,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   _birthDate == null ? null : _formatBirthDate(_birthDate!),
               'contentFilter': _registrationFilter,
               'contentFilterConfirmed': _filterConfirmed,
+              if (kPendingInviteId != null) 'inviteId': kPendingInviteId,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -2099,6 +2232,9 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   void dispose() {
+    if (_supportsRegistrationSmsRetriever) {
+      unawaited(SmartAuth.instance.removeSmsRetrieverApiListener());
+    }
     _nameCtrl.dispose();
     _emailCtrl.dispose();
     _phoneCtrl.dispose();
@@ -2230,6 +2366,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 'contentFilter': _registrationFilter,
                 'contentFilterConfirmed': _filterConfirmed,
                 'verificationProof': _verificationProof,
+                if (kPendingInviteId != null) 'inviteId': kPendingInviteId,
               }),
             )
             .timeout(const Duration(seconds: 30));
@@ -2381,7 +2518,13 @@ class _AuthScreenState extends State<AuthScreen> {
       _loading = true;
       _error = null;
     });
+    final webOtpFuture = _registrationMethod == 'phone' && kIsWeb
+        ? readWebOtp()
+        : Future<String?>.value(null);
     try {
+      final appSignature = _registrationMethod == 'phone'
+          ? await _startRegistrationSmsReading()
+          : null;
       final response = await http
           .post(
             Uri.parse('$kApi/registration/send-code'),
@@ -2389,7 +2532,8 @@ class _AuthScreenState extends State<AuthScreen> {
             body: jsonEncode({
               'method': _registrationMethod,
               'email': email,
-              'phone': phone
+              'phone': phone,
+              if (appSignature != null) 'appSignature': appSignature,
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -2402,6 +2546,15 @@ class _AuthScreenState extends State<AuthScreen> {
         else
           _error = data['error'] as String? ?? 'שליחת הקוד נכשלה';
       });
+      if (response.statusCode == 200 &&
+          _registrationMethod == 'phone' &&
+          kIsWeb) {
+        final code = await webOtpFuture;
+        if (code != null && mounted) {
+          _registrationCodeCtrl.text = code;
+          await _verifyRegistrationCode();
+        }
+      }
     } catch (_) {
       if (mounted)
         setState(() {
@@ -2712,6 +2865,8 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
           const SizedBox(height: 12),
           if (_registrationCodeSent) ...[
+            if (_registrationMethod == 'phone')
+              const _SmsCodeWaitingAnimation(),
             TextField(
               controller: _registrationCodeCtrl,
               keyboardType: TextInputType.number,
@@ -2980,10 +3135,15 @@ class _AuthScreenState extends State<AuthScreen> {
                     alignment: Alignment.topCenter,
                     child: AnimatedSwitcher(
                       duration: const Duration(milliseconds: 220),
-                      child: SizedBox(
+                      child: SingleChildScrollView(
                         key: ValueKey(_registrationStep),
-                        width: double.infinity,
-                        child: _registrationStepContent(),
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: _registrationStepContent(),
+                        ),
                       ),
                     ),
                   ),
@@ -4817,9 +4977,6 @@ class _MainShellContentState extends State<_MainShellContent> {
   final Map<String, Timer> _userTypingTimers = {};
   final List<Map<String, dynamic>> _messageRequests = [];
   bool _showingMessageRequest = false;
-  List<Map<String, dynamic>> _recentSentMessages = [];
-  int _recentSentIndex = -1;
-  bool _recentSentLoading = false;
 
   List<Map<String, dynamic>> _withoutScanBot(List<Map<String, dynamic>> users) {
     final sorted =
@@ -5190,7 +5347,8 @@ class _MainShellContentState extends State<_MainShellContent> {
           msg.contains('phone_required')) {
         _requirePhoneSetup(
             requireVerification: msg.contains('verification_required'));
-      } else if (msg.contains('user_not_found')) {
+      } else if (msg.contains('registration_incomplete') ||
+          msg.contains('user_not_found')) {
         _forceLogout(showRegistration: true);
       } else if (msg.contains('unauthorized')) {
         _forceLogout();
@@ -5304,149 +5462,6 @@ class _MainShellContentState extends State<_MainShellContent> {
         ),
       ),
       (route) => false,
-    );
-  }
-
-  Future<void> _browseRecentSent({required bool older}) async {
-    if (_recentSentLoading) return;
-    if (_recentSentMessages.isEmpty) {
-      setState(() => _recentSentLoading = true);
-      try {
-        final response = await http.get(
-          Uri.parse('$kApi/messages/recent-sent?limit=50'),
-          headers: {'Authorization': 'Bearer ${widget.token}'},
-        );
-        if (response.statusCode != 200) throw Exception();
-        final loaded = (jsonDecode(response.body) as List)
-            .map((item) => Map<String, dynamic>.from(item as Map))
-            .toList();
-        if (!mounted) return;
-        setState(() {
-          _recentSentMessages = loaded;
-          _recentSentIndex = loaded.isEmpty ? -1 : 0;
-        });
-        if (loaded.isEmpty && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('לא נמצאו הודעות ששלחת')),
-          );
-        }
-      } catch (_) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('טעינת ההודעות האחרונות נכשלה')),
-          );
-        }
-      } finally {
-        if (mounted) setState(() => _recentSentLoading = false);
-      }
-      return;
-    }
-    setState(() {
-      if (older && _recentSentIndex < _recentSentMessages.length - 1) {
-        _recentSentIndex++;
-      } else if (!older && _recentSentIndex > 0) {
-        _recentSentIndex--;
-      }
-    });
-  }
-
-  String _recentSentText(Map<String, dynamic> message) {
-    final text = (message['body'] ?? '').toString().trim();
-    if (text.isNotEmpty) return text;
-    final fileName = (message['file_name'] ?? '').toString().trim();
-    if (fileName.isNotEmpty) return '📎 $fileName';
-    return message['type'] == 'video'
-        ? '🎥 סרטון'
-        : message['type'] == 'image'
-            ? '🖼️ תמונה'
-            : 'קובץ';
-  }
-
-  Widget _recentSentBrowser() {
-    final hasMessage =
-        _recentSentIndex >= 0 && _recentSentIndex < _recentSentMessages.length;
-    final message = hasMessage ? _recentSentMessages[_recentSentIndex] : null;
-    return SafeArea(
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          if (message != null)
-            Container(
-              width: math.min(330, MediaQuery.sizeOf(context).width - 92),
-              margin: const EdgeInsets.only(left: 6),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.97),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: kBorder),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black26, blurRadius: 8)
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    Expanded(
-                        child: Text(
-                      'נשלח ${message['target_type'] == 'group' ? 'לקבוצה' : 'אל'} ${message['target_name'] ?? ''}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, color: kPrimary),
-                    )),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      tooltip: 'סגור',
-                      onPressed: () => setState(() => _recentSentIndex = -1),
-                      icon: const Icon(Icons.close, size: 18),
-                    ),
-                  ]),
-                  Text(_recentSentText(message),
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      textDirection: TextDirection.rtl),
-                  const SizedBox(height: 3),
-                  Text(
-                      '${_recentSentIndex + 1} מתוך ${_recentSentMessages.length}',
-                      style: const TextStyle(fontSize: 11, color: kSubtext)),
-                ],
-              ),
-            ),
-          Material(
-            color: kPrimary,
-            borderRadius: BorderRadius.circular(24),
-            elevation: 4,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              IconButton(
-                color: Colors.white,
-                tooltip: 'הודעה קודמת ששלחתי',
-                onPressed: _recentSentLoading
-                    ? null
-                    : () => _browseRecentSent(older: true),
-                icon: _recentSentLoading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white))
-                    : const Icon(Icons.keyboard_arrow_up),
-              ),
-              Container(width: 26, height: 1, color: Colors.white30),
-              IconButton(
-                color: Colors.white,
-                tooltip: 'הודעה חדשה יותר ששלחתי',
-                onPressed: _recentSentLoading || !hasMessage
-                    ? null
-                    : () => _browseRecentSent(older: false),
-                icon: const Icon(Icons.keyboard_arrow_down),
-              ),
-            ]),
-          ),
-        ],
-      ),
     );
   }
 
@@ -5624,17 +5639,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         : screens[_idx];
 
     return Scaffold(
-      body: Stack(
-        children: [
-          Positioned.fill(child: body),
-          if (_idx != 3)
-            Positioned(
-              left: 8,
-              top: 88,
-              child: _recentSentBrowser(),
-            ),
-        ],
-      ),
+      body: body,
       bottomNavigationBar: _idx == 3
           ? null
           : BottomNavigationBar(
@@ -9290,6 +9295,8 @@ class _ChatScreenState extends State<ChatScreen> {
       'fileType': isFile ? msgType : null,
       'fileUrl': map['file_url'],
       'fileName': map['file_name'],
+      'educationFormId': map['education_form_id'],
+      'educationResponseStatus': map['education_response_status'],
       'isGroupInvite': msgType == 'group_invite',
       'meta': map['file_name'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
@@ -9339,6 +9346,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'status': isIncoming ? 'received' : 'sent',
         'isFile': isFile,
         'fileType': fileType,
+        'educationFormId': data['formId'],
+        'educationResponseStatus': data['educationResponseStatus'],
         'fileUrl': fileUrl,
         'fileName': fileName,
         if (data['classification'] != null)
@@ -13303,12 +13312,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   String _typingName = '';
   late final void Function(dynamic) _typingSocketHandler;
   late final void Function(dynamic) _scanRejectedSocketHandler;
+  late final void Function(dynamic) _educationUpdatedSocketHandler;
   late final void Function(dynamic) _messageRejectedSocketHandler;
   List<Map<String, dynamic>> _members = [];
   String _myStatus = 'member'; // 'member' or 'pending'
   Map<String, dynamic>? _editingMsg;
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
+  bool _processingInvite = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
   String _voiceFileName = 'voice_message.webm';
@@ -13321,6 +13332,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     super.initState();
     _isAdmin = widget.group['role'] == 'admin';
     _myStatus = widget.group['status'] as String? ?? 'member';
+    _reconcileGroupMembership();
     _setupSocket();
     if (_myStatus == 'member') {
       // A newly-created group is added after the socket connected, so its
@@ -13343,6 +13355,35 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
       }
     }
+  }
+
+  Future<void> _reconcileGroupMembership() async {
+    try {
+      final response = await http.get(Uri.parse('$kApi/groups'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (!mounted || response.statusCode != 200) return;
+      final groups =
+          (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+      final currentIndex =
+          groups.indexWhere((group) => group['id'] == _groupId);
+      if (currentIndex == -1) return;
+      final current = groups[currentIndex];
+      final serverStatus = current['status']?.toString() ?? 'member';
+      if (serverStatus == _myStatus) return;
+      setState(() {
+        _myStatus = serverStatus;
+        widget.group['status'] = serverStatus;
+      });
+      if (serverStatus == 'member') {
+        widget.socket?.emit('group:join', {'groupId': _groupId});
+        widget.socket?.emit('group:viewed', {'groupId': _groupId});
+        await Future.wait([
+          _loadMessages(),
+          _loadMembers(),
+          _loadGroupReceivingFilter(),
+        ]);
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadGroupReceivingFilter() async {
@@ -13421,6 +13462,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'fileType': _normalizeIncomingFileType(map['type'] as String?,
           fileUrl: map['file_url'] as String?,
           fileName: map['file_name'] as String?),
+      'educationFormId': map['education_form_id'],
+      'educationResponseStatus': map['education_response_status'],
       if (map['reply_to_id'] != null)
         'replyTo': {
           'id': map['reply_to_id'],
@@ -13430,6 +13473,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _acceptPending() async {
+    if (_processingInvite) return;
+    setState(() => _processingInvite = true);
     try {
       final res = await http.post(
         Uri.parse('$kApi/groups/$_groupId/join'),
@@ -13437,7 +13482,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (res.statusCode == 200 && mounted) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        setState(() => _myStatus = 'member');
+        setState(() {
+          _myStatus = 'member';
+          widget.group['status'] = 'member';
+        });
         // Join socket room
         widget.socket?.emit('group:join', {'groupId': _groupId});
         widget.socket?.emit('group:viewed', {'groupId': _groupId});
@@ -13451,9 +13499,31 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           });
         }
         await _loadMembers();
+        await _loadMessages();
+        await _loadGroupReceivingFilter();
         _scrollToBottom();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('ההצטרפות לקבוצה אושרה בהצלחה')));
+        }
+      } else if (mounted) {
+        var message = 'אישור ההצטרפות נכשל';
+        try {
+          final data = jsonDecode(res.body);
+          message = data['error']?.toString() ?? message;
+        } catch (_) {}
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(message), backgroundColor: Colors.red));
       }
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('שגיאת חיבור בעת אישור ההצטרפות'),
+            backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _processingInvite = false);
+    }
   }
 
   Future<void> _declinePending() async {
@@ -14046,6 +14116,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'fileType': _normalizeIncomingFileType(map['type'] as String?,
           fileUrl: map['file_url'] as String?,
           fileName: map['file_name'] as String?),
+      'educationFormId': map['education_form_id'],
+      'educationResponseStatus': map['education_response_status'],
+      'educationFormStatus': map['education_form_status'],
       if (map['reply_to_id'] != null)
         'replyTo': {
           'id': map['reply_to_id'],
@@ -14084,6 +14157,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'fileUrl': fileUrl,
         'fileName': fileName,
         'fileType': fileType,
+        'educationFormId': data['formId'],
+        'educationResponseStatus': data['educationResponseStatus'],
         if (data['classification'] != null)
           'classification': data['classification'],
       };
@@ -14128,6 +14203,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       });
     };
     widget.socket?.on('scan:rejected', _scanRejectedSocketHandler);
+    _educationUpdatedSocketHandler = (data) {
+      if (!mounted || data is! Map || data['groupId'] != _groupId) return;
+      _loadMessages();
+    };
+    widget.socket?.on('education:updated', _educationUpdatedSocketHandler);
 
     _messageRejectedSocketHandler = (data) {
       if (!mounted || data is! Map || data['groupId']?.toString() != _groupId) {
@@ -14169,6 +14249,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       }
     });
 
+    widget.socket?.on('group:member_joined', (data) {
+      if (!mounted || data['groupId'] != _groupId) return;
+      _loadMembers();
+    });
+
     widget.socket?.on('message:edited', (data) {
       if (!mounted) return;
       final gid = data['groupId'] as String?;
@@ -14202,9 +14287,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _audioRecorder.dispose();
     widget.socket?.off('group:message');
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
+    widget.socket?.off('education:updated', _educationUpdatedSocketHandler);
     widget.socket?.off('message:rejected', _messageRejectedSocketHandler);
     widget.socket?.off('group:typing', _typingSocketHandler);
     widget.socket?.off('group:viewed');
+    widget.socket?.off('group:member_joined');
     widget.socket?.off('message:edited');
     widget.socket?.off('message:deleted');
     _msgCtrl.dispose();
@@ -15309,6 +15396,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       case 'members':
         _showMembersDialog();
         break;
+      case 'education':
+        await _openEducationForms();
+        break;
       case 'filter':
         await Navigator.push(
           context,
@@ -15359,6 +15449,74 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       case 'leave':
         _leaveGroup();
         break;
+    }
+  }
+
+  Future<void> _openEducationForms() => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => EducationFormsScreen(
+            token: widget.token,
+            groupId: _groupId,
+            groupName: widget.group['name'] as String? ?? 'קבוצה',
+            isAdmin: _isAdmin,
+            socket: widget.socket,
+          ),
+        ),
+      );
+
+  Future<void> _openEducationAnnouncement(Map<String, dynamic> message) async {
+    final directFormId = message['educationFormId']?.toString();
+    if (directFormId != null && directFormId.isNotEmpty) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => EducationFormDetailsScreen(
+            token: widget.token,
+            formId: directFormId,
+            isAdmin: _isAdmin,
+            socket: widget.socket,
+          ),
+        ),
+      );
+      if (mounted) await _loadMessages();
+      return;
+    }
+    final text = message['text']?.toString() ?? '';
+    final firstLine = text.split('\n').first;
+    final separator = firstLine.indexOf(':');
+    final title =
+        separator == -1 ? '' : firstLine.substring(separator + 1).trim();
+    if (title.isEmpty) {
+      await _openEducationForms();
+      return;
+    }
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/groups/$_groupId/education-forms'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (response.statusCode != 200) throw Exception();
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final forms = (data['forms'] as List).cast<Map<String, dynamic>>();
+      final matchIndex =
+          forms.indexWhere((form) => form['title']?.toString().trim() == title);
+      if (matchIndex == -1) throw Exception();
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => EducationFormDetailsScreen(
+            token: widget.token,
+            formId: forms[matchIndex]['id'] as String,
+            isAdmin: _isAdmin,
+            socket: widget.socket,
+          ),
+        ),
+      );
+      if (mounted) await _loadMessages();
+    } catch (_) {
+      if (mounted) await _openEducationForms();
     }
   }
 
@@ -15492,6 +15650,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   height: 40,
                   child: _CompactMenuItem(Icons.search, 'חיפוש בהודעות')),
               const PopupMenuItem(
+                  value: 'education',
+                  height: 40,
+                  child: _CompactMenuItem(
+                      Icons.fact_check_outlined, 'אישורים, חתימות וסקרים')),
+              const PopupMenuItem(
                   value: 'mute',
                   height: 40,
                   child: _CompactMenuItem(
@@ -15576,11 +15739,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton(
-                        onPressed: _acceptPending,
+                        onPressed: _processingInvite ? null : _acceptPending,
                         style:
                             ElevatedButton.styleFrom(backgroundColor: kPrimary),
-                        child: const Text('אשר הצטרפות',
-                            style: TextStyle(color: Colors.white)),
+                        child: _processingInvite
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white))
+                            : const Text('אשר הצטרפות',
+                                style: TextStyle(color: Colors.white)),
                       ),
                     ],
                   ),
@@ -15604,6 +15773,32 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           final messageIndex = _messages.length - 1 - i;
                           final msg = _messages[messageIndex];
                           final isMe = msg['isMe'] == true;
+                          final isEducationAnnouncement =
+                              (msg['text'] as String? ?? '').startsWith('📋 ');
+                          final educationStatus =
+                              msg['educationResponseStatus']?.toString();
+                          final educationFormClosed =
+                              msg['educationFormStatus'] == 'closed';
+                          final educationStatusLabel = educationFormClosed
+                              ? 'הטופס נסגר'
+                              : _isAdmin
+                                  ? 'ניהול מסמך'
+                                  : educationStatus == 'declined'
+                                      ? 'לא אושר'
+                                      : educationStatus == 'approved' ||
+                                              educationStatus == 'completed'
+                                          ? 'בוצע'
+                                          : 'ממתין לפעולה';
+                          final educationStatusColor = educationFormClosed
+                              ? Colors.blueGrey.shade700
+                              : _isAdmin
+                                  ? kPrimary
+                                  : educationStatus == 'declined'
+                                      ? Colors.red.shade700
+                                      : educationStatus == 'approved' ||
+                                              educationStatus == 'completed'
+                                          ? Colors.green.shade700
+                                          : Colors.orange.shade800;
                           var imageRunStart = messageIndex;
                           var imageRunEnd = messageIndex;
                           if (_isGridImageMessage(msg)) {
@@ -15673,10 +15868,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                     onMessageOptions: _showMessageOptions)
                               else
                                 GestureDetector(
-                                  onTap: !kIsWeb && msg['fileUrl'] == null
-                                      ? () => _copyMessageText(context, msg)
-                                      : null,
-                                  onDoubleTap: kIsWeb && msg['fileUrl'] == null
+                                  onTap: isEducationAnnouncement
+                                      ? () => _openEducationAnnouncement(msg)
+                                      : !kIsWeb && msg['fileUrl'] == null
+                                          ? () => _copyMessageText(context, msg)
+                                          : null,
+                                  onDoubleTap: !isEducationAnnouncement &&
+                                          kIsWeb &&
+                                          msg['fileUrl'] == null
                                       ? () => _copyMessageText(context, msg)
                                       : null,
                                   onLongPress: () => _showMessageOptions(msg),
@@ -15829,6 +16028,97 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                           color: kPrimary,
                                                           fontWeight:
                                                               FontWeight.w600)),
+                                                ],
+                                              ),
+                                            ),
+                                          )
+                                        else if (isEducationAnnouncement)
+                                          InkWell(
+                                            onTap: () =>
+                                                _openEducationAnnouncement(msg),
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                            child: Padding(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 4),
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.end,
+                                                children: [
+                                                  Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      const Icon(
+                                                          Icons
+                                                              .fact_check_outlined,
+                                                          color: kPrimary),
+                                                      const SizedBox(width: 8),
+                                                      Flexible(
+                                                        child: Text(
+                                                          msg['text']
+                                                                  as String? ??
+                                                              '',
+                                                          style: const TextStyle(
+                                                              fontSize: 15,
+                                                              height: 1.4,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w600),
+                                                          textDirection:
+                                                              TextDirection.rtl,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      const Icon(
+                                                          Icons.touch_app,
+                                                          size: 17,
+                                                          color: kPrimary),
+                                                      const SizedBox(width: 4),
+                                                      const Text(
+                                                          'לחץ לפתיחת המסמך',
+                                                          style: TextStyle(
+                                                              color: kPrimary,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .bold)),
+                                                      const SizedBox(width: 12),
+                                                      Container(
+                                                        padding:
+                                                            const EdgeInsets
+                                                                .symmetric(
+                                                                horizontal: 9,
+                                                                vertical: 3),
+                                                        decoration:
+                                                            BoxDecoration(
+                                                          color:
+                                                              educationStatusColor
+                                                                  .withOpacity(
+                                                                      .12),
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(14),
+                                                        ),
+                                                        child: Text(
+                                                          educationStatusLabel,
+                                                          style: TextStyle(
+                                                            color:
+                                                                educationStatusColor,
+                                                            fontWeight:
+                                                                FontWeight.bold,
+                                                            fontSize: 12,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
                                                 ],
                                               ),
                                             ),
@@ -18245,6 +18535,1409 @@ class _PermissionsViewState extends State<_PermissionsView> {
       ],
     );
   }
+}
+
+// ── Educational approvals, signatures and surveys ─────────────────
+class EducationFormsScreen extends StatefulWidget {
+  final String token;
+  final String groupId;
+  final String groupName;
+  final bool isAdmin;
+  final IO.Socket? socket;
+  const EducationFormsScreen(
+      {super.key,
+      required this.token,
+      required this.groupId,
+      required this.groupName,
+      required this.isAdmin,
+      this.socket});
+
+  @override
+  State<EducationFormsScreen> createState() => _EducationFormsScreenState();
+}
+
+class _EducationFormsScreenState extends State<EducationFormsScreen> {
+  bool _loading = true;
+  String? _error;
+  List<Map<String, dynamic>> _forms = [];
+  Timer? _onlineRefreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.socket?.on('education:updated', _onEducationUpdated);
+    _onlineRefreshTimer =
+        Timer.periodic(const Duration(seconds: 5), (_) => _load(silent: true));
+    _load();
+  }
+
+  void _onEducationUpdated(dynamic data) {
+    if (!mounted || data is! Map || data['groupId'] != widget.groupId) return;
+    _load(silent: true);
+  }
+
+  @override
+  void dispose() {
+    _onlineRefreshTimer?.cancel();
+    widget.socket?.off('education:updated', _onEducationUpdated);
+    super.dispose();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/groups/${widget.groupId}/education-forms'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200) throw Exception(data['error'] ?? 'שגיאה');
+      if (!mounted) return;
+      setState(() {
+        _forms = (data['forms'] as List).cast<Map<String, dynamic>>();
+        _loading = false;
+      });
+    } catch (e) {
+      if (mounted)
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
+    }
+  }
+
+  String _kind(Map<String, dynamic> form) => switch (form['form_type']) {
+        'signature' => 'מסמך לחתימה',
+        'survey' => 'סקר',
+        _ => 'אישור'
+      };
+
+  IconData _icon(Map<String, dynamic> form) => switch (form['form_type']) {
+        'signature' => Icons.draw_outlined,
+        'survey' => Icons.poll_outlined,
+        _ => Icons.fact_check_outlined
+      };
+
+  String _date(dynamic value) {
+    final date = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+    if (date == null) return '';
+    return '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+  }
+
+  Future<void> _create() async {
+    final created = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => CreateEducationFormScreen(
+              token: widget.token,
+              groupId: widget.groupId,
+              groupName: widget.groupName),
+        ));
+    if (created == true) _load();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+            title: Text('אישורים וסקרים • ${widget.groupName}'),
+            backgroundColor: kPrimary,
+            actions: [
+              IconButton(onPressed: _load, icon: const Icon(Icons.refresh))
+            ]),
+        floatingActionButton: widget.isAdmin
+            ? FloatingActionButton.extended(
+                onPressed: _create,
+                backgroundColor: kPrimary,
+                icon: const Icon(Icons.add),
+                label: const Text('יצירה חדשה'))
+            : null,
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _error != null
+                ? Center(
+                    child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child:
+                            Column(mainAxisSize: MainAxisSize.min, children: [
+                          Text(_error!, textAlign: TextAlign.center),
+                          const SizedBox(height: 12),
+                          ElevatedButton(
+                              onPressed: _load, child: const Text('נסה שוב'))
+                        ])))
+                : _forms.isEmpty
+                    ? Center(
+                        child: Padding(
+                            padding: const EdgeInsets.all(30),
+                            child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.assignment_outlined,
+                                      size: 72,
+                                      color: Colors.blueGrey.shade200),
+                                  const SizedBox(height: 14),
+                                  const Text('אין עדיין אישורים או סקרים',
+                                      style: TextStyle(
+                                          fontSize: 19,
+                                          fontWeight: FontWeight.bold)),
+                                  if (widget.isAdmin)
+                                    const Padding(
+                                        padding: EdgeInsets.only(top: 8),
+                                        child: Text(
+                                            'לחץ על „יצירה חדשה” כדי להתחיל'))
+                                ])))
+                    : RefreshIndicator(
+                        onRefresh: _load,
+                        child: ListView.builder(
+                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
+                            itemCount: _forms.length,
+                            itemBuilder: (_, index) {
+                              final form = _forms[index];
+                              final answered =
+                                  form['my_response_status'] != null;
+                              final closed = form['status'] == 'closed';
+                              final responses = form['response_count'] ?? 0;
+                              final expected = form['expected_count'] ?? 0;
+                              return Card(
+                                  margin: const EdgeInsets.only(bottom: 11),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () async {
+                                      await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                              builder: (_) =>
+                                                  EducationFormDetailsScreen(
+                                                      token: widget.token,
+                                                      formId:
+                                                          form['id'] as String,
+                                                      isAdmin: widget.isAdmin,
+                                                      socket: widget.socket)));
+                                      _load();
+                                    },
+                                    child: Padding(
+                                        padding: const EdgeInsets.all(15),
+                                        child: Row(children: [
+                                          CircleAvatar(
+                                              backgroundColor:
+                                                  kPrimary.withOpacity(.12),
+                                              child: Icon(_icon(form),
+                                                  color: kPrimary)),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                              child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                Row(children: [
+                                                  Expanded(
+                                                      child: Text(
+                                                          form['title']
+                                                                  ?.toString() ??
+                                                              '',
+                                                          style: const TextStyle(
+                                                              fontSize: 16,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .bold))),
+                                                  if (closed)
+                                                    const Chip(
+                                                        label: Text('סגור',
+                                                            style: TextStyle(
+                                                                fontSize: 11)))
+                                                ]),
+                                                Text(
+                                                    '${_kind(form)}${form['due_at'] != null ? ' • עד ${_date(form['due_at'])}' : ''}',
+                                                    style: const TextStyle(
+                                                        color: kSubtext,
+                                                        fontSize: 13)),
+                                                const SizedBox(height: 5),
+                                                Text(
+                                                    widget.isAdmin
+                                                        ? '$responses מתוך $expected השלימו'
+                                                        : answered
+                                                            ? 'הושלם'
+                                                            : 'ממתין לתשובתך',
+                                                    style: TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                        color: answered
+                                                            ? Colors
+                                                                .green.shade700
+                                                            : Colors.orange
+                                                                .shade800)),
+                                              ])),
+                                          const Icon(Icons.chevron_left),
+                                        ])),
+                                  ));
+                            })),
+      );
+}
+
+class CreateEducationFormScreen extends StatefulWidget {
+  final String token, groupId, groupName;
+  const CreateEducationFormScreen(
+      {super.key,
+      required this.token,
+      required this.groupId,
+      required this.groupName});
+  @override
+  State<CreateEducationFormScreen> createState() =>
+      _CreateEducationFormScreenState();
+}
+
+class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
+  final _title = TextEditingController();
+  final _description = TextEditingController();
+  String _type = 'approval';
+  bool _anonymous = false, _loading = false, _uploading = false;
+  DateTime? _dueAt;
+  String? _fileUrl, _fileName, _error;
+  final List<Map<String, dynamic>> _questions = [];
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _description.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDocument() async {
+    final result = await FilePicker.platform.pickFiles(
+        withData: true,
+        type: FileType.custom,
+        allowedExtensions: ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png']);
+    if (result == null || result.files.single.bytes == null) return;
+    final file = result.files.single;
+    setState(() {
+      _uploading = true;
+      _error = null;
+    });
+    try {
+      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+        ..headers['Authorization'] = 'Bearer ${widget.token}'
+        ..fields['groupId'] = widget.groupId
+        ..files.add(http.MultipartFile.fromBytes('file', file.bytes!,
+            filename: file.name, contentType: _mimeFromFileName(file.name)));
+      final streamed =
+          await request.send().timeout(const Duration(seconds: 90));
+      final body = await streamed.stream.bytesToString();
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      if (streamed.statusCode != 200 || data['status'] == 'pending') {
+        throw Exception(data['error'] ??
+            (data['status'] == 'pending'
+                ? 'הקובץ ממתין לאישור הסריקה'
+                : 'העלאת הקובץ נכשלה'));
+      }
+      if (mounted)
+        setState(() {
+          _fileUrl = data['url'] as String?;
+          _fileName = file.name;
+        });
+    } catch (e) {
+      if (mounted)
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  Future<void> _addQuestion() async {
+    final question = TextEditingController();
+    final options = TextEditingController();
+    final result = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: const Text('שאלת סקר'),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  TextField(
+                      controller: question,
+                      decoration: const InputDecoration(labelText: 'השאלה')),
+                  const SizedBox(height: 10),
+                  TextField(
+                      controller: options,
+                      minLines: 3,
+                      maxLines: 6,
+                      decoration: const InputDecoration(
+                          labelText: 'אפשרויות — כל אפשרות בשורה')),
+                ]),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('ביטול')),
+                  ElevatedButton(
+                      onPressed: () {
+                        final values = options.text
+                            .split('\n')
+                            .map((e) => e.trim())
+                            .where((e) => e.isNotEmpty)
+                            .toList();
+                        if (question.text.trim().isNotEmpty &&
+                            values.length >= 2) {
+                          Navigator.pop(ctx, {
+                            'text': question.text.trim(),
+                            'options': values
+                          });
+                        }
+                      },
+                      child: const Text('הוסף'))
+                ]));
+    question.dispose();
+    options.dispose();
+    if (result != null) setState(() => _questions.add(result));
+  }
+
+  Future<void> _chooseDueDate() async {
+    final date = await showDatePicker(
+        context: context,
+        initialDate: DateTime.now().add(const Duration(days: 2)),
+        firstDate: DateTime.now(),
+        lastDate: DateTime.now().add(const Duration(days: 730)));
+    if (date != null)
+      setState(
+          () => _dueAt = DateTime(date.year, date.month, date.day, 23, 59));
+  }
+
+  Future<void> _submit() async {
+    if (_title.text.trim().isEmpty) {
+      setState(() => _error = 'יש להזין כותרת');
+      return;
+    }
+    if (_type == 'survey' && _questions.isEmpty) {
+      setState(() => _error = 'יש להוסיף לפחות שאלת סקר אחת');
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final response = await http.post(
+          Uri.parse('$kApi/groups/${widget.groupId}/education-forms'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json'
+          },
+          body: jsonEncode({
+            'formType': _type,
+            'title': _title.text.trim(),
+            'description': _description.text.trim(),
+            'fileUrl': _fileUrl,
+            'fileName': _fileName,
+            'questions': _questions,
+            'anonymous': _anonymous,
+            if (_dueAt != null) 'dueAt': _dueAt!.toUtc().toIso8601String()
+          }));
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 201)
+        throw Exception(data['error'] ?? 'יצירת הטופס נכשלה');
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted)
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+            title: const Text('יצירת אישור או סקר'), backgroundColor: kPrimary),
+        body: ListView(padding: const EdgeInsets.all(18), children: [
+          SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                    value: 'approval',
+                    icon: Icon(Icons.fact_check_outlined),
+                    label: Text('אישור')),
+                ButtonSegment(
+                    value: 'signature',
+                    icon: Icon(Icons.draw_outlined),
+                    label: Text('חתימה')),
+                ButtonSegment(
+                    value: 'survey',
+                    icon: Icon(Icons.poll_outlined),
+                    label: Text('סקר')),
+              ],
+              selected: {
+                _type
+              },
+              onSelectionChanged: (value) =>
+                  setState(() => _type = value.first)),
+          const SizedBox(height: 18),
+          TextField(
+              controller: _title,
+              textDirection: TextDirection.rtl,
+              decoration: const InputDecoration(
+                  labelText: 'כותרת *', prefixIcon: Icon(Icons.title))),
+          const SizedBox(height: 12),
+          TextField(
+              controller: _description,
+              minLines: 3,
+              maxLines: 7,
+              textDirection: TextDirection.rtl,
+              decoration: const InputDecoration(
+                  labelText: 'הסבר להורים', alignLabelWithHint: true)),
+          const SizedBox(height: 12),
+          Card(
+              child: ListTile(
+                  leading: _uploading
+                      ? const CircularProgressIndicator()
+                      : const Icon(Icons.attach_file),
+                  title: Text(_fileName ?? 'צירוף תמונה או מסמך'),
+                  subtitle: const Text('PDF, Word או תמונה'),
+                  trailing: _fileName != null
+                      ? IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => setState(() {
+                                _fileName = null;
+                                _fileUrl = null;
+                              }))
+                      : null,
+                  onTap: _uploading ? null : _pickDocument)),
+          Card(
+              child: ListTile(
+                  leading: const Icon(Icons.event_outlined),
+                  title: Text(_dueAt == null
+                      ? 'ללא מועד סיום'
+                      : 'מועד סיום: ${_dueAt!.day}/${_dueAt!.month}/${_dueAt!.year}'),
+                  trailing: _dueAt == null
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => setState(() => _dueAt = null)),
+                  onTap: _chooseDueDate)),
+          if (_type == 'survey') ...[
+            SwitchListTile(
+                value: _anonymous,
+                onChanged: (v) => setState(() => _anonymous = v),
+                title: const Text('סקר אנונימי'),
+                subtitle: const Text(
+                    'המנהל יראה מי השתתף, אך לא איזו תשובה שייכת למי')),
+            const Divider(),
+            ..._questions.asMap().entries.map((entry) => Card(
+                child: ListTile(
+                    leading: CircleAvatar(child: Text('${entry.key + 1}')),
+                    title: Text(entry.value['text'] as String),
+                    subtitle:
+                        Text((entry.value['options'] as List).join(' • ')),
+                    trailing: IconButton(
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () =>
+                            setState(() => _questions.removeAt(entry.key)))))),
+            OutlinedButton.icon(
+                onPressed: _addQuestion,
+                icon: const Icon(Icons.add),
+                label: const Text('הוסף שאלת סקר')),
+          ],
+          if (_error != null)
+            Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(_error!,
+                    style: const TextStyle(color: Colors.red),
+                    textAlign: TextAlign.center)),
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+              onPressed: _loading || _uploading ? null : _submit,
+              icon: _loading
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.send),
+              label: const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text('פרסם בקבוצה'))),
+        ]),
+      );
+}
+
+class EducationFormDetailsScreen extends StatefulWidget {
+  final String token, formId;
+  final bool isAdmin;
+  final IO.Socket? socket;
+  const EducationFormDetailsScreen(
+      {super.key,
+      required this.token,
+      required this.formId,
+      required this.isAdmin,
+      this.socket});
+  @override
+  State<EducationFormDetailsScreen> createState() =>
+      _EducationFormDetailsScreenState();
+}
+
+class _EducationFormDetailsScreenState
+    extends State<EducationFormDetailsScreen> {
+  bool _loading = true, _saving = false, _exportingPdf = false;
+  String? _error;
+  Map<String, dynamic>? _form;
+  List<Map<String, dynamic>> _participants = [], _results = [];
+  final Map<int, String> _answers = {};
+  final _signerName = TextEditingController();
+  final List<Offset?> _signature = [];
+  Timer? _onlineRefreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.socket?.on('education:updated', _onEducationUpdated);
+    if (widget.isAdmin) {
+      _onlineRefreshTimer = Timer.periodic(
+          const Duration(seconds: 5), (_) => _load(silent: true));
+    }
+    _load();
+  }
+
+  void _onEducationUpdated(dynamic data) {
+    if (!mounted || data is! Map || data['formId'] != widget.formId) return;
+    final action = data['action']?.toString();
+    if (!widget.isAdmin &&
+        action != 'closed' &&
+        action != 'opened' &&
+        action != 'change_approved' &&
+        action != 'change_rejected') {
+      return;
+    }
+    _load(silent: true);
+  }
+
+  @override
+  void dispose() {
+    _onlineRefreshTimer?.cancel();
+    widget.socket?.off('education:updated', _onEducationUpdated);
+    _signerName.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final response = await http.get(
+          Uri.parse('$kApi/education-forms/${widget.formId}'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200) throw Exception(data['error'] ?? 'שגיאה');
+      final loadedForm = data['form'] as Map<String, dynamic>;
+      var defaultSignerName =
+          loadedForm['current_user_name']?.toString().trim() ?? '';
+      if (loadedForm['form_type'] == 'signature' && defaultSignerName.isEmpty) {
+        final profileResponse = await http.get(Uri.parse('$kApi/profile'),
+            headers: {'Authorization': 'Bearer ${widget.token}'});
+        if (profileResponse.statusCode == 200) {
+          final profile =
+              jsonDecode(profileResponse.body) as Map<String, dynamic>;
+          defaultSignerName = profile['name']?.toString().trim() ?? '';
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _form = loadedForm;
+        _participants = data['participants'] == null
+            ? []
+            : (data['participants'] as List).cast<Map<String, dynamic>>();
+        _results = data['results'] == null
+            ? []
+            : (data['results'] as List).cast<Map<String, dynamic>>();
+        final previous = _form?['my_answers'];
+        if (previous is Map)
+          for (final entry in previous.entries) {
+            final key = int.tryParse(entry.key.toString());
+            if (key != null) _answers[key] = entry.value.toString();
+          }
+        if (_signerName.text.trim().isEmpty) {
+          _signerName.text =
+              _form?['my_signer_name']?.toString().trim().isNotEmpty == true
+                  ? _form!['my_signer_name'].toString()
+                  : defaultSignerName;
+        }
+        _loading = false;
+      });
+    } catch (e) {
+      if (mounted)
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
+    }
+  }
+
+  String _statusLabel(String? status) => switch (status) {
+        'approved' => 'אושר',
+        'declined' => 'לא אושר',
+        'completed' => 'הושלם',
+        _ => 'טרם השלים'
+      };
+
+  Future<void> _respond(String status) async {
+    final form = _form!;
+    final type = form['form_type'];
+    if (type == 'signature' &&
+        (_signerName.text.trim().isEmpty ||
+            _signature.whereType<Offset>().length < 2)) {
+      setState(() => _error = 'יש להזין שם מלא ולחתום בתוך המסגרת');
+      return;
+    }
+    final questions = (form['questions'] as List? ?? []);
+    if (type == 'survey' && _answers.length < questions.length) {
+      setState(() => _error = 'יש לענות על כל שאלות הסקר');
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final signatureData = _signature
+          .map((point) => point == null ? null : {'x': point.dx, 'y': point.dy})
+          .toList();
+      final response = await http.post(
+          Uri.parse('$kApi/education-forms/${widget.formId}/respond'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json'
+          },
+          body: jsonEncode({
+            'status': status,
+            'answers': _answers.map((k, v) => MapEntry('$k', v)),
+            'signerName': _signerName.text.trim(),
+            'signatureData': signatureData
+          }));
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200)
+        throw Exception(data['error'] ?? 'שמירת התשובה נכשלה');
+      if (mounted) Navigator.pop(context, status);
+    } catch (e) {
+      if (mounted)
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _requestResponseChange() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final response = await http.post(
+          Uri.parse('$kApi/education-forms/${widget.formId}/change-request'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200) {
+        throw Exception(data['error'] ?? 'שליחת בקשת השינוי נכשלה');
+      }
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('בקשת השינוי נשלחה למנהל הקבוצה')));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _decideResponseChange(String userId, String decision) async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final response = await http.post(
+          Uri.parse(
+              '$kApi/education-forms/${widget.formId}/change-request/$userId/decision'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json'
+          },
+          body: jsonEncode({'decision': decision}));
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200) {
+        throw Exception(data['error'] ?? 'שמירת החלטת המנהל נכשלה');
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _remind({String? userId}) async {
+    setState(() => _saving = true);
+    try {
+      final response = await http.post(
+          Uri.parse('$kApi/education-forms/${widget.formId}/remind'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json'
+          },
+          body: jsonEncode({
+            'userIds': userId == null ? [] : [userId]
+          }));
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200)
+        throw Exception(data['error'] ?? 'שליחת התזכורת נכשלה');
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('נשלחו ${data['sent']} תזכורות')));
+      await _load();
+    } catch (e) {
+      if (mounted)
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _toggleStatus() async {
+    final next = _form?['status'] == 'open' ? 'closed' : 'open';
+    final response = await http.put(
+        Uri.parse('$kApi/education-forms/${widget.formId}/status'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json'
+        },
+        body: jsonEncode({'status': next}));
+    if (response.statusCode == 200) _load();
+  }
+
+  Future<void> _downloadSurveyPdf() async {
+    if (_form?['form_type'] != 'survey' ||
+        _form?['status'] != 'closed' ||
+        _exportingPdf) {
+      return;
+    }
+    setState(() {
+      _exportingPdf = true;
+      _error = null;
+    });
+    try {
+      final fontData = await rootBundle.load('assets/fonts/NotoSansHebrew.ttf');
+      final font = pw.Font.ttf(fontData);
+      final document = pw.Document();
+      final questions = (_form?['questions'] as List? ?? []).cast<dynamic>();
+      final completed =
+          _participants.where((p) => p['response_status'] != null).length;
+      final generatedAt = DateTime.now();
+
+      document.addPage(pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          textDirection: pw.TextDirection.rtl,
+          theme: pw.ThemeData.withFont(base: font, bold: font),
+          margin: const pw.EdgeInsets.all(32),
+          header: (context) => pw.Container(
+              alignment: pw.Alignment.centerRight,
+              padding: const pw.EdgeInsets.only(bottom: 8),
+              decoration: const pw.BoxDecoration(
+                  border: pw.Border(
+                      bottom: pw.BorderSide(color: PdfColors.grey400))),
+              child: pw.Text('תוצאות סקר',
+                  style: pw.TextStyle(fontSize: 11, color: PdfColors.grey700))),
+          footer: (context) => pw.Align(
+              alignment: pw.Alignment.center,
+              child: pw.Text(
+                  'עמוד ${context.pageNumber} מתוך ${context.pagesCount}',
+                  style: const pw.TextStyle(
+                      fontSize: 9, color: PdfColors.grey600))),
+          build: (context) => [
+                pw.SizedBox(height: 12),
+                pw.Text(_form?['title']?.toString() ?? 'סקר',
+                    style: pw.TextStyle(
+                        fontSize: 22, fontWeight: pw.FontWeight.bold)),
+                if ((_form?['description']?.toString().trim() ?? '')
+                    .isNotEmpty) ...[
+                  pw.SizedBox(height: 8),
+                  pw.Text(_form!['description'].toString()),
+                ],
+                pw.SizedBox(height: 12),
+                pw.Container(
+                    padding: const pw.EdgeInsets.all(10),
+                    color: PdfColors.grey100,
+                    child: pw.Row(children: [
+                      pw.Expanded(
+                          child: pw.Text('השלימו: $completed',
+                              style: pw.TextStyle(
+                                  fontWeight: pw.FontWeight.bold))),
+                      pw.Expanded(
+                          child: pw.Text(
+                              'סה״כ משתתפים: ${_participants.length}',
+                              style: pw.TextStyle(
+                                  fontWeight: pw.FontWeight.bold))),
+                    ])),
+                pw.SizedBox(height: 18),
+                ...questions.asMap().entries.map((entry) {
+                  final question = entry.value as Map<String, dynamic>;
+                  final counts = <String, int>{
+                    for (final option in question['options'] as List)
+                      option.toString(): 0
+                  };
+                  for (final result in _results) {
+                    final answers = result['answers'];
+                    if (answers is Map) {
+                      final answer = answers['${entry.key}']?.toString();
+                      if (answer != null) {
+                        counts[answer] = (counts[answer] ?? 0) + 1;
+                      }
+                    }
+                  }
+                  return pw.Container(
+                      margin: const pw.EdgeInsets.only(bottom: 14),
+                      padding: const pw.EdgeInsets.all(12),
+                      decoration: pw.BoxDecoration(
+                          border: pw.Border.all(color: PdfColors.grey400),
+                          borderRadius:
+                              const pw.BorderRadius.all(pw.Radius.circular(6))),
+                      child: pw.Column(
+                          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+                          children: [
+                            pw.Text('${entry.key + 1}. ${question['text']}',
+                                style: pw.TextStyle(
+                                    fontWeight: pw.FontWeight.bold)),
+                            pw.SizedBox(height: 8),
+                            ...counts.entries.map((item) => pw.Padding(
+                                padding:
+                                    const pw.EdgeInsets.symmetric(vertical: 3),
+                                child: pw.Row(children: [
+                                  pw.Expanded(child: pw.Text(item.key)),
+                                  pw.Text('${item.value}',
+                                      style: pw.TextStyle(
+                                          fontWeight: pw.FontWeight.bold)),
+                                ]))),
+                          ]));
+                }),
+                pw.SizedBox(height: 8),
+                pw.Text(
+                    'הופק בתאריך ${generatedAt.day}/${generatedAt.month}/${generatedAt.year} ${generatedAt.hour.toString().padLeft(2, '0')}:${generatedAt.minute.toString().padLeft(2, '0')}',
+                    style: const pw.TextStyle(
+                        fontSize: 9, color: PdfColors.grey600)),
+              ]));
+
+      final title = (_form?['title']?.toString() ?? 'survey')
+          .replaceAll(RegExp(r'[^\w\u0590-\u05FF-]+'), '_');
+      await Printing.sharePdf(
+          bytes: await document.save(), filename: '$title.pdf');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = 'הפקת קובץ ה־PDF נכשלה');
+      }
+    } finally {
+      if (mounted) setState(() => _exportingPdf = false);
+    }
+  }
+
+  Future<void> _assignNewMembers() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final response = await http.post(
+          Uri.parse(
+              '$kApi/education-forms/${widget.formId}/assign-new-members'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200) {
+        throw Exception(data['error'] ?? 'השליחה נכשלה');
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('הטופס נשלח ל־${data['sent']} חברים חדשים')));
+      }
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _republish() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final response = await http.post(
+          Uri.parse('$kApi/education-forms/${widget.formId}/republish'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200) {
+        throw Exception(data['error'] ?? 'הפרסום נכשל');
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('הטופס פורסם שוב בשיחת הקבוצה')));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Widget _documentCard() {
+    final form = _form!;
+    if (form['file_url'] == null) return const SizedBox.shrink();
+    final storedUrl = form['file_url'].toString();
+    final documentUri = Uri.parse(storedUrl).hasScheme
+        ? Uri.parse(storedUrl)
+        : Uri.parse(kServer).resolve(storedUrl);
+    return Card(
+        child: ListTile(
+            leading: const Icon(Icons.description_outlined, color: kPrimary),
+            title: Text(form['file_name']?.toString() ?? 'מסמך מצורף'),
+            subtitle: const Text('לחץ לצפייה במסמך לפני האישור'),
+            trailing: const Icon(Icons.open_in_new),
+            onTap: () async {
+              final opened = await launchUrl(documentUri,
+                  mode: kIsWeb
+                      ? LaunchMode.platformDefault
+                      : LaunchMode.externalApplication);
+              if (!opened && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('לא ניתן לפתוח את המסמך. נסה שוב.')));
+              }
+            }));
+  }
+
+  Widget _memberResponse() {
+    final form = _form!;
+    final type = form['form_type'];
+    final closed = form['status'] == 'closed';
+    final answered = form['my_response_status'] != null;
+    if (closed)
+      return const Card(
+          child: Padding(
+              padding: EdgeInsets.all(18),
+              child: Text('הטופס נסגר ולא ניתן עוד להשיב.')));
+    if (answered) {
+      final changeStatus = form['my_change_request_status']?.toString();
+      return Card(
+          child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(children: [
+                const Icon(Icons.verified_outlined,
+                    color: Colors.green, size: 34),
+                const SizedBox(height: 8),
+                Text(
+                    'תשובתך: ${_statusLabel(form['my_response_status'] as String?)}',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(height: 6),
+                const Text('התגובה נשלחה ולא ניתן לשנות אותה',
+                    textAlign: TextAlign.center),
+                const SizedBox(height: 12),
+                if (changeStatus == 'pending')
+                  const Chip(label: Text('בקשת שינוי ממתינה לאישור מנהל'))
+                else
+                  OutlinedButton.icon(
+                      onPressed: _saving ? null : _requestResponseChange,
+                      icon: const Icon(Icons.change_circle_outlined),
+                      label: const Text('בקש/י מהמנהל לשנות בחירה')),
+              ])));
+    }
+    if (type == 'survey') {
+      final questions = (form['questions'] as List? ?? []).cast<dynamic>();
+      return Column(children: [
+        ...questions.asMap().entries.map((entry) {
+          final q = entry.value as Map<String, dynamic>;
+          return Card(
+              child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${entry.key + 1}. ${q['text']}',
+                            style:
+                                const TextStyle(fontWeight: FontWeight.bold)),
+                        ...(q['options'] as List).map((option) =>
+                            RadioListTile<String>(
+                                dense: true,
+                                value: option.toString(),
+                                groupValue: _answers[entry.key],
+                                title: Text(option.toString()),
+                                onChanged: (v) =>
+                                    setState(() => _answers[entry.key] = v!))),
+                      ])));
+        }),
+        ElevatedButton.icon(
+            onPressed: _saving ? null : () => _respond('completed'),
+            icon: const Icon(Icons.send),
+            label: const Text('שלח תשובות')),
+      ]);
+    }
+    if (type == 'signature') {
+      return Card(
+          child: Padding(
+              padding: const EdgeInsets.all(15),
+              child: Column(children: [
+                TextField(
+                    controller: _signerName,
+                    decoration:
+                        const InputDecoration(labelText: 'שם מלא של החותם')),
+                const SizedBox(height: 12),
+                Row(children: [
+                  const Expanded(
+                      child: Text('חתימה באצבע בתוך המסגרת',
+                          style: TextStyle(fontWeight: FontWeight.bold))),
+                  TextButton(
+                      onPressed: () => setState(_signature.clear),
+                      child: const Text('נקה'))
+                ]),
+                Container(
+                    height: 170,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: kPrimary),
+                        borderRadius: BorderRadius.circular(8)),
+                    child: GestureDetector(
+                        onPanStart: (d) =>
+                            setState(() => _signature.add(d.localPosition)),
+                        onPanUpdate: (d) =>
+                            setState(() => _signature.add(d.localPosition)),
+                        onPanEnd: (_) => setState(() => _signature.add(null)),
+                        child: CustomPaint(
+                            painter: _EducationSignaturePainter(_signature)))),
+                const SizedBox(height: 14),
+                ElevatedButton.icon(
+                    onPressed: _saving ? null : () => _respond('approved'),
+                    icon: const Icon(Icons.draw),
+                    label: const Text('אני מאשר/ת וחותם/ת')),
+              ])));
+    }
+    return Card(
+        child: Padding(
+            padding: const EdgeInsets.all(15),
+            child: Column(children: [
+              Row(children: [
+                Expanded(
+                    child: OutlinedButton.icon(
+                        onPressed: _saving ? null : () => _respond('declined'),
+                        icon: const Icon(Icons.close),
+                        label: const Text('איני מאשר/ת'))),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: ElevatedButton.icon(
+                        onPressed: _saving ? null : () => _respond('approved'),
+                        icon: const Icon(Icons.check),
+                        label: const Text('מאשר/ת'))),
+              ])
+            ])));
+  }
+
+  Widget _adminPanel() {
+    final pending =
+        _participants.where((p) => p['response_status'] == null).length;
+    final newMembers = (_form?['new_member_count'] as num?)?.toInt() ?? 0;
+    final closed = _form?['status'] == 'closed';
+    return Column(children: [
+      if (closed)
+        const Card(
+            child: ListTile(
+                leading: Icon(Icons.lock_outline, color: Colors.orange),
+                title: Text('הטופס סגור'),
+                subtitle:
+                    Text('תגובות, שינויי בחירה, תזכורות ופרסום נוסף מושבתים'))),
+      Card(
+          child: Padding(
+              padding: const EdgeInsets.all(15),
+              child: Column(children: [
+                Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _EducationCount(
+                          value: '${_participants.length - pending}',
+                          label: 'השלימו',
+                          color: Colors.green),
+                      _EducationCount(
+                          value: '$pending',
+                          label: 'טרם השלימו',
+                          color: Colors.orange),
+                      _EducationCount(
+                          value: '${_participants.length}',
+                          label: 'סה״כ',
+                          color: kPrimary),
+                    ]),
+                const SizedBox(height: 12),
+                SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                        onPressed: closed || pending == 0 || _saving
+                            ? null
+                            : () => _remind(),
+                        icon: const Icon(Icons.notifications_active_outlined),
+                        label: Text('שלח תזכורת לכל הממתינים ($pending)'))),
+                const SizedBox(height: 8),
+                SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                        onPressed: closed || _saving ? null : _republish,
+                        icon: const Icon(Icons.campaign_outlined),
+                        label: const Text('פרסם שוב בשיחת הקבוצה'))),
+                if (newMembers > 0) ...[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                          onPressed:
+                              closed || _saving ? null : _assignNewMembers,
+                          icon: const Icon(Icons.person_add_alt_1_outlined),
+                          label: Text(
+                              'שלח גם לחברים שהצטרפו לאחר מכן ($newMembers)'))),
+                ],
+                if (closed && _form?['form_type'] == 'survey') ...[
+                  const SizedBox(height: 8),
+                  SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                          onPressed: _exportingPdf ? null : _downloadSurveyPdf,
+                          icon: _exportingPdf
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.picture_as_pdf_outlined),
+                          label: const Text('הורד תוצאות כ־PDF'))),
+                ],
+              ]))),
+      if (_form?['form_type'] == 'survey') _surveyResults(),
+      const Padding(
+          padding: EdgeInsets.fromLTRB(4, 14, 4, 5),
+          child: Align(
+              alignment: Alignment.centerRight,
+              child: Text('מצב משתתפים',
+                  style:
+                      TextStyle(fontSize: 17, fontWeight: FontWeight.bold)))),
+      ..._participants.map((person) {
+        final status = person['response_status'] as String?;
+        final changePending = person['change_request_status'] == 'pending';
+        return Card(
+            child: ListTile(
+          leading: CircleAvatar(
+              child:
+                  Text((person['name']?.toString() ?? '?').characters.first)),
+          title: Text(person['name']?.toString() ?? ''),
+          subtitle: Text(
+              changePending
+                  ? '${_statusLabel(status)} • מבקש/ת לשנות בחירה'
+                  : _statusLabel(status),
+              style: TextStyle(
+                  color: changePending
+                      ? Colors.orange.shade800
+                      : status == null
+                          ? Colors.orange.shade800
+                          : Colors.green.shade700)),
+          trailing: changePending
+              ? Row(mainAxisSize: MainAxisSize.min, children: [
+                  IconButton(
+                      tooltip: 'דחה בקשת שינוי',
+                      icon: const Icon(Icons.close, color: Colors.red),
+                      onPressed: closed || _saving
+                          ? null
+                          : () => _decideResponseChange(
+                              person['id'] as String, 'rejected')),
+                  IconButton(
+                      tooltip: 'אשר שינוי בחירה',
+                      icon: const Icon(Icons.check, color: Colors.green),
+                      onPressed: closed || _saving
+                          ? null
+                          : () => _decideResponseChange(
+                              person['id'] as String, 'approved')),
+                ])
+              : status == null
+                  ? IconButton(
+                      icon: const Icon(Icons.notifications_none),
+                      tooltip: 'שלח תזכורת',
+                      onPressed: _saving
+                          ? null
+                          : () => _remind(userId: person['id'] as String))
+                  : person['submitted_at'] == null
+                      ? null
+                      : Text(_shortDate(person['submitted_at'])),
+        ));
+      }),
+    ]);
+  }
+
+  Widget _surveyResults() {
+    final questions = (_form?['questions'] as List? ?? []).cast<dynamic>();
+    return Column(
+        children: questions.asMap().entries.map((entry) {
+      final q = entry.value as Map<String, dynamic>;
+      final counts = <String, int>{
+        for (final o in q['options'] as List) o.toString(): 0
+      };
+      for (final row in _results) {
+        final answers = row['answers'];
+        if (answers is Map) {
+          final answer = answers['${entry.key}']?.toString();
+          if (answer != null) counts[answer] = (counts[answer] ?? 0) + 1;
+        }
+      }
+      return Card(
+          child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(q['text'].toString(),
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    ...counts.entries.map((item) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 3),
+                        child: Row(children: [
+                          Expanded(child: Text(item.key)),
+                          Text('${item.value}',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold))
+                        ]))),
+                  ])));
+    }).toList());
+  }
+
+  String _shortDate(dynamic value) {
+    final d = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
+    return d == null
+        ? ''
+        : '${d.day}/${d.month} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading)
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_form == null)
+      return Scaffold(
+          appBar: AppBar(),
+          body: Center(child: Text(_error ?? 'הטופס לא נמצא')));
+    final form = _form!;
+    return Scaffold(
+        appBar: AppBar(
+            title: Text(form['title']?.toString() ?? ''),
+            backgroundColor: kPrimary,
+            actions: [
+              if (widget.isAdmin)
+                PopupMenuButton<String>(
+                    onSelected: (_) => _toggleStatus(),
+                    itemBuilder: (_) => [
+                          PopupMenuItem(
+                              value: 'toggle',
+                              child: Text(form['status'] == 'open'
+                                  ? 'סגור טופס'
+                                  : 'פתח מחדש'))
+                        ])
+            ]),
+        body: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView(padding: const EdgeInsets.all(14), children: [
+              Card(
+                  child: Padding(
+                      padding: const EdgeInsets.all(17),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Icon(
+                                  form['form_type'] == 'survey'
+                                      ? Icons.poll_outlined
+                                      : form['form_type'] == 'signature'
+                                          ? Icons.draw_outlined
+                                          : Icons.fact_check_outlined,
+                                  color: kPrimary),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                  child: Text(form['title'].toString(),
+                                      style: const TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.bold)))
+                            ]),
+                            if ((form['description']?.toString() ?? '')
+                                .isNotEmpty)
+                              Padding(
+                                  padding: const EdgeInsets.only(top: 10),
+                                  child: Text(form['description'].toString())),
+                            if (form['due_at'] != null)
+                              Padding(
+                                  padding: const EdgeInsets.only(top: 10),
+                                  child: Text(
+                                      'מועד אחרון: ${_shortDate(form['due_at'])}',
+                                      style: const TextStyle(color: kSubtext))),
+                            if (form['anonymous'] == true)
+                              const Padding(
+                                  padding: EdgeInsets.only(top: 8),
+                                  child: Chip(label: Text('סקר אנונימי'))),
+                          ]))),
+              _documentCard(),
+              if (_error != null)
+                Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Text(_error!,
+                        style: const TextStyle(color: Colors.red),
+                        textAlign: TextAlign.center)),
+              if (widget.isAdmin) _adminPanel() else _memberResponse(),
+              const SizedBox(height: 30),
+            ])));
+  }
+}
+
+class _EducationCount extends StatelessWidget {
+  final String value, label;
+  final Color color;
+  const _EducationCount(
+      {required this.value, required this.label, required this.color});
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        Text(value,
+            style: TextStyle(
+                fontSize: 24, fontWeight: FontWeight.bold, color: color)),
+        Text(label)
+      ]);
+}
+
+class _EducationSignaturePainter extends CustomPainter {
+  final List<Offset?> points;
+  _EducationSignaturePainter(this.points);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFF123B57)
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    for (var i = 0; i < points.length - 1; i++) {
+      if (points[i] != null && points[i + 1] != null)
+        canvas.drawLine(points[i]!, points[i + 1]!, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _EducationSignaturePainter oldDelegate) => true;
 }
 
 class _AppLifecycleObserver extends WidgetsBindingObserver {

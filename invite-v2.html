@@ -35,7 +35,13 @@
     <img src="/betshuva-app/whatsapp-card-v2.jpg" alt="בתשובה — מסר נקי יהודי">
     <h1>בתשובה</h1>
     <p class="lead">צ׳אטים, קבוצות ומודעות בסביבה מסוננת.</p>
-    <a class="cta" href="/betshuva-app/">כניסה לאפליקציה</a>
+    <a class="cta" id="open-app" href="/betshuva-app/">כניסה לאפליקציה</a>
   </main>
 </body>
+<script>
+  const invite = new URLSearchParams(location.search).get('invite');
+  if (invite && /^[0-9a-f-]{36}$/i.test(invite)) {
+    document.getElementById('open-app').href = '/betshuva-app/?invite=' + encodeURIComponent(invite);
+  }
+</script>
 </html>

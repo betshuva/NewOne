@@ -2198,8 +2198,8 @@ function openUserDeleteModal(userId, name, email) {
   document.getElementById('udm-err').style.display = 'none';
   const btn = document.getElementById('udm-confirm');
   btn.disabled = false; btn.textContent = 'מחק';
-  document.querySelectorAll('.udm-cb').forEach(cb => cb.checked = false);
-  document.getElementById('udm-all').checked = false;
+  document.querySelectorAll('.udm-cb').forEach(cb => cb.checked = true);
+  document.getElementById('udm-all').checked = true;
   document.getElementById('user-delete-modal').style.display = 'flex';
 }
 
@@ -2246,7 +2246,9 @@ async function executeUserDelete() {
     }
     closeUserDeleteModal();
     const extra = data.filesDeleted ? ` · ${data.filesDeleted} קבצים נמחקו מ-B2` : '';
-    alert(`✅ "${data.name}" נמחק בהצלחה${extra}`);
+    alert(account
+      ? `✅ המשתמש "${data.name}" וכל נתוניו נמחקו בהצלחה${extra}`
+      : `✅ הנתונים שנבחרו עבור "${data.name}" נמחקו${extra}`);
     loadTable('users', currentOffset);
   } catch (e) {
     errEl.textContent = e.message;

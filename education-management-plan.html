@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>אפיון מערכת למוסדות חינוך — בתשובה</title>
+  <meta name="description" content="מסמך אפיון למערכת אישורי הורים, חתימות, סקרים ותזכורות עבור בתי ספר וגני ילדים באפליקציית בתשובה.">
+  <link rel="icon" href="/betshuva-app/favicon.png">
+  <style>
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Arial,"Heebo",sans-serif;background:#f3f8fc;color:#18364c;line-height:1.75}
+    header{background:linear-gradient(135deg,#0d4f82,#2378b4);color:#fff;padding:42px 22px;text-align:center}header img{width:70px;height:70px;border-radius:19px}header h1{font-size:34px;margin:12px 0 5px}header p{max-width:760px;margin:auto;opacity:.92;font-size:17px}
+    nav{position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid #d7e7f2;padding:10px 18px;text-align:center;overflow:auto;white-space:nowrap}nav a{color:#17659c;text-decoration:none;margin:0 10px;font-size:14px}
+    main{max-width:940px;margin:34px auto;padding:0 20px 60px}.summary{background:#e8f5fd;border:1px solid #a9d3ed;border-radius:16px;padding:22px 25px;margin-bottom:24px}.summary strong{color:#0d4f82}
+    section{background:#fff;border-radius:17px;padding:27px 31px;margin-bottom:20px;box-shadow:0 3px 16px rgba(22,75,111,.07)}h2{font-size:22px;color:#14679f;margin:0 0 15px;padding-bottom:9px;border-bottom:2px solid #e6f3fb}h3{font-size:17px;color:#174f76;margin:21px 0 7px}p{margin:7px 0}ul,ol{padding-right:24px;margin:8px 0}li{margin-bottom:7px}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:13px}.mini{background:#f7fbfe;border:1px solid #dcecf6;border-radius:12px;padding:16px}.mini h3{margin-top:0}.tag{display:inline-block;background:#dff1fc;color:#105f94;border-radius:20px;padding:3px 11px;margin:3px;font-size:13px}
+    table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:right;padding:11px;border-bottom:1px solid #dfebf3;vertical-align:top}th{background:#edf7fd;color:#145c89}.note{border-right:4px solid #e6a817;background:#fff9e8;padding:13px 16px;margin-top:14px}.success{border-right-color:#27926a;background:#edf9f4}
+    footer{text-align:center;background:#e3f0f8;color:#547084;padding:26px 15px}footer a{color:#17659c}.updated{font-size:13px;color:#7693a7;text-align:center;margin-top:20px}
+    @media(max-width:680px){header h1{font-size:27px}.grid{grid-template-columns:1fr}section{padding:21px 18px}table{font-size:13px}th,td{padding:8px 5px}}
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/betshuva-app/icons/Icon-192.png" alt="לוגו בתשובה">
+    <h1>בתשובה למוסדות חינוך</h1>
+    <p>מסמך אפיון למערכת אישורי הורים, חתימות, סקרים, מעקב ותזכורות עבור בתי ספר, גנים, תלמודי תורה וקהילות.</p>
+  </header>
+  <nav aria-label="ניווט במסמך">
+    <a href="#vision">חזון</a><a href="#flows">תהליכים</a><a href="#documents">מסמכים</a><a href="#tracking">מעקב</a><a href="#surveys">סקרים</a><a href="#extras">כלים נוספים</a><a href="#security">אבטחה</a><a href="#roadmap">שלבי פיתוח</a>
+  </nav>
+  <main>
+    <div class="summary"><strong>מטרת המוצר:</strong> לאפשר למנהל או לצוות חינוכי לשלוח בקבוצה מסמך, אישור או סקר, לקבל תשובה מזוהה מכל הורה, לדעת בזמן אמת מי טרם הגיב ולשלוח תזכורת ממוקדת — בלי לנהל רשימות ידניות ובלי להציף את כל הקבוצה.</div>
+
+    <section id="vision">
+      <h2>1. עקרונות וחוויית שימוש</h2>
+      <div class="grid">
+        <div class="mini"><h3>פשוט להורה</h3><p>פתיחת ההודעה, צפייה במסמך, סימון אישור וחתימה — במסך קצר וברור, גם בטלפון.</p></div>
+        <div class="mini"><h3>שליטה למנהל</h3><p>לוח מצב המציג אושר, נדחה, טרם נצפה, נצפה אך לא אושר, ופרטים חסרים.</p></div>
+        <div class="mini"><h3>תיעוד אמין</h3><p>שמירת זהות המאשר, מועד, גרסת המסמך, אופן האימות ויומן פעולות הניתן לייצוא.</p></div>
+        <div class="mini"><h3>פרטיות כברירת מחדל</h3><p>הורה רואה את תשובתו בלבד; הצוות המורשה רואה תמונת מצב כיתתית בהתאם לתפקידו.</p></div>
+      </div>
+    </section>
+
+    <section id="flows">
+      <h2>2. סוגי פרסומים שהמנהל יוכל ליצור</h2>
+      <p><span class="tag">אישור טיול</span><span class="tag">אישור רפואי</span><span class="tag">חתימה על תקנון</span><span class="tag">אישור צילום</span><span class="tag">סקר</span><span class="tag">בחירת מועד</span><span class="tag">אישור קריאה</span><span class="tag">טופס פרטים</span></p>
+      <ul>
+        <li><strong>אישור מהיר:</strong> „מאשר/ת” או „איני מאשר/ת”, עם הערה אופציונלית.</li>
+        <li><strong>חתימה:</strong> שם מלא, תיבת הסכמה, חתימה בציור באצבע ואימות בטלפון או בקוד חד־פעמי לפי רמת החשיבות.</li>
+        <li><strong>טופס:</strong> שדות טקסט, בחירה, תאריך, מספר, הצהרת בריאות, איש קשר לשעת חירום וצירוף קובץ.</li>
+        <li><strong>אישור קריאה:</strong> מתאים להודעות חשובות שאינן דורשות חתימה, עם תיעוד פתיחה ואישור מפורש.</li>
+      </ul>
+      <h3>תהליך מומלץ</h3>
+      <ol><li>המנהל בוחר קבוצה ותבנית.</li><li>מעלה מסמך או יוצר טופס, מגדיר מי צריך לענות ותאריך יעד.</li><li>צופה בתצוגה מקדימה ושולח.</li><li>ההורים מקבלים התראה, קוראים ומאשרים.</li><li>לוח הבקרה מתעדכן ומפעיל תזכורות למי שטרם השלים.</li><li>בסיום ננעלת הגרסה וניתן להפיק דוח.</li></ol>
+    </section>
+
+    <section id="documents">
+      <h2>3. יצירת מסמך מתמונה או מקובץ</h2>
+      <ul>
+        <li>צילום מסמך מהמצלמה או העלאת תמונה, PDF ו־Word.</li>
+        <li>יישור, חיתוך ושיפור קריאות של צילום; איחוד כמה תמונות למסמך אחד.</li>
+        <li>זיהוי טקסט כדי להציע כותרת, תאריך, שדות למילוי ומקום לחתימה. המנהל חייב לאשר את התוצאה לפני שליחה.</li>
+        <li>הצבת שדות על גבי המסמך: חתימה, שם הורה, שם ילד, תאריך, סימון כן/לא והערה.</li>
+        <li>שמירת תבניות חוזרות לשימוש עתידי ושכפול מסמך משנה קודמת.</li>
+        <li>תצוגה מקדימה לנייד והורדה של עותק מלא לאחר האישור.</li>
+      </ul>
+      <div class="note">חשוב להבחין בממשק בין <strong>אישור/הסכמה מתועדים</strong> לבין <strong>חתימה אלקטרונית</strong>. לפני שמצהירים על תוקף משפטי מסוים יש לקבל ייעוץ משפטי ולהתאים את רמת הזיהוי, התיעוד ושמירת הראיות.</div>
+    </section>
+
+    <section id="tracking">
+      <h2>4. מעקב, אי־אישור ותזכורות</h2>
+      <table><thead><tr><th>מצב</th><th>מה המנהל רואה</th><th>פעולה אפשרית</th></tr></thead><tbody>
+        <tr><td>טרם נמסר</td><td>אין מכשיר פעיל או שההתראה לא נמסרה</td><td>שליחה חוזרת או פנייה חלופית</td></tr>
+        <tr><td>נמסר ולא נצפה</td><td>ההודעה הגיעה אך לא נפתחה</td><td>תזכורת שקטה וממוקדת</td></tr>
+        <tr><td>נצפה ולא הושלם</td><td>ההורה פתח אך לא חתם/אישר</td><td>תזכורת עם קישור ישיר למשימה</td></tr>
+        <tr><td>אושר</td><td>זהות, שעה, גרסה ופרטי האישור</td><td>צפייה או הפקת דוח</td></tr>
+        <tr><td>נדחה/נדרשת עזרה</td><td>סיבה או הערה מההורה</td><td>פנייה פרטית ומעקב טיפול</td></tr>
+      </tbody></table>
+      <h3>מנגנון תזכורות</h3>
+      <ul>
+        <li>שליחה ידנית לכל מי שלא השלים, לקבוצה מסוננת או להורה יחיד.</li>
+        <li>תזכורת אוטומטית לפי לוח זמנים, למשל 48 ו־12 שעות לפני המועד.</li>
+        <li>עצירה אוטומטית מיד לאחר השלמת המשימה ומניעת תזכורות כפולות.</li>
+        <li>הסלמה מבוקרת למחנך או למזכירות במקרה שאין תגובה, בלי לחשוף זאת בקבוצה.</li>
+        <li>ריכוז כמה משימות פתוחות לתזכורת אחת כדי להפחית עומס.</li>
+      </ul>
+    </section>
+
+    <section id="surveys">
+      <h2>5. סקרים בתוך הקבוצה</h2>
+      <ul>
+        <li>שאלה יחידה או שאלון רב־שלבי; בחירה אחת, בחירה מרובה, דירוג, טקסט ותאריך מועדף.</li>
+        <li>סקר מזוהה או אנונימי. בסקר אנונימי המערכת לא תציג למנהל מי בחר מה, אלא רק מי השתתף — ואם נדרש, ניתן גם למנוע מעקב השתתפות אישי.</li>
+        <li>אפשרות להסתיר תוצאות עד סגירת הסקר ולמנוע השפעה בין המשתתפים.</li>
+        <li>קהל יעד: כל הקבוצה, צוות בלבד, הורים בלבד או בחירת משתתפים.</li>
+        <li>תאריך סגירה, שינוי תשובה עד הסגירה, גרפים וייצוא תוצאות.</li>
+        <li>„מציאת מועד” לאספה, מסיבה או שיחת הורים עם בחירת כמה זמנים אפשריים.</li>
+      </ul>
+    </section>
+
+    <section id="extras">
+      <h2>6. כלים נוספים שיעזרו לבית ספר או לגן</h2>
+      <div class="grid">
+        <div class="mini"><h3>מרכז משימות להורה</h3><p>מסך אחד המרכז את כל האישורים, הטפסים, התשלומים והסקרים הפתוחים עבור כל ילד.</p></div>
+        <div class="mini"><h3>קישור ילד–הורים</h3><p>שני אפוטרופוסים, משפחות נפרדות והרשאה מי מהם רשאי לאשר כל סוג בקשה, בלי לחשוף פרטים בין הצדדים.</p></div>
+        <div class="mini"><h3>נוכחות ואיסוף</h3><p>דיווח היעדרות, איחור, אישור אדם מורשה לאיסוף ושינוי חד־פעמי עם תיעוד.</p></div>
+        <div class="mini"><h3>לוח שנה מוסדי</h3><p>טיולים, חופשות, אספות ואירועים; הוספה ליומן האישי ותזכורות מותאמות.</p></div>
+        <div class="mini"><h3>תשלומים ורשימות ציוד</h3><p>קישור לתשלום חיצוני, מעקב סטטוס בלבד ורשימת ציוד עם אישור „טופל”.</p></div>
+        <div class="mini"><h3>חירום ובטיחות</h3><p>הודעה דחופה עם אישור קבלה, שרשרת דיווח, אנשי קשר וגישה מהירה למידע חיוני בהרשאה.</p></div>
+        <div class="mini"><h3>תרגום ונגישות</h3><p>הקראת מסמך, שפה פשוטה, הגדלת טקסט ותרגום מוצע — תוך הצגת המקור המחייב.</p></div>
+        <div class="mini"><h3>ניהול שנתי</h3><p>העברת כיתות, ארכוב שנה, שכפול תבניות, קליטת משפחות חדשות וייצוא מסודר בעת החלפת צוות.</p></div>
+      </div>
+    </section>
+
+    <section id="security">
+      <h2>7. הרשאות, פרטיות ואבטחת מידע</h2>
+      <ul>
+        <li>תפקידים נפרדים: מנהל מוסד, מזכירות, מחנך, גננת, איש צוות, הורה ומבקר.</li>
+        <li>כל איש צוות נחשף רק לקבוצות ולנתונים הדרושים לתפקידו; פעולות רגישות דורשות אימות נוסף.</li>
+        <li>יומן ביקורת שאינו ניתן לעריכה: יצירה, שליחה, צפייה, אישור, שינוי, תזכורת, ייצוא ומחיקה.</li>
+        <li>נעילת גרסת המסמך לאחר קבלת אישור. שינוי מהותי יוצר גרסה חדשה ודורש אישור מחדש.</li>
+        <li>הצפנה בתעבורה ובאחסון, גיבויים, הגבלת הורדות והגנת קישורים מפני העברה.</li>
+        <li>מדיניות שמירה ומחיקה לפי סוג מסמך ודרישות המוסד; ייצוא נתונים במקרה של בקשה תקינה.</li>
+        <li>הסכמה מדעת ומידע ברור להורים על מטרת האיסוף, משך השמירה ומי רשאי לצפות.</li>
+      </ul>
+      <div class="note">המערכת תטפל במידע על קטינים ובמידע רפואי אפשרי. לפני הפעלה בפועל נדרשים מיפוי משפטי ופרטיות, תנאי עיבוד מידע מול המוסד, מדיניות שמירה, בדיקות אבטחה והגדרת נוהל אירוע.</div>
+    </section>
+
+    <section id="roadmap">
+      <h2>8. שלבי פיתוח מומלצים</h2>
+      <table><thead><tr><th>שלב</th><th>תכולה</th><th>מטרת הבדיקה</th></tr></thead><tbody>
+        <tr><td>1 — מוצר בסיסי</td><td>אישור קריאה, כן/לא, תאריך יעד, סטטוסים, תזכורת ידנית ודוח</td><td>לוודא שהורים וצוות משלימים את התהליך בקלות</td></tr>
+        <tr><td>2 — מסמכים וחתימה</td><td>PDF/תמונה, שדות על מסמך, חתימה, גרסאות ויומן ביקורת</td><td>פיילוט באישור טיול ובתקנון</td></tr>
+        <tr><td>3 — סקרים ואוטומציה</td><td>סקרים, תזכורות אוטומטיות, תבניות ומרכז משימות</td><td>צמצום עבודה ידנית ועומס הודעות</td></tr>
+        <tr><td>4 — ניהול מוסדי</td><td>תפקידים מתקדמים, כמה ילדים למשפחה, ייצוא ואינטגרציות</td><td>התאמה להפעלה רחבה בכמה כיתות או מוסדות</td></tr>
+      </tbody></table>
+      <div class="note success"><strong>המלצת התחלה:</strong> פיילוט קטן בקבוצה אחת עם שני תרחישים בלבד — אישור טיול ואישור קריאת הודעה. למדוד שיעור השלמה, זמן עד אישור, מספר תזכורות, פניות תמיכה ושביעות רצון לפני הרחבה.</div>
+    </section>
+
+    <section>
+      <h2>9. מדדי הצלחה</h2>
+      <ul><li>אחוז האישורים שהושלמו עד המועד.</li><li>משך הזמן הממוצע משליחה ועד השלמה.</li><li>מספר התזכורות והפניות הידניות שנחסכו לצוות.</li><li>אחוז ההורים שהשלימו ללא עזרה.</li><li>מספר טעויות, כפילויות או מחלוקות לגבי אישור.</li><li>שביעות רצון של הורים וצוות ועמידה בדרישות פרטיות ואבטחה.</li></ul>
+    </section>
+    <p class="updated">מסמך תכנון ראשוני · 24 באוגוסט 2026 · המסמך אינו ייעוץ משפטי או התחייבות לפיתוח</p>
+  </main>
+  <footer><a href="/betshuva-app/home.html">חזרה לאתר בתשובה</a> · <a href="/betshuva-app/">פתיחת האפליקציה</a></footer>
+</body>
+</html>

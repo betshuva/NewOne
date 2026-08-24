@@ -129,6 +129,69 @@ CREATE TABLE IF NOT EXISTS group_members (
   PRIMARY KEY (group_id, user_id)
 );
 
+-- ── Educational approvals, signatures and surveys ────────────────
+CREATE TABLE IF NOT EXISTS education_forms (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_id    UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  created_by  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  form_type   TEXT NOT NULL CHECK (form_type IN ('approval','signature','survey')),
+  title       TEXT NOT NULL,
+  description TEXT,
+  file_url    TEXT,
+  file_name   TEXT,
+  questions   JSONB NOT NULL DEFAULT '[]'::jsonb,
+  anonymous   BOOLEAN NOT NULL DEFAULT FALSE,
+  due_at      TIMESTAMPTZ,
+  status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS education_forms_group_idx
+  ON education_forms(group_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS education_form_recipients (
+  form_id     UUID NOT NULL REFERENCES education_forms(id) ON DELETE CASCADE,
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notified_at TIMESTAMPTZ,
+  PRIMARY KEY(form_id,user_id)
+);
+
+CREATE TABLE IF NOT EXISTS education_form_responses (
+  form_id          UUID NOT NULL REFERENCES education_forms(id) ON DELETE CASCADE,
+  user_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  response_status  TEXT NOT NULL CHECK (response_status IN ('approved','declined','completed')),
+  answers          JSONB NOT NULL DEFAULT '{}'::jsonb,
+  signer_name      TEXT,
+  signature_data   JSONB,
+  document_version TEXT NOT NULL,
+  submitted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY(form_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS education_form_reminders (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  form_id      UUID NOT NULL REFERENCES education_forms(id) ON DELETE CASCADE,
+  sent_by      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  recipient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sent_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS education_response_change_requests (
+  form_id      UUID NOT NULL REFERENCES education_forms(id) ON DELETE CASCADE,
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status       TEXT NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','approved','rejected')),
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at   TIMESTAMPTZ,
+  decided_by   UUID REFERENCES users(id) ON DELETE SET NULL,
+  PRIMARY KEY(form_id,user_id)
+);
+
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS education_form_id
+  UUID REFERENCES education_forms(id) ON DELETE SET NULL;
+
 -- ── Saved contacts and per-contact filter overrides ─────────────
 CREATE TABLE IF NOT EXISTS user_contacts (
   owner_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -9,6 +9,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   flutter_webrtc
   geolocator_windows
   permission_handler_windows
+  printing
   record_windows
   url_launcher_windows
 )
