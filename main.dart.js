@@ -63497,7 +63497,7 @@ k.e=null}}k.aN(new A.tn())
 return k},
 $S:383}
 A.bjC.prototype={
-$0(){return A.nZ(A.av("https://betshuva.com/betshuva-app/betshuva-1.2.93.apk",0,null),B.ho)},
+$0(){return A.nZ(A.av("https://betshuva.com/betshuva-app/betshuva-1.2.94.apk",0,null),B.ho)},
 $S:0}
 A.Yj.prototype={
 G(a){var s=null,r=A.bw5(s,s,new A.hI(4,A.aK(10),B.rh),s,s,s,s,s,s,new A.hI(4,A.aK(10),B.z_),s,s,s,B.u,!0,s,s,s,s,new A.hI(4,A.aK(10),B.XU),s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s)
@@ -73961,7 +73961,7 @@ A.bfU.prototype={
 $0(){return A.nZ(A.av(u.C,0,null),B.ho)},
 $S:0}
 A.bfV.prototype={
-$0(){return A.bX8(new A.as(B.dg,A.a0M("icon_source.png",null,64,64),null),"\xa9 2026 \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","\u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","1.2.93",this.a)},
+$0(){return A.bX8(new A.as(B.dg,A.a0M("icon_source.png",null,64,64),null),"\xa9 2026 \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","\u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","1.2.94",this.a)},
 $S:0}
 A.bfW.prototype={
 $0(){var s=A.cD(new A.bfL(this.a),!1,null,t.z)
@@ -160016,7 +160016,7 @@ B.bk2=new A.B("\u05de\u05e1\u05e8\u05d9\u05dd \u05dc\u05e7\u05d4\u05d9\u05dc\u05
 B.acP=new A.kl(B.aaL,B.bn5,B.bk2,null,null,null,null,null,null,null,!0,null,null,!1,null,null,null,!1,null,null,null,null,null,null,null,null,!0,null,null)
 B.a9U=new A.a8(B.kt,null,null,B.a7,null,null)
 B.bkL=new A.B("\u05d2\u05e8\u05e1\u05d4",null,null,null,null,null,null,null,null,null,null)
-B.bom=new A.B("1.2.93",null,B.dE,null,null,null,null,null,null,null,null)
+B.bom=new A.B("1.2.94",null,B.dE,null,null,null,null,null,null,null,null)
 B.acQ=new A.kl(B.a9U,B.bkL,null,B.bom,null,null,null,null,null,null,!0,null,null,!1,null,null,null,!1,null,null,null,null,null,null,null,null,!0,null,null)
 B.Au=new A.C(0.10196078431372549,0.050980392156862744,0.30980392156862746,0.5098039215686274,B.x)
 B.K=new A.r(0,0)
@@ -166792,7 +166792,7 @@ B.bnR=new A.B("\u05d4\u05e9\u05dc\u05de\u05ea \u05e4\u05e8\u05d8\u05d9\u05dd",nu
 B.bnT=new A.B("\u05e0\u05d9\u05d4\u05d5\u05dc",null,null,null,null,null,null,null,null,null,null)
 B.Vq=new A.B("\u05de\u05d7\u05e7 \u05d0\u05e6\u05dc\u05d9",null,null,null,null,null,null,null,null,null,null)
 B.bnU=new A.B("\u05d4\u05d7\u05dc",null,B.d6,null,null,null,null,null,null,null,null)
-B.bnY=new A.B("\u05d4\u05d5\u05e8\u05d3\u05ea betshuva-1.2.93.apk  \u2022  \u05d2\u05e8\u05e1\u05d4 1.2.93",null,null,null,null,null,null,null,null,null,null)
+B.bnY=new A.B("\u05d4\u05d5\u05e8\u05d3\u05ea betshuva-1.2.94.apk  \u2022  \u05d2\u05e8\u05e1\u05d4 1.2.94",null,null,null,null,null,null,null,null,null,null)
 B.bnZ=new A.B("\u05dc\u05e1\u05d9\u05d5\u05e2: support@betshuva.com",null,B.dE,null,null,null,null,null,null,null,null)
 B.Vr=new A.B("",null,null,null,null,null,null,null,null,null,null)
 B.bje=new A.A(!0,B.J,null,null,null,null,34,B.aA,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null)
