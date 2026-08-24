@@ -32,6 +32,79 @@ const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
 const WELCOME_MESSAGE =
   'ברוך הבא לבתשובה 🌿\n\nשמחים שהצטרפת אלינו. כאן תקבל עדכונים חשובים, הודעות מערכת וטיפים שיעזרו לך להשתמש באפליקציה בבטחה ובנוחות.\n\nכך מוסיפים חברים:\n1. לחץ על סמל הוספת החבר (אדם עם סימן +) בחלק העליון של מסך השיחות.\n2. חפש לפי שם, מספר טלפון או כתובת אימייל.\n3. לחץ על „שמור” ליד האדם הרצוי.\n4. החבר יופיע ברשימת השיחות ותוכל לפתוח איתו שיחה.\n\nאם איש הקשר עדיין לא רשום, לחץ על „הזמן” כדי לשלוח לו קישור הצטרפות.\n\nמאחלים לך שיחות טובות ומועילות!';
 
+const BUILTIN_EXPRESSION_ROOT = path.join(__dirname, '..', 'expression-library');
+const EXPRESSION_CATALOG_PATH = path.join(BUILTIN_EXPRESSION_ROOT, 'catalog.json');
+const EXPRESSION_PUBLIC_BASE = '/betshuva-app/expression-library';
+let builtinExpressionHashesPromise = null;
+let builtinExpressionHashesExpiresAt = 0;
+
+async function listExpressionFiles(directory) {
+  const files = [];
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    if (entry.name === 'catalog.json') continue;
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await listExpressionFiles(target));
+    else if (/\.(png|gif|webp)$/i.test(entry.name)) files.push(target);
+  }
+  return files;
+}
+
+async function getBuiltinExpressionHashes() {
+  if (!builtinExpressionHashesPromise || Date.now() >= builtinExpressionHashesExpiresAt) {
+    builtinExpressionHashesExpiresAt = Date.now() + 60 * 1000;
+    builtinExpressionHashesPromise = (async () => {
+      const names = await listExpressionFiles(BUILTIN_EXPRESSION_ROOT);
+      const hashes = await Promise.all(names.map(async name => {
+        const bytes = await fs.readFile(name);
+        return crypto.createHash('sha256').update(bytes).digest('hex');
+      }));
+      return new Set(hashes);
+    })().catch(error => {
+      builtinExpressionHashesPromise = null;
+      builtinExpressionHashesExpiresAt = 0;
+      console.error('builtin expressions:', error.message);
+      return new Set();
+    });
+  }
+  return builtinExpressionHashesPromise;
+}
+
+async function getExpressionCatalog() {
+  const source = JSON.parse(await fs.readFile(EXPRESSION_CATALOG_PATH, 'utf8'));
+  const categories = [];
+  for (const category of source.categories || []) {
+    const folder = String(category.path || '');
+    const prefix = String(category.prefix || '');
+    const extension = String(category.extension || '').toLowerCase();
+    if (!/^[a-z0-9-]+$/i.test(folder) || !/^[a-z0-9-]+$/i.test(prefix) ||
+        !['png', 'gif', 'webp'].includes(extension)) continue;
+    const items = [];
+    for (let index = 0; index < (category.labels || []).length; index++) {
+      const fileName = `${prefix}-${String(index + 1).padStart(2, '0')}.${extension}`;
+      try {
+        await fs.access(path.join(BUILTIN_EXPRESSION_ROOT, folder, fileName));
+        items.push({
+          id: `${category.id}-${index + 1}`,
+          label: String(category.labels[index] || ''),
+          url: `${EXPRESSION_PUBLIC_BASE}/${folder}/${fileName}`,
+          animated: extension === 'gif',
+        });
+      } catch (_) { /* A missing file is omitted without breaking the catalog. */ }
+    }
+    if (items.length) categories.push({
+      id: String(category.id || folder),
+      title: String(category.title || folder),
+      items,
+    });
+  }
+  return { version: source.version || 1, updatedAt: source.updatedAt, categories };
+}
+
+async function isTrustedBuiltinExpression(file) {
+  const hash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+  return (await getBuiltinExpressionHashes()).has(hash);
+}
+
 // ── Firebase Cloud Messaging (HTTP v1 via Admin SDK) ──────────────
 let firebaseMessaging = null;
 function getFirebaseMessaging() {
@@ -4816,6 +4889,16 @@ app.post('/api/fcm-token', auth, async (req, res) => {
 });
 
 // ── File Upload ───────────────────────────────────────────────────
+app.get('/api/expressions/catalog', auth, async (_req, res) => {
+  try {
+    res.set('Cache-Control', 'private, max-age=60, must-revalidate');
+    res.json(await getExpressionCatalog());
+  } catch (error) {
+    console.error('expression catalog:', error.message);
+    res.status(500).json({ error: 'טעינת ספריית הביטויים נכשלה' });
+  }
+});
+
 app.get('/api/gifs/search', auth, searchRateLimit, async (req, res) => {
   const query = String(req.query.q || '').trim().slice(0, 80);
   try {
@@ -4885,6 +4968,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
 
   try {
     const pool = await getPool();
+    const trustedBuiltinExpression = req.body.builtinExpression === 'true' &&
+      allowed.dbType === 'image' && await isTrustedBuiltinExpression(file);
     const scanBotUpload = req.body.toUserId === SCAN_BOT_ID;
     const reportImageScan = allowed.dbType === 'image' &&
       (scanBotUpload || req.body.scanReport === 'true');
@@ -4933,7 +5018,20 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
 
     // Content moderation scan
     let scanResult;
-    if (allowed.dbType === 'image')
+    if (trustedBuiltinExpression)
+      scanResult = {
+        blocked: false,
+        pending: false,
+        source: 'builtin-expression',
+        faces: [],
+        labels: [{ name: 'Betshuva original expression' }],
+        classification: {
+          category: 'nonHumanImages',
+          detectedCategories: ['nonHumanImages'],
+          uncertain: false,
+        },
+      };
+    else if (allowed.dbType === 'image')
       scanResult = await scanImage(file.buffer);
     else if (allowed.dbType === 'video')
       scanResult = await scanVideo(file.buffer, file.originalname, file.mimetype);

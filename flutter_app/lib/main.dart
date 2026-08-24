@@ -462,8 +462,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.94';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.94.apk';
+const kVersion = '1.2.95';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.95.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -11182,6 +11182,44 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _showExpressions() async {
     final choice = await _showExpressionPicker(context, widget.token);
     if (choice == null || !mounted) return;
+    if (choice.startsWith(_remoteExpressionPrefix)) {
+      final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
+      try {
+        final response = await http.get(Uri.parse(remoteUrl), headers: {
+          'Authorization': 'Bearer ${widget.token}',
+        });
+        if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+          throw Exception('הקובץ אינו זמין כרגע');
+        }
+        final extension =
+            Uri.parse(remoteUrl).path.toLowerCase().endsWith('.gif')
+                ? 'gif'
+                : 'png';
+        final fileName = 'betshuva_${Uri.parse(remoteUrl).pathSegments.last}';
+        final file = XFile.fromData(response.bodyBytes,
+            name: fileName, mimeType: 'image/$extension');
+        await _uploadAndSend(file, fileName, 'image', extraFields: const {
+          'builtinExpression': 'true',
+        });
+      } catch (error) {
+        if (mounted) _showError('לא ניתן לשלוח את הביטוי: $error');
+      }
+      return;
+    }
+    if (choice.startsWith(_originalExpressionPrefix)) {
+      final assetPath = choice.substring(_originalExpressionPrefix.length);
+      final data = await rootBundle.load(assetPath);
+      final bytes = data.buffer.asUint8List();
+      final extension = assetPath.endsWith('.gif') ? 'gif' : 'png';
+      final fileName =
+          'betshuva_${assetPath.split('/').last.replaceAll('.$extension', '')}.$extension';
+      final file =
+          XFile.fromData(bytes, name: fileName, mimeType: 'image/$extension');
+      await _uploadAndSend(file, fileName, 'image', extraFields: const {
+        'builtinExpression': 'true',
+      });
+      return;
+    }
     if (choice == _gifPickerAction) {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -11984,7 +12022,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             size: 16, color: kPrimary),
                         const SizedBox(width: 6),
                         IconButton(
-                          tooltip: 'אימוג׳י, GIF ומדבקות',
+                          tooltip: 'סמיילים ומדבקות של בתשובה',
                           icon: const Icon(Icons.emoji_emotions_outlined,
                               size: 19, color: kPrimary),
                           onPressed: _showExpressions,
@@ -13318,6 +13356,127 @@ const _sharedGifUploadAction = '__shared_gif_upload__';
 const _personalStickerAction = '__personal_sticker__';
 const _sharedGifPrefix = '__shared_gif__:';
 const _stickerPrefix = '__sticker__:';
+const _originalExpressionPrefix = '__betshuva_expression__:';
+const _remoteExpressionPrefix = '__betshuva_remote_expression__:';
+const _originalSmileAssets = <String>[
+  'assets/expressions/items/expression-01.png',
+  'assets/expressions/items/expression-06.png',
+  'assets/expressions/items/expression-11.png',
+  'assets/expressions/items/expression-16.png',
+  'assets/expressions/items/expression-20.png',
+];
+const _originalStickerAssets = <String>[
+  'assets/expressions/items/expression-02.png',
+  'assets/expressions/items/expression-03.png',
+  'assets/expressions/items/expression-04.png',
+  'assets/expressions/items/expression-05.png',
+  'assets/expressions/items/expression-07.png',
+  'assets/expressions/items/expression-08.png',
+  'assets/expressions/items/expression-09.png',
+  'assets/expressions/items/expression-10.png',
+  'assets/expressions/items/expression-12.png',
+  'assets/expressions/items/expression-13.png',
+  'assets/expressions/items/expression-14.png',
+  'assets/expressions/items/expression-15.png',
+  'assets/expressions/items/expression-17.png',
+  'assets/expressions/items/expression-18.png',
+  'assets/expressions/items/expression-19.png',
+];
+const _originalGifAssets = <String>[
+  'assets/expressions/items/expression-21.gif',
+  'assets/expressions/items/expression-22.gif',
+  'assets/expressions/items/expression-23.gif',
+  'assets/expressions/items/expression-24.gif',
+  'assets/expressions/items/expression-25.gif',
+];
+const _originalSmileLabels = <String>[
+  'שמחה',
+  'צחוק',
+  'אהבה',
+  'תודה',
+  'ברכה',
+  'שלווה',
+  'התרגשות',
+  'הפתעה',
+  'מחשבה',
+  'תקווה',
+  'תפילה',
+  'עידוד',
+  'ביטחון',
+  'ביישנות',
+  'עצב',
+  'בכי',
+  'דאגה',
+  'סליחה',
+  'לילה טוב',
+  'חגיגה'
+];
+const _originalStickerLabels = <String>[
+  'שבת שלום',
+  'שבת מבורכת',
+  'שלום בית',
+  'שנה טובה',
+  'גמר חתימה טובה',
+  'חג סוכות שמח',
+  'שמחת תורה',
+  'חנוכה שמח',
+  'נס גדול היה פה',
+  'פורים שמח',
+  'פסח כשר ושמח',
+  'קריעת ים סוף',
+  'ל״ג בעומר שמח',
+  'חג שבועות שמח',
+  'ירושלים',
+  'תפילה',
+  'צדקה',
+  'ברכה והצלחה',
+  'שלום ואחדות',
+  'בשורות טובות'
+];
+const _originalFamilyLabels = <String>[
+  'שמחה',
+  'מודה ושמחה',
+  'אמא ותינוק',
+  'תינוק שמח',
+  'פעוט מוחא כפיים',
+  'ילדה שמחה',
+  'ילד שמח',
+  'אחים אוהבים',
+  'רוקדים משמחה',
+  'לומדים בשמחה',
+  'עוזרים בבית',
+  'עוזרים לאבא',
+  'משפחה בשבת',
+  'הדלקת נרות',
+  'ילדים וחלה',
+  'חלומות מתוקים',
+  'מכל הלב',
+  'תודה רבה',
+  'חיבוק משפחתי',
+  'שמחה משפחתית'
+];
+const _originalGifLabels = <String>[
+  'שמחה מאירה',
+  'אהבה זוהרת',
+  'מגן דוד מסתובב',
+  'שבת שלום',
+  'שבת מבורכת',
+  'שלום',
+  'סביבון',
+  'חנוכה מאיר',
+  'חג סוכות שמח',
+  'שנה טובה',
+  'מזל טוב',
+  'מחיאות כפיים',
+  'תפילה',
+  'איזה יופי',
+  'תקווה',
+  'ירושלים מאירה',
+  'תקיעת שופר',
+  'חגיגה',
+  'יום מאיר',
+  'לילה טוב'
+];
 const _emojiCategories = <String, List<String>>{
   'אחרונים': [],
   'חיוכים': [
@@ -13619,6 +13778,8 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   final _gifSearch = TextEditingController();
   List<String> _recent = [];
   List<Map<String, dynamic>> _gifs = [];
+  List<Map<String, dynamic>>? _remoteExpressionCategories;
+  bool _loadingExpressionCatalog = true;
   bool _searchingGifs = false;
   String? _gifError;
 
@@ -13629,6 +13790,36 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
       if (!mounted) return;
       setState(() => _recent = prefs.getStringList('recent_emojis') ?? []);
     });
+    _loadExpressionCatalog();
+  }
+
+  Future<void> _loadExpressionCatalog() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/expressions/catalog'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (response.statusCode != 200) return;
+      final payload = jsonDecode(response.body) as Map<String, dynamic>;
+      final categories = (payload['categories'] as List? ?? const [])
+          .whereType<Map>()
+          .map((category) => Map<String, dynamic>.from(category))
+          .where(
+              (category) => (category['items'] as List? ?? const []).isNotEmpty)
+          .toList();
+      if (mounted && categories.isNotEmpty) {
+        setState(() {
+          _remoteExpressionCategories = categories;
+          _loadingExpressionCatalog = false;
+        });
+      }
+    } catch (_) {
+      // The bundled collection remains available as an offline fallback.
+    } finally {
+      if (mounted && _remoteExpressionCategories == null) {
+        setState(() => _loadingExpressionCatalog = false);
+      }
+    }
   }
 
   @override
@@ -13672,8 +13863,149 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     }
   }
 
+  IconData _expressionCategoryIcon(String id) {
+    switch (id) {
+      case 'family':
+        return Icons.family_restroom;
+      case 'stickers':
+        return Icons.auto_awesome;
+      case 'animated':
+        return Icons.animation;
+      default:
+        return Icons.sentiment_satisfied_alt;
+    }
+  }
+
+  Widget _buildRemoteExpressionPicker(List<Map<String, dynamic>> categories) {
+    return SafeArea(
+      child: DefaultTabController(
+        length: categories.length,
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.68,
+          child: Column(children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
+              child: Row(children: [
+                Icon(Icons.cloud_done_outlined, color: kPrimary),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text('הביטויים של בתשובה — מתעדכנים אוטומטית',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ]),
+            ),
+            TabBar(
+              isScrollable: categories.length > 4,
+              labelColor: kPrimary,
+              tabs: categories
+                  .map((category) => Tab(
+                        icon: Icon(_expressionCategoryIcon(
+                            category['id']?.toString() ?? '')),
+                        text: category['title']?.toString() ?? '',
+                      ))
+                  .toList(),
+            ),
+            Expanded(
+              child: TabBarView(
+                children: categories
+                    .map((category) => _RemoteExpressionGrid(
+                          items: (category['items'] as List? ?? const [])
+                              .whereType<Map>()
+                              .map((item) => Map<String, dynamic>.from(item))
+                              .toList(),
+                        ))
+                    .toList(),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(12, 4, 12, 10),
+              child: Text(
+                'הספרייה נטענת מהשרת ונשמרת במטמון — תכנים חדשים יופיעו ללא עדכון אפליקציה',
+                style: TextStyle(fontSize: 11, color: kSubtext),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final remoteCategories = _remoteExpressionCategories;
+    if (remoteCategories != null && remoteCategories.isNotEmpty) {
+      return _buildRemoteExpressionPicker(remoteCategories);
+    }
+    if (_loadingExpressionCatalog) {
+      return const SafeArea(
+        child: SizedBox(
+          height: 260,
+          child: Center(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              CircularProgressIndicator(color: kPrimary),
+              SizedBox(height: 14),
+              Text('טוען את ספריית הביטויים…'),
+            ]),
+          ),
+        ),
+      );
+    }
+    return _legacyBuild(context);
+    /* Offline legacy fallback retained below for reference.
+    return SafeArea(
+      child: DefaultTabController(
+        length: 3,
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.68,
+          child: Column(children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
+              child: Row(children: [
+                Icon(Icons.auto_awesome, color: kPrimary),
+                SizedBox(width: 8),
+                Text('הביטויים המקוריים של בתשובה',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ]),
+            ),
+            const TabBar(labelColor: kPrimary, tabs: [
+              Tab(icon: Icon(Icons.sentiment_satisfied_alt), text: 'סמיילים'),
+              Tab(icon: Icon(Icons.auto_awesome), text: 'מדבקות'),
+              Tab(icon: Icon(Icons.animation), text: 'מונפשים'),
+            ]),
+            Expanded(
+              child: TabBarView(children: [
+                _OriginalExpressionGrid(
+                    assets: _originalSmileAssets,
+                    labels: _originalSmileLabels,
+                    columns: 4),
+                _OriginalExpressionGrid(
+                    assets: _originalStickerAssets,
+                    labels: _originalStickerLabels,
+                    columns: 4),
+                _OriginalExpressionGrid(
+                    assets: _originalGifAssets,
+                    labels: _originalGifLabels,
+                    columns: 4),
+              ]),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(12, 4, 12, 10),
+              child: Text(
+                'איורים מקוריים ונקיים שנוצרו במיוחד עבור קהילת בתשובה',
+                style: TextStyle(fontSize: 11, color: kSubtext),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ]),
+        ),
+      ),
+    ); */
+  }
+
+  Widget _legacyBuild(BuildContext context) {
     final categoryValues = _category == 'אחרונים'
         ? _recent
         : (_emojiCategories[_category] ?? const <String>[]);
@@ -13888,6 +14220,123 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
       ),
     );
   }
+}
+
+class _RemoteExpressionGrid extends StatelessWidget {
+  final List<Map<String, dynamic>> items;
+
+  const _RemoteExpressionGrid({required this.items});
+
+  String _absoluteUrl(String value) => Uri.parse(value).hasScheme
+      ? value
+      : '${kServerUri.origin}${value.startsWith('/') ? value : '/$value'}';
+
+  @override
+  Widget build(BuildContext context) => GridView.builder(
+        padding: const EdgeInsets.all(14),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 4,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: items.length,
+        itemBuilder: (_, index) {
+          final item = items[index];
+          final url = _absoluteUrl(item['url']?.toString() ?? '');
+          return Material(
+            color: const Color(0xFFF0F6FC),
+            borderRadius: BorderRadius.circular(18),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: url.isEmpty
+                  ? null
+                  : () =>
+                      Navigator.pop(context, '$_remoteExpressionPrefix$url'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(6, 6, 6, 5),
+                child: Column(children: [
+                  Expanded(
+                    child: Image.network(
+                      url,
+                      fit: BoxFit.contain,
+                      filterQuality: FilterQuality.medium,
+                      errorBuilder: (_, __, ___) => const Icon(
+                          Icons.broken_image_outlined,
+                          color: kSubtext),
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    item['label']?.toString() ?? '',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: kPrimary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          );
+        },
+      );
+}
+
+class _OriginalExpressionGrid extends StatelessWidget {
+  final List<String> assets;
+  final List<String> labels;
+  final int columns;
+
+  const _OriginalExpressionGrid({
+    required this.assets,
+    required this.labels,
+    required this.columns,
+  });
+
+  @override
+  Widget build(BuildContext context) => GridView.builder(
+        padding: const EdgeInsets.all(14),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: columns,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: assets.length,
+        itemBuilder: (_, index) => Material(
+          color: const Color(0xFFF0F6FC),
+          borderRadius: BorderRadius.circular(18),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: () => Navigator.pop(
+                context, '$_originalExpressionPrefix${assets[index]}'),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(6, 6, 6, 5),
+              child: Column(children: [
+                Expanded(
+                  child: Image.asset(assets[index], fit: BoxFit.contain),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  labels[index],
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: kPrimary,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      );
 }
 
 class _AttachOption extends StatelessWidget {
@@ -15596,6 +16045,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _showGroupExpressions() async {
     final choice = await _showExpressionPicker(context, widget.token);
     if (choice == null || !mounted) return;
+    if (choice.startsWith(_originalExpressionPrefix)) {
+      final assetPath = choice.substring(_originalExpressionPrefix.length);
+      final data = await rootBundle.load(assetPath);
+      final bytes = data.buffer.asUint8List();
+      final extension = assetPath.endsWith('.gif') ? 'gif' : 'png';
+      final fileName =
+          'betshuva_${assetPath.split('/').last.replaceAll('.$extension', '')}.$extension';
+      final file =
+          XFile.fromData(bytes, name: fileName, mimeType: 'image/$extension');
+      await _uploadGroupFile(file, fileName, 'image', extraFields: const {
+        'builtinExpression': 'true',
+      });
+      return;
+    }
     if (choice == _gifPickerAction) {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -17344,7 +17807,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               child: Row(
                 children: [
                   IconButton(
-                    tooltip: 'אימוג׳י, GIF ומדבקות',
+                    tooltip: 'סמיילים ומדבקות של בתשובה',
                     icon: const Icon(Icons.emoji_emotions_outlined,
                         color: kPrimary),
                     onPressed: _showGroupExpressions,
