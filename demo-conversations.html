@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>בתשובה — שיחות לדוגמה</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;background:#edf3f6;font-family:Arial,sans-serif;color:#1e3442}
+    .phone{width:min(100%,430px);min-height:100vh;margin:auto;background:#fff;box-shadow:0 0 28px #123b5730}
+    header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:12px;padding:17px 16px;background:#176fa6;color:#fff}
+    header img{width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid #fff}
+    header h1{font-size:21px;margin:0} header p{font-size:12px;margin:4px 0 0;color:#dbeef9}
+    .tabs{display:flex;border-bottom:1px solid #d8e4eb;background:#fff}.tabs span{flex:1;text-align:center;padding:13px;color:#708692}.tabs .active{color:#176fa6;font-weight:bold;border-bottom:3px solid #176fa6}
+    .search{margin:12px 14px;padding:11px 15px;border-radius:22px;background:#edf4f7;color:#78909c;font-size:14px}
+    .row{direction:rtl;display:grid;grid-template-columns:58px minmax(0,1fr) 48px;align-items:center;gap:11px;padding:12px 14px;border-bottom:1px solid #e4edf1;min-height:82px}
+    .row.unread{background:#f5fbff}.avatar{position:relative;width:58px;height:58px}.avatar img{width:100%;height:100%;border-radius:50%;object-fit:cover;border:1px solid #d4e3ea}
+    .online{position:absolute;bottom:0;left:0;width:16px;height:16px;background:#35a854;border:2px solid #fff;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:10px}
+    .main{min-width:0}.name{display:flex;align-items:center;gap:5px;font-size:17px;font-weight:700}.group{font-size:11px;color:#176fa6;background:#e6f2f9;padding:2px 6px;border-radius:8px}
+    .message{margin-top:7px;color:#687f8d;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.unread .message,.unread .name{color:#123b57;font-weight:700}
+    .meta{direction:ltr;text-align:center;color:#91a1aa;font-size:11px}.badge{display:inline-grid;place-items:center;min-width:24px;height:24px;margin-top:8px;padding:0 7px;border-radius:13px;background:#247fbd;color:white;font-size:13px;font-weight:bold}
+    .compose{position:fixed;left:calc(50% - min(50%,215px) + 22px);bottom:22px;width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:#176fa6;color:#fff;font-size:25px;box-shadow:0 5px 16px #176fa666}
+  </style>
+</head>
+<body>
+  <main class="phone">
+    <header><img src="uploads/demo-historical/second-temple-man.webp" alt=""><div><h1>בתשובה</h1><p>קהילה מחוברת בשיח טוב</p></div></header>
+    <nav class="tabs"><span class="active">שיחות</span><span>קבוצות</span><span>אנשי קשר</span></nav>
+    <div class="search">חיפוש שיחות ואנשים…</div>
+    <section>
+      <div class="row unread"><div class="avatar"><img src="uploads/demo-historical/first-temple-man.webp" alt="אליהו"><i class="online">✓</i></div><div class="main"><div class="name">אליהו בן־אורי</div><div class="message">🙏 תודה רבה על העזרה והעידוד!</div></div><div class="meta">10:30<div class="badge">3</div></div></div>
+      <div class="row unread"><div class="avatar"><img src="uploads/demo-historical/first-temple-woman.webp" alt="אביגיל"><i class="online">✓</i></div><div class="main"><div class="name">אביגיל בת־עמינדב</div><div class="message">איזה יופי, הבשורה ממש משמחת!</div></div><div class="meta">10:12<div class="badge">2</div></div></div>
+      <div class="row unread"><div class="avatar"><img src="uploads/demo-historical/second-temple-man.webp" alt="יונתן"><i class="online">✓</i></div><div class="main"><div class="name">יונתן הלוי</div><div class="message">חזק וברוך, הדברים נתנו הרבה כוח</div></div><div class="meta">09:45<div class="badge">5</div></div></div>
+      <div class="row"><div class="avatar"><img src="uploads/demo-historical/second-temple-woman.webp" alt="מרים"></div><div class="main"><div class="name">מרים בת־יהודה</div><div class="message">שיהיה יום מבורך ומלא בשורות טובות 🌿</div></div><div class="meta">09:18</div></div>
+      <div class="row unread"><div class="avatar"><img src="uploads/demo-historical/temple-men-group.webp" alt="קבוצת גברים"></div><div class="main"><div class="name">לומדים יחד — גברים <span class="group">קבוצה</span></div><div class="message">אליהו: השיעור הערב בשעה שמונה</div></div><div class="meta">אתמול<div class="badge">8</div></div></div>
+      <div class="row unread"><div class="avatar"><img src="uploads/demo-historical/temple-women-group.webp" alt="קבוצת נשים"></div><div class="main"><div class="name">קהילת חסד — נשים <span class="group">קבוצה</span></div><div class="message">אביגיל: תודה לכל מי שהתנדבה ❤️</div></div><div class="meta">אתמול<div class="badge">4</div></div></div>
+    </section>
+    <div class="compose">✎</div>
+  </main>
+</body>
+</html>

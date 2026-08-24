@@ -4476,7 +4476,7 @@ app.post('/api/listings', auth, async (req, res) => {
   const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const validTypes = ['free', 'sale'];
-  const validCats  = ['רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
+  const validCats  = ['רכב','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
   try {
     const pool = await getPool();
     // use user's stored location if not provided
@@ -4628,7 +4628,7 @@ app.put('/api/listings/:id', auth, async (req, res) => {
   const { type, title, description, price, city, category, image_urls } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const validTypes = ['free', 'sale'];
-  const validCats  = ['רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
+  const validCats  = ['רכב','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
   const safeType   = validTypes.includes(type) ? type : 'free';
   const safeCat    = validCats.includes(category) ? category : 'אחר';
   const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 8) : [];
@@ -6163,6 +6163,33 @@ app.delete('/api/groups/:id', auth, async (req, res) => {
 });
 
 // ── Groups: update settings (admin) ──────────────────────────────
+app.patch('/api/groups/:id/name', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
+  const name = String(req.body.name || '').trim();
+  if (name.length < 2 || name.length > 80)
+    return res.status(400).json({ error: 'שם הקבוצה חייב להכיל 2 עד 80 תווים' });
+  try {
+    const pool = await getPool();
+    const updated = await pool.query(
+      `UPDATE groups g SET name=$1 WHERE g.id=$2 AND EXISTS (
+         SELECT 1 FROM group_members gm WHERE gm.group_id=g.id
+         AND gm.user_id=$3 AND gm.role='admin' AND gm.status='member'
+       ) RETURNING id,name`,
+      [name, req.params.id, req.user.id]);
+    if (!updated.rows.length) return res.status(403).json({ error: 'רק מנהל הקבוצה יכול לשנות את שמה' });
+    io.to(`group:${req.params.id}`).emit('group:updated', {
+      groupId: req.params.id, name,
+    });
+    logActivity(req.user.id, 'rename_group', {
+      groupId: req.params.id, name,
+    }, req.ip);
+    res.json(updated.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: 'שינוי שם הקבוצה נכשל' });
+  }
+});
+
 app.put('/api/groups/:id', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
