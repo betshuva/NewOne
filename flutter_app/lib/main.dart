@@ -462,8 +462,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.95';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.95.apk';
+const kVersion = '1.2.96';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.96.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -14232,58 +14232,65 @@ class _RemoteExpressionGrid extends StatelessWidget {
       : '${kServerUri.origin}${value.startsWith('/') ? value : '/$value'}';
 
   @override
-  Widget build(BuildContext context) => GridView.builder(
-        padding: const EdgeInsets.all(14),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 4,
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 10,
-          childAspectRatio: 0.82,
-        ),
-        itemCount: items.length,
-        itemBuilder: (_, index) {
-          final item = items[index];
-          final url = _absoluteUrl(item['url']?.toString() ?? '');
-          return Material(
-            color: const Color(0xFFF0F6FC),
-            borderRadius: BorderRadius.circular(18),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(18),
-              onTap: url.isEmpty
-                  ? null
-                  : () =>
-                      Navigator.pop(context, '$_remoteExpressionPrefix$url'),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(6, 6, 6, 5),
-                child: Column(children: [
-                  Expanded(
-                    child: Image.network(
-                      url,
-                      fit: BoxFit.contain,
-                      filterQuality: FilterQuality.medium,
-                      errorBuilder: (_, __, ___) => const Icon(
-                          Icons.broken_image_outlined,
-                          color: kSubtext),
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    item['label']?.toString() ?? '',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: kPrimary,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ]),
-              ),
+  Widget build(BuildContext context) => LayoutBuilder(
+      builder: (context, constraints) => GridView.builder(
+            padding: const EdgeInsets.all(12),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: constraints.maxWidth < 360 ? 4 : 5,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: 0.9,
             ),
-          );
-        },
-      );
+            itemCount: items.length,
+            itemBuilder: (_, index) {
+              final item = items[index];
+              final url = _absoluteUrl(item['url']?.toString() ?? '');
+              return Material(
+                color: const Color(0xFFF0F6FC),
+                borderRadius: BorderRadius.circular(15),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(15),
+                  onTap: url.isEmpty
+                      ? null
+                      : () => Navigator.pop(
+                          context, '$_remoteExpressionPrefix$url'),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(5, 7, 5, 5),
+                    child: Column(children: [
+                      Expanded(
+                        child: Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(
+                                maxWidth: 66, maxHeight: 66),
+                            child: Image.network(
+                              url,
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.medium,
+                              errorBuilder: (_, __, ___) => const Icon(
+                                  Icons.broken_image_outlined,
+                                  color: kSubtext),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        item['label']?.toString() ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: kPrimary,
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ]),
+                  ),
+                ),
+              );
+            },
+          ));
 }
 
 class _OriginalExpressionGrid extends StatelessWidget {

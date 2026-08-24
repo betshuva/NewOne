@@ -19,7 +19,7 @@ void main() {
       output: Directory('${root.path}/stickers')..createSync(),
       prefix: 'sticker');
   _splitSheet(
-      sourcePath: 'assets/expressions/source/family-sheet-v2.png',
+      sourcePath: 'assets/expressions/source/family-sheet-v3-original.png',
       output: Directory('${root.path}/family')..createSync(),
       prefix: 'family');
   final animatedTiles = _splitSheet(
@@ -97,8 +97,39 @@ void _writeAnimatedGif(img.Image source, File target, int index) {
       frame = img.adjustColor(img.Image.from(source),
           brightness: 1 + phase * 0.025, contrast: 1 + phase * 0.035);
     }
+    _addSparkles(frame, index, frameIndex);
     frame.frameDuration = 130;
     animation.addFrame(frame);
   }
   target.writeAsBytesSync(img.encodeGif(animation));
+}
+
+void _addSparkles(img.Image frame, int itemIndex, int frameIndex) {
+  // Small, softly moving points of light. Coordinates are deterministic so
+  // every generated GIF remains reproducible and does not need remote media.
+  const positions = <(double, double)>[
+    (0.22, 0.22),
+    (0.78, 0.25),
+    (0.70, 0.72),
+    (0.28, 0.76),
+    (0.50, 0.16),
+    (0.84, 0.52),
+  ];
+  for (var sparkle = 0; sparkle < 3; sparkle++) {
+    final position =
+        positions[(itemIndex + frameIndex + sparkle * 2) % positions.length];
+    final radius = 2 + ((frameIndex + sparkle) % 3) * 2;
+    img.fillCircle(frame,
+        x: (frame.width * position.$1).round(),
+        y: (frame.height * position.$2).round(),
+        radius: radius,
+        color: img.ColorRgba8(255, 224, 92, 210),
+        antialias: true);
+    img.fillCircle(frame,
+        x: (frame.width * position.$1).round(),
+        y: (frame.height * position.$2).round(),
+        radius: 1,
+        color: img.ColorRgba8(255, 255, 255, 255),
+        antialias: true);
+  }
 }
