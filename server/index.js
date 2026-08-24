@@ -248,6 +248,17 @@ const normalizedCredential = req => {
   return `${clientIp(req)}:${String(value).trim().toLowerCase().slice(0, 200)}`;
 };
 
+function normalizeIsraeliMobile(value) {
+  let digits = String(value || '').replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith('972')) digits = `0${digits.slice(3)}`;
+  return digits;
+}
+
+function isValidIsraeliMobile(value) {
+  return /^05\d{8}$/.test(normalizeIsraeliMobile(value));
+}
+
 const apiRateLimit = createRateLimiter({
   windowMs: 5 * 60 * 1000,
   max: 600,
@@ -2110,6 +2121,7 @@ if (!JWT_SECRET) {
 }
 const onlineUsers = new Map(); // userId → socketId
 const otpStore    = new Map(); // phone → { code, expires, name }
+const registrationOtpStore = new Map(); // method:value → { code, expires }
 const socketRateBuckets = new Map();
 const activeVoiceCalls = new Map(); // callId → { callerId, calleeId, timeout }
 const userVoiceCalls = new Map();   // userId → callId
@@ -2893,6 +2905,48 @@ io.on('connection', async (socket) => {
 });
 
 // ── Register ─────────────────────────────────────────────────────
+app.post('/api/registration/send-code', authRateLimit, otpRateLimit, async (req, res) => {
+  const method = req.body.method;
+  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const phone = normalizeIsraeliMobile(req.body.phone);
+  if (!['email', 'phone'].includes(method)) return res.status(400).json({ error: 'שיטת אימות לא תקינה' });
+  if (method === 'email' && (!email || !email.includes('@'))) return res.status(400).json({ error: 'כתובת אימייל לא תקינה' });
+  if (method === 'phone' && !isValidIsraeliMobile(phone))
+    return res.status(400).json({ error: 'יש להזין מספר סלולרי ישראלי תקין' });
+  try {
+    const pool = await getPool();
+    const exists = method === 'email'
+      ? await pool.query('SELECT id FROM users WHERE lower(email)=lower($1)', [email])
+      : await pool.query('SELECT id FROM users WHERE phone=$1', [phone]);
+    if (exists.rows.length) return res.status(409).json({ error: method === 'email' ? 'האימייל כבר רשום' : 'מספר הטלפון כבר רשום' });
+    const value = method === 'email' ? email : phone;
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    registrationOtpStore.set(`${method}:${value}`, { code, expires: Date.now() + 10 * 60 * 1000 });
+    const message = method === 'email'
+      ? { to: email, subject: `קוד האימות שלך לבתשובה: ${code}`, html: `<div dir="rtl" style="font-family:Arial"><h2>אימות אימייל</h2><p>קוד האימות:</p><div style="font-size:32px;font-weight:bold;letter-spacing:8px">${code}</div><p>הקוד בתוקף למשך 10 דקות.</p></div>` }
+      : { to: `${phone}@019sms.co.il`, subject: `קוד האימות שלך לבתשובה: ${code}`, html: '' };
+    await sendEmail(message);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('registration send-code:', e.message);
+    res.status(500).json({ error: 'שליחת קוד האימות נכשלה' });
+  }
+});
+
+app.post('/api/registration/verify-code', authRateLimit, credentialRateLimit, (req, res) => {
+  const method = req.body.method;
+  const value = method === 'email'
+    ? String(req.body.email || '').trim().toLowerCase()
+    : normalizeIsraeliMobile(req.body.phone);
+  const key = `${method}:${value}`;
+  const entry = registrationOtpStore.get(key);
+  if (!entry || entry.code !== String(req.body.code || '') || Date.now() > entry.expires)
+    return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
+  registrationOtpStore.delete(key);
+  const proof = jwt.sign({ purpose: 'registration', method, value }, JWT_SECRET, { expiresIn: '30m' });
+  res.json({ ok: true, proof });
+});
+
 app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) => {
   const { name, password, phone, clientType, verificationMethod, gender } = req.body;
   if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
@@ -2914,14 +2968,25 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
   const hasPhone = !!phone;
   const verifyByEmail = verificationMethod !== 'phone';
   const verifyByPhone = verificationMethod === 'phone';
+  let verificationProof;
+  try {
+    verificationProof = jwt.verify(req.body.verificationProof || '', JWT_SECRET);
+  } catch (_) {
+    return res.status(400).json({ error: 'יש להשלים אימות משתמש תחילה' });
+  }
+  const proofMethod = verifyByPhone ? 'phone' : 'email';
+  const proofValue = verifyByPhone ? normalizeIsraeliMobile(phone) : email;
+  if (verificationProof.purpose !== 'registration' ||
+      verificationProof.method !== proofMethod || verificationProof.value !== proofValue)
+    return res.status(400).json({ error: 'אימות המשתמש אינו תואם לפרטי ההרשמה' });
   if (clientType === 'desktop' && (!hasEmail || !hasPhone))
     return res.status(400).json({ error: 'בהרשמה ממחשב חובה להזין אימייל ומספר טלפון' });
   if (!hasEmail && !hasPhone)
     return res.status(400).json({ error: 'יש לספק אימייל עם סיסמה, מספר טלפון, או שניהם' });
 
-  const cleanPhone = hasPhone ? phone.replace(/\D/g, '') : null;
-  if (hasPhone && cleanPhone.length < 9)
-    return res.status(400).json({ error: 'מספר טלפון לא תקין' });
+  const cleanPhone = hasPhone ? normalizeIsraeliMobile(phone) : null;
+  if (hasPhone && !isValidIsraeliMobile(cleanPhone))
+    return res.status(400).json({ error: 'יש להזין מספר סלולרי ישראלי תקין' });
   try {
     const pool = await getPool();
     if (hasEmail && verifyByEmail) {
@@ -2935,15 +3000,15 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
 
     const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
     const result = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter)
-       VALUES ($1, $2, $3, $4, now(), '2026-08-23', TRUE, $5, $6, $7)
+      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter, email_verified, phone_verified)
+       VALUES ($1, $2, $3, $4, now(), '2026-08-23', TRUE, $5, $6, $7, $8, $9)
        RETURNING id, name, email`,
       [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender,
-       agePolicy.birthDate, JSON.stringify(registrationFilter)]);
+       agePolicy.birthDate, JSON.stringify(registrationFilter), verifyByEmail, verifyByPhone]);
     const user = result.rows[0];
     await provisionSystemConversation(pool, user.id);
 
-    if (hasEmail) {
+    if (hasEmail && !verifyByEmail) {
       const emailToken = crypto.randomBytes(32).toString('hex');
       const expires24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
       await pool.query(
@@ -2957,7 +3022,7 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
       }).catch(() => {});
     }
 
-    if (hasPhone) {
+    if (hasPhone && !verifyByPhone) {
       const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
       otpStore.set(cleanPhone, { code: smsCode, expires: Date.now() + 10 * 60 * 1000, name });
       sendEmail({
@@ -2968,7 +3033,8 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
     }
 
     logActivity(user.id, 'register', { email: email || null, phone: cleanPhone }, req.ip);
-    res.json({ pending: true, phone: cleanPhone, hasEmail, hasPhone,
+    const authToken = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    res.json({ pending: false, token: authToken, user, phone: cleanPhone, hasEmail, hasPhone,
       verificationMethod: verifyByPhone ? 'phone' : 'email' });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -3051,6 +3117,24 @@ app.post('/api/resend-verification', authRateLimit, otpRateLimit, async (req, re
 });
 
 // ── Google Sign-In ────────────────────────────────────────────────
+app.post('/api/registration/verify-google', authRateLimit, async (req, res) => {
+  if (!req.body.idToken) return res.status(400).json({ error: 'חסר idToken' });
+  try {
+    const tokenRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(req.body.idToken)}`);
+    const payload = await tokenRes.json();
+    const configured = (process.env.GOOGLE_CLIENT_IDS || process.env.GOOGLE_CLIENT_ID || '').split(',').map(v => v.trim()).filter(Boolean);
+    const allowed = new Set([...configured,
+      '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com',
+      '862738339788-4ogau0m9c0nh2h8jh7k6fosj2i3tah28.apps.googleusercontent.com',
+      '862738339788-umebs5qrpaaikhdr3uuu259hufc65l98.apps.googleusercontent.com']);
+    if (!payload.sub || !allowed.has(payload.aud) || (payload.email_verified !== 'true' && payload.email_verified !== true))
+      return res.status(401).json({ error: 'חשבון Google לא תקין או לא מאומת' });
+    res.json({ ok: true, name: payload.name || '', email: payload.email || '' });
+  } catch (_) {
+    res.status(500).json({ error: 'אימות Google נכשל' });
+  }
+});
+
 app.post('/api/auth/google', authRateLimit, async (req, res) => {
   const { idToken } = req.body;
   if (!idToken) return res.status(400).json({ error: 'חסר idToken' });
@@ -5631,12 +5715,13 @@ app.get('/api/leaderboard', auth, async (req, res) => {
 app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
   const { phone, name, email, gender } = req.body;
   if (!phone) return res.status(400).json({ error: 'נדרש מספר טלפון' });
-  const clean      = phone.replace(/\D/g, '');
+  const clean      = normalizeIsraeliMobile(phone);
   const cleanName = typeof name === 'string'
     ? name.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim()
     : '';
   const cleanEmail = (email || '').toLowerCase().trim();
-  if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
+  if (!isValidIsraeliMobile(clean))
+    return res.status(400).json({ error: 'יש להזין מספר סלולרי ישראלי תקין' });
   try {
     const pool = await getPool();
     const existingPhone = await pool.query(
@@ -5771,8 +5856,9 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
 // ── Link Phone to existing account (after Google sign-in) ───────
 app.post('/api/link-phone', auth, otpRateLimit, async (req, res) => {
   const { phone, code } = req.body;
-  const clean = (phone || '').replace(/\D/g, '');
-  if (clean.length < 9) return res.status(400).json({ error: 'מספר טלפון לא תקין' });
+  const clean = normalizeIsraeliMobile(phone);
+  if (!isValidIsraeliMobile(clean))
+    return res.status(400).json({ error: 'יש להזין מספר סלולרי ישראלי תקין' });
   try {
     const pool = await getPool();
     const account = await pool.query(

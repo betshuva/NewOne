@@ -32,6 +32,16 @@ import 'web_capture_picker.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 
+String _normalizeIsraeliMobile(String value) {
+  var digits = value.replaceAll(RegExp(r'\D'), '');
+  if (digits.startsWith('00')) digits = digits.substring(2);
+  if (digits.startsWith('972')) digits = '0${digits.substring(3)}';
+  return digits;
+}
+
+bool _isValidIsraeliMobile(String value) =>
+    RegExp(r'^05\d{8}$').hasMatch(_normalizeIsraeliMobile(value));
+
 String _whatsAppPhoneNumber(String rawPhone) {
   var digits = rawPhone.replaceAll(RegExp(r'\D'), '');
   if (digits.startsWith('00')) digits = digits.substring(2);
@@ -446,8 +456,8 @@ const kApi = '$kServer/api';
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.85';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.85.apk';
+const kVersion = '1.2.87';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.87.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -1561,19 +1571,14 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     });
     try {
       await _googleSignIn.signOut();
-      // On web, signIn() is an OAuth authorization flow and does not return
-      // an ID token. The GIS authentication flow used by signInSilently does.
       final account = kIsWeb
           ? await _googleSignIn.signInSilently()
           : await _googleSignIn.signIn();
       if (account == null) {
-        setState(() {
-          _loading = false;
-        });
+        setState(() => _loading = false);
         return;
       }
-      final auth = await account.authentication;
-      final idToken = auth.idToken;
+      final idToken = (await account.authentication).idToken;
       if (idToken == null) throw Exception('לא התקבל טוקן מגוגל');
       final res = await http
           .post(
@@ -1640,8 +1645,8 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   }
 
   Future<void> _sendOtp() async {
-    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
-    if (phone.length < 9) {
+    final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
+    if (!_isValidIsraeliMobile(phone)) {
       setState(() => _error = 'נא להזין מספר טלפון תקין');
       return;
     }
@@ -1712,7 +1717,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       _error = null;
     });
     try {
-      final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+      final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
       final res = await http
           .post(
             Uri.parse('$kApi/verify-otp'),
@@ -1987,19 +1992,25 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _verificationRequired = false;
   bool _acceptedTerms = false;
   bool _ageConfirmed = false;
-  bool _filterConfirmed = false;
+  bool _filterConfirmed = true;
   int _registrationStep = 0;
   String _registrationMethod = 'email';
   Map<String, bool> _registrationFilter = _newAccountFilter();
   String? _gender;
   DateTime? _birthDate;
   String _verificationMethod = 'email';
+  bool _registrationCodeSent = false;
+  bool _identityVerified = false;
+  bool _showVerificationSuccess = false;
+  String? _verificationProof;
+  String? _googleRegistrationIdToken;
   String? _error;
 
   final _nameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
+  final _registrationCodeCtrl = TextEditingController();
 
   final _googleSignIn = GoogleSignIn(
     clientId: kIsWeb ? kGoogleWebClientId : null,
@@ -2019,20 +2030,18 @@ class _AuthScreenState extends State<AuthScreen> {
       _error = null;
     });
     try {
-      await _googleSignIn.signOut();
-      // On web, signIn() is an OAuth authorization flow and does not return
-      // an ID token. The GIS authentication flow used by signInSilently does.
-      final account = kIsWeb
-          ? await _googleSignIn.signInSilently()
-          : await _googleSignIn.signIn();
-      if (account == null) {
-        setState(() {
-          _loading = false;
-        });
-        return;
+      String? idToken = _googleRegistrationIdToken;
+      if (idToken == null) {
+        await _googleSignIn.signOut();
+        final account = kIsWeb
+            ? await _googleSignIn.signInSilently()
+            : await _googleSignIn.signIn();
+        if (account == null) {
+          setState(() => _loading = false);
+          return;
+        }
+        idToken = (await account.authentication).idToken;
       }
-      final auth = await account.authentication;
-      final idToken = auth.idToken;
       if (idToken == null) throw Exception('לא התקבל טוקן מגוגל');
 
       final res = await http
@@ -2094,6 +2103,7 @@ class _AuthScreenState extends State<AuthScreen> {
     _emailCtrl.dispose();
     _phoneCtrl.dispose();
     _passCtrl.dispose();
+    _registrationCodeCtrl.dispose();
     super.dispose();
   }
 
@@ -2105,7 +2115,7 @@ class _AuthScreenState extends State<AuthScreen> {
         .toLowerCase();
     final password = _passCtrl.text;
     final name = _nameCtrl.text.trim();
-    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+    final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
 
     if (_isLogin) {
       if (email.isEmpty || !email.contains('@')) {
@@ -2142,7 +2152,7 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() => _error = 'נא להזין כתובת אימייל תקינה');
         return;
       }
-      if (phone.length < 9) {
+      if (!_isValidIsraeliMobile(phone)) {
         setState(() => _error = 'נא להזין מספר טלפון תקין');
         return;
       }
@@ -2219,6 +2229,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 'birthDate': _formatBirthDate(_birthDate!),
                 'contentFilter': _registrationFilter,
                 'contentFilterConfirmed': _filterConfirmed,
+                'verificationProof': _verificationProof,
               }),
             )
             .timeout(const Duration(seconds: 30));
@@ -2231,16 +2242,13 @@ class _AuthScreenState extends State<AuthScreen> {
           return;
         }
         if (!mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => VerifyScreen(
-              phone: phone,
-              email: email,
-              method: _verificationMethod,
-            ),
-          ),
-        );
+        final token = data['token'] as String?;
+        if (token == null) throw Exception('לא התקבל טוקן התחברות');
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('token', token);
+        if (!mounted) return;
+        Navigator.pushReplacement(context,
+            MaterialPageRoute(builder: (_) => MainShell(token: token)));
       }
     } catch (_) {
       setState(() {
@@ -2304,29 +2312,178 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  Future<void> _selectRegistrationMethod(String method) async {
+    setState(() {
+      _registrationMethod = method;
+      _verificationMethod = method == 'phone' ? 'phone' : 'email';
+      _identityVerified = false;
+      _verificationProof = null;
+      _registrationCodeSent = false;
+      _showVerificationSuccess = false;
+      _registrationCodeCtrl.clear();
+      _error = null;
+      if (method != 'google') _registrationStep = 1;
+    });
+    if (method != 'google') return;
+    setState(() => _loading = true);
+    try {
+      await _googleSignIn.signOut();
+      final account = kIsWeb
+          ? await _googleSignIn.signInSilently()
+          : await _googleSignIn.signIn();
+      if (account == null) {
+        if (mounted) setState(() => _loading = false);
+        return;
+      }
+      final auth = await account.authentication;
+      if (auth.idToken == null) throw Exception('לא התקבל טוקן מגוגל');
+      final response = await http
+          .post(
+            Uri.parse('$kApi/registration/verify-google'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'idToken': auth.idToken}),
+          )
+          .timeout(const Duration(seconds: 30));
+      final data = _registrationResponseData(response);
+      if (response.statusCode != 200)
+        throw Exception(data['error'] ?? 'אימות Google נכשל');
+      if (!mounted) return;
+      setState(() {
+        _googleRegistrationIdToken = auth.idToken;
+        _identityVerified = true;
+        _nameCtrl.text = (data['name'] as String?) ?? '';
+        _emailCtrl.text = (data['email'] as String?) ?? '';
+        _loading = false;
+      });
+      await _showSuccessfulVerification();
+    } catch (e) {
+      if (mounted)
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
+    }
+  }
+
+  Future<void> _sendRegistrationCode() async {
+    final email = _emailCtrl.text.trim().toLowerCase();
+    final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
+    if (_registrationMethod == 'email' &&
+        (email.isEmpty || !email.contains('@'))) {
+      _registrationError('נא להזין כתובת אימייל תקינה');
+      return;
+    }
+    if (_registrationMethod == 'phone' && !_isValidIsraeliMobile(phone)) {
+      _registrationError('נא להזין מספר טלפון תקין');
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$kApi/registration/send-code'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'method': _registrationMethod,
+              'email': email,
+              'phone': phone
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+      final data = _registrationResponseData(response);
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        if (response.statusCode == 200)
+          _registrationCodeSent = true;
+        else
+          _error = data['error'] as String? ?? 'שליחת הקוד נכשלה';
+      });
+    } catch (_) {
+      if (mounted)
+        setState(() {
+          _loading = false;
+          _error = 'שגיאת חיבור. נסה שוב.';
+        });
+    }
+  }
+
+  Future<void> _verifyRegistrationCode() async {
+    if (_registrationCodeCtrl.text.trim().length != 6) {
+      _registrationError('נא להזין קוד בן 6 ספרות');
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$kApi/registration/verify-code'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'method': _registrationMethod,
+              'email': _emailCtrl.text.trim().toLowerCase(),
+              'phone': _normalizeIsraeliMobile(_phoneCtrl.text),
+              'code': _registrationCodeCtrl.text.trim(),
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
+      final data = _registrationResponseData(response);
+      if (!mounted) return;
+      if (response.statusCode != 200) {
+        setState(() {
+          _loading = false;
+          _error = data['error'] as String? ?? 'הקוד שגוי';
+        });
+        return;
+      }
+      setState(() {
+        _verificationProof = data['proof'] as String;
+        _identityVerified = true;
+        _loading = false;
+      });
+      await _showSuccessfulVerification();
+    } catch (_) {
+      if (mounted)
+        setState(() {
+          _loading = false;
+          _error = 'שגיאת חיבור. נסה שוב.';
+        });
+    }
+  }
+
   void _registrationError(String message) {
     setState(() => _error = message);
   }
 
+  Future<void> _showSuccessfulVerification() async {
+    if (!mounted) return;
+    setState(() {
+      _showVerificationSuccess = true;
+      _error = null;
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 1300));
+    if (!mounted) return;
+    setState(() {
+      _showVerificationSuccess = false;
+      _registrationStep = 2;
+    });
+  }
+
+  Map<String, dynamic> _registrationResponseData(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return {'error': 'שירות האימות אינו זמין כרגע. נסה שוב בעוד רגע.'};
+  }
+
   void _nextRegistrationStep() {
-    if (_registrationStep == 1) {
-      if (_registrationMethod == 'email') {
-        final email = _emailCtrl.text.trim();
-        final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
-        if (email.isEmpty || !email.contains('@')) {
-          _registrationError('נא להזין כתובת אימייל תקינה');
-          return;
-        }
-        if (phone.length < 9) {
-          _registrationError('נא להזין מספר טלפון תקין');
-          return;
-        }
-        if (_passCtrl.text.length < 6) {
-          _registrationError('הסיסמה חייבת להיות לפחות 6 תווים');
-          return;
-        }
-      }
-    }
     if (_registrationStep == 2) {
       if (_nameCtrl.text.trim().isEmpty) {
         _registrationError('נא להזין שם מלא');
@@ -2340,10 +2497,18 @@ class _AuthScreenState extends State<AuthScreen> {
         _registrationError('יש לבחור מגדר');
         return;
       }
-    }
-    if (_registrationStep == 3 && !_filterConfirmed) {
-      _registrationError('יש לאשר את בחירת הסינון');
-      return;
+      if (_registrationMethod != 'google') {
+        final email = _emailCtrl.text.trim();
+        final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
+        if (email.isEmpty || !email.contains('@')) {
+          _registrationError('נא להזין כתובת אימייל תקינה');
+          return;
+        }
+        if (!_isValidIsraeliMobile(phone)) {
+          _registrationError('נא להזין מספר טלפון תקין');
+          return;
+        }
+      }
     }
     setState(() {
       _error = null;
@@ -2352,6 +2517,10 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _finishRegistration() async {
+    if (_registrationMethod != 'google' && _passCtrl.text.length < 6) {
+      _registrationError('הסיסמה חייבת להיות לפחות 6 תווים');
+      return;
+    }
     if (!_ageConfirmed || !_acceptedTerms) {
       _registrationError(
           'יש לאשר גיל 13 ומעלה ואת תנאי השימוש ומדיניות הפרטיות');
@@ -2376,7 +2545,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }) {
     final selected = _registrationMethod == method;
     return InkWell(
-      onTap: () => setState(() => _registrationMethod = method),
+      onTap: _loading ? null : () => _selectRegistrationMethod(method),
       borderRadius: BorderRadius.circular(16),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
@@ -2444,8 +2613,59 @@ class _AuthScreenState extends State<AuthScreen> {
               icon: Icons.alternate_email_rounded,
               title: 'הרשמה באימייל',
               subtitle: 'יצירת חשבון עם אימייל, טלפון וסיסמה'),
+          const SizedBox(height: 12),
+          _registrationMethodCard(
+              method: 'phone',
+              icon: Icons.sms_outlined,
+              title: 'הרשמה עם SMS',
+              subtitle: 'קוד אימות מיידי למספר הטלפון'),
         ]);
       case 1:
+        if (_showVerificationSuccess) {
+          return Column(children: [
+            const SizedBox(height: 28),
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.55, end: 1),
+              duration: const Duration(milliseconds: 450),
+              curve: Curves.elasticOut,
+              builder: (context, scale, child) =>
+                  Transform.scale(scale: scale, child: child),
+              child: Container(
+                width: 92,
+                height: 92,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE5F3FC),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: kPrimary, width: 3),
+                  boxShadow: const [
+                    BoxShadow(
+                        color: Color(0x331B75B3),
+                        blurRadius: 18,
+                        offset: Offset(0, 7)),
+                  ],
+                ),
+                child:
+                    const Icon(Icons.check_rounded, color: kPrimary, size: 58),
+              ),
+            ),
+            const SizedBox(height: 22),
+            const Text('האימות הצליח!',
+                style: TextStyle(
+                    color: kPrimary,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900)),
+            const SizedBox(height: 8),
+            const Text('הפרטים אומתו בהצלחה\nממשיכים להשלמת ההרשמה',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: kSubtext, fontSize: 14, height: 1.5)),
+            const SizedBox(height: 22),
+            const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+          ]);
+        }
         if (_registrationMethod == 'google') {
           return const Column(children: [
             Icon(Icons.verified_user_rounded, size: 62, color: kPrimary),
@@ -2464,36 +2684,69 @@ class _AuthScreenState extends State<AuthScreen> {
           const Text('אימות משתמש',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
-          const Text('הזן פרטי התחברות ואבטחה',
-              style: TextStyle(color: kSubtext, fontSize: 12.5)),
+          Text(
+              _registrationMethod == 'phone'
+                  ? 'הזן מספר טלפון בלבד וקבל קוד ב־SMS'
+                  : 'הזן כתובת אימייל בלבד וקבל קוד אימות',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: kSubtext, fontSize: 12.5)),
           const SizedBox(height: 14),
-          TextField(
-            controller: _phoneCtrl,
-            keyboardType: TextInputType.phone,
-            textDirection: TextDirection.ltr,
-            decoration: const InputDecoration(
-                labelText: 'מספר טלפון',
-                hintText: '05X-XXX-XXXX',
-                prefixIcon: Icon(Icons.phone_android)),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _emailCtrl,
-            keyboardType: TextInputType.emailAddress,
-            textDirection: TextDirection.ltr,
-            decoration: const InputDecoration(
-                labelText: 'כתובת אימייל',
-                prefixIcon: Icon(Icons.email_outlined)),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _passCtrl,
-            obscureText: true,
-            textDirection: TextDirection.ltr,
-            decoration: const InputDecoration(
-                labelText: 'סיסמה — לפחות 6 תווים',
-                prefixIcon: Icon(Icons.lock_outline)),
-          ),
+          if (_registrationMethod == 'phone')
+            TextField(
+              controller: _phoneCtrl,
+              keyboardType: TextInputType.phone,
+              textDirection: TextDirection.ltr,
+              decoration: const InputDecoration(
+                  labelText: 'מספר טלפון',
+                  hintText: '05X-XXX-XXXX',
+                  prefixIcon: Icon(Icons.phone_android)),
+            )
+          else
+            TextField(
+              controller: _emailCtrl,
+              keyboardType: TextInputType.emailAddress,
+              textDirection: TextDirection.ltr,
+              decoration: const InputDecoration(
+                  labelText: 'כתובת אימייל',
+                  prefixIcon: Icon(Icons.email_outlined)),
+            ),
+          const SizedBox(height: 12),
+          if (_registrationCodeSent) ...[
+            TextField(
+              controller: _registrationCodeCtrl,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              autofillHints: const [AutofillHints.oneTimeCode],
+              textAlign: TextAlign.center,
+              textDirection: TextDirection.ltr,
+              onChanged: (value) {
+                final code = value.replaceAll(RegExp(r'\D'), '');
+                if (code != value) {
+                  _registrationCodeCtrl.value = TextEditingValue(
+                    text: code,
+                    selection: TextSelection.collapsed(offset: code.length),
+                  );
+                }
+                if (code.length == 6 && !_loading) {
+                  unawaited(_verifyRegistrationCode());
+                }
+              },
+              decoration: const InputDecoration(
+                  labelText: 'קוד אימות',
+                  counterText: '',
+                  prefixIcon: Icon(Icons.password_rounded)),
+            ),
+            TextButton(
+              onPressed: _loading ? null : _sendRegistrationCode,
+              child: const Text('שלח קוד חדש'),
+            ),
+          ] else
+            Text(
+              _registrationMethod == 'phone'
+                  ? 'קוד האימות יישלח ב־SMS'
+                  : 'קוד האימות יישלח לאימייל',
+              style: const TextStyle(color: kSubtext, fontSize: 12.5),
+            ),
         ]);
       case 2:
         return Column(children: [
@@ -2521,12 +2774,34 @@ class _AuthScreenState extends State<AuthScreen> {
             ],
             onChanged: (value) => setState(() => _gender = value),
           ),
+          if (_registrationMethod != 'google') ...[
+            const SizedBox(height: 12),
+            if (_registrationMethod == 'email')
+              TextField(
+                controller: _phoneCtrl,
+                keyboardType: TextInputType.phone,
+                textDirection: TextDirection.ltr,
+                decoration: const InputDecoration(
+                    labelText: 'מספר טלפון',
+                    hintText: '05X-XXX-XXXX',
+                    prefixIcon: Icon(Icons.phone_android)),
+              )
+            else
+              TextField(
+                controller: _emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                textDirection: TextDirection.ltr,
+                decoration: const InputDecoration(
+                    labelText: 'כתובת אימייל',
+                    prefixIcon: Icon(Icons.email_outlined)),
+              ),
+          ],
         ]);
       case 3:
         const filterItems = <String, (String, IconData)>{
           'text': ('טקסט', Icons.chat_bubble_outline),
           'video': ('וידאו', Icons.videocam_outlined),
-          'nonHumanImages': ('תמונות ללא בני אדם', Icons.landscape_outlined),
+          'nonHumanImages': ('תמונות נוף או חפצים', Icons.landscape_outlined),
           'men': ('גברים', Icons.man),
           'women': ('נשים', Icons.woman),
           'children': ('ילדים', Icons.child_care),
@@ -2544,28 +2819,40 @@ class _AuthScreenState extends State<AuthScreen> {
             alignment: WrapAlignment.center,
             children: filterItems.entries.map((entry) {
               final selected = _registrationFilter[entry.key] == true;
-              return FilterChip(
-                selected: selected,
-                avatar: Icon(entry.value.$2, size: 18),
-                label: Text(entry.value.$1),
-                onSelected: (value) => setState(() {
+              return InkWell(
+                onTap: () => setState(() {
                   _registrationFilter = {
                     ..._registrationFilter,
-                    entry.key: value
+                    entry.key: !selected
                   };
-                  _filterConfirmed = false;
+                  _filterConfirmed = true;
                 }),
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  padding: const EdgeInsetsDirectional.only(end: 10),
+                  decoration: BoxDecoration(
+                    color: selected ? const Color(0xFFE7F3FC) : Colors.white,
+                    border: Border.all(color: selected ? kPrimary : kBorder),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Checkbox(
+                      value: selected,
+                      onChanged: (value) => setState(() {
+                        _registrationFilter = {
+                          ..._registrationFilter,
+                          entry.key: value == true
+                        };
+                        _filterConfirmed = true;
+                      }),
+                    ),
+                    Icon(entry.value.$2, size: 18, color: kPrimary),
+                    const SizedBox(width: 5),
+                    Text(entry.value.$1),
+                  ]),
+                ),
               );
             }).toList(),
-          ),
-          const SizedBox(height: 18),
-          FilledButton.icon(
-            onPressed: () => setState(() => _filterConfirmed = true),
-            icon: Icon(_filterConfirmed
-                ? Icons.check_circle_rounded
-                : Icons.shield_outlined),
-            label: Text(
-                _filterConfirmed ? 'בחירת הסינון אושרה' : 'אישור בחירת הסינון'),
           ),
         ]);
       default:
@@ -2573,6 +2860,17 @@ class _AuthScreenState extends State<AuthScreen> {
           const Text('אישור וסיום',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
           const SizedBox(height: 12),
+          if (_registrationMethod != 'google') ...[
+            TextField(
+              controller: _passCtrl,
+              obscureText: true,
+              textDirection: TextDirection.ltr,
+              decoration: const InputDecoration(
+                  labelText: 'יצירת סיסמה — לפחות 6 תווים',
+                  prefixIcon: Icon(Icons.lock_outline)),
+            ),
+            const SizedBox(height: 8),
+          ],
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             value: _ageConfirmed,
@@ -2588,24 +2886,19 @@ class _AuthScreenState extends State<AuthScreen> {
                 'קראתי ואני מסכים/ה לתנאי השימוש ולמדיניות הפרטיות',
                 style: TextStyle(fontSize: 13)),
           ),
-          if (_registrationMethod == 'email') ...[
-            const SizedBox(height: 8),
-            const Text('שליחת קוד אימות באמצעות:'),
-            const SizedBox(height: 8),
-            SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'email', label: Text('אימייל')),
-                ButtonSegment(value: 'phone', label: Text('SMS')),
-              ],
-              selected: {_verificationMethod},
-              onSelectionChanged: (values) =>
-                  setState(() => _verificationMethod = values.first),
-            ),
-          ] else ...[
+          if (_registrationMethod == 'google') ...[
             const SizedBox(height: 10),
-            const Text('בלחיצה על סיום ייפתח חלון האימות של Google',
+            const Text('הזהות אומתה באמצעות Google',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: kSubtext, fontSize: 12.5)),
+          ] else ...[
+            const SizedBox(height: 10),
+            Text(
+                _registrationMethod == 'phone'
+                    ? 'מספר הטלפון אומת בהצלחה באמצעות SMS'
+                    : 'כתובת האימייל אומתה בהצלחה',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: kSubtext, fontSize: 12.5)),
           ],
         ]);
     }
@@ -2711,7 +3004,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 Row(children: [
                   if (_registrationStep > 0)
                     OutlinedButton(
-                      onPressed: _loading
+                      onPressed: _loading || _showVerificationSuccess
                           ? null
                           : () => setState(() {
                                 _registrationStep--;
@@ -2724,20 +3017,28 @@ class _AuthScreenState extends State<AuthScreen> {
                     child: FilledButton(
                       onPressed: _loading
                           ? null
-                          : (_registrationStep == 4
-                              ? _finishRegistration
-                              : _nextRegistrationStep),
+                          : (_registrationStep == 1 && !_identityVerified
+                              ? (_registrationCodeSent
+                                  ? _verifyRegistrationCode
+                                  : _sendRegistrationCode)
+                              : (_registrationStep == 4
+                                  ? _finishRegistration
+                                  : _nextRegistrationStep)),
                       child: _loading
                           ? const SizedBox(
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(
                                   strokeWidth: 2, color: Colors.white))
-                          : Text(_registrationStep == 4
-                              ? (_registrationMethod == 'google'
-                                  ? 'סיום והרשמה עם Google'
-                                  : 'יצירת חשבון ושליחת אימות')
-                              : 'המשך'),
+                          : Text(_registrationStep == 1 && !_identityVerified
+                              ? (_registrationCodeSent
+                                  ? 'אמת קוד והמשך'
+                                  : 'שלח קוד אימות')
+                              : (_registrationStep == 4
+                                  ? (_registrationMethod == 'google'
+                                      ? 'סיום הרשמה'
+                                      : 'יצירת חשבון')
+                                  : 'המשך')),
                     ),
                   ),
                 ]),
@@ -3140,8 +3441,8 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
   }
 
   Future<void> _sendOtp() async {
-    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
-    if (phone.length < 9) {
+    final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
+    if (!_isValidIsraeliMobile(phone)) {
       setState(() => _error = 'נא להזין מספר טלפון תקין');
       return;
     }
@@ -3221,7 +3522,7 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
   }
 
   Future<void> _verify() async {
-    final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
+    final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
     final code = _otpCtrl.text.trim();
     if (code.length != 6) {
       setState(() => _error = 'נא להזין קוד בן 6 ספרות');
@@ -3268,132 +3569,161 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: kBg,
+      backgroundColor: kIsWeb ? const Color(0xFFF2F7FB) : kBg,
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
-            const SizedBox(height: 48),
-            Container(
-              width: 80,
-              height: 80,
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Container(
+              width: double.infinity,
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
               decoration: BoxDecoration(
-                  color: kPrimary, borderRadius: BorderRadius.circular(20)),
-              child: const Icon(Icons.phone_android,
-                  size: 44, color: Colors.white),
-            ),
-            const SizedBox(height: 20),
-            Text(
-                widget.requireVerification
-                    ? 'הוסף ואמת מספר טלפון'
-                    : 'הוסף מספר טלפון',
-                style: const TextStyle(
-                    fontSize: 26,
-                    fontWeight: FontWeight.bold,
-                    color: kPrimary)),
-            const SizedBox(height: 8),
-            const Text(
-                'אפליקציית בתשובה משתמשת במספר הטלפון\nכדי לחבר אותך עם אנשי הקשר שלך',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: kSubtext, height: 1.5)),
-            const SizedBox(height: 36),
-            if (!_sentOtp) ...[
-              TextField(
-                controller: _phoneCtrl,
-                keyboardType: TextInputType.phone,
-                textDirection: TextDirection.ltr,
-                decoration: const InputDecoration(
-                    labelText: 'מספר טלפון',
-                    hintText: '05X-XXX-XXXX',
-                    prefixIcon: Icon(Icons.phone_android)),
+                color: kBg,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: kIsWeb
+                    ? const [
+                        BoxShadow(
+                            color: Color(0x1A0D4F82),
+                            blurRadius: 28,
+                            offset: Offset(0, 10))
+                      ]
+                    : null,
               ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _loading ? null : _sendOtp,
-                  child: _loading
-                      ? const SizedBox(
-                          height: 22,
-                          width: 22,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white))
-                      : Text(
+              child: SingleChildScrollView(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      const SizedBox(height: 48),
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                            color: kPrimary,
+                            borderRadius: BorderRadius.circular(20)),
+                        child: const Icon(Icons.phone_android,
+                            size: 44, color: Colors.white),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
                           widget.requireVerification
-                              ? 'שלח קוד אימות'
-                              : 'שמור והיכנס',
+                              ? 'הוסף ואמת מספר טלפון'
+                              : 'הוסף מספר טלפון',
                           style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.bold)),
-                ),
-              ),
-            ] else ...[
-              Text('נשלח קוד SMS ל-${_phoneCtrl.text}',
-                  style: const TextStyle(color: kSubtext, fontSize: 13)),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _otpCtrl,
-                autofillHints: const [AutofillHints.oneTimeCode],
-                keyboardType: TextInputType.number,
-                textDirection: TextDirection.ltr,
-                maxLength: 6,
-                decoration: const InputDecoration(
-                    labelText: 'קוד אימות',
-                    hintText: '123456',
-                    prefixIcon: Icon(Icons.sms_outlined)),
-              ),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _loading ? null : _verify,
-                  child: _loading
-                      ? const SizedBox(
-                          height: 22,
-                          width: 22,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.white))
-                      : const Text('אמת וכנס',
+                              fontSize: 26,
+                              fontWeight: FontWeight.bold,
+                              color: kPrimary)),
+                      const SizedBox(height: 8),
+                      const Text(
+                          'אפליקציית בתשובה משתמשת במספר הטלפון\nכדי לחבר אותך עם אנשי הקשר שלך',
+                          textAlign: TextAlign.center,
                           style: TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.bold)),
-                ),
+                              fontSize: 14, color: kSubtext, height: 1.5)),
+                      const SizedBox(height: 36),
+                      if (!_sentOtp) ...[
+                        TextField(
+                          controller: _phoneCtrl,
+                          keyboardType: TextInputType.phone,
+                          textDirection: TextDirection.ltr,
+                          decoration: const InputDecoration(
+                              labelText: 'מספר טלפון',
+                              hintText: '05X-XXX-XXXX',
+                              prefixIcon: Icon(Icons.phone_android)),
+                        ),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _loading ? null : _sendOtp,
+                            child: _loading
+                                ? const SizedBox(
+                                    height: 22,
+                                    width: 22,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white))
+                                : Text(
+                                    widget.requireVerification
+                                        ? 'שלח קוד אימות'
+                                        : 'שמור והיכנס',
+                                    style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ] else ...[
+                        Text('נשלח קוד SMS ל-${_phoneCtrl.text}',
+                            style:
+                                const TextStyle(color: kSubtext, fontSize: 13)),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _otpCtrl,
+                          autofillHints: const [AutofillHints.oneTimeCode],
+                          keyboardType: TextInputType.number,
+                          textDirection: TextDirection.ltr,
+                          maxLength: 6,
+                          decoration: const InputDecoration(
+                              labelText: 'קוד אימות',
+                              hintText: '123456',
+                              prefixIcon: Icon(Icons.sms_outlined)),
+                        ),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _loading ? null : _verify,
+                            child: _loading
+                                ? const SizedBox(
+                                    height: 22,
+                                    width: 22,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white))
+                                : const Text('אמת וכנס',
+                                    style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => setState(() {
+                            _sentOtp = false;
+                            _otpCtrl.clear();
+                          }),
+                          child: const Text('חזור לשינוי מספר',
+                              style: TextStyle(color: kSubtext, fontSize: 13)),
+                        ),
+                      ],
+                      if (_error != null) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius: BorderRadius.circular(8)),
+                          child: Text(_error!,
+                              style: const TextStyle(
+                                  color: Colors.red, fontSize: 13)),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      TextButton(
+                        onPressed: () async {
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setString('token', widget.token);
+                          if (!mounted) return;
+                          Navigator.of(context).pushAndRemoveUntil(
+                            MaterialPageRoute(
+                                builder: (_) => MainShell(token: widget.token)),
+                            (route) => false,
+                          );
+                        },
+                        child: const Text('דלג על שלב זה',
+                            style: TextStyle(color: kSubtext, fontSize: 13)),
+                      ),
+                    ]),
               ),
-              TextButton(
-                onPressed: () => setState(() {
-                  _sentOtp = false;
-                  _otpCtrl.clear();
-                }),
-                child: const Text('חזור לשינוי מספר',
-                    style: TextStyle(color: kSubtext, fontSize: 13)),
-              ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(8)),
-                child: Text(_error!,
-                    style: const TextStyle(color: Colors.red, fontSize: 13)),
-              ),
-            ],
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: () async {
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setString('token', widget.token);
-                if (!mounted) return;
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(
-                      builder: (_) => MainShell(token: widget.token)),
-                  (route) => false,
-                );
-              },
-              child: const Text('דלג על שלב זה',
-                  style: TextStyle(color: kSubtext, fontSize: 13)),
             ),
-          ]),
+          ),
         ),
       ),
     );
@@ -5175,6 +5505,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       groupTypingNames: _groupTypingNames,
       typingUserIds: _typingUserIds,
       onLogout: _logout,
+      onSettings: () => setState(() => _idx = 3),
       onContactsChanged: _loadUsers,
       onVoiceCall: (user) {
         _voiceCalls?.startCall(
@@ -5217,6 +5548,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       SettingsScreen(
           me: _me,
           token: widget.token,
+          onBack: () => setState(() => _idx = 0),
           onLogout: _logout,
           onAccountDeleted: _logoutAfterAccountDeletion,
           onProfileChanged: _loadMyProfile,
@@ -5295,45 +5627,44 @@ class _MainShellContentState extends State<_MainShellContent> {
       body: Stack(
         children: [
           Positioned.fill(child: body),
-          Positioned(
-            left: 8,
-            top: 88,
-            child: _recentSentBrowser(),
-          ),
+          if (_idx != 3)
+            Positioned(
+              left: 8,
+              top: 88,
+              child: _recentSentBrowser(),
+            ),
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _idx,
-        onTap: (i) => setState(() => _idx = i),
-        selectedItemColor: kPrimary,
-        unselectedItemColor: kSubtext,
-        backgroundColor: Colors.white,
-        elevation: 8,
-        type: BottomNavigationBarType.fixed,
-        items: [
-          BottomNavigationBarItem(
-            icon:
-                navigationIcon(Icons.chat_bubble_outline, totalUnreadMessages),
-            activeIcon: navigationIcon(Icons.chat_bubble, totalUnreadMessages),
-            label: 'שיחות',
-          ),
-          BottomNavigationBarItem(
-            icon: navigationIcon(Icons.group_outlined, totalUnreadGroups),
-            activeIcon: navigationIcon(Icons.group, totalUnreadGroups),
-            label: 'קבוצות',
-          ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.storefront_outlined),
-            activeIcon: Icon(Icons.storefront),
-            label: 'מודעות',
-          ),
-          const BottomNavigationBarItem(
-            icon: Icon(Icons.settings_outlined),
-            activeIcon: Icon(Icons.settings),
-            label: 'הגדרות',
-          ),
-        ],
-      ),
+      bottomNavigationBar: _idx == 3
+          ? null
+          : BottomNavigationBar(
+              currentIndex: _idx,
+              onTap: (i) => setState(() => _idx = i),
+              selectedItemColor: kPrimary,
+              unselectedItemColor: kSubtext,
+              backgroundColor: Colors.white,
+              elevation: 8,
+              type: BottomNavigationBarType.fixed,
+              items: [
+                BottomNavigationBarItem(
+                  icon: navigationIcon(
+                      Icons.chat_bubble_outline, totalUnreadMessages),
+                  activeIcon:
+                      navigationIcon(Icons.chat_bubble, totalUnreadMessages),
+                  label: 'שיחות',
+                ),
+                BottomNavigationBarItem(
+                  icon: navigationIcon(Icons.group_outlined, totalUnreadGroups),
+                  activeIcon: navigationIcon(Icons.group, totalUnreadGroups),
+                  label: 'קבוצות',
+                ),
+                const BottomNavigationBarItem(
+                  icon: Icon(Icons.storefront_outlined),
+                  activeIcon: Icon(Icons.storefront),
+                  label: 'מודעות',
+                ),
+              ],
+            ),
     );
   }
 }
@@ -7199,6 +7530,7 @@ class ConversationsScreen extends StatefulWidget {
   final void Function(Map<String, dynamic> group, bool openMembers)?
       onGroupSelected;
   final Future<void> Function() onLogout;
+  final VoidCallback onSettings;
   final Future<void> Function() onContactsChanged;
   final void Function(Map<String, dynamic> user) onVoiceCall;
 
@@ -7214,6 +7546,7 @@ class ConversationsScreen extends StatefulWidget {
     required this.typingUserIds,
     required this.onChatOpened,
     required this.onLogout,
+    required this.onSettings,
     required this.onContactsChanged,
     required this.onVoiceCall,
     this.onUserSelected,
@@ -7932,9 +8265,21 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             icon: const Icon(Icons.more_vert, color: Colors.white),
             tooltip: 'תפריט',
             onSelected: (value) {
+              if (value == 'settings') widget.onSettings();
               if (value == 'logout') _confirmLogout();
             },
             itemBuilder: (_) => const [
+              PopupMenuItem<String>(
+                value: 'settings',
+                child: Row(
+                  children: [
+                    Icon(Icons.settings_outlined),
+                    SizedBox(width: 10),
+                    Text('הגדרות'),
+                  ],
+                ),
+              ),
+              PopupMenuDivider(),
               PopupMenuItem<String>(
                 value: 'logout',
                 child: Row(
@@ -8717,7 +9062,7 @@ class _AllowedReceivingFilterIcons extends StatelessWidget {
     'video': (Icons.videocam_outlined, 'מאפשרת לקבל סרטוני וידאו מסווגים'),
     'nonHumanImages': (
       Icons.landscape_outlined,
-      'מאפשרת לקבל תמונות ללא בני אדם'
+      'מאפשרת לקבל תמונות נוף או חפצים'
     ),
     'men': (Icons.man, 'מאפשרת לקבל תמונות גברים'),
     'women': (Icons.woman, 'מאפשרת לקבל תמונות נשים'),
@@ -16174,7 +16519,7 @@ class _ContentFilterSettingsScreenState
                       'text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
                   _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
                       Icons.videocam_outlined),
-                  _option('nonHumanImages', 'תמונות ללא בני אדם',
+                  _option('nonHumanImages', 'תמונות נוף או חפצים',
                       'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
                   _option(
                       'men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
@@ -16219,6 +16564,7 @@ class _ContentFilterSettingsScreenState
 class SettingsScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
   final String token;
+  final VoidCallback onBack;
   final VoidCallback onLogout;
   final Future<void> Function() onAccountDeleted;
   final Future<void> Function() onProfileChanged;
@@ -16227,6 +16573,7 @@ class SettingsScreen extends StatefulWidget {
       {super.key,
       required this.me,
       required this.token,
+      required this.onBack,
       required this.onLogout,
       required this.onAccountDeleted,
       required this.onProfileChanged,
@@ -16407,6 +16754,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       backgroundColor: kBg,
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'חזרה',
+          onPressed: widget.onBack,
+          icon: const Icon(Icons.arrow_back),
+        ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
