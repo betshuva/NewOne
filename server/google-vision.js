@@ -10,6 +10,7 @@ const DEFAULT_TIMEOUT_MS = 15000;
 // positives on ordinary portraits and screenshots. Require LIKELY unless an
 // operator explicitly configures a different threshold.
 const DEFAULT_BLOCK_THRESHOLD = 'LIKELY';
+const DEFAULT_PERSON_THRESHOLD = 0.7;
 const MODERATION_CATEGORIES = ['adult', 'racy'];
 const ALL_CATEGORIES = ['adult', 'racy', 'violence', 'medical', 'spoof'];
 const LIKELIHOOD_RANK = Object.freeze({
@@ -23,6 +24,13 @@ const LIKELIHOOD_RANK = Object.freeze({
 
 function googleSafeSearchConfigured(apiKey = process.env.GOOGLE_VISION_API_KEY) {
   return typeof apiKey === 'string' && apiKey.trim().length > 0;
+}
+
+function normalizePersonThreshold(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+    ? parsed
+    : DEFAULT_PERSON_THRESHOLD;
 }
 
 function normalizeBlockThreshold(value) {
@@ -204,6 +212,102 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
   }
 }
 
+// This deliberately remains a separate request from SafeSearch. Callers use it
+// only to verify a local "person" hit, avoiding extra Vision requests and cost
+// for ordinary product photos.
+async function scanGoogleObjectLocalization(buffer, options = {}) {
+  const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
+  const configured = googleSafeSearchConfigured(apiKey);
+  const threshold = normalizePersonThreshold(
+    options.threshold ?? process.env.GOOGLE_VISION_PERSON_THRESHOLD,
+  );
+  const startedAt = performance.now();
+  const baseResult = {
+    provider: 'google-cloud-vision',
+    feature: 'OBJECT_LOCALIZATION',
+    configured,
+    available: false,
+    threshold,
+    personDetected: false,
+    maxPersonScore: 0,
+    persons: [],
+    durationMs: 0,
+  };
+
+  if (!configured) return { ...baseResult, status: 'not_configured' };
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return {
+    ...baseResult,
+    status: 'error',
+    errorCode: 'INVALID_IMAGE',
+    error: 'Image buffer is empty',
+    durationMs: Math.round(performance.now() - startedAt),
+  };
+
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const timeoutMs = Number(options.timeoutMs ?? process.env.GOOGLE_VISION_TIMEOUT_MS) ||
+    DEFAULT_TIMEOUT_MS;
+  try {
+    const prepared = await prepareInlineImage(buffer);
+    const response = await fetchImpl(GOOGLE_VISION_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'X-Goog-Api-Key': apiKey,
+      },
+      body: JSON.stringify({
+        requests: [{
+          image: { content: prepared.buffer.toString('base64') },
+          features: [{ type: 'OBJECT_LOCALIZATION', maxResults: 30 }],
+        }],
+      }),
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(timeoutMs, 60000))),
+    });
+    const data = await response.json().catch(() => ({}));
+    const annotationResponse = data.responses?.[0];
+    const apiError = data.error || annotationResponse?.error;
+    if (!response.ok || apiError) {
+      const error = new Error(apiError?.message || `Google Vision HTTP ${response.status}`);
+      error.code = apiError?.status || apiError?.code || `HTTP_${response.status}`;
+      throw error;
+    }
+    const objects = Array.isArray(annotationResponse?.localizedObjectAnnotations)
+      ? annotationResponse.localizedObjectAnnotations
+      : [];
+    const persons = objects
+      .filter(object => String(object?.name || '').trim().toLowerCase() === 'person')
+      .map(object => ({
+        score: Number(object.score) || 0,
+        boundingPoly: object.boundingPoly || null,
+      }))
+      .filter(person => person.score >= threshold);
+    const maxPersonScore = persons.reduce((maximum, person) =>
+      Math.max(maximum, person.score), 0);
+    return {
+      ...baseResult,
+      available: true,
+      status: persons.length ? 'person_detected' : 'passed',
+      personDetected: persons.length > 0,
+      maxPersonScore,
+      persons,
+      objectCount: objects.length,
+      inputBytes: prepared.inputBytes,
+      sentBytes: prepared.sentBytes,
+      transformed: prepared.transformed,
+      durationMs: Math.round(performance.now() - startedAt),
+    };
+  } catch (error) {
+    const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
+    return {
+      ...baseResult,
+      status: 'error',
+      errorCode,
+      error: safeErrorMessage(error),
+      retryable: !['IMAGE_TOO_LARGE', 'IMAGE_PREPARATION_FAILED'].includes(errorCode),
+      durationMs: Math.round(performance.now() - startedAt),
+    };
+  }
+}
+
 module.exports = {
   ALL_CATEGORIES,
   LIKELIHOOD_RANK,
@@ -212,6 +316,8 @@ module.exports = {
   evaluateSafeSearch,
   googleSafeSearchConfigured,
   normalizeBlockThreshold,
+  normalizePersonThreshold,
   prepareInlineImage,
+  scanGoogleObjectLocalization,
   scanGoogleSafeSearch,
 };

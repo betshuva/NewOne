@@ -18,6 +18,7 @@ const { getPool } = require('./db');
 const {
   googleSafeSearchConfigured,
   normalizeBlockThreshold,
+  scanGoogleObjectLocalization,
   scanGoogleSafeSearch,
 } = require('./google-vision');
 
@@ -1838,6 +1839,34 @@ async function migrateDatabase() {
         value      TEXT NOT NULL,
         updated_at TIMESTAMPTZ DEFAULT now()
       )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS israel_localities (
+        code INTEGER PRIMARY KEY,
+        name_he TEXT NOT NULL,
+        district TEXT,
+        subdistrict TEXT,
+        locality_type TEXT,
+        municipal_status TEXT,
+        natural_region TEXT,
+        municipal_cluster TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        source_updated_at TIMESTAMPTZ,
+        synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS israel_localities_name_idx
+      ON israel_localities(name_he)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS israel_streets (
+        locality_code INTEGER NOT NULL REFERENCES israel_localities(code)
+          ON UPDATE CASCADE ON DELETE CASCADE,
+        street_code INTEGER NOT NULL,
+        name_he TEXT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY(locality_code,street_code)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS israel_streets_name_idx
+      ON israel_streets(locality_code,name_he)`);
 
     // ── Games ──────────────────────────────────────────────────────
     await pool.query(`
@@ -4541,6 +4570,28 @@ async function reverseGeocodeHebrew(lat, lng) {
   } catch { return { city: null, country: null }; }
 }
 
+// Resolve the locality for a listing without retaining precise coordinates.
+app.put('/api/location/city', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'שיתוף מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
+  const latitude = Number(req.body?.latitude);
+  const longitude = Number(req.body?.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+      Math.abs(latitude) > 90 || Math.abs(longitude) > 180)
+    return res.status(400).json({ error: 'מיקום לא תקין' });
+  try {
+    const { city, country } = await reverseGeocodeHebrew(latitude, longitude);
+    if (!city) return res.status(404).json({ error: 'לא נמצא יישוב עבור המיקום' });
+    const pool = await getPool();
+    await pool.query(
+      `UPDATE users SET city=$1, country=COALESCE($2, country) WHERE id=$3`,
+      [city, country || null, req.user.id]);
+    res.json({ ok: true, city, country });
+  } catch (_) {
+    res.status(503).json({ error: 'לא ניתן לזהות את היישוב כרגע' });
+  }
+});
+
 app.put('/api/location', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'שיתוף מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
@@ -4624,6 +4675,50 @@ app.get('/api/users/nearby', auth, async (req, res) => {
 });
 
 // ── Location: list cities with users ─────────────────────────────
+app.get('/api/localities', async (req, res) => {
+  const query = String(req.query.q || '').trim().slice(0, 80);
+  const variants = [...new Set([
+    query,
+    query.replace(/(^|\s)קרית(?=\s|$)/g, '$1קריית'),
+    query.replace(/(^|\s)קריית(?=\s|$)/g, '$1קרית'),
+  ].filter(Boolean))];
+  const containsPatterns = variants.map(value => `%${value}%`);
+  const prefixPatterns = variants.map(value => `${value}%`);
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT code,name_he AS city,district,subdistrict,locality_type,
+              municipal_status,natural_region,municipal_cluster
+       FROM israel_localities
+       WHERE active=TRUE AND ($1='' OR name_he ILIKE ANY($2::text[]))
+       ORDER BY CASE WHEN name_he=ANY($3::text[]) THEN 0
+                     WHEN name_he ILIKE ANY($4::text[]) THEN 1 ELSE 2 END,
+                name_he
+       LIMIT 30`, [query, containsPatterns, variants, prefixPatterns]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/streets', async (req, res) => {
+  const city = String(req.query.city || '').trim().slice(0, 80);
+  const query = String(req.query.q || '').trim().slice(0, 100);
+  if (!city) return res.status(400).json({ error: 'נדרש שם יישוב' });
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT s.street_code,s.name_he AS street,l.code AS locality_code,
+              l.name_he AS city
+       FROM israel_streets s
+       JOIN israel_localities l ON l.code=s.locality_code
+       WHERE s.active=TRUE AND l.active=TRUE AND l.name_he=$1
+         AND ($2='' OR s.name_he ILIKE $3)
+       ORDER BY CASE WHEN s.name_he=$2 THEN 0 WHEN s.name_he ILIKE $4 THEN 1 ELSE 2 END,
+                s.name_he
+       LIMIT 30`, [city, query, `%${query}%`, `${query}%`]);
+    res.json(result.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/cities', auth, async (req, res) => {
   try {
     const pool = await getPool();
@@ -4657,6 +4752,15 @@ function publicVehicleDetails(record) {
     road_date: record.moed_aliya_lakvish || null,
     test_valid_until: record.tokef_dt || null,
   };
+}
+
+function listingDescriptionWithTitle(title, description) {
+  const cleanTitle = String(title || '').trim();
+  const cleanDescription = String(description || '').trim();
+  if (!cleanTitle) return cleanDescription;
+  return cleanDescription.startsWith(cleanTitle)
+    ? cleanDescription
+    : `${cleanTitle}\n\n${cleanDescription}`.trim();
 }
 
 app.get('/api/vehicles/:plate', auth, async (req, res) => {
@@ -4730,7 +4834,8 @@ app.post('/api/listings', auth, async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
                $17,$18,now() + ($19::text || ' days')::interval)
        RETURNING id`,
-      [req.user.id, normalizedType, title.trim(), description || null,
+      [req.user.id, normalizedType, title.trim(),
+       listingDescriptionWithTitle(title, description) || null,
        normalizedType === 'sale' ? normalizedPrice : null, listCity || null, lat || null, lng || null,
        allImages[0] || null, validCats.includes(category) ? category : 'אחר',
        validConditions.includes(item_condition) ? item_condition : 'good',
@@ -4907,15 +5012,35 @@ app.put('/api/listings/:id/status', auth, async (req, res) => {
 app.put('/api/listings/:id', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
-  const { type, title, description, price, city, category, image_urls } = req.body;
+  const { title, description, price, city, image_urls, item_condition,
+          negotiable, quantity, delivery_method, pickup_details,
+          contact_phone_visible, expires_in_days, license_plate,
+          vehicle_details } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
-  const validCats  = ['רכב','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
   const normalizedPrice = Number(price) || 0;
   const safeType   = normalizedPrice > 0 ? 'sale' : 'free';
-  const safeCat    = validCats.includes(category) ? category : 'אחר';
   const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 8) : [];
+  const validConditions = ['new','like_new','good','fair','for_parts'];
+  const validDelivery = ['pickup','delivery','both'];
+  const parsedQuantity = Math.max(1, Math.min(999, Number.parseInt(quantity, 10) || 1));
+  const expiryDays = [7,14,30,60].includes(Number(expires_in_days))
+    ? Number(expires_in_days) : 30;
   try {
     const pool = await getPool();
+    const current = await pool.query(
+      'SELECT category FROM listings WHERE id=$1 AND user_id=$2',
+      [req.params.id, req.user.id]);
+    if (!current.rows.length) return res.status(404).json({ error: 'לא נמצא' });
+    const fixedCategory = current.rows[0].category;
+    const safePlate = fixedCategory === 'רכב' && license_plate
+      ? normalizeLicensePlate(license_plate) : null;
+    if (fixedCategory === 'רכב' && license_plate && !safePlate)
+      return res.status(400).json({ error: 'מספר הרישוי חייב להכיל 7 או 8 ספרות' });
+    const safeVehicleDetails = fixedCategory === 'רכב' && vehicle_details &&
+      typeof vehicle_details === 'object' && !Array.isArray(vehicle_details)
+      ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 20).map(([key, value]) =>
+        [String(key).slice(0, 40), value == null ? null : String(value).slice(0, 120)]))
+      : null;
     const previousImages = await pool.query(
       `SELECT url FROM listing_images WHERE listing_id=$1
        UNION SELECT image_url AS url FROM listings
@@ -4923,10 +5048,20 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       [req.params.id]);
     const upd = await pool.query(
       `UPDATE listings SET type=$1, title=$2, description=$3,
-       price=$4, city=$5, category=$6, image_url=$7
-       WHERE id=$8 AND user_id=$9`,
-      [safeType, title.trim(), description || null, safeType === 'sale' ? normalizedPrice : null,
-       city || null, safeCat, allImages[0] || null, req.params.id, req.user.id]);
+       price=$4, city=$5, image_url=$6, item_condition=$7,
+       negotiable=$8, quantity=$9, delivery_method=$10,
+       pickup_details=$11, contact_phone_visible=$12,
+       license_plate=$13, vehicle_details=$14,
+       expires_at=now() + ($15::text || ' days')::interval
+       WHERE id=$16 AND user_id=$17`,
+      [safeType, title.trim(), listingDescriptionWithTitle(title, description) || null,
+       safeType === 'sale' ? normalizedPrice : null,
+       city || null, allImages[0] || null,
+       validConditions.includes(item_condition) ? item_condition : 'good',
+       safeType === 'sale' && negotiable === true, parsedQuantity,
+       validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
+       pickup_details?.trim() || null, contact_phone_visible === true,
+       safePlate, safeVehicleDetails, expiryDays, req.params.id, req.user.id]);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'לא נמצא' });
     await pool.query('DELETE FROM listing_images WHERE listing_id=$1', [req.params.id]);
     for (let i = 0; i < allImages.length; i++) {
@@ -5186,10 +5321,28 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       const categories = classification?.detectedCategories || [];
       const hasPeople = (scanResult?.faces?.length || 0) > 0 ||
         categories.some(category => ['men', 'women', 'children', 'people'].includes(category));
-      const confidentNonHuman = classification?.category === 'nonHumanImages' &&
-        classification?.uncertain !== true && !hasPeople;
+      const uncertain = classification?.uncertain === true ||
+        !classification?.category || categories.length === 0;
+      // Object Localization is an escalation step, not a scan applied to every
+      // image: it runs only after a local person hit or an uncertain local result.
+      const needsGooglePersonCheck = hasPeople || uncertain;
+      const googleObjectLocalization = needsGooglePersonCheck
+        ? await scanGoogleObjectLocalization(file.buffer)
+        : null;
+      const googleConfirmedNoPeople = needsGooglePersonCheck &&
+        googleObjectLocalization?.available === true &&
+        googleObjectLocalization.personDetected === false;
+      if (googleObjectLocalization) scanResult.googleObjectLocalization =
+        googleObjectLocalization;
+      const confirmedPeople =
+        googleObjectLocalization?.available === true &&
+          googleObjectLocalization.personDetected === true ||
+        hasPeople && !googleConfirmedNoPeople;
+      const confidentNonHuman = googleConfirmedNoPeople ||
+        (classification?.category === 'nonHumanImages' &&
+          classification?.uncertain !== true && !hasPeople);
       if (!confidentNonHuman) {
-        const reason = hasPeople
+        const reason = confirmedPeople
           ? 'במודעות מותרות רק תמונות ללא אנשים'
           : 'לא ניתן לאשר שזו תמונה ללא אנשים';
         const details = { ...scanResult, reason, listingImage: true };
@@ -5200,6 +5353,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         logActivity(req.user.id, 'blocked_listing_image', {
           fileName: file.originalname, fileUrl: url, reason, classification,
           faces: scanResult?.faces || [],
+          googleObjectLocalization,
         }, req.ip);
         return res.json({
           url, fileName: file.originalname, fileSize: file.size,
@@ -8311,12 +8465,172 @@ async function retryPendingScans() {
   }
 }
 
+const GOVERNMENT_LOCALITIES_RESOURCE =
+  'f01dec33-b09b-482d-8413-e9b4fcbc4d7f';
+const GOVERNMENT_LOCALITIES_API =
+  `https://data.gov.il/api/3/action/datastore_search?resource_id=${GOVERNMENT_LOCALITIES_RESOURCE}&limit=5000`;
+const GOVERNMENT_STREETS_RESOURCE =
+  '9ad3862c-8391-4b2f-84a4-2d4c68625f4b';
+
+async function syncGovernmentLocalities() {
+  if (syncGovernmentLocalities.running) return;
+  syncGovernmentLocalities.running = true;
+  try {
+    const response = await fetch(GOVERNMENT_LOCALITIES_API, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!response.ok) throw new Error(`data.gov.il HTTP ${response.status}`);
+    const payload = await response.json();
+    const records = payload?.result?.records;
+    if (!payload?.success || !Array.isArray(records) || records.length < 1000)
+      throw new Error('Government locality response is incomplete');
+    const pool = await getPool();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE israel_localities SET active=FALSE');
+      for (const row of records) {
+        const code = Number(row.Code);
+        const name = String(row.Name_Hebrew || '').trim();
+        if (!Number.isInteger(code) || !name) continue;
+        await client.query(
+          `INSERT INTO israel_localities
+             (code,name_he,district,subdistrict,locality_type,municipal_status,
+              natural_region,municipal_cluster,active,source_updated_at,synced_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,TRUE,now(),now())
+           ON CONFLICT(code) DO UPDATE SET
+             name_he=EXCLUDED.name_he,district=EXCLUDED.district,
+             subdistrict=EXCLUDED.subdistrict,locality_type=EXCLUDED.locality_type,
+             municipal_status=EXCLUDED.municipal_status,
+             natural_region=EXCLUDED.natural_region,
+             municipal_cluster=EXCLUDED.municipal_cluster,active=TRUE,
+             source_updated_at=EXCLUDED.source_updated_at,synced_at=now()`,
+          [code, name, String(row.District || '').trim() || null,
+           String(row['נפה'] || '').trim() || null,
+           String(row['צורת יישוב'] || '').trim() || null,
+           String(row['מעמד מוניציפלי'] || '').trim() || null,
+           String(row.Natural_Region || '').trim() || null,
+           String(row['אשכול רשויות מקומיות'] || '').trim() || null]);
+      }
+      await client.query(
+        `INSERT INTO app_settings(key_name,value,updated_at)
+         VALUES('government_localities_last_sync',$1,now())
+         ON CONFLICT(key_name) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,
+        [JSON.stringify({ resource: GOVERNMENT_LOCALITIES_RESOURCE,
+          records: records.length, syncedAt: new Date().toISOString() })]);
+      await client.query('COMMIT');
+      console.log(`[localities] synchronized ${records.length} government records`);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally { client.release(); }
+  } catch (error) {
+    console.error('[localities] synchronization failed:', error.message);
+  } finally { syncGovernmentLocalities.running = false; }
+}
+syncGovernmentLocalities.running = false;
+
+async function syncGovernmentStreets() {
+  if (syncGovernmentStreets.running) return;
+  syncGovernmentStreets.running = true;
+  try {
+    const records = [];
+    const pageSize = 10000;
+    for (let offset = 0; ; offset += pageSize) {
+      const url = `https://data.gov.il/api/3/action/datastore_search?resource_id=${GOVERNMENT_STREETS_RESOURCE}&limit=${pageSize}&offset=${offset}`;
+      const response = await fetch(url, { headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(45000) });
+      if (!response.ok) throw new Error(`data.gov.il HTTP ${response.status}`);
+      const payload = await response.json();
+      const page = payload?.result?.records;
+      if (!payload?.success || !Array.isArray(page))
+        throw new Error('Government street response is invalid');
+      records.push(...page);
+      if (records.length >= Number(payload.result.total || 0) || page.length < pageSize)
+        break;
+    }
+    if (records.length < 50000)
+      throw new Error('Government street response is incomplete');
+    const normalized = records.map(row => ({
+      locality_code: Number(row['סמל_ישוב']),
+      locality_name: String(row['שם_ישוב'] || '').trim(),
+      street_code: Number(row['סמל_רחוב']),
+      name_he: String(row['שם_רחוב'] || '').trim(),
+    })).filter(row => Number.isInteger(row.locality_code) &&
+      row.locality_name && Number.isInteger(row.street_code) && row.name_he);
+    const pool = await getPool();
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO israel_localities(code,name_he,active,source_updated_at,synced_at)
+         SELECT DISTINCT r.locality_code,r.locality_name,TRUE,now(),now()
+         FROM jsonb_to_recordset($1::jsonb)
+           AS r(locality_code INTEGER,locality_name TEXT)
+         ON CONFLICT(code) DO UPDATE SET active=TRUE,synced_at=now()`,
+        [JSON.stringify(normalized.map(row => ({
+          locality_code: row.locality_code, locality_name: row.locality_name,
+        })))]);
+      await client.query('UPDATE israel_streets SET active=FALSE');
+      for (let offset = 0; offset < normalized.length; offset += 5000) {
+        await client.query(
+          `INSERT INTO israel_streets
+             (locality_code,street_code,name_he,active,synced_at)
+           SELECT r.locality_code,r.street_code,r.name_he,TRUE,now()
+           FROM jsonb_to_recordset($1::jsonb)
+             AS r(locality_code INTEGER,street_code INTEGER,name_he TEXT)
+           JOIN israel_localities l ON l.code=r.locality_code AND l.active=TRUE
+           ON CONFLICT(locality_code,street_code) DO UPDATE SET
+             name_he=EXCLUDED.name_he,active=TRUE,synced_at=now()`,
+          [JSON.stringify(normalized.slice(offset, offset + 5000))]);
+      }
+      await client.query(
+        `INSERT INTO app_settings(key_name,value,updated_at)
+         VALUES('government_streets_last_sync',$1,now())
+         ON CONFLICT(key_name) DO UPDATE SET value=EXCLUDED.value,updated_at=now()`,
+        [JSON.stringify({ resource: GOVERNMENT_STREETS_RESOURCE,
+          records: normalized.length, syncedAt: new Date().toISOString() })]);
+      await client.query('COMMIT');
+      console.log(`[streets] synchronized ${normalized.length} government records`);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally { client.release(); }
+  } catch (error) {
+    console.error('[streets] synchronization failed:', error.message);
+  } finally { syncGovernmentStreets.running = false; }
+}
+syncGovernmentStreets.running = false;
+
+function scheduleGovernmentLocalitiesSync() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(3, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  const delay = next.getTime() - now.getTime();
+  console.log(`[localities] next synchronization at ${next.toString()}`);
+  setTimeout(async () => {
+    await syncGovernmentLocalities();
+    await syncGovernmentStreets();
+    scheduleGovernmentLocalitiesSync();
+  }, delay);
+}
+
 const PORT = process.env.PORT || 3000;
 
 async function startServer() {
   await fs.mkdir(UPLOAD_ROOT, { recursive: true });
   await migrateDatabase();
   await initPendingTable();
+  const pool = await getPool();
+  const localityCount = await pool.query(
+    'SELECT COUNT(*)::int AS count FROM israel_localities WHERE active=TRUE');
+  if (!localityCount.rows[0].count) await syncGovernmentLocalities();
+  const streetCount = await pool.query(
+    'SELECT COUNT(*)::int AS count FROM israel_streets WHERE active=TRUE');
+  if (!streetCount.rows[0].count) await syncGovernmentStreets();
+  scheduleGovernmentLocalitiesSync();
   setTimeout(retryPendingScans, 1000); // process queued files after startup
   setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
   httpServer.listen(PORT, '127.0.0.1', () => console.log(`Server running on port ${PORT}`));

@@ -6,6 +6,7 @@ const sharp = require('sharp');
 const {
   MAX_INLINE_IMAGE_BYTES,
   evaluateSafeSearch,
+  scanGoogleObjectLocalization,
   scanGoogleSafeSearch,
 } = require('../server/google-vision');
 
@@ -105,6 +106,52 @@ test('per-image Google API errors fail closed instead of becoming an approval', 
   assert.equal(result.available, false);
   assert.equal(result.status, 'error');
   assert.equal(result.errorCode, 'RESOURCE_EXHAUSTED');
+});
+
+test('Object Localization requests only the localization feature', async () => {
+  let feature;
+  const result = await scanGoogleObjectLocalization(Buffer.from('image'), {
+    apiKey: 'server-key',
+    fetchImpl: async (_url, options) => {
+      feature = JSON.parse(options.body).requests[0].features;
+      return response({ responses: [{ localizedObjectAnnotations: [] }] });
+    },
+  });
+
+  assert.deepEqual(feature, [{ type: 'OBJECT_LOCALIZATION', maxResults: 30 }]);
+  assert.equal(result.available, true);
+  assert.equal(result.personDetected, false);
+  assert.equal(result.status, 'passed');
+});
+
+test('Object Localization recognizes Person at or above the threshold', async () => {
+  const result = await scanGoogleObjectLocalization(Buffer.from('image'), {
+    apiKey: 'server-key',
+    threshold: 0.7,
+    fetchImpl: async () => response({ responses: [{ localizedObjectAnnotations: [
+      { name: 'Person', score: 0.81, boundingPoly: { normalizedVertices: [] } },
+      { name: 'Person', score: 0.61 },
+      { name: 'Car', score: 0.95 },
+    ] }] }),
+  });
+
+  assert.equal(result.personDetected, true);
+  assert.equal(result.status, 'person_detected');
+  assert.equal(result.persons.length, 1);
+  assert.equal(result.maxPersonScore, 0.81);
+});
+
+test('Object Localization errors remain unavailable and cannot approve an image', async () => {
+  const result = await scanGoogleObjectLocalization(Buffer.from('image'), {
+    apiKey: 'server-key',
+    fetchImpl: async () => response({
+      responses: [{ error: { status: 'RESOURCE_EXHAUSTED', message: 'quota' } }],
+    }),
+  });
+
+  assert.equal(result.available, false);
+  assert.equal(result.personDetected, false);
+  assert.equal(result.status, 'error');
 });
 
 test('large uploads are converted for Google without modifying the original buffer', async () => {

@@ -6073,9 +6073,31 @@ class _LocationAutocompleteField extends StatefulWidget {
 class _LocationAutocompleteFieldState
     extends State<_LocationAutocompleteField> {
   final _focusNode = FocusNode();
+  Timer? _searchDebounce;
+  List<String> _governmentLocations = const [];
+
+  void _searchGovernmentLocations(String value) {
+    _searchDebounce?.cancel();
+    final query = value.trim();
+    _searchDebounce = Timer(const Duration(milliseconds: 220), () async {
+      try {
+        final uri = Uri.parse('$kApi/localities')
+            .replace(queryParameters: {if (query.isNotEmpty) 'q': query});
+        final response = await http.get(uri);
+        if (!mounted || response.statusCode != 200) return;
+        final rows =
+            (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+        setState(() => _governmentLocations = rows
+            .map((row) => row['city']?.toString() ?? '')
+            .where((city) => city.isNotEmpty)
+            .toList());
+      } catch (_) {}
+    });
+  }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
@@ -6087,9 +6109,12 @@ class _LocationAutocompleteFieldState
         displayStringForOption: (option) => option,
         optionsBuilder: (value) {
           final query = value.text.trim();
-          if (query.isEmpty) return _kIsraeliLocations.take(10);
-          return _kIsraeliLocations
-              .where((location) => location.contains(query));
+          final combined = <String>{
+            ..._governmentLocations,
+            ..._kIsraeliLocations
+                .where((location) => query.isEmpty || location.contains(query)),
+          };
+          return combined.take(30);
         },
         onSelected: (option) => widget.controller.text = option,
         fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
@@ -6097,6 +6122,7 @@ class _LocationAutocompleteFieldState
           controller: controller,
           focusNode: focusNode,
           textDirection: TextDirection.rtl,
+          onChanged: _searchGovernmentLocations,
           onSubmitted: (_) => onSubmitted(),
           decoration: InputDecoration(
             labelText: widget.label,
@@ -6128,6 +6154,98 @@ class _LocationAutocompleteFieldState
                     ),
                     title: Text(option, textDirection: TextDirection.rtl),
                     onTap: () => onSelected(option),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+class _StreetAutocompleteField extends StatefulWidget {
+  final TextEditingController controller;
+  final TextEditingController cityController;
+  const _StreetAutocompleteField({
+    required this.controller,
+    required this.cityController,
+  });
+
+  @override
+  State<_StreetAutocompleteField> createState() =>
+      _StreetAutocompleteFieldState();
+}
+
+class _StreetAutocompleteFieldState extends State<_StreetAutocompleteField> {
+  final _focusNode = FocusNode();
+  Timer? _debounce;
+  List<String> _streets = const [];
+
+  void _search(String value) {
+    _debounce?.cancel();
+    final city = widget.cityController.text.trim();
+    if (city.isEmpty) {
+      setState(() => _streets = const []);
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 220), () async {
+      try {
+        final response = await http.get(Uri.parse('$kApi/streets').replace(
+          queryParameters: {
+            'city': city,
+            if (value.trim().isNotEmpty) 'q': value.trim()
+          },
+        ));
+        if (!mounted || response.statusCode != 200) return;
+        final rows =
+            (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+        setState(() => _streets = rows
+            .map((row) => row['street']?.toString() ?? '')
+            .where((street) => street.isNotEmpty)
+            .toList());
+      } catch (_) {}
+    });
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RawAutocomplete<String>(
+        textEditingController: widget.controller,
+        focusNode: _focusNode,
+        optionsBuilder: (_) => _streets,
+        onSelected: (street) => widget.controller.text = street,
+        fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
+            TextField(
+          controller: controller,
+          focusNode: focusNode,
+          textDirection: TextDirection.rtl,
+          onChanged: _search,
+          decoration: const InputDecoration(hintText: 'הקלד שם רחוב'),
+        ),
+        optionsViewBuilder: (context, onSelected, options) => Align(
+          alignment: Alignment.topRight,
+          child: Material(
+            elevation: 8,
+            borderRadius: BorderRadius.circular(10),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260, maxWidth: 420),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: options.length,
+                itemBuilder: (_, index) {
+                  final street = options.elementAt(index);
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.add_road, color: kPrimary),
+                    title: Text(street, textDirection: TextDirection.rtl),
+                    onTap: () => onSelected(street),
                   );
                 },
               ),
@@ -7113,11 +7231,100 @@ class _PostListingScreenState extends State<PostListingScreen> {
   bool _showPhone = false;
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
+  final List<_FileUploadOutcome?> _imageOutcomes =
+      List<_FileUploadOutcome?>.filled(8, null);
+  final List<String?> _imageReasons = List<String?>.filled(8, null);
   bool _saving = false;
   bool _vehicleLookupLoading = false;
   String? _vehicleLookupMessage;
   String _vehicleTransmission = 'automatic';
   Timer? _plateLookupTimer;
+  String _mirroredTitle = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _titleCtrl.addListener(_mirrorTitleIntoDescription);
+    if (_cityCtrl.text.trim().isEmpty) _loadCityFromProfile();
+  }
+
+  void _mirrorTitleIntoDescription() {
+    final title = _titleCtrl.text.trim();
+    final current = _descCtrl.text;
+    String? updated;
+    if (_mirroredTitle.isEmpty && current.trim().isEmpty) {
+      updated = title;
+    } else if (current.trim() == _mirroredTitle) {
+      updated = title;
+    } else if (_mirroredTitle.isNotEmpty &&
+        current.startsWith('$_mirroredTitle\n\n')) {
+      final remainder = current.substring(_mirroredTitle.length + 2);
+      updated = title.isEmpty ? remainder : '$title\n\n$remainder';
+    }
+    _mirroredTitle = title;
+    if (updated != null && updated != current) {
+      _descCtrl.value = TextEditingValue(
+        text: updated,
+        selection: TextSelection.collapsed(offset: updated.length),
+      );
+    }
+  }
+
+  Future<void> _loadCityFromProfile() async {
+    try {
+      final response = await http.get(Uri.parse('$kApi/profile'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (!mounted || response.statusCode != 200 || _cityCtrl.text.isNotEmpty) {
+        return;
+      }
+      final profile = jsonDecode(response.body);
+      final city = profile is Map ? profile['city']?.toString().trim() : null;
+      if (city != null && city.isNotEmpty) {
+        setState(() => _cityCtrl.text = city);
+      } else {
+        await _loadCityFromDevice();
+      }
+    } catch (_) {
+      await _loadCityFromDevice();
+    }
+  }
+
+  Future<void> _loadCityFromDevice() async {
+    if (!mounted || _cityCtrl.text.trim().isNotEmpty) return;
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) return;
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.low,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+      final response = await http.put(
+        Uri.parse('$kApi/location/city'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({
+          'latitude': position.latitude,
+          'longitude': position.longitude,
+        }),
+      );
+      if (!mounted || response.statusCode != 200) return;
+      final payload = jsonDecode(response.body);
+      final city = payload is Map ? payload['city']?.toString().trim() : null;
+      if (city != null && city.isNotEmpty && _cityCtrl.text.trim().isEmpty) {
+        setState(() => _cityCtrl.text = city);
+      }
+    } catch (_) {
+      // The locality can always be selected manually when location is denied.
+    }
+  }
 
   Future<void> _lookupVehicle() async {
     final plate = _plateCtrl.text.replaceAll(RegExp(r'\D'), '');
@@ -7212,9 +7419,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
       if (!mounted) return;
       setState(() {
         for (var i = 0; i < results.length; i++) {
-          if (results[i].outcome == _FileUploadOutcome.approved) {
-            _imageUrls[availableSlots[i]] = results[i].data['url'] as String;
-          }
+          final target = availableSlots[i];
+          final result = results[i];
+          final url = result.data['url']?.toString();
+          _imageOutcomes[target] = result.outcome;
+          _imageReasons[target] =
+              result.data['reason']?.toString() ?? result.error;
+          // The server keeps rejected/pending uploads for moderation. Show the
+          // returned image to its owner, but only approved URLs are published.
+          if (url != null && url.isNotEmpty) _imageUrls[target] = url;
         }
       });
       _showImageBatchSummary(context, results);
@@ -7259,7 +7472,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
       ),
     );
     if (confirmed == true && mounted) {
-      setState(() => _imageUrls[slot] = null);
+      setState(() {
+        _imageUrls[slot] = null;
+        _imageOutcomes[slot] = null;
+        _imageReasons[slot] = null;
+      });
     }
   }
 
@@ -7289,12 +7506,23 @@ class _PostListingScreenState extends State<PostListingScreen> {
     }
     setState(() => _saving = true);
     try {
-      final urls = _imageUrls.where((u) => u != null).toList();
+      final urls = <String>[];
+      for (var i = 0; i < _imageUrls.length; i++) {
+        if (_imageUrls[i] != null &&
+            _imageOutcomes[i] == _FileUploadOutcome.approved) {
+          urls.add(_imageUrls[i]!);
+        }
+      }
       final city = _cityCtrl.text.trim();
+      final title = _titleCtrl.text.trim();
+      final enteredDescription = _descCtrl.text.trim();
+      final description = enteredDescription.startsWith(title)
+          ? enteredDescription
+          : '$title\n\n$enteredDescription';
       final body = <String, dynamic>{
         'type': listingType,
-        'title': _titleCtrl.text.trim(),
-        'description': _descCtrl.text.trim(),
+        'title': title,
+        'description': description,
         'category': _category,
         'item_condition': _condition,
         'negotiable': listingType == 'sale' && _negotiable,
@@ -7363,6 +7591,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
 
   @override
   void dispose() {
+    _titleCtrl.removeListener(_mirrorTitleIntoDescription);
     _titleCtrl.dispose();
     _descCtrl.dispose();
     _priceCtrl.dispose();
@@ -7407,6 +7636,24 @@ class _PostListingScreenState extends State<PostListingScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // Choose the category first so category-specific fields
+                    // are shown before the rest of the listing form.
+                    DropdownButtonFormField<String>(
+                      value: _category,
+                      decoration: const InputDecoration(
+                          labelText: 'קטגוריה', border: OutlineInputBorder()),
+                      items: _kCategories
+                          .skip(1)
+                          .map(
+                              (c) => DropdownMenuItem(value: c, child: Text(c)))
+                          .toList(),
+                      onChanged: (v) => setState(() => _category = v!),
+                    ),
+                    if (_category == 'רכב') ...[
+                      const SizedBox(height: 12),
+                      _vehicleFields(),
+                    ],
+                    const SizedBox(height: 12),
                     // Title
                     TextField(
                         controller: _titleCtrl,
@@ -7420,11 +7667,12 @@ class _PostListingScreenState extends State<PostListingScreen> {
                         controller: _descCtrl,
                         textDirection: TextDirection.rtl,
                         maxLines: 3,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                             labelText: 'תיאור מפורט *',
-                            hintText:
-                                'מצב המוצר, מידות, גיל, פגמים וכל פרט חשוב',
-                            border: OutlineInputBorder())),
+                            hintText: _category == 'רכב'
+                                ? 'מצב הרכב, טיפולים, בעלות קודמת, פגמים וכל פרט חשוב'
+                                : 'מצב המוצר, מידות, גיל, פגמים וכל פרט חשוב',
+                            border: const OutlineInputBorder())),
                     const SizedBox(height: 12),
                     TextField(
                         controller: _priceCtrl,
@@ -7443,52 +7691,39 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       value: _negotiable,
                       onChanged: (value) => setState(() => _negotiable = value),
                     ),
-                    const SizedBox(height: 4),
-                    // Category
-                    DropdownButtonFormField<String>(
-                      value: _category,
-                      decoration: const InputDecoration(
-                          labelText: 'קטגוריה', border: OutlineInputBorder()),
-                      items: _kCategories
-                          .skip(1)
-                          .map(
-                              (c) => DropdownMenuItem(value: c, child: Text(c)))
-                          .toList(),
-                      onChanged: (v) => setState(() => _category = v!),
-                    ),
-                    if (_category == 'רכב') ...[
+                    if (_category != 'רכב') ...[
                       const SizedBox(height: 12),
-                      _vehicleFields(),
+                      DropdownButtonFormField<String>(
+                        value: _condition,
+                        decoration: const InputDecoration(
+                            labelText: 'מצב המוצר *',
+                            prefixIcon: Icon(Icons.verified_outlined),
+                            border: OutlineInputBorder()),
+                        items: const [
+                          DropdownMenuItem(value: 'new', child: Text('חדש')),
+                          DropdownMenuItem(
+                              value: 'like_new', child: Text('כמו חדש')),
+                          DropdownMenuItem(
+                              value: 'good', child: Text('מצב טוב')),
+                          DropdownMenuItem(
+                              value: 'fair', child: Text('מצב סביר')),
+                          DropdownMenuItem(
+                              value: 'for_parts',
+                              child: Text('לתיקון / לחלקים')),
+                        ],
+                        onChanged: (value) =>
+                            setState(() => _condition = value ?? 'good'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _quantityCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                            labelText: 'כמות',
+                            prefixIcon: Icon(Icons.numbers),
+                            border: OutlineInputBorder()),
+                      ),
                     ],
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      value: _condition,
-                      decoration: const InputDecoration(
-                          labelText: 'מצב המוצר *',
-                          prefixIcon: Icon(Icons.verified_outlined),
-                          border: OutlineInputBorder()),
-                      items: const [
-                        DropdownMenuItem(value: 'new', child: Text('חדש')),
-                        DropdownMenuItem(
-                            value: 'like_new', child: Text('כמו חדש')),
-                        DropdownMenuItem(value: 'good', child: Text('מצב טוב')),
-                        DropdownMenuItem(
-                            value: 'fair', child: Text('מצב סביר')),
-                        DropdownMenuItem(
-                            value: 'for_parts', child: Text('לתיקון / לחלקים')),
-                      ],
-                      onChanged: (value) =>
-                          setState(() => _condition = value ?? 'good'),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _quantityCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                          labelText: 'כמות',
-                          prefixIcon: Icon(Icons.numbers),
-                          border: OutlineInputBorder()),
-                    ),
                     const SizedBox(height: 12),
                     // City
                     _LocationAutocompleteField(
@@ -7496,34 +7731,39 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       label: 'עיר או אזור *',
                       hint: 'התחל להקליד ובחר מהרשימה',
                     ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String>(
-                      value: _deliveryMethod,
-                      decoration: const InputDecoration(
-                          labelText: 'אופן קבלה *',
-                          prefixIcon: Icon(Icons.local_shipping_outlined),
-                          border: OutlineInputBorder()),
-                      items: const [
-                        DropdownMenuItem(
-                            value: 'pickup', child: Text('איסוף עצמי')),
-                        DropdownMenuItem(
-                            value: 'delivery', child: Text('משלוח')),
-                        DropdownMenuItem(
-                            value: 'both', child: Text('איסוף עצמי או משלוח')),
-                      ],
-                      onChanged: (value) =>
-                          setState(() => _deliveryMethod = value ?? 'pickup'),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _pickupCtrl,
-                      textDirection: TextDirection.rtl,
-                      maxLines: 2,
-                      decoration: const InputDecoration(
-                          labelText: 'פרטי איסוף או משלוח',
-                          hintText: 'לדוגמה: איסוף בשעות הערב, קומה ללא מעלית',
-                          border: OutlineInputBorder()),
-                    ),
+                    if (_category != 'רכב') ...[
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: _deliveryMethod,
+                        decoration: const InputDecoration(
+                            labelText: 'אופן קבלה *',
+                            prefixIcon: Icon(Icons.local_shipping_outlined),
+                            border: OutlineInputBorder()),
+                        items: const [
+                          DropdownMenuItem(
+                              value: 'pickup', child: Text('איסוף עצמי')),
+                          DropdownMenuItem(
+                              value: 'delivery', child: Text('משלוח')),
+                          DropdownMenuItem(
+                              value: 'both',
+                              child: Text('איסוף עצמי או משלוח')),
+                        ],
+                        onChanged: (value) =>
+                            setState(() => _deliveryMethod = value ?? 'pickup'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _pickupCtrl,
+                        textDirection: TextDirection.rtl,
+                        maxLines: 2,
+                        decoration: const InputDecoration(
+                            labelText: 'פרטי איסוף או משלוח',
+                            hintText:
+                                'לדוגמה: איסוף בשעות הערב, קומה ללא מעלית',
+                            border: OutlineInputBorder()),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text('הצגת מספר הטלפון במודעה'),
@@ -7559,14 +7799,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     Text('ניתן להוסיף עד 8 תמונות, ללא אנשים',
                         style: TextStyle(fontSize: 13, color: kSubtext)),
                     const SizedBox(height: 10),
-                    GridView.count(
-                      crossAxisCount: 4,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      children: List.generate(8, (i) => _imageSlot(i)),
-                    ),
+                    _dynamicImagePicker(),
                     const SizedBox(height: 24),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
@@ -7589,9 +7822,155 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
+  Widget _unusedEditVehicleFieldsA() {
+    Widget field(TextEditingController controller, String label,
+            {bool numeric = false}) =>
+        TextField(
+          controller: controller,
+          keyboardType: numeric ? TextInputType.number : TextInputType.text,
+          inputFormatters:
+              numeric ? [FilteringTextInputFormatter.digitsOnly] : null,
+          decoration: InputDecoration(
+              labelText: label, border: const OutlineInputBorder()),
+        );
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F9FD),
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        TextField(
+          controller: _plateCtrl,
+          keyboardType: TextInputType.number,
+          maxLength: 8,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(
+            labelText: 'מספר לוחית רישוי',
+            counterText: '',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleManufacturerCtrl, 'יצרן')),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleModelCtrl, 'דגם')),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleYearCtrl, 'שנת ייצור', numeric: true)),
+          const SizedBox(width: 10),
+          Expanded(
+              child: field(_vehicleMileageCtrl, 'קילומטראז׳', numeric: true)),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleHandCtrl, 'יד', numeric: true)),
+        ]),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          value: _vehicleTransmission,
+          decoration: const InputDecoration(
+              labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'automatic', child: Text('אוטומטית')),
+            DropdownMenuItem(value: 'manual', child: Text('ידנית')),
+            DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
+            DropdownMenuItem(value: 'other', child: Text('אחרת')),
+          ],
+          onChanged: (value) =>
+              setState(() => _vehicleTransmission = value ?? 'automatic'),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleFuelCtrl, 'סוג דלק')),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleColorCtrl, 'צבע')),
+        ]),
+        const SizedBox(height: 10),
+        field(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+      ]),
+    );
+  }
+
+  Widget _unusedEditVehicleFieldsB() {
+    Widget field(TextEditingController controller, String label,
+            {bool numeric = false}) =>
+        TextField(
+          controller: controller,
+          keyboardType: numeric ? TextInputType.number : TextInputType.text,
+          inputFormatters:
+              numeric ? [FilteringTextInputFormatter.digitsOnly] : null,
+          decoration: InputDecoration(
+              labelText: label, border: const OutlineInputBorder()),
+        );
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F9FD),
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        TextField(
+          controller: _plateCtrl,
+          keyboardType: TextInputType.number,
+          maxLength: 8,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(
+            labelText: 'מספר לוחית רישוי',
+            counterText: '',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleManufacturerCtrl, 'יצרן')),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleModelCtrl, 'דגם')),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleYearCtrl, 'שנת ייצור', numeric: true)),
+          const SizedBox(width: 10),
+          Expanded(
+              child: field(_vehicleMileageCtrl, 'קילומטראז׳', numeric: true)),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleHandCtrl, 'יד', numeric: true)),
+        ]),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          value: _vehicleTransmission,
+          decoration: const InputDecoration(
+              labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'automatic', child: Text('אוטומטית')),
+            DropdownMenuItem(value: 'manual', child: Text('ידנית')),
+            DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
+            DropdownMenuItem(value: 'other', child: Text('אחרת')),
+          ],
+          onChanged: (value) =>
+              setState(() => _vehicleTransmission = value ?? 'automatic'),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleFuelCtrl, 'סוג דלק')),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleColorCtrl, 'צבע')),
+        ]),
+        const SizedBox(height: 10),
+        field(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+      ]),
+    );
+  }
+
   Widget _imageSlot(int i) {
     final url = _imageUrls[i];
     final uploading = _uploadingSlot[i];
+    final outcome = _imageOutcomes[i];
+    final rejected = outcome == _FileUploadOutcome.rejected ||
+        outcome == _FileUploadOutcome.failed;
+    final pending = outcome == _FileUploadOutcome.pending;
     return GestureDetector(
       onTap: uploading ? null : () => _pickImage(i),
       onLongPress: url != null ? () => _removeImage(i) : null,
@@ -7637,6 +8016,33 @@ class _PostListingScreenState extends State<PostListingScreen> {
                             size: 13, color: Colors.white),
                       ),
                     ),
+                    if (rejected || pending)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: Container(
+                            alignment: Alignment.bottomCenter,
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(9),
+                              color: rejected
+                                  ? const Color(0x66B91C1C)
+                                  : const Color(0x556B7280),
+                            ),
+                            child: Text(
+                              rejected
+                                  ? 'לא אושרה\n${_imageReasons[i] ?? ''}'
+                                  : 'ממתינה לסריקה',
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      ),
                   ])
                 : Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -7649,6 +8055,38 @@ class _PostListingScreenState extends State<PostListingScreen> {
                               textAlign: TextAlign.center),
                       ]),
       ),
+    );
+  }
+
+  Widget _dynamicImagePicker() {
+    final occupied = <int>[
+      for (var i = 0; i < 8; i++)
+        if (_imageUrls[i] != null || _uploadingSlot[i]) i,
+    ];
+    int? firstFree;
+    for (var i = 0; i < 8; i++) {
+      if (_imageUrls[i] == null && !_uploadingSlot[i]) {
+        firstFree = i;
+        break;
+      }
+    }
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final i in occupied)
+          SizedBox(width: 150, height: 150, child: _imageSlot(i)),
+        if (firstFree != null)
+          SizedBox(
+            width: 150,
+            height: 150,
+            child: OutlinedButton.icon(
+              onPressed: () => _pickImage(firstFree!),
+              icon: const Icon(Icons.add_photo_alternate_outlined),
+              label: Text(occupied.isEmpty ? 'בחירת תמונות' : 'הוסף תמונות'),
+            ),
+          ),
+      ],
     );
   }
 
@@ -7783,24 +8221,151 @@ class _EditListingScreenState extends State<EditListingScreen> {
   final _descCtrl = TextEditingController();
   final _priceCtrl = TextEditingController();
   final _cityCtrl = TextEditingController();
+  final _quantityCtrl = TextEditingController(text: '1');
+  final _pickupCtrl = TextEditingController();
+  final _plateCtrl = TextEditingController();
+  final _vehicleManufacturerCtrl = TextEditingController();
+  final _vehicleModelCtrl = TextEditingController();
+  final _vehicleYearCtrl = TextEditingController();
+  final _vehicleMileageCtrl = TextEditingController();
+  final _vehicleHandCtrl = TextEditingController();
+  final _vehicleFuelCtrl = TextEditingController();
+  final _vehicleColorCtrl = TextEditingController();
+  final _vehicleTestCtrl = TextEditingController();
   String _category = 'אחר';
+  String _condition = 'good';
+  String _deliveryMethod = 'pickup';
+  String _vehicleTransmission = 'automatic';
+  int _expiryDays = 30;
+  bool _negotiable = false;
+  bool _showPhone = false;
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
+  final List<_FileUploadOutcome?> _imageOutcomes =
+      List<_FileUploadOutcome?>.filled(8, null);
+  final List<String?> _imageReasons = List<String?>.filled(8, null);
   bool _loading = true;
   bool _saving = false;
+  String _mirroredTitle = '';
+
+  Widget _editVehicleFields() {
+    Widget field(TextEditingController controller, String label,
+            {bool numeric = false}) =>
+        TextField(
+          controller: controller,
+          keyboardType: numeric ? TextInputType.number : TextInputType.text,
+          inputFormatters:
+              numeric ? [FilteringTextInputFormatter.digitsOnly] : null,
+          decoration: InputDecoration(
+              labelText: label, border: const OutlineInputBorder()),
+        );
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F9FD),
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        TextField(
+          controller: _plateCtrl,
+          keyboardType: TextInputType.number,
+          maxLength: 8,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(
+            labelText: 'מספר לוחית רישוי',
+            counterText: '',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleManufacturerCtrl, 'יצרן')),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleModelCtrl, 'דגם')),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleYearCtrl, 'שנת ייצור', numeric: true)),
+          const SizedBox(width: 10),
+          Expanded(
+              child: field(_vehicleMileageCtrl, 'קילומטראז׳', numeric: true)),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleHandCtrl, 'יד', numeric: true)),
+        ]),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          value: _vehicleTransmission,
+          decoration: const InputDecoration(
+              labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'automatic', child: Text('אוטומטית')),
+            DropdownMenuItem(value: 'manual', child: Text('ידנית')),
+            DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
+            DropdownMenuItem(value: 'other', child: Text('אחרת')),
+          ],
+          onChanged: (value) =>
+              setState(() => _vehicleTransmission = value ?? 'automatic'),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_vehicleFuelCtrl, 'סוג דלק')),
+          const SizedBox(width: 10),
+          Expanded(child: field(_vehicleColorCtrl, 'צבע')),
+        ]),
+        const SizedBox(height: 10),
+        field(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+      ]),
+    );
+  }
 
   @override
   void initState() {
     super.initState();
+    _titleCtrl.addListener(_mirrorTitleIntoDescription);
     _loadDetail();
+  }
+
+  void _mirrorTitleIntoDescription() {
+    final title = _titleCtrl.text.trim();
+    final current = _descCtrl.text;
+    String? updated;
+    if (_mirroredTitle.isEmpty && current.trim().isEmpty) {
+      updated = title;
+    } else if (current.trim() == _mirroredTitle) {
+      updated = title;
+    } else if (_mirroredTitle.isNotEmpty &&
+        current.startsWith('$_mirroredTitle\n\n')) {
+      final remainder = current.substring(_mirroredTitle.length + 2);
+      updated = title.isEmpty ? remainder : '$title\n\n$remainder';
+    }
+    _mirroredTitle = title;
+    if (updated != null && updated != current) {
+      _descCtrl.value = TextEditingValue(
+        text: updated,
+        selection: TextSelection.collapsed(offset: updated.length),
+      );
+    }
   }
 
   @override
   void dispose() {
+    _titleCtrl.removeListener(_mirrorTitleIntoDescription);
     _titleCtrl.dispose();
     _descCtrl.dispose();
     _priceCtrl.dispose();
     _cityCtrl.dispose();
+    _quantityCtrl.dispose();
+    _pickupCtrl.dispose();
+    _plateCtrl.dispose();
+    _vehicleManufacturerCtrl.dispose();
+    _vehicleModelCtrl.dispose();
+    _vehicleYearCtrl.dispose();
+    _vehicleMileageCtrl.dispose();
+    _vehicleHandCtrl.dispose();
+    _vehicleFuelCtrl.dispose();
+    _vehicleColorCtrl.dispose();
+    _vehicleTestCtrl.dispose();
     super.dispose();
   }
 
@@ -7814,6 +8379,9 @@ class _EditListingScreenState extends State<EditListingScreen> {
       final item = jsonDecode(res.body) as Map<String, dynamic>;
       final imgs = List<String>.from(item['images'] ??
           (item['image_url'] != null ? [item['image_url']] : []));
+      final vehicle = item['vehicle_details'] is Map
+          ? Map<String, dynamic>.from(item['vehicle_details'] as Map)
+          : <String, dynamic>{};
       setState(() {
         _category = item['category'] as String? ?? 'אחר';
         _titleCtrl.text = item['title'] as String? ?? '';
@@ -7821,8 +8389,28 @@ class _EditListingScreenState extends State<EditListingScreen> {
         _priceCtrl.text =
             item['price'] != null ? item['price'].toString() : '0';
         _cityCtrl.text = item['city'] as String? ?? '';
+        _condition = item['item_condition']?.toString() ?? 'good';
+        _negotiable = item['negotiable'] == true;
+        _quantityCtrl.text = item['quantity']?.toString() ?? '1';
+        _deliveryMethod = item['delivery_method']?.toString() ?? 'pickup';
+        _pickupCtrl.text = item['pickup_details']?.toString() ?? '';
+        _showPhone = item['contact_phone_visible'] == true;
+        _plateCtrl.text = item['license_plate']?.toString() ?? '';
+        _vehicleManufacturerCtrl.text =
+            vehicle['manufacturer']?.toString() ?? '';
+        _vehicleModelCtrl.text = vehicle['model']?.toString() ?? '';
+        _vehicleYearCtrl.text = vehicle['year']?.toString() ?? '';
+        _vehicleMileageCtrl.text = vehicle['mileage']?.toString() ?? '';
+        _vehicleHandCtrl.text = vehicle['hand']?.toString() ?? '';
+        _vehicleTransmission =
+            vehicle['transmission']?.toString() ?? 'automatic';
+        _vehicleFuelCtrl.text = vehicle['fuel']?.toString() ?? '';
+        _vehicleColorCtrl.text = vehicle['color']?.toString() ?? '';
+        _vehicleTestCtrl.text = vehicle['test_valid_until']?.toString() ?? '';
         for (int i = 0; i < 8; i++) {
           _imageUrls[i] = i < imgs.length ? imgs[i] : null;
+          _imageOutcomes[i] =
+              i < imgs.length ? _FileUploadOutcome.approved : null;
         }
         _loading = false;
       });
@@ -7866,9 +8454,13 @@ class _EditListingScreenState extends State<EditListingScreen> {
       if (!mounted) return;
       setState(() {
         for (var i = 0; i < results.length; i++) {
-          if (results[i].outcome == _FileUploadOutcome.approved) {
-            _imageUrls[availableSlots[i]] = results[i].data['url'] as String;
-          }
+          final target = availableSlots[i];
+          final result = results[i];
+          final url = result.data['url']?.toString();
+          _imageOutcomes[target] = result.outcome;
+          _imageReasons[target] =
+              result.data['reason']?.toString() ?? result.error;
+          if (url != null && url.isNotEmpty) _imageUrls[target] = url;
         }
       });
       _showImageBatchSummary(context, results);
@@ -7897,18 +8489,50 @@ class _EditListingScreenState extends State<EditListingScreen> {
     }
     setState(() => _saving = true);
     try {
-      final urls = _imageUrls.where((u) => u != null).toList();
+      final urls = <String>[];
+      for (var i = 0; i < _imageUrls.length; i++) {
+        if (_imageUrls[i] != null &&
+            _imageOutcomes[i] == _FileUploadOutcome.approved) {
+          urls.add(_imageUrls[i]!);
+        }
+      }
       final city = _cityCtrl.text.trim();
+      final title = _titleCtrl.text.trim();
+      final enteredDescription = _descCtrl.text.trim();
+      final description = enteredDescription.startsWith(title)
+          ? enteredDescription
+          : '$title\n\n$enteredDescription';
       final parsedPrice = double.tryParse(_priceCtrl.text.trim()) ?? 0;
       final listingType = parsedPrice <= 0 ? 'free' : 'sale';
       final body = <String, dynamic>{
         'type': listingType,
-        'title': _titleCtrl.text.trim(),
-        'description': _descCtrl.text.trim(),
+        'title': title,
+        'description': description,
         'category': _category,
+        'item_condition': _condition,
+        'negotiable': listingType == 'sale' && _negotiable,
+        'quantity': int.tryParse(_quantityCtrl.text) ?? 1,
+        'delivery_method': _deliveryMethod,
+        'pickup_details': _pickupCtrl.text.trim(),
+        'contact_phone_visible': _showPhone,
+        'expires_in_days': _expiryDays,
         if (city.isNotEmpty) 'city': city,
         'image_urls': urls,
         'price': parsedPrice,
+        if (_category == 'רכב' && _plateCtrl.text.trim().isNotEmpty)
+          'license_plate': _plateCtrl.text.trim(),
+        if (_category == 'רכב')
+          'vehicle_details': {
+            'manufacturer': _vehicleManufacturerCtrl.text.trim(),
+            'model': _vehicleModelCtrl.text.trim(),
+            'year': _vehicleYearCtrl.text.trim(),
+            'mileage': _vehicleMileageCtrl.text.trim(),
+            'hand': _vehicleHandCtrl.text.trim(),
+            'transmission': _vehicleTransmission,
+            'fuel': _vehicleFuelCtrl.text.trim(),
+            'color': _vehicleColorCtrl.text.trim(),
+            'test_valid_until': _vehicleTestCtrl.text.trim(),
+          },
       };
       final res = await http.put(
         Uri.parse('$kApi/listings/${widget.listingId}'),
@@ -7955,14 +8579,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                                 color: kSubtext,
                                 fontWeight: FontWeight.w500)),
                         const SizedBox(height: 8),
-                        GridView.count(
-                          crossAxisCount: 4,
-                          crossAxisSpacing: 8,
-                          mainAxisSpacing: 8,
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          children: List.generate(8, (i) => _imageSlot(i)),
-                        ),
+                        _dynamicImagePicker(),
                         const SizedBox(height: 16),
                         TextField(
                             controller: _titleCtrl,
@@ -7988,27 +8605,116 @@ class _EditListingScreenState extends State<EditListingScreen> {
                                 border: OutlineInputBorder(),
                                 prefixText: '₪ ')),
                         const SizedBox(height: 12),
-                        DropdownButtonFormField<String>(
-                          value: _category,
+                        InputDecorator(
                           decoration: const InputDecoration(
-                              labelText: 'קטגוריה',
-                              border: OutlineInputBorder()),
-                          items: _kCategories
-                              .skip(1)
-                              .map((c) =>
-                                  DropdownMenuItem(value: c, child: Text(c)))
-                              .toList(),
-                          onChanged: (v) => setState(() => _category = v!),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _cityCtrl,
-                          textDirection: TextDirection.rtl,
-                          decoration: const InputDecoration(
-                            labelText: 'עיר',
+                            labelText: 'קטגוריה (לא ניתנת לשינוי)',
                             border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.location_city_outlined),
+                            prefixIcon: Icon(Icons.lock_outline),
                           ),
+                          child: Text(_category,
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600)),
+                        ),
+                        if (_category == 'רכב') ...[
+                          const SizedBox(height: 12),
+                          _editVehicleFields(),
+                        ],
+                        const SizedBox(height: 12),
+                        _LocationAutocompleteField(
+                          controller: _cityCtrl,
+                          label: 'עיר או יישוב',
+                        ),
+                        if (_category != 'רכב') ...[
+                          const SizedBox(height: 12),
+                          DropdownButtonFormField<String>(
+                            value: _condition,
+                            decoration: const InputDecoration(
+                              labelText: 'מצב המוצר',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'new', child: Text('חדש')),
+                              DropdownMenuItem(
+                                  value: 'like_new', child: Text('כמו חדש')),
+                              DropdownMenuItem(
+                                  value: 'good', child: Text('מצב טוב')),
+                              DropdownMenuItem(
+                                  value: 'fair', child: Text('מצב סביר')),
+                              DropdownMenuItem(
+                                  value: 'for_parts',
+                                  child: Text('לתיקון / לחלקים')),
+                            ],
+                            onChanged: (value) =>
+                                setState(() => _condition = value ?? 'good'),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _quantityCtrl,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              labelText: 'כמות',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          DropdownButtonFormField<String>(
+                            value: _deliveryMethod,
+                            decoration: const InputDecoration(
+                              labelText: 'אופן קבלה',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'pickup', child: Text('איסוף עצמי')),
+                              DropdownMenuItem(
+                                  value: 'delivery', child: Text('משלוח')),
+                              DropdownMenuItem(
+                                  value: 'both',
+                                  child: Text('איסוף עצמי או משלוח')),
+                            ],
+                            onChanged: (value) => setState(
+                                () => _deliveryMethod = value ?? 'pickup'),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _pickupCtrl,
+                            maxLines: 2,
+                            textDirection: TextDirection.rtl,
+                            decoration: const InputDecoration(
+                              labelText: 'פרטי איסוף או משלוח',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('המחיר גמיש'),
+                          value: _negotiable,
+                          onChanged: (value) =>
+                              setState(() => _negotiable = value),
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('הצגת מספר הטלפון במודעה'),
+                          value: _showPhone,
+                          onChanged: (value) =>
+                              setState(() => _showPhone = value),
+                        ),
+                        DropdownButtonFormField<int>(
+                          value: _expiryDays,
+                          decoration: const InputDecoration(
+                            labelText: 'הארכת הפרסום ממועד השמירה',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: 7, child: Text('7 ימים')),
+                            DropdownMenuItem(value: 14, child: Text('14 ימים')),
+                            DropdownMenuItem(value: 30, child: Text('30 ימים')),
+                            DropdownMenuItem(value: 60, child: Text('60 ימים')),
+                          ],
+                          onChanged: (value) =>
+                              setState(() => _expiryDays = value ?? 30),
                         ),
                         const SizedBox(height: 24),
                         ElevatedButton(
@@ -8036,10 +8742,13 @@ class _EditListingScreenState extends State<EditListingScreen> {
   Widget _imageSlot(int i) {
     final url = _imageUrls[i];
     final uploading = _uploadingSlot[i];
+    final outcome = _imageOutcomes[i];
+    final rejected = outcome == _FileUploadOutcome.rejected ||
+        outcome == _FileUploadOutcome.failed;
+    final pending = outcome == _FileUploadOutcome.pending;
     return GestureDetector(
       onTap: uploading ? null : () => _pickImage(i),
-      onLongPress:
-          url != null ? () => setState(() => _imageUrls[i] = null) : null,
+      onLongPress: url != null ? () => _clearEditImage(i) : null,
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFFE8F4FD),
@@ -8058,7 +8767,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                         top: 3,
                         left: 3,
                         child: GestureDetector(
-                            onTap: () => setState(() => _imageUrls[i] = null),
+                            onTap: () => _clearEditImage(i),
                             child: Container(
                                 width: 20,
                                 height: 20,
@@ -8079,6 +8788,33 @@ class _EditListingScreenState extends State<EditListingScreen> {
                             size: 13, color: Colors.white),
                       ),
                     ),
+                    if (rejected || pending)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: Container(
+                            alignment: Alignment.bottomCenter,
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(9),
+                              color: rejected
+                                  ? const Color(0x66B91C1C)
+                                  : const Color(0x556B7280),
+                            ),
+                            child: Text(
+                              rejected
+                                  ? 'לא אושרה\n${_imageReasons[i] ?? ''}'
+                                  : 'ממתינה לסריקה',
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                      ),
                   ])
                 : Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -8091,6 +8827,44 @@ class _EditListingScreenState extends State<EditListingScreen> {
                               textAlign: TextAlign.center),
                       ]),
       ),
+    );
+  }
+
+  void _clearEditImage(int index) => setState(() {
+        _imageUrls[index] = null;
+        _imageOutcomes[index] = null;
+        _imageReasons[index] = null;
+      });
+
+  Widget _dynamicImagePicker() {
+    final occupied = <int>[
+      for (var i = 0; i < 8; i++)
+        if (_imageUrls[i] != null || _uploadingSlot[i]) i,
+    ];
+    int? firstFree;
+    for (var i = 0; i < 8; i++) {
+      if (_imageUrls[i] == null && !_uploadingSlot[i]) {
+        firstFree = i;
+        break;
+      }
+    }
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final i in occupied)
+          SizedBox(width: 150, height: 150, child: _imageSlot(i)),
+        if (firstFree != null)
+          SizedBox(
+            width: 150,
+            height: 150,
+            child: OutlinedButton.icon(
+              onPressed: () => _pickImage(firstFree!),
+              icon: const Icon(Icons.add_photo_alternate_outlined),
+              label: Text(occupied.isEmpty ? 'בחירת תמונות' : 'הוסף תמונות'),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -20141,19 +20915,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
                 _FieldLabel(label: 'עיר'),
                 const SizedBox(height: 6),
-                TextField(
+                _LocationAutocompleteField(
                   controller: _cityCtrl,
-                  textDirection: TextDirection.rtl,
-                  decoration: const InputDecoration(hintText: 'עיר מגורים'),
+                  label: 'עיר או יישוב',
+                  hint: 'הקלד שם עיר או יישוב',
                 ),
                 const SizedBox(height: 14),
 
                 _FieldLabel(label: 'רחוב'),
                 const SizedBox(height: 6),
-                TextField(
+                _StreetAutocompleteField(
                   controller: _streetCtrl,
-                  textDirection: TextDirection.rtl,
-                  decoration: const InputDecoration(hintText: 'שם הרחוב'),
+                  cityController: _cityCtrl,
                 ),
                 const SizedBox(height: 14),
 

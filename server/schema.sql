@@ -40,6 +40,34 @@ CREATE TABLE IF NOT EXISTS users (
   created_at          TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS israel_localities (
+  code                INTEGER PRIMARY KEY,
+  name_he             TEXT NOT NULL,
+  district            TEXT,
+  subdistrict         TEXT,
+  locality_type       TEXT,
+  municipal_status    TEXT,
+  natural_region      TEXT,
+  municipal_cluster   TEXT,
+  active              BOOLEAN NOT NULL DEFAULT TRUE,
+  source_updated_at   TIMESTAMPTZ,
+  synced_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS israel_localities_name_idx
+  ON israel_localities(name_he);
+
+CREATE TABLE IF NOT EXISTS israel_streets (
+  locality_code INTEGER NOT NULL REFERENCES israel_localities(code)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  street_code INTEGER NOT NULL,
+  name_he TEXT NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY(locality_code,street_code)
+);
+CREATE INDEX IF NOT EXISTS israel_streets_name_idx
+  ON israel_streets(locality_code,name_he);
+
 -- ── Auth Tokens ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
   token      TEXT PRIMARY KEY,
