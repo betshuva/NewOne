@@ -27,7 +27,9 @@ const SCAN_BOT_ID = '00000000-0000-4000-8000-000000000001';
 const SCAN_BOT_EMAIL = 'scan@betshuva.system';
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002';
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
-const SYSTEM_USER_NAME = 'מדריך בתשובה';
+const SYSTEM_USER_NAME = 'אביאל – מדריך בתשובה';
+const SYSTEM_USER_PROFILE_PIC =
+  '/betshuva-app/assets/assets/guide/aviel-guide.png';
 const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
 const WELCOME_MESSAGE =
   'ברוך הבא לבתשובה 🌿\n\nשמחים שהצטרפת אלינו. כאן תקבל עדכונים חשובים, הודעות מערכת וטיפים שיעזרו לך להשתמש באפליקציה בבטחה ובנוחות.\n\nכך מוסיפים חברים:\n1. לחץ על סמל הוספת החבר (אדם עם סימן +) בחלק העליון של מסך השיחות.\n2. חפש לפי שם, מספר טלפון או כתובת אימייל.\n3. לחץ על „שמור” ליד האדם הרצוי.\n4. החבר יופיע ברשימת השיחות ותוכל לפתוח איתו שיחה.\n\nאם איש הקשר עדיין לא רשום, לחץ על „הזמן” כדי לשלוח לו קישור הצטרפות.\n\nמאחלים לך שיחות טובות ומועילות!';
@@ -1446,12 +1448,13 @@ async function migrateDatabase() {
       ON CONFLICT (id) DO UPDATE SET name='סריקה', email=$2,
         email_verified=TRUE, phone_verified=TRUE`, [SCAN_BOT_ID, SCAN_BOT_EMAIL]);
     await pool.query(`
-      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,birth_date)
-      VALUES($1,$2,$3,'0000000002',TRUE,TRUE,'מערכת','1900-01-01')
+      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,birth_date,profile_pic_url)
+      VALUES($1,$2,$3,'0000000002',TRUE,TRUE,'מערכת','1900-01-01',$4)
       ON CONFLICT (id) DO UPDATE SET name=$2, email=$3,
         email_verified=TRUE, phone_verified=TRUE, city='מערכת',
-        birth_date='1900-01-01'`,
-      [SYSTEM_USER_ID, SYSTEM_USER_NAME, SYSTEM_USER_EMAIL]);
+        birth_date='1900-01-01', profile_pic_url=$4`,
+      [SYSTEM_USER_ID, SYSTEM_USER_NAME, SYSTEM_USER_EMAIL,
+       SYSTEM_USER_PROFILE_PIC]);
 
     // Only one verified identity may own a phone number or email address.
     // Unverified drafts may coexist, but a second one can never be verified.
@@ -1702,6 +1705,8 @@ async function migrateDatabase() {
         created_at TIMESTAMPTZ DEFAULT now(),
         UNIQUE(sender_id, recipient_id)
       )`);
+    await pool.query(`ALTER TABLE message_requests
+      DROP CONSTRAINT IF EXISTS message_requests_sender_id_recipient_id_key`);
     const contactsInitialized = await pool.query(
       `SELECT 1 FROM app_settings WHERE key_name='contacts_initialized'`);
     if (!contactsInitialized.rows.length) {
@@ -1883,7 +1888,7 @@ async function provisionSystemConversation(pool, userId, sendWelcome = true) {
   return result.rows[0] || null;
 }
 
-const SYSTEM_AI_PROMPT = `אתה העוזר הרשמי של אפליקציית "בתשובה" ושמך "מדריך בתשובה".
+const SYSTEM_AI_PROMPT = `אתה העוזר הרשמי של אפליקציית "בתשובה" ושמך "אביאל – מדריך בתשובה".
 ענה בעברית, בקצרה, בנעימות ובצעדים מעשיים. ענה רק על שימוש באפליקציה.
 עובדות חשובות: מוסיפים חבר דרך סמל אדם עם +, מחפשים שם/טלפון/אימייל ולוחצים שמור;
 תוכן תמונה ווידאו נסרק אוטומטית; הגדרות הסינון נמצאות בהגדרות וניתן להגדיר גם לקבוצה;
@@ -1969,7 +1974,7 @@ function localSystemAnswer(question, uploadContext = null) {
   if (/מיקום|עיר|מרחק/.test(q))
     return 'שיתוף מיקום הוא אופציונלי. ניתן לעדכן או למחוק אותו בהגדרות; משתמשים אחרים רואים לכל היותר עיר ומרחק משוער ולא קואורדינטות.';
   if (/שלום|היי|מי אתה|עזרה/.test(q))
-    return 'שלום 🌿 אני „מדריך בתשובה”, העוזר של אפליקציית בתשובה. אפשר לשאול אותי על הוספת חברים, קבוצות, סינון תוכן, הודעות, כניסה או הגדרות.';
+    return 'שלום 🌿 אני אביאל, מדריך בתשובה. אפשר לשאול אותי על הוספת חברים, קבוצות, סינון תוכן, הודעות, כניסה או הגדרות.';
   return 'אני מסייע בשאלות על אפליקציית בתשובה. אפשר לשאול למשל איך מוסיפים חבר, משנים סינון, יוצרים קבוצה או מוחקים חשבון. אם הבעיה נמשכת, אפשר לפנות ל־support@betshuva.com.';
 }
 
@@ -2186,11 +2191,12 @@ async function handleMessageBrowsing(pool, userId, question) {
   return page.answer;
 }
 
-async function createSystemExchange(pool, userId, question) {
+async function createSystemExchange(pool, userId, question, file = null) {
   const sent = await pool.query(
-    `INSERT INTO messages(sender_id,recipient_id,type,body)
-     VALUES($1,$2,'text',$3) RETURNING id,created_at`,
-    [userId, SYSTEM_USER_ID, question]);
+    `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name)
+     VALUES($1,$2,$3,$4,$5,$6) RETURNING id,created_at`,
+    [userId, SYSTEM_USER_ID, file?.type || 'text', question,
+     file?.url || null, file?.name || null]);
   const answer = await handleMessageBrowsing(pool, userId, question) ||
     await handleSystemAction(pool, userId, question) ||
     await generateSystemAnswer(pool, userId, question);
@@ -2866,11 +2872,8 @@ io.on('connection', async (socket) => {
         }
         const request = await pool.query(
           `INSERT INTO message_requests
-             (sender_id, recipient_id, body, type, file_url, file_name)
+           (sender_id, recipient_id, body, type, file_url, file_name)
            VALUES ($1,$2,$3,$4,$5,$6)
-           ON CONFLICT(sender_id, recipient_id) DO UPDATE SET
-             body=EXCLUDED.body, type=EXCLUDED.type, file_url=EXCLUDED.file_url,
-             file_name=EXCLUDED.file_name, created_at=now()
            RETURNING id, created_at`,
           [socket.user.id, toUserId, text || null, msgType,
            fileUrl || null, fileName || null]);
@@ -3914,7 +3917,27 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       ORDER BY sf.created_at DESC
       LIMIT 50
     `, scanParams);
-    const combined = [...result.rows, ...scans.rows]
+    const contactRequests = await pool.query(`
+      SELECT
+        'request_' || mr.id::text AS id,
+        mr.sender_id,
+        mr.recipient_id,
+        mr.type,
+        COALESCE(mr.body,mr.file_name) AS body,
+        mr.file_url,
+        mr.file_name,
+        sf.file_size,
+        mr.created_at,
+        sf.moderation_details->'classification' AS image_classification,
+        'awaiting_contact_approval' AS message_status
+      FROM message_requests mr
+      LEFT JOIN stored_files sf ON sf.public_url=mr.file_url
+      WHERE mr.sender_id=$1 AND mr.recipient_id=$2
+        ${before ? 'AND mr.created_at < $3' : ''}
+      ORDER BY mr.created_at DESC
+      LIMIT 50
+    `, scanParams);
+    const combined = [...result.rows, ...scans.rows, ...contactRequests.rows]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .slice(-50);
     res.json(combined);
@@ -3942,10 +3965,15 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   try {
     const pool = await getPool();
     if (toUserId === SYSTEM_USER_ID) {
-      if (fileUrl || !text)
-        return res.status(400).json({ error: 'העוזר מקבל כעת שאלות טקסט בלבד' });
+      if (!text && !fileUrl)
+        return res.status(400).json({ error: 'לא נשלח תוכן' });
+      const directQuestion = text || (fileType === 'image'
+        ? 'התמונה ששלחתי אושרה. הסבר לי ישירות מה נמצא בסריקה.'
+        : 'הסבר לי ישירות על הקובץ ששלחתי.');
       const exchange = await createSystemExchange(
-        pool, senderId, String(text).slice(0, 2000));
+        pool, senderId, String(directQuestion).slice(0, 2000), fileUrl ? {
+          url: fileUrl, name: fileName, type: fileType || 'document',
+        } : null);
       const sid = onlineUsers.get(senderId);
       if (sid) io.to(sid).emit('chat:message', {
         id: exchange.reply.id, fromUserId: SYSTEM_USER_ID,
@@ -3992,15 +4020,10 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
          AND group_id IS NULL AND deleted_for_everyone=FALSE
        LIMIT 1`, [toUserId, senderId]);
     if (!accepted.rows.length && !marketplaceInquiry.rows.length) {
-      if (type !== 'text' || fileUrl)
-        return res.status(403).json({ error: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
       const request = await pool.query(
         `INSERT INTO message_requests
            (sender_id, recipient_id, body, type, file_url, file_name)
          VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT(sender_id, recipient_id) DO UPDATE SET
-           body=EXCLUDED.body, type=EXCLUDED.type, file_url=EXCLUDED.file_url,
-           file_name=EXCLUDED.file_name, created_at=now()
          RETURNING id, created_at`,
         [senderId, toUserId, text || null, type, fileUrl || null, fileName || null]);
       const requestRow = request.rows[0];
@@ -4009,8 +4032,10 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
         id: requestRow.id, senderId, senderName: req.user.name,
         text, fileName, createdAt: requestRow.created_at,
       });
-      sendPush(toUserId, 'בקשת הודעה חדשה',
-        `${req.user.name} רוצה לשלוח לך הודעה`,
+      sendPush(toUserId, 'בקשת חברות חדשה',
+        fileUrl
+          ? `${req.user.name} רוצה להוסיף אותך כחבר ולשלוח לך קובץ`
+          : `${req.user.name} רוצה להוסיף אותך כחבר ולשלוח לך הודעה`,
         { type: 'message_request', senderId });
       return res.json({ requestPending: true, id: requestRow.id });
     }
@@ -4111,25 +4136,28 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
        ON CONFLICT DO NOTHING`, [req.user.id, request.sender_id]);
     const saved = await client.query(
       `INSERT INTO messages(sender_id, recipient_id, body, type, file_url, file_name)
-       VALUES($1,$2,$3,$4,$5,$6) RETURNING id, created_at`,
-      [request.sender_id, req.user.id, request.body, request.type,
-       request.file_url, request.file_name]);
-    await client.query('DELETE FROM message_requests WHERE id=$1', [request.id]);
+       SELECT sender_id,recipient_id,body,type,file_url,file_name
+       FROM message_requests
+       WHERE sender_id=$1 AND recipient_id=$2
+       ORDER BY created_at
+       RETURNING id,created_at,sender_id,body,type,file_url,file_name`,
+      [request.sender_id, req.user.id]);
+    await client.query(
+      'DELETE FROM message_requests WHERE sender_id=$1 AND recipient_id=$2',
+      [request.sender_id, req.user.id]);
     await client.query('COMMIT');
-    const row = saved.rows[0];
-    const payload = {
-      id: row.id, fromUserId: request.sender_id,
-      text: request.body, createdAt: row.created_at,
-      fileUrl: request.file_url, fileName: request.file_name,
-      fileType: request.type,
-    };
     const recipientSid = onlineUsers.get(req.user.id);
-    if (recipientSid) io.to(recipientSid).emit('chat:message', payload);
+    if (recipientSid) saved.rows.forEach(row => io.to(recipientSid).emit('chat:message', {
+      id: row.id, fromUserId: row.sender_id,
+      text: row.body, createdAt: row.created_at,
+      fileUrl: row.file_url, fileName: row.file_name,
+      fileType: row.type,
+    }));
     const senderSid = onlineUsers.get(request.sender_id);
     if (senderSid) io.to(senderSid).emit('message:request-accepted', {
-      byUserId: req.user.id, messageId: row.id,
+      byUserId: req.user.id, messageIds: saved.rows.map(row => row.id),
     });
-    res.json({ ok: true, messageId: row.id });
+    res.json({ ok: true, messageIds: saved.rows.map(row => row.id) });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: e.message });
@@ -4609,13 +4637,56 @@ app.get('/api/cities', auth, async (req, res) => {
 
 // ── Listings ──────────────────────────────────────────────────────
 
+const VEHICLE_DATA_RESOURCE = '053cea08-09bc-40ec-8f7a-156f0677aff3';
+
+function normalizeLicensePlate(value) {
+  const plate = String(value || '').replace(/\D/g, '');
+  return /^\d{7,8}$/.test(plate) ? plate : null;
+}
+
+function publicVehicleDetails(record) {
+  return {
+    manufacturer: record.tozeret_nm || null,
+    model: record.kinuy_mishari || record.degem_nm || null,
+    model_code: record.degem_nm || null,
+    trim: record.ramat_gimur || null,
+    year: record.shnat_yitzur || null,
+    color: record.tzeva_rechev || null,
+    fuel: record.sug_delek_nm || null,
+    ownership: record.baalut || null,
+    road_date: record.moed_aliya_lakvish || null,
+    test_valid_until: record.tokef_dt || null,
+  };
+}
+
+app.get('/api/vehicles/:plate', auth, async (req, res) => {
+  const plate = normalizeLicensePlate(req.params.plate);
+  if (!plate) return res.status(400).json({ error: 'מספר הרישוי חייב להכיל 7 או 8 ספרות' });
+  try {
+    const url = new URL('https://data.gov.il/api/3/action/datastore_search');
+    url.searchParams.set('resource_id', VEHICLE_DATA_RESOURCE);
+    url.searchParams.set('filters', JSON.stringify({ mispar_rechev: Number(plate) }));
+    url.searchParams.set('limit', '1');
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`data.gov.il ${response.status}`);
+    const payload = await response.json();
+    const record = payload?.result?.records?.[0];
+    if (!record) return res.status(404).json({ error: 'הרכב לא נמצא במאגר הפעיל' });
+    res.json({ plate, source: 'משרד התחבורה והבטיחות בדרכים', details: publicVehicleDetails(record) });
+  } catch (e) {
+    console.error('vehicle lookup:', e.message);
+    res.status(503).json({ error: 'מאגר הרכב אינו זמין כרגע; אפשר להזין את הפרטים ידנית' });
+  }
+});
+
 app.post('/api/listings', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   const { type, title, description, price, city, latitude, longitude,
           image_url, image_urls, category, item_condition, negotiable,
           quantity, delivery_method, pickup_details,
-          contact_phone_visible, expires_in_days } = req.body;
+          contact_phone_visible, expires_in_days, license_plate,
+          vehicle_details } = req.body;
   const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   if (title.trim().length > 120) return res.status(400).json({ error: 'הכותרת ארוכה מדי' });
@@ -4632,6 +4703,15 @@ app.post('/api/listings', auth, async (req, res) => {
   const parsedQuantity = Math.max(1, Math.min(999, Number.parseInt(quantity, 10) || 1));
   const expiryDays = [7,14,30,60].includes(Number(expires_in_days))
     ? Number(expires_in_days) : 30;
+  const safePlate = category === 'רכב' && license_plate
+    ? normalizeLicensePlate(license_plate) : null;
+  if (category === 'רכב' && license_plate && !safePlate)
+    return res.status(400).json({ error: 'מספר הרישוי חייב להכיל 7 או 8 ספרות' });
+  const safeVehicleDetails = category === 'רכב' && vehicle_details &&
+    typeof vehicle_details === 'object' && !Array.isArray(vehicle_details)
+    ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 20).map(([key, value]) =>
+      [String(key).slice(0, 40), value == null ? null : String(value).slice(0, 120)]))
+    : null;
   try {
     const pool = await getPool();
     // use user's stored location if not provided
@@ -4646,9 +4726,9 @@ app.post('/api/listings', auth, async (req, res) => {
       `INSERT INTO listings
        (user_id,type,title,description,price,city,latitude,longitude,image_url,category,
         item_condition,negotiable,quantity,delivery_method,pickup_details,
-        contact_phone_visible,expires_at)
+        contact_phone_visible,license_plate,vehicle_details,expires_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-               now() + ($17::text || ' days')::interval)
+               $17,$18,now() + ($19::text || ' days')::interval)
        RETURNING id`,
       [req.user.id, normalizedType, title.trim(), description || null,
        normalizedType === 'sale' ? normalizedPrice : null, listCity || null, lat || null, lng || null,
@@ -4656,7 +4736,8 @@ app.post('/api/listings', auth, async (req, res) => {
        validConditions.includes(item_condition) ? item_condition : 'good',
        normalizedType === 'sale' && negotiable === true, parsedQuantity,
        validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
-       pickup_details?.trim() || null, contact_phone_visible === true, expiryDays]);
+       pickup_details?.trim() || null, contact_phone_visible === true,
+       safePlate, safeVehicleDetails, expiryDays]);
     const listingId = result.rows[0].id;
     if (allImages.length) {
       for (let i = 0; i < allImages.length; i++) {
@@ -4736,6 +4817,7 @@ app.get('/api/listings', auth, async (req, res) => {
              image_url, images, category, status, created_at,
              item_condition, negotiable, quantity, delivery_method,
              pickup_details, contact_phone_visible,
+             license_plate, vehicle_details,
              view_count, contact_count,
              seller_id, seller_name, seller_pic, seller_phone,
              dist AS distance_km
@@ -4751,6 +4833,7 @@ app.get('/api/listings', auth, async (req, res) => {
                l.category, l.status, l.created_at, l.item_condition,
                l.negotiable, l.quantity, l.delivery_method,
                l.pickup_details, l.contact_phone_visible,
+               l.license_plate, l.vehicle_details,
                l.view_count, l.contact_count, l.latitude, l.longitude,
                u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
                CASE WHEN l.contact_phone_visible THEN u.phone ELSE NULL END AS seller_phone,
@@ -4926,6 +5009,22 @@ app.get('/api/gifs/search', auth, searchRateLimit, async (req, res) => {
   }
 });
 
+app.get('/contact-vcard', (req, res) => {
+  const clean = (value, max = 120) => String(value || '')
+    .replace(/[\r\n]/g, ' ').trim().slice(0, max);
+  const name = clean(req.query.name) || 'איש קשר';
+  const phone = clean(req.query.phone, 40);
+  const email = clean(req.query.email, 160);
+  const escapeVcard = value => value.replace(/([,;\\])/g, '\\$1');
+  const lines = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${escapeVcard(name)}`];
+  if (phone) lines.push(`TEL;TYPE=CELL:${escapeVcard(phone)}`);
+  if (email) lines.push(`EMAIL:${escapeVcard(email)}`);
+  lines.push('NOTE:שותף באמצעות בתשובה', 'END:VCARD');
+  res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="betshuva-contact.vcf"');
+  res.send(`\uFEFF${lines.join('\r\n')}\r\n`);
+});
+
 app.post('/api/gifs/:id/use', auth, async (req, res) => {
   try {
     const pool = await getPool();
@@ -4983,8 +5082,6 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         });
       recipientPolicy = await getEffectiveRecipientFilter(pool, req.body.toUserId, req.user.id);
       if (!recipientPolicy) return res.status(404).json({ error: 'הנמען לא נמצא' });
-      if (!recipientPolicy.isContact)
-        return res.status(403).json({ error: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
       if (allowed.dbType === 'video' && recipientPolicy.filter.video !== true)
         return res.status(403).json({ error: 'סרטוני וידאו חסומים בהגדרות הנמען' });
     }
@@ -7838,6 +7935,8 @@ async function initPendingTable() {
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'pickup'`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS pickup_details TEXT`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_phone_visible BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS license_plate TEXT`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS vehicle_details JSONB`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS listing_views (
         listing_id  UUID NOT NULL,

@@ -33,9 +33,142 @@ import 'native_video_player.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
 import 'web_capture_picker.dart';
+import 'clipboard_image_paste.dart';
 import 'web_otp.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
+const _sharedContactPrefix = 'betshuva://contact/';
+
+String _sharedContactText(Map<String, String> contact) =>
+    '$_sharedContactPrefix${base64Url.encode(utf8.encode(jsonEncode(contact)))}';
+
+Map<String, dynamic>? _sharedContactFromText(String text) {
+  if (!text.startsWith(_sharedContactPrefix)) return null;
+  try {
+    final encoded = text.substring(_sharedContactPrefix.length).trim();
+    final value =
+        jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(encoded))));
+    return value is Map<String, dynamic> ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<Map<String, String>?> _manualSharedContact(BuildContext context) async {
+  final name = TextEditingController();
+  final phone = TextEditingController();
+  final email = TextEditingController();
+  return showDialog<Map<String, String>>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('שיתוף איש קשר'),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        TextField(
+            controller: name,
+            decoration: const InputDecoration(labelText: 'שם')),
+        TextField(
+            controller: phone,
+            keyboardType: TextInputType.phone,
+            decoration: const InputDecoration(labelText: 'טלפון')),
+        TextField(
+            controller: email,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(labelText: 'אימייל')),
+      ]),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('ביטול')),
+        ElevatedButton(
+          onPressed: () {
+            if (name.text.trim().isEmpty ||
+                (phone.text.trim().isEmpty && email.text.trim().isEmpty))
+              return;
+            Navigator.pop(dialogContext, {
+              'name': name.text.trim(),
+              'phone': phone.text.trim(),
+              'email': email.text.trim(),
+            });
+          },
+          child: const Text('שתף'),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<Map<String, String>?> _pickPhoneContact(BuildContext context) async {
+  if (kIsWeb) return _manualSharedContact(context);
+  final granted = await FlutterContacts.requestPermission(readonly: true);
+  if (!granted) return null;
+  final contacts = await FlutterContacts.getContacts(withProperties: true);
+  if (!context.mounted) return null;
+  final selected = await showModalBottomSheet<Contact>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+      child: ListView.builder(
+        itemCount: contacts.length,
+        itemBuilder: (_, index) => ListTile(
+          leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+          title: Text(contacts[index].displayName),
+          subtitle: Text(contacts[index].phones.isNotEmpty
+              ? contacts[index].phones.first.number
+              : contacts[index].emails.isNotEmpty
+                  ? contacts[index].emails.first.address
+                  : ''),
+          onTap: () => Navigator.pop(sheetContext, contacts[index]),
+        ),
+      ),
+    ),
+  );
+  if (selected == null) return null;
+  return {
+    'name': selected.displayName,
+    'phone': selected.phones.isNotEmpty ? selected.phones.first.number : '',
+    'email': selected.emails.isNotEmpty ? selected.emails.first.address : '',
+  };
+}
+
+Future<Map<String, String>?> _pickGroupSharedContact(
+    BuildContext context, List<Map<String, dynamic>> members) async {
+  final source = await showModalBottomSheet<String>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+      ListTile(
+          leading: const Icon(Icons.contact_phone_outlined),
+          title: const Text('איש קשר מהטלפון'),
+          onTap: () => Navigator.pop(sheetContext, 'phone')),
+      ListTile(
+          leading: const Icon(Icons.groups_outlined),
+          title: const Text('חבר מהקבוצה'),
+          onTap: () => Navigator.pop(sheetContext, 'group')),
+    ])),
+  );
+  if (source == null || !context.mounted) return null;
+  if (source == 'phone') return _pickPhoneContact(context);
+  final member = await showModalBottomSheet<Map<String, dynamic>>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+        child: ListView.builder(
+      itemCount: members.length,
+      itemBuilder: (_, index) => ListTile(
+        leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+        title: Text(members[index]['name']?.toString() ?? 'חבר בקבוצה'),
+        subtitle: Text(members[index]['phone']?.toString() ??
+            members[index]['email']?.toString() ??
+            ''),
+        onTap: () => Navigator.pop(sheetContext, members[index]),
+      ),
+    )),
+  );
+  if (member == null) return null;
+  return {
+    'name': member['name']?.toString() ?? 'חבר בקבוצה',
+    'phone': member['phone']?.toString() ?? '',
+    'email': member['email']?.toString() ?? '',
+  };
+}
 
 String _normalizeIsraeliMobile(String value) {
   var digits = value.replaceAll(RegExp(r'\D'), '');
@@ -5158,7 +5291,13 @@ class _MainShellContentState extends State<_MainShellContent> {
             headers: {'Authorization': 'Bearer ${widget.token}'});
       }
     } catch (_) {}
-    _messageRequests.removeAt(0);
+    if (accepted == true) {
+      final senderId = request['sender_id'] ?? request['senderId'];
+      _messageRequests.removeWhere(
+          (item) => (item['sender_id'] ?? item['senderId']) == senderId);
+    } else {
+      _messageRequests.removeAt(0);
+    }
     _showingMessageRequest = false;
     _showNextMessageRequest();
   }
@@ -6955,6 +7094,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final _priceCtrl = TextEditingController();
   final _quantityCtrl = TextEditingController(text: '1');
   final _pickupCtrl = TextEditingController();
+  final _plateCtrl = TextEditingController();
+  final _vehicleManufacturerCtrl = TextEditingController();
+  final _vehicleModelCtrl = TextEditingController();
+  final _vehicleYearCtrl = TextEditingController();
+  final _vehicleMileageCtrl = TextEditingController();
+  final _vehicleHandCtrl = TextEditingController();
+  final _vehicleFuelCtrl = TextEditingController();
+  final _vehicleColorCtrl = TextEditingController();
+  final _vehicleTestCtrl = TextEditingController();
   late final _cityCtrl =
       TextEditingController(text: widget.me?['city'] as String? ?? '');
   String _category = 'אחר';
@@ -6966,6 +7114,68 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   bool _saving = false;
+  bool _vehicleLookupLoading = false;
+  String? _vehicleLookupMessage;
+  String _vehicleTransmission = 'automatic';
+  Timer? _plateLookupTimer;
+
+  Future<void> _lookupVehicle() async {
+    final plate = _plateCtrl.text.replaceAll(RegExp(r'\D'), '');
+    if (plate.length != 7 && plate.length != 8) {
+      setState(() => _vehicleLookupMessage = 'יש להזין 7 או 8 ספרות');
+      return;
+    }
+    setState(() {
+      _vehicleLookupLoading = true;
+      _vehicleLookupMessage = null;
+    });
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/vehicles/$plate'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 12));
+      if (!mounted) return;
+      final payload = jsonDecode(response.body);
+      if (response.statusCode != 200 || payload is! Map) {
+        setState(() => _vehicleLookupMessage = payload is Map
+            ? (payload['error']?.toString() ?? 'הרכב לא נמצא')
+            : 'הרכב לא נמצא');
+        return;
+      }
+      final details = Map<String, dynamic>.from(payload['details'] as Map);
+      _vehicleManufacturerCtrl.text = details['manufacturer']?.toString() ?? '';
+      _vehicleModelCtrl.text = details['model']?.toString() ?? '';
+      _vehicleYearCtrl.text = details['year']?.toString() ?? '';
+      _vehicleFuelCtrl.text = details['fuel']?.toString() ?? '';
+      _vehicleColorCtrl.text = details['color']?.toString() ?? '';
+      _vehicleTestCtrl.text = details['test_valid_until']?.toString() ?? '';
+      if (_titleCtrl.text.trim().isEmpty) {
+        _titleCtrl.text = [
+          _vehicleManufacturerCtrl.text,
+          _vehicleModelCtrl.text,
+          _vehicleYearCtrl.text,
+        ].where((value) => value.trim().isNotEmpty).join(' ');
+      }
+      setState(() => _vehicleLookupMessage =
+          'הפרטים אותרו במאגר משרד התחבורה — מומלץ לבדוק אותם');
+    } catch (_) {
+      if (mounted) {
+        setState(() => _vehicleLookupMessage =
+            'לא ניתן לבדוק כרגע; אפשר למלא את הפרטים ידנית');
+      }
+    } finally {
+      if (mounted) setState(() => _vehicleLookupLoading = false);
+    }
+  }
+
+  void _onPlateChanged(String value) {
+    _plateLookupTimer?.cancel();
+    final plate = value.replaceAll(RegExp(r'\D'), '');
+    if (plate.length == 7 || plate.length == 8) {
+      _plateLookupTimer =
+          Timer(const Duration(milliseconds: 650), _lookupVehicle);
+    }
+  }
 
   Future<void> _pickImage(int slot) async {
     final picker = ImagePicker();
@@ -7095,6 +7305,20 @@ class _PostListingScreenState extends State<PostListingScreen> {
         'expires_in_days': _expiryDays,
         if (city.isNotEmpty) 'city': city,
         if (urls.isNotEmpty) 'image_urls': urls,
+        if (_category == 'רכב' && _plateCtrl.text.trim().isNotEmpty)
+          'license_plate': _plateCtrl.text,
+        if (_category == 'רכב')
+          'vehicle_details': {
+            'manufacturer': _vehicleManufacturerCtrl.text.trim(),
+            'model': _vehicleModelCtrl.text.trim(),
+            'year': _vehicleYearCtrl.text.trim(),
+            'mileage': _vehicleMileageCtrl.text.trim(),
+            'hand': _vehicleHandCtrl.text.trim(),
+            'transmission': _vehicleTransmission,
+            'fuel': _vehicleFuelCtrl.text.trim(),
+            'color': _vehicleColorCtrl.text.trim(),
+            'test_valid_until': _vehicleTestCtrl.text.trim(),
+          },
       };
       body['price'] = parsedPrice;
       final res = await http
@@ -7144,6 +7368,16 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _priceCtrl.dispose();
     _quantityCtrl.dispose();
     _pickupCtrl.dispose();
+    _plateLookupTimer?.cancel();
+    _plateCtrl.dispose();
+    _vehicleManufacturerCtrl.dispose();
+    _vehicleModelCtrl.dispose();
+    _vehicleYearCtrl.dispose();
+    _vehicleMileageCtrl.dispose();
+    _vehicleHandCtrl.dispose();
+    _vehicleFuelCtrl.dispose();
+    _vehicleColorCtrl.dispose();
+    _vehicleTestCtrl.dispose();
     _cityCtrl.dispose();
     super.dispose();
   }
@@ -7222,6 +7456,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
                           .toList(),
                       onChanged: (v) => setState(() => _category = v!),
                     ),
+                    if (_category == 'רכב') ...[
+                      const SizedBox(height: 12),
+                      _vehicleFields(),
+                    ],
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
                       value: _condition,
@@ -7413,6 +7651,121 @@ class _PostListingScreenState extends State<PostListingScreen> {
       ),
     );
   }
+
+  Widget _vehicleFields() => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF4F9FD),
+          border: Border.all(color: kBorder),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            const Icon(Icons.directions_car_outlined, color: kPrimary),
+            const SizedBox(width: 8),
+            Text('מאפייני הרכב',
+                style: TextStyle(
+                    color: kTextDark,
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold)),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+              'מספר הרישוי אינו חובה. אם יוזן, ננסה להשלים פרטים מהמאגר הממשלתי.',
+              style: TextStyle(color: kSubtext, fontSize: 12)),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _plateCtrl,
+            keyboardType: TextInputType.number,
+            maxLength: 8,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            onChanged: _onPlateChanged,
+            decoration: InputDecoration(
+              labelText: 'מספר לוחית רישוי (לא חובה)',
+              hintText: '7 או 8 ספרות',
+              counterText: '',
+              prefixIcon: const Icon(Icons.pin_outlined),
+              suffixIcon: _vehicleLookupLoading
+                  ? const Padding(
+                      padding: EdgeInsets.all(13),
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : IconButton(
+                      tooltip: 'איתור פרטי הרכב',
+                      onPressed: _lookupVehicle,
+                      icon: const Icon(Icons.search)),
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          if (_vehicleLookupMessage != null) ...[
+            const SizedBox(height: 6),
+            Text(_vehicleLookupMessage!,
+                style: TextStyle(
+                    color: _vehicleLookupMessage!.startsWith('הפרטים אותרו')
+                        ? Colors.green.shade700
+                        : Colors.orange.shade800,
+                    fontSize: 12)),
+          ],
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(
+                child: _vehicleTextField(_vehicleManufacturerCtrl, 'יצרן')),
+            const SizedBox(width: 10),
+            Expanded(child: _vehicleTextField(_vehicleModelCtrl, 'דגם')),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(
+                child: _vehicleTextField(_vehicleYearCtrl, 'שנת ייצור',
+                    numeric: true)),
+            const SizedBox(width: 10),
+            Expanded(
+                child: _vehicleTextField(_vehicleMileageCtrl, 'קילומטראז׳',
+                    numeric: true)),
+            const SizedBox(width: 10),
+            Expanded(
+                child:
+                    _vehicleTextField(_vehicleHandCtrl, 'יד', numeric: true)),
+          ]),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            value: _vehicleTransmission,
+            decoration: const InputDecoration(
+                labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'automatic', child: Text('אוטומטית')),
+              DropdownMenuItem(value: 'manual', child: Text('ידנית')),
+              DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
+              DropdownMenuItem(value: 'other', child: Text('אחרת')),
+            ],
+            onChanged: (value) =>
+                setState(() => _vehicleTransmission = value ?? 'automatic'),
+          ),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: _vehicleTextField(_vehicleFuelCtrl, 'סוג דלק')),
+            const SizedBox(width: 10),
+            Expanded(child: _vehicleTextField(_vehicleColorCtrl, 'צבע')),
+          ]),
+          const SizedBox(height: 10),
+          _vehicleTextField(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+          const SizedBox(height: 6),
+          Text(
+              'המידע מהמשרד הממשלתי הוא מידע מסייע ואינו תחליף לבדיקת הרכב והרישיון.',
+              style: TextStyle(color: kSubtext, fontSize: 11)),
+        ]),
+      );
+
+  Widget _vehicleTextField(TextEditingController controller, String label,
+          {bool numeric = false}) =>
+      TextField(
+        controller: controller,
+        keyboardType: numeric ? TextInputType.number : TextInputType.text,
+        inputFormatters:
+            numeric ? [FilteringTextInputFormatter.digitsOnly] : null,
+        decoration: InputDecoration(
+            labelText: label, border: const OutlineInputBorder()),
+      );
 }
 
 // ── Edit Listing Screen ───────────────────────────────────────────
@@ -8023,6 +8376,9 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
       'delivery': 'משלוח',
       'both': 'איסוף עצמי או משלוח',
     };
+    final vehicleDetails = widget.item['vehicle_details'] is Map
+        ? Map<String, dynamic>.from(widget.item['vehicle_details'] as Map)
+        : <String, dynamic>{};
     final galleryHeight =
         (MediaQuery.sizeOf(context).width * 0.56).clamp(280.0, 520.0);
     return Scaffold(
@@ -8214,6 +8570,78 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                     ),
                 ],
               ),
+              if (widget.item['category'] == 'רכב' &&
+                  (vehicleDetails.isNotEmpty ||
+                      (widget.item['license_plate'] ?? '')
+                          .toString()
+                          .isNotEmpty)) ...[
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F9FD),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: kBorder),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(children: [
+                        Icon(Icons.directions_car_outlined, color: kPrimary),
+                        SizedBox(width: 8),
+                        Text('פרטי הרכב',
+                            style: TextStyle(
+                                fontSize: 17, fontWeight: FontWeight.bold)),
+                      ]),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          if ((widget.item['license_plate'] ?? '')
+                              .toString()
+                              .isNotEmpty)
+                            _ListingDetailBadge(
+                                icon: Icons.pin_outlined,
+                                text:
+                                    'מספר רישוי: ${widget.item['license_plate']}'),
+                          for (final entry in const {
+                            'manufacturer': 'יצרן',
+                            'model': 'דגם',
+                            'year': 'שנת ייצור',
+                            'mileage': 'קילומטראז׳',
+                            'hand': 'יד',
+                            'fuel': 'דלק',
+                            'color': 'צבע',
+                            'test_valid_until': 'טסט עד',
+                          }.entries)
+                            if ((vehicleDetails[entry.key] ?? '')
+                                .toString()
+                                .trim()
+                                .isNotEmpty)
+                              _ListingDetailBadge(
+                                  icon: Icons.check_circle_outline,
+                                  text:
+                                      '${entry.value}: ${vehicleDetails[entry.key]}'),
+                          if ((vehicleDetails['transmission'] ?? '')
+                              .toString()
+                              .isNotEmpty)
+                            _ListingDetailBadge(
+                              icon: Icons.settings_outlined,
+                              text: 'תיבה: ${{
+                                    'automatic': 'אוטומטית',
+                                    'manual': 'ידנית',
+                                    'robotic': 'רובוטית',
+                                    'other': 'אחרת'
+                                  }[vehicleDetails['transmission']] ?? vehicleDetails['transmission']}',
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               if ((widget.item['pickup_details'] ?? '')
                   .toString()
                   .trim()
@@ -9963,6 +10391,8 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   final _msgCtrl = TextEditingController();
+  final _msgFocusNode = FocusNode();
+  late final ClipboardImagePasteListener _clipboardImagePasteListener;
   final _scrollCtrl = ScrollController();
   Map<String, dynamic>? _replyTo;
   Map<String, dynamic>? _editingMsg;
@@ -9983,6 +10413,15 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _clipboardImagePasteListener = ClipboardImagePasteListener(
+      focusNode: _msgFocusNode,
+      onImage: (bytes, fileName, mimeType) => _uploadAndSend(
+        XFile.fromData(bytes, name: fileName, mimeType: mimeType),
+        fileName,
+        'image',
+        extraFields: const {'clipboardPaste': 'true'},
+      ),
+    );
     final prefill = (widget.initialText ?? '').trim();
     if (prefill.isNotEmpty) {
       _msgCtrl.text = prefill;
@@ -10306,6 +10745,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _clipboardImagePasteListener.dispose();
     _messageRefreshTimer?.cancel();
     _recordTimer?.cancel();
     _audioRecorder.dispose();
@@ -10319,6 +10759,7 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.off('message:deleted');
     widget.socket?.off('message:edited');
     _msgCtrl.dispose();
+    _msgFocusNode.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
@@ -11091,6 +11532,13 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (_) {}
   }
 
+  Future<void> _sharePhoneContact() async {
+    final contact = await _pickPhoneContact(context);
+    if (contact == null || !mounted) return;
+    _msgCtrl.text = _sharedContactText(contact);
+    await _send();
+  }
+
   void _showAttachMenu() {
     showModalBottomSheet(
       context: context,
@@ -11154,6 +11602,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   },
                 ),
               ],
+            ),
+            const SizedBox(height: 14),
+            _AttachOption(
+              icon: Icons.contact_phone_outlined,
+              label: 'שתף איש קשר',
+              color: Colors.teal,
+              onTap: () {
+                Navigator.pop(context);
+                _sharePhoneContact();
+              },
             ),
             const SizedBox(height: 16),
             Container(
@@ -11398,7 +11856,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
-    final showProgress = fileType != 'image';
+    final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
+    final showProgress = fileType != 'image' || isClipboardPaste;
     final navigator =
         showProgress ? Navigator.of(context, rootNavigator: true) : null;
     final dialogFuture = showProgress
@@ -11438,7 +11897,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (dialogFuture != null) await dialogFuture;
     if (!mounted) return;
     await _applyPrivateUploadResult(result, fileName, fileType,
-        showNotice: fileType != 'image');
+        showNotice: fileType != 'image' || isClipboardPaste);
   }
 
   Future<bool> _applyPrivateUploadResult(
@@ -11452,6 +11911,20 @@ class _ChatScreenState extends State<ChatScreen> {
     final fileUrl = data['url'] as String?;
     switch (result.outcome) {
       case _FileUploadOutcome.failed:
+        setState(() {
+          _messages.add({
+            'id': _newUploadMessageId('failed_'),
+            'text': fileName,
+            'from': widget.me?['id'],
+            'time': _nowTime(),
+            'createdAt': DateTime.now().toIso8601String(),
+            'status': 'failed',
+            'isFile': true,
+            'fileType': fileType,
+            'fileName': fileName,
+          });
+        });
+        _scrollToBottom();
         if (showNotice) _showError(result.error ?? 'שגיאה בהעלאה');
         return false;
       case _FileUploadOutcome.rejected:
@@ -11554,6 +12027,30 @@ class _ChatScreenState extends State<ChatScreen> {
             result.error =
                 sendData['error']?.toString() ?? 'הקובץ הועלה אך לא נשלח';
             if (showNotice && mounted) _showError(result.error!);
+            return false;
+          }
+          if (sendData['requestPending'] == true) {
+            if (!mounted) return false;
+            setState(() {
+              _messages.add({
+                'id': sendData['id'] ?? _newUploadMessageId('request_'),
+                'text': fileName,
+                'from': widget.me?['id'],
+                'time': _nowTime(),
+                'createdAt': DateTime.now().toIso8601String(),
+                'status': 'awaiting_contact_approval',
+                'isFile': true,
+                'fileType': fileType,
+                'fileUrl': fileUrl,
+                'fileName': fileName,
+              });
+            });
+            _scrollToBottom();
+            if (showNotice) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('נשלחה בקשת חברות — הקובץ יימסר לאחר האישור'),
+              ));
+            }
             return false;
           }
         } catch (error) {
@@ -12032,6 +12529,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         Expanded(
                           child: TextField(
                             controller: _msgCtrl,
+                            focusNode: _msgFocusNode,
                             textDirection: TextDirection.rtl,
                             maxLines: 4,
                             minLines: 1,
@@ -12690,6 +13188,16 @@ class _ImageStatusBadge extends StatelessWidget {
         icon = Icons.document_scanner_outlined;
         color = Colors.orange;
         break;
+      case 'awaiting_contact_approval':
+        label = 'ממתין לאישור חברות';
+        icon = Icons.person_add_alt_1;
+        color = Colors.orange;
+        break;
+      case 'failed':
+        label = 'השליחה נכשלה';
+        icon = Icons.error_outline;
+        color = Colors.red;
+        break;
       case 'rejected_scan':
         label = 'נחסם';
         icon = Icons.block;
@@ -13002,6 +13510,115 @@ class _ConsecutiveImageGrid extends StatelessWidget {
   }
 }
 
+class _SharedContactCard extends StatelessWidget {
+  final Map<String, dynamic> contact;
+  const _SharedContactCard(this.contact);
+
+  @override
+  Widget build(BuildContext context) {
+    final name = contact['name']?.toString() ?? 'איש קשר';
+    final phone = contact['phone']?.toString() ?? '';
+    final email = contact['email']?.toString() ?? '';
+    final uri = Uri.parse('$kServer/contact-vcard').replace(queryParameters: {
+      'name': name,
+      if (phone.isNotEmpty) 'phone': phone,
+      if (email.isNotEmpty) 'email': email,
+    });
+    return Container(
+      width: 250,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+          color: Colors.white.withOpacity(.85),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kBorder)),
+      child: Column(children: [
+        Row(children: [
+          const CircleAvatar(
+              backgroundColor: kPrimary,
+              child: Icon(Icons.person, color: Colors.white)),
+          const SizedBox(width: 10),
+          Expanded(
+              child:
+                  Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(name,
+                style:
+                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            if (phone.isNotEmpty) Text(phone, textDirection: TextDirection.ltr),
+            if (email.isNotEmpty)
+              Text(email,
+                  textDirection: TextDirection.ltr,
+                  overflow: TextOverflow.ellipsis),
+          ])),
+        ]),
+        const Divider(),
+        SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () =>
+                  launchUrl(uri, mode: LaunchMode.externalApplication),
+              icon: const Icon(Icons.person_add_alt_1),
+              label: const Text('שמור בטלפון'),
+            )),
+      ]),
+    );
+  }
+}
+
+class _BetshuvaInvitePreview extends StatelessWidget {
+  final String url;
+  const _BetshuvaInvitePreview(this.url);
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: () =>
+            launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
+        child: Container(
+          width: 330,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF8AD9C7))),
+          child: Column(children: [
+            Container(
+                height: 145,
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                        colors: [Color(0xFF38A8EA), Color(0xFF1678C5)])),
+                child:
+                    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Image.asset('icon_source.png', width: 76, height: 76),
+                  const SizedBox(width: 18),
+                  const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text('בתשובה',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold)),
+                        Text('מסר יהודי מחבר',
+                            style:
+                                TextStyle(color: Colors.white, fontSize: 15)),
+                      ]),
+                ])),
+            Container(
+                width: double.infinity,
+                color: const Color(0xFFDDF7D5),
+                padding: const EdgeInsets.all(12),
+                child: const Column(children: [
+                  Text('בתשובה — מסר נקי ויהודי',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  SizedBox(height: 5),
+                  Text('צ׳אטים, קבוצות ומודעות בסביבה מסוננת.'),
+                  Text('betshuva.com', style: TextStyle(color: kSubtext)),
+                ])),
+          ]),
+        ),
+      );
+}
+
 class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic> message;
   final List<Map<String, dynamic>> conversationMessages;
@@ -13033,6 +13650,16 @@ class _MessageBubble extends StatelessWidget {
           child:
               Icon(Icons.hourglass_top, size: 14, color: Colors.orangeAccent),
         );
+      case 'awaiting_contact_approval':
+        return const Tooltip(
+          message: 'ממתין לאישור חברות — הקובץ יישלח לאחר האישור',
+          child: Icon(Icons.person_add_alt_1, size: 15, color: Colors.orange),
+        );
+      case 'failed':
+        return const Tooltip(
+          message: 'השליחה נכשלה',
+          child: Icon(Icons.error_outline, size: 15, color: Colors.red),
+        );
       case 'rejected_scan':
         return const Tooltip(
           message: 'התמונה לא נשלחה',
@@ -13062,16 +13689,24 @@ class _MessageBubble extends StatelessWidget {
 
     // זיהוי קישור מודעה פנימי: betshuva://listing/{id}
     final rawText = message['text'] as String? ?? '';
+    final sharedContact = !isFile ? _sharedContactFromText(rawText) : null;
+    final inviteMatch = !isFile
+        ? RegExp(
+                r'https://betshuva\.com/betshuva-app/invite-v2\.html\?invite=[\w-]+')
+            .firstMatch(rawText)
+        : null;
     final linkRegex = RegExp(r'betshuva://listing/([\w\-]+)');
     final linkMatch = !isFile ? linkRegex.firstMatch(rawText) : null;
     final listingId = linkMatch?.group(1);
     // טקסט נקי ללא שורת הקישור
-    final displayText = linkMatch != null
-        ? rawText
-            .replaceAll('\nbetshuva://listing/$listingId', '')
-            .replaceAll('betshuva://listing/$listingId', '')
-            .trim()
-        : rawText;
+    final displayText = sharedContact != null
+        ? ''
+        : linkMatch != null
+            ? rawText
+                .replaceAll('\nbetshuva://listing/$listingId', '')
+                .replaceAll('betshuva://listing/$listingId', '')
+                .trim()
+            : rawText;
 
     const textColor = kTextDark;
     const timeColor = kSubtext;
@@ -13274,6 +13909,8 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ),
               )
+            else if (sharedContact != null)
+              _SharedContactCard(sharedContact)
             else
               Text(
                 displayText,
@@ -13284,6 +13921,11 @@ class _MessageBubble extends StatelessWidget {
                 textDirection: TextDirection.rtl,
                 textAlign: TextAlign.right,
               ),
+
+            if (inviteMatch != null) ...[
+              const SizedBox(height: 8),
+              _BetshuvaInvitePreview(inviteMatch.group(0)!),
+            ],
 
             // כרטיסיית קישור למודעה
             if (listingId != null) ...[
@@ -14782,6 +15424,8 @@ class GroupChatScreen extends StatefulWidget {
 class _GroupChatScreenState extends State<GroupChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   final _msgCtrl = TextEditingController();
+  final _msgFocusNode = FocusNode();
+  late final ClipboardImagePasteListener _clipboardImagePasteListener;
   final _scrollCtrl = ScrollController();
   bool _loading = true;
   bool _isAdmin = false;
@@ -14807,6 +15451,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
+    _clipboardImagePasteListener = ClipboardImagePasteListener(
+      focusNode: _msgFocusNode,
+      onImage: (bytes, fileName, mimeType) => _uploadGroupFile(
+        XFile.fromData(bytes, name: fileName, mimeType: mimeType),
+        fileName,
+        'image',
+        extraFields: const {'clipboardPaste': 'true'},
+      ),
+    );
     _isAdmin = widget.group['role'] == 'admin';
     _myStatus = widget.group['status'] as String? ?? 'member';
     _reconcileGroupMembership();
@@ -15760,6 +16413,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
+    _clipboardImagePasteListener.dispose();
     _recordTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('group:message');
@@ -15772,6 +16426,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.off('message:edited');
     widget.socket?.off('message:deleted');
     _msgCtrl.dispose();
+    _msgFocusNode.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
@@ -16182,6 +16837,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 14),
+            _AttachOption(
+              icon: Icons.contact_phone_outlined,
+              label: 'שתף איש קשר',
+              color: Colors.teal,
+              onTap: () async {
+                Navigator.pop(context);
+                final contact =
+                    await _pickGroupSharedContact(context, _members);
+                if (contact == null || !mounted) return;
+                _msgCtrl.text = _sharedContactText(contact);
+                await _send();
+              },
+            ),
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -16263,7 +16932,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
-    final showProgress = fileType != 'image';
+    final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
+    final showProgress = fileType != 'image' || isClipboardPaste;
     final navigator =
         showProgress ? Navigator.of(context, rootNavigator: true) : null;
     final dialogFuture = showProgress
@@ -16299,7 +16969,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (dialogFuture != null) await dialogFuture;
     if (!mounted) return;
     await _applyGroupUploadResult(
-        result, fileName, fileType, fileType != 'image');
+        result, fileName, fileType, fileType != 'image' || isClipboardPaste);
   }
 
   Future<void> _applyGroupUploadResult(_FileUploadResult result,
@@ -17367,6 +18037,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           final messageIndex = _messages.length - 1 - i;
                           final msg = _messages[messageIndex];
                           final isMe = msg['isMe'] == true;
+                          final groupText = msg['text'] as String? ?? '';
+                          final sharedContact = msg['fileUrl'] == null
+                              ? _sharedContactFromText(groupText)
+                              : null;
+                          final inviteLink = msg['fileUrl'] == null
+                              ? RegExp(
+                                      r'https://betshuva\.com/betshuva-app/invite-v2\.html\?invite=[\w-]+')
+                                  .firstMatch(groupText)
+                                  ?.group(0)
+                              : null;
                           final isEducationAnnouncement =
                               (msg['text'] as String? ?? '').startsWith('📋 ');
                           final educationStatus =
@@ -17717,6 +18397,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                               ),
                                             ),
                                           )
+                                        else if (sharedContact != null)
+                                          _SharedContactCard(sharedContact)
                                         else
                                           Text(
                                             msg['text'] as String? ?? '',
@@ -17730,6 +18412,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                 height: 1.4),
                                             textDirection: TextDirection.rtl,
                                           ),
+                                        if (inviteLink != null) ...[
+                                          const SizedBox(height: 8),
+                                          _BetshuvaInvitePreview(inviteLink),
+                                        ],
                                         const SizedBox(height: 4),
                                         Row(
                                           mainAxisSize: MainAxisSize.min,
@@ -17826,6 +18512,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   Expanded(
                     child: TextField(
                       controller: _msgCtrl,
+                      focusNode: _msgFocusNode,
                       textDirection: TextDirection.rtl,
                       decoration: InputDecoration(
                         hintText: 'הודעה לקבוצה...',

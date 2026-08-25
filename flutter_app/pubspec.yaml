@@ -49,3 +49,4 @@ flutter:
   assets:
     - icon_source.png
     - assets/fonts/NotoSansHebrew.ttf
+    - assets/guide/
