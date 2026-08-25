@@ -129,6 +129,79 @@ Future<Map<String, String>?> _pickPhoneContact(BuildContext context) async {
   };
 }
 
+Future<Map<String, String>?> _confirmMyContactShare(
+    BuildContext context, String token,
+    {bool isGroup = false}) async {
+  try {
+    final response = await http.get(
+      Uri.parse('$kApi/profile/share-card'),
+      headers: {'Authorization': 'Bearer $token'},
+    );
+    if (!context.mounted) return null;
+    if (response.statusCode != 200) {
+      var message = 'לא ניתן לשתף את פרטי הקשר';
+      try {
+        message = (jsonDecode(response.body) as Map<String, dynamic>)['error']
+                ?.toString() ??
+            message;
+      } catch (_) {}
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+      return null;
+    }
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final contact = <String, String>{
+      'name': data['name']?.toString() ?? '',
+      'phone': data['phone']?.toString() ?? '',
+      'email': data['email']?.toString() ?? '',
+    };
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('שיתוף הפרטים שלי'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isGroup)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'שימו לב: כל חברי הקבוצה יוכלו לראות ולשמור את הפרטים.',
+                  style: TextStyle(color: Colors.orange),
+                ),
+              ),
+            Text('שם: ${contact['name']}'),
+            if (contact['phone']!.isNotEmpty)
+              Text('טלפון: ${contact['phone']}'),
+            if (contact['email']!.isNotEmpty)
+              Text('אימייל: ${contact['email']}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('ביטול'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.send_outlined),
+            label: const Text('שתף'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true ? contact : null;
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('לא ניתן לטעון את פרטי הקשר')),
+      );
+    }
+    return null;
+  }
+}
+
 Future<Map<String, String>?> _pickGroupSharedContact(
     BuildContext context, List<Map<String, dynamic>> members) async {
   final source = await showModalBottomSheet<String>(
@@ -199,6 +272,75 @@ Future<bool> _openWhatsApp(String phone, String message) {
     _whatsAppUri(phone, message),
     mode: LaunchMode.externalApplication,
   );
+}
+
+Future<void> _confirmAndOpenExternalLink(
+    BuildContext context, String rawUrl) async {
+  final uri = Uri.tryParse(rawUrl);
+  if (uri == null || uri.scheme != 'https') return;
+  final host = uri.host.toLowerCase();
+  final isBetshuva = host == 'betshuva.com' || host.endsWith('.betshuva.com');
+  if (!isBetshuva) {
+    final approved = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+            titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+            contentPadding: const EdgeInsets.fromLTRB(22, 12, 22, 8),
+            title: Row(children: [
+              ClipOval(
+                child: Image.asset('assets/guide/aviel-guide.png',
+                    width: 64, height: 64, fit: BoxFit.cover),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text('אביאל מבקש לעצור רגע',
+                    textAlign: TextAlign.right,
+                    style:
+                        TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
+              ),
+            ]),
+            content: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Text(
+                'אתה עומד לצאת מבתשובה ולעבור לאתר חיצוני. הקישור עבר בדיקות אוטומטיות, אך אין אפשרות להבטיח שאתר חיצוני בטוח לחלוטין. הלחיצה והמשך השימוש באתר הם באחריותך.',
+                textAlign: TextAlign.right,
+                style: TextStyle(height: 1.45),
+              ),
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFFFF4DF),
+                    borderRadius: BorderRadius.circular(10)),
+                child: Text(host,
+                    textDirection: TextDirection.ltr,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ]),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('חזרה לבתשובה')),
+              FilledButton.icon(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  icon: const Icon(Icons.open_in_new, size: 18),
+                  label: const Text('המשך לאתר')),
+            ],
+          ),
+        ) ??
+        false;
+    if (!approved || !context.mounted) return;
+  }
+  final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  if (!opened && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('לא ניתן לפתוח את הקישור')),
+    );
+  }
 }
 
 Uri _deviceSmsUri(String phone, String message) => Uri(
@@ -595,8 +737,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.96';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.96.apk';
+const kVersion = '1.2.98';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.98.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -4938,6 +5080,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   late Future<bool> _birthDateReady;
+  bool _exitDialogOpen = false;
 
   @override
   void initState() {
@@ -4959,25 +5102,55 @@ class _MainShellState extends State<MainShell> {
     }
   }
 
+  Future<void> _confirmExit() async {
+    if (_exitDialogOpen || !mounted) return;
+    _exitDialogOpen = true;
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('יציאה מהאפליקציה'),
+        content: const Text('האם אתם בטוחים שברצונכם לצאת?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('ביטול'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('יציאה'),
+          ),
+        ],
+      ),
+    );
+    _exitDialogOpen = false;
+    if (shouldExit == true) await SystemNavigator.pop();
+  }
+
   @override
-  Widget build(BuildContext context) => FutureBuilder<bool>(
-        future: _birthDateReady,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
-          }
-          if (snapshot.data != true) {
-            return _CompleteBirthDateScreen(
-              token: widget.token,
-              onCompleted: () => setState(() {
-                _birthDateReady = Future.value(true);
-              }),
-            );
-          }
-          return _MainShellContent(token: widget.token);
+  Widget build(BuildContext context) => PopScope(
+        canPop: kIsWeb,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && !kIsWeb) _confirmExit();
         },
+        child: FutureBuilder<bool>(
+          future: _birthDateReady,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (snapshot.data != true) {
+              return _CompleteBirthDateScreen(
+                token: widget.token,
+                onCompleted: () => setState(() {
+                  _birthDateReady = Future.value(true);
+                }),
+              );
+            }
+            return _MainShellContent(token: widget.token);
+          },
+        ),
       );
 }
 
@@ -5258,18 +5431,13 @@ class _MainShellContentState extends State<_MainShellContent> {
     final request = _messageRequests.first;
     final senderName =
         request['sender_name'] ?? request['senderName'] ?? 'משתמש';
-    final preview = request['body'] ??
-        request['text'] ??
-        request['file_name'] ??
-        request['fileName'] ??
-        'קובץ';
     final accepted = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) => AlertDialog(
         title: const Text('בקשת הודעה'),
         content: Text(
-            '$senderName רוצה לשלוח לך הודעה:\n“$preview”\n\nלהוסיף אותו כחבר?'),
+            '$senderName רוצה לשלוח לך הודעה.\n\nלהוסיף אותו כחבר ולאפשר את קבלת ההודעה?'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
@@ -5988,14 +6156,267 @@ class _BrandAppBarTitle extends StatelessWidget {
 const _kCategories = [
   'הכל',
   'רכב',
+  'נדל״ן',
   'רהיטים',
   'אלקטרוניקה',
-  'בגדים',
+  'מחשבים',
+  'טלפונים וטאבלטים',
+  'מוצרי חשמל',
+  'בגדים והנעלה',
+  'תינוקות וילדים',
   'ספרים',
-  'כלי בית',
-  'צעצועים',
+  'יודאיקה ותשמישי קדושה',
+  'כלי בית ומטבח',
+  'צעצועים ומשחקים',
+  'ספורט ופנאי',
+  'אופניים וקורקינטים',
+  'כלי עבודה',
+  'גינה וחצר',
+  'כלי נגינה',
+  'ציוד משרדי',
+  'ציוד לבעלי חיים',
+  'אספנות ואמנות',
   'אחר'
 ];
+
+const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
+  'רהיטים': [
+    ('item_type', 'סוג הרהיט', 'שולחן, ארון, מיטה...'),
+    ('material', 'חומר', 'עץ מלא, מתכת...'),
+    ('dimensions', 'מידות', 'רוחב × עומק × גובה'),
+    ('color', 'צבע', ''),
+    ('assembly', 'פירוק והרכבה', 'מתפרק / דורש הובלה שלם'),
+    ('age', 'גיל המוצר', ''),
+    ('defects', 'פגמים ובלאי', '')
+  ],
+  'אלקטרוניקה': [
+    ('item_type', 'סוג המוצר', ''),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם מדויק', ''),
+    ('purchase_year', 'שנת רכישה', ''),
+    ('warranty', 'אחריות', 'עד מתי וממי'),
+    ('connectivity', 'חיבורים וקישוריות', ''),
+    ('included', 'מה כלול', 'מטען, שלט, אריזה...'),
+    ('defects', 'תקלות או פגמים', '')
+  ],
+  'מחשבים': [
+    ('computer_type', 'סוג מחשב', 'נייד / נייח / מיני'),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם מדויק', ''),
+    ('processor', 'מעבד', ''),
+    ('memory', 'זיכרון RAM', ''),
+    ('storage', 'אחסון', 'נפח וסוג SSD/HDD'),
+    ('graphics', 'כרטיס מסך', ''),
+    ('screen', 'מסך', 'גודל, רזולוציה'),
+    ('operating_system', 'מערכת הפעלה', ''),
+    ('battery', 'מצב סוללה', ''),
+    ('warranty', 'אחריות', ''),
+    ('included', 'ציוד נלווה', '')
+  ],
+  'טלפונים וטאבלטים': [
+    ('device_type', 'סוג מכשיר', 'טלפון / טאבלט / שעון'),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם מדויק', ''),
+    ('storage', 'נפח אחסון', ''),
+    ('color', 'צבע', ''),
+    ('battery', 'בריאות סוללה', ''),
+    ('sim', 'SIM וקישוריות', ''),
+    ('warranty', 'אחריות', ''),
+    ('included', 'מה כלול', ''),
+    ('defects', 'תקלות או תיקונים', '')
+  ],
+  'מוצרי חשמל': [
+    ('appliance_type', 'סוג המכשיר', ''),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם', ''),
+    ('dimensions', 'מידות', ''),
+    ('energy_rating', 'דירוג אנרגטי', ''),
+    ('purchase_year', 'שנת רכישה', ''),
+    ('warranty', 'אחריות', ''),
+    ('installation', 'התקנה נדרשת', ''),
+    ('defects', 'תקלות או פגמים', '')
+  ],
+  'בגדים והנעלה': [
+    ('item_type', 'סוג הפריט', ''),
+    ('audience', 'מיועד עבור', 'גברים / נשים / ילדים'),
+    ('size', 'מידה', ''),
+    ('brand', 'מותג', ''),
+    ('color', 'צבע', ''),
+    ('material', 'בד / חומר', ''),
+    ('season', 'עונה', ''),
+    ('measurements', 'מידות מדויקות', '')
+  ],
+  'תינוקות וילדים': [
+    ('item_type', 'סוג הפריט', ''),
+    ('age_range', 'טווח גיל או משקל', ''),
+    ('brand', 'יצרן', ''),
+    ('dimensions', 'מידות', ''),
+    ('safety_standard', 'תקן בטיחות', ''),
+    ('expiry_date', 'תוקף', 'אם רלוונטי'),
+    ('washable', 'ניקוי וכביסה', ''),
+    ('included', 'חלקים נלווים', '')
+  ],
+  'ספרים': [
+    ('book_type', 'סוג הספר', 'קודש, לימוד, ילדים...'),
+    ('title_author', 'מחבר / עורך', ''),
+    ('publisher', 'הוצאה', ''),
+    ('language', 'שפה', ''),
+    ('edition', 'מהדורה ושנת הדפסה', ''),
+    ('binding', 'כריכה', ''),
+    ('pages', 'מספר כרכים / עמודים', ''),
+    ('dedication', 'הקדשה או סימונים', '')
+  ],
+  'יודאיקה ותשמישי קדושה': [
+    ('item_type', 'סוג הפריט', ''),
+    ('custom', 'נוסח / מנהג', ''),
+    ('material', 'חומר', ''),
+    ('community_style', 'סגנון / עדה', ''),
+    ('scribe_or_maker', 'סופר / יצרן', ''),
+    ('dimensions', 'מידות', ''),
+    ('certification', 'הגהה / תעודה', ''),
+    ('condition_notes', 'מצב הלכתי ופיזי', '')
+  ],
+  'כלי בית ומטבח': [
+    ('item_type', 'סוג הפריט', ''),
+    ('brand', 'יצרן', ''),
+    ('material', 'חומר', ''),
+    ('dimensions', 'מידות', ''),
+    ('capacity', 'נפח / קיבולת', ''),
+    ('dishwasher_safe', 'התאמה למדיח', ''),
+    ('set_contents', 'תכולת הסט', '')
+  ],
+  'צעצועים ומשחקים': [
+    ('item_type', 'סוג המשחק', ''),
+    ('age_range', 'טווח גיל', ''),
+    ('brand', 'יצרן', ''),
+    ('players', 'מספר משתתפים', ''),
+    ('language', 'שפה', ''),
+    ('complete', 'שלמות החלקים', ''),
+    ('batteries', 'סוללות', ''),
+    ('safety_notes', 'הערות בטיחות', '')
+  ],
+  'ספורט ופנאי': [
+    ('sport_type', 'ענף ספורט', ''),
+    ('item_type', 'סוג הציוד', ''),
+    ('brand', 'יצרן', ''),
+    ('size', 'מידה', ''),
+    ('weight', 'משקל', ''),
+    ('skill_level', 'רמת משתמש', ''),
+    ('included', 'אביזרים כלולים', ''),
+    ('defects', 'בלאי ופגמים', '')
+  ],
+  'אופניים וקורקינטים': [
+    ('vehicle_type', 'סוג הכלי', ''),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם', ''),
+    ('wheel_size', 'גודל גלגל', ''),
+    ('frame_size', 'מידת שלדה', ''),
+    ('gears', 'הילוכים', ''),
+    ('electric', 'חשמלי / רגיל', ''),
+    ('battery', 'סוללה', ''),
+    ('range', 'טווח נסיעה', ''),
+    ('included', 'אביזרים', '')
+  ],
+  'כלי עבודה': [
+    ('tool_type', 'סוג הכלי', ''),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם', ''),
+    ('power_source', 'מקור כוח', 'חשמל / סוללה / ידני'),
+    ('voltage', 'מתח', ''),
+    ('power', 'הספק', ''),
+    ('accessories', 'אביזרים', ''),
+    ('warranty', 'אחריות', '')
+  ],
+  'גינה וחצר': [
+    ('item_type', 'סוג הפריט', ''),
+    ('brand', 'יצרן', ''),
+    ('dimensions', 'מידות', ''),
+    ('material', 'חומר', ''),
+    ('power_source', 'מקור כוח', ''),
+    ('weather_resistant', 'עמידות במזג אוויר', ''),
+    ('assembly', 'הרכבה', ''),
+    ('included', 'מה כלול', '')
+  ],
+  'כלי נגינה': [
+    ('instrument_type', 'סוג הכלי', ''),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם', ''),
+    ('size', 'גודל', ''),
+    ('year', 'שנת ייצור', ''),
+    ('country', 'ארץ ייצור', ''),
+    ('accessories', 'אביזרים ונרתיק', ''),
+    ('service_history', 'טיפולים ותיקונים', '')
+  ],
+  'ציוד משרדי': [
+    ('item_type', 'סוג הציוד', ''),
+    ('brand', 'יצרן', ''),
+    ('model', 'דגם', ''),
+    ('dimensions', 'מידות', ''),
+    ('compatibility', 'תאימות', ''),
+    ('quantity_per_pack', 'כמות באריזה', ''),
+    ('included', 'מה כלול', '')
+  ],
+  'ציוד לבעלי חיים': [
+    ('animal_type', 'סוג בעל החיים', ''),
+    ('item_type', 'סוג הציוד', ''),
+    ('brand', 'יצרן', ''),
+    ('size', 'מידה', ''),
+    ('dimensions', 'מידות', ''),
+    ('material', 'חומר', ''),
+    ('washable', 'אפשרות ניקוי', ''),
+    ('safety_notes', 'הערות בטיחות', '')
+  ],
+  'אספנות ואמנות': [
+    ('item_type', 'סוג הפריט', ''),
+    ('artist_or_maker', 'אמן / יצרן', ''),
+    ('year_period', 'שנה / תקופה', ''),
+    ('material', 'חומר וטכניקה', ''),
+    ('dimensions', 'מידות', ''),
+    ('signed', 'חתימה', ''),
+    ('provenance', 'מקור והיסטוריה', ''),
+    ('certificate', 'תעודה / הערכה', '')
+  ],
+  'אחר': [
+    ('item_type', 'סוג הפריט', ''),
+    ('brand', 'יצרן / מותג', ''),
+    ('model', 'דגם', ''),
+    ('dimensions', 'מידות', ''),
+    ('material', 'חומר', ''),
+    ('included', 'מה כלול', ''),
+    ('defects', 'פגמים או חוסרים', '')
+  ],
+};
+
+Map<String, TextEditingController> _newCategoryDetailControllers() => {
+      for (final fields in _kCategoryDetailFields.values)
+        for (final field in fields) field.$1: TextEditingController(),
+    };
+
+List<(String, String, String)> _listingSearchFields(String category) {
+  if (category == 'רכב') {
+    return const [
+      ('manufacturer', 'יצרן', 'לדוגמה Toyota'),
+      ('model', 'דגם', ''),
+      ('year', 'שנת ייצור', ''),
+      ('fuel', 'סוג דלק', ''),
+      ('transmission', 'תיבת הילוכים', 'automatic / manual'),
+      ('color', 'צבע', ''),
+    ];
+  }
+  if (category == 'נדל״ן') {
+    return const [
+      ('deal_type', 'סוג עסקה', 'rent להשכרה / sale למכירה'),
+      ('property_type', 'סוג נכס', 'דירה, בית פרטי...'),
+      ('street', 'רחוב או שכונה', ''),
+      ('rooms', 'מספר חדרים', ''),
+      ('area_sqm', 'שטח במ״ר', ''),
+      ('floor', 'קומה', ''),
+      ('entry_date', 'מועד כניסה', ''),
+      ('furniture', 'ריהוט', 'ללא / חלקי / מלא'),
+    ];
+  }
+  return _kCategoryDetailFields[category] ?? const [];
+}
 
 const _kIsraeliLocations = [
   'כל הארץ',
@@ -6283,6 +6704,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
   double? _minPrice;
   double? _maxPrice;
   String _sortFilter = 'newest';
+  String _conditionFilter = 'all';
+  Map<String, String> _detailFilters = {};
   double _radius = 0; // 0 = no radius filter
   Map<String, dynamic>? _selectedItem;
   bool _showPostForm = false;
@@ -6327,6 +6750,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
       _minPrice = null;
       _maxPrice = null;
       _sortFilter = 'newest';
+      _conditionFilter = 'all';
+      _detailFilters = {};
       _radius = 0;
     });
     _load();
@@ -6344,6 +6769,12 @@ class _ListingsScreenState extends State<ListingsScreen> {
       if (_minPrice != null) params['minPrice'] = _minPrice.toString();
       if (_maxPrice != null) params['maxPrice'] = _maxPrice.toString();
       if (_sortFilter != 'newest') params['sort'] = _sortFilter;
+      if (_conditionFilter != 'all') params['condition'] = _conditionFilter;
+      for (final entry in _detailFilters.entries) {
+        if (entry.value.trim().isNotEmpty) {
+          params['detail_${entry.key}'] = entry.value.trim();
+        }
+      }
       if (_radius > 0) params['radius'] = _radius.toStringAsFixed(0);
       final uri = Uri.parse('$kApi/listings').replace(queryParameters: params);
       final res = await http
@@ -6587,6 +7018,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
       _minPrice != null ||
       _maxPrice != null ||
       _radius > 0 ||
+      _conditionFilter != 'all' ||
+      _detailFilters.isNotEmpty ||
       _sortFilter != 'newest';
 
   Widget _quickFilterChip(String value, String label) {
@@ -6614,6 +7047,64 @@ class _ListingsScreenState extends State<ListingsScreen> {
     );
   }
 
+  Widget _advancedDetailField((String, String, String) field,
+      Map<String, TextEditingController> controllers) {
+    const options = <String, List<(String, String)>>{
+      'deal_type': [('rent', 'השכרה'), ('sale', 'מכירה')],
+      'property_type': [
+        ('apartment', 'דירה'),
+        ('house', 'בית פרטי'),
+        ('garden', 'דירת גן'),
+        ('penthouse', 'פנטהאוז'),
+        ('duplex', 'דופלקס'),
+        ('studio', 'יחידת דיור / סטודיו'),
+        ('other', 'אחר')
+      ],
+      'transmission': [
+        ('automatic', 'אוטומטית'),
+        ('manual', 'ידנית'),
+        ('robotic', 'רובוטית'),
+        ('other', 'אחרת')
+      ],
+      'furniture': [
+        ('none', 'ללא ריהוט'),
+        ('partial', 'ריהוט חלקי'),
+        ('full', 'מרוהט')
+      ],
+    };
+    final controller =
+        controllers.putIfAbsent(field.$1, () => TextEditingController());
+    final values = options[field.$1];
+    if (values != null) {
+      final current = values.any((option) => option.$1 == controller.text)
+          ? controller.text
+          : null;
+      return DropdownButtonFormField<String>(
+        value: current,
+        decoration: InputDecoration(
+            labelText: field.$2,
+            isDense: true,
+            border: const OutlineInputBorder()),
+        items: [
+          const DropdownMenuItem(value: '', child: Text('הכול')),
+          for (final option in values)
+            DropdownMenuItem(value: option.$1, child: Text(option.$2)),
+        ],
+        onChanged: (value) => controller.text = value ?? '',
+      );
+    }
+    return TextField(
+      controller: controller,
+      textDirection: TextDirection.rtl,
+      decoration: InputDecoration(
+        labelText: field.$2,
+        hintText: field.$3.isEmpty ? null : field.$3,
+        isDense: true,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+
   void _showFilterSheet() {
     final cityCtrl = TextEditingController(text: _cityFilter);
     final queryCtrl = TextEditingController(text: _queryFilter);
@@ -6624,6 +7115,11 @@ class _ListingsScreenState extends State<ListingsScreen> {
     String tmpType = _typeFilter;
     String tmpCategory = _catFilter;
     String tmpSort = _sortFilter;
+    String tmpCondition = _conditionFilter;
+    final detailCtrls = <String, TextEditingController>{
+      for (final entry in _detailFilters.entries)
+        entry.key: TextEditingController(text: entry.value),
+    };
     double tmpRadius = _radius;
     showModalBottomSheet(
         context: context,
@@ -6680,9 +7176,40 @@ class _ListingsScreenState extends State<ListingsScreen> {
                                   .map((category) => DropdownMenuItem(
                                       value: category, child: Text(category)))
                                   .toList(),
-                              onChanged: (value) =>
-                                  setS(() => tmpCategory = value ?? 'הכל'),
+                              onChanged: (value) => setS(() {
+                                tmpCategory = value ?? 'הכל';
+                                for (final controller in detailCtrls.values) {
+                                  controller.clear();
+                                }
+                              }),
                             ),
+                            if (tmpCategory != 'הכל') ...[
+                              const SizedBox(height: 12),
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF4F9FD),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: kBorder),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    Text('סינון לפי מאפייני $tmpCategory',
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: kPrimary)),
+                                    const SizedBox(height: 10),
+                                    for (final field in _listingSearchFields(
+                                        tmpCategory)) ...[
+                                      _advancedDetailField(field, detailCtrls),
+                                      const SizedBox(height: 9),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ],
                             const SizedBox(height: 12),
                             Row(children: [
                               Expanded(
@@ -6711,6 +7238,34 @@ class _ListingsScreenState extends State<ListingsScreen> {
                               label: 'עיר או אזור',
                               hint: 'התחל להקליד ובחר מהרשימה',
                             ),
+                            if (tmpCategory != 'רכב' &&
+                                tmpCategory != 'נדל״ן') ...[
+                              const SizedBox(height: 12),
+                              DropdownButtonFormField<String>(
+                                value: tmpCondition,
+                                decoration: const InputDecoration(
+                                    labelText: 'מצב המוצר',
+                                    prefixIcon: Icon(Icons.verified_outlined)),
+                                items: const [
+                                  DropdownMenuItem(
+                                      value: 'all', child: Text('כל המצבים')),
+                                  DropdownMenuItem(
+                                      value: 'new', child: Text('חדש')),
+                                  DropdownMenuItem(
+                                      value: 'like_new',
+                                      child: Text('כמו חדש')),
+                                  DropdownMenuItem(
+                                      value: 'good', child: Text('מצב טוב')),
+                                  DropdownMenuItem(
+                                      value: 'fair', child: Text('מצב סביר')),
+                                  DropdownMenuItem(
+                                      value: 'for_parts',
+                                      child: Text('לתיקון / לחלקים')),
+                                ],
+                                onChanged: (value) =>
+                                    setS(() => tmpCondition = value ?? 'all'),
+                              ),
+                            ],
                             const SizedBox(height: 16),
                             Text(
                                 'רדיוס: ${tmpRadius == 0 ? "ללא" : "${tmpRadius.toInt()} ק״מ"}'),
@@ -6756,6 +7311,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
                                     _minPrice = null;
                                     _maxPrice = null;
                                     _sortFilter = 'newest';
+                                    _conditionFilter = 'all';
+                                    _detailFilters = {};
                                     _radius = 0;
                                   });
                                   Navigator.pop(ctx);
@@ -6780,6 +7337,22 @@ class _ListingsScreenState extends State<ListingsScreen> {
                                     _maxPrice = double.tryParse(
                                         maxPriceCtrl.text.trim());
                                     _sortFilter = tmpSort;
+                                    _conditionFilter = tmpCondition;
+                                    _detailFilters = tmpCategory == 'הכל'
+                                        ? {}
+                                        : {
+                                            for (final field
+                                                in _listingSearchFields(
+                                                    tmpCategory))
+                                              if ((detailCtrls[field.$1]
+                                                          ?.text
+                                                          .trim() ??
+                                                      '')
+                                                  .isNotEmpty)
+                                                field.$1: detailCtrls[field.$1]!
+                                                    .text
+                                                    .trim(),
+                                          };
                                     _radius = tmpRadius;
                                   });
                                   Navigator.pop(ctx);
@@ -7188,6 +7761,71 @@ class _MyListingCard extends StatelessWidget {
 }
 
 // ── Post Listing Screen ───────────────────────────────────────────
+class _PropertyEntryDateField extends StatelessWidget {
+  final TextEditingController controller;
+  final VoidCallback onChanged;
+  const _PropertyEntryDateField({
+    required this.controller,
+    required this.onChanged,
+  });
+
+  DateTime? _currentDate() {
+    final parts = controller.text.split('/');
+    if (parts.length != 3) return null;
+    final day = int.tryParse(parts[0]);
+    final month = int.tryParse(parts[1]);
+    final year = int.tryParse(parts[2]);
+    if (day == null || month == null || year == null) return null;
+    final value = DateTime(year, month, day);
+    return value.day == day && value.month == month && value.year == year
+        ? value
+        : null;
+  }
+
+  @override
+  Widget build(BuildContext context) => Row(children: [
+        Expanded(
+          child: InkWell(
+            onTap: () async {
+              final now = DateTime.now();
+              final selected = await showDatePicker(
+                context: context,
+                initialDate: _currentDate() ?? now,
+                firstDate: now.subtract(const Duration(days: 365)),
+                lastDate: DateTime(now.year + 10, 12, 31),
+                helpText: 'בחירת תאריך כניסה',
+                cancelText: 'ביטול',
+                confirmText: 'בחירה',
+              );
+              if (selected == null) return;
+              controller.text =
+                  '${selected.day.toString().padLeft(2, '0')}/${selected.month.toString().padLeft(2, '0')}/${selected.year}';
+              onChanged();
+            },
+            child: InputDecorator(
+              decoration: const InputDecoration(
+                labelText: 'תאריך כניסה',
+                prefixIcon: Icon(Icons.event_outlined),
+                border: OutlineInputBorder(),
+              ),
+              child: Text(
+                controller.text.isEmpty ? 'בחר תאריך' : controller.text,
+                textDirection: TextDirection.ltr,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        OutlinedButton(
+          onPressed: () {
+            controller.text = 'מיידי';
+            onChanged();
+          },
+          child: const Text('מיידי'),
+        ),
+      ]);
+}
+
 class PostListingScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
@@ -7221,6 +7859,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final _vehicleFuelCtrl = TextEditingController();
   final _vehicleColorCtrl = TextEditingController();
   final _vehicleTestCtrl = TextEditingController();
+  final _propertyStreetCtrl = TextEditingController();
+  final _propertyRoomsCtrl = TextEditingController();
+  final _propertyFloorCtrl = TextEditingController();
+  final _propertyTotalFloorsCtrl = TextEditingController();
+  final _propertyAreaCtrl = TextEditingController();
+  final _propertyEntryCtrl = TextEditingController();
+  final _propertyArnonaCtrl = TextEditingController();
+  final _propertyVaadCtrl = TextEditingController();
+  final _categoryDetailCtrls = _newCategoryDetailControllers();
   late final _cityCtrl =
       TextEditingController(text: widget.me?['city'] as String? ?? '');
   String _category = 'אחר';
@@ -7238,8 +7885,66 @@ class _PostListingScreenState extends State<PostListingScreen> {
   bool _vehicleLookupLoading = false;
   String? _vehicleLookupMessage;
   String _vehicleTransmission = 'automatic';
+  String _propertyDealType = 'rent';
+  String _propertyType = 'apartment';
+  String _propertyFurniture = 'none';
+  bool _propertyParking = false;
+  bool _propertyElevator = false;
+  bool _propertyMamad = false;
+  bool _propertyBalcony = false;
+  bool _propertyAccessible = false;
+  bool _propertyStorage = false;
+  bool _propertyAirConditioning = false;
+  bool _propertyPets = false;
   Timer? _plateLookupTimer;
   String _mirroredTitle = '';
+
+  Map<String, String> _categoryDetailsPayload() => {
+        for (final field in _kCategoryDetailFields[_category] ?? const [])
+          if ((_categoryDetailCtrls[field.$1]?.text.trim() ?? '').isNotEmpty)
+            field.$1: _categoryDetailCtrls[field.$1]!.text.trim(),
+      };
+
+  Widget _categorySpecificFields() {
+    final fields = _kCategoryDetailFields[_category] ?? const [];
+    if (fields.isEmpty) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F9FD),
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('מאפייני $_category',
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        const Text('מילוי מדויק יעזור לקונים למצוא ולהבין את המוצר',
+            style: TextStyle(fontSize: 12, color: kSubtext)),
+        const SizedBox(height: 10),
+        for (var index = 0; index < fields.length; index += 2) ...[
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(child: _categoryDetailField(fields[index])),
+            if (index + 1 < fields.length) ...[
+              const SizedBox(width: 10),
+              Expanded(child: _categoryDetailField(fields[index + 1])),
+            ],
+          ]),
+          if (index + 2 < fields.length) const SizedBox(height: 10),
+        ],
+      ]),
+    );
+  }
+
+  Widget _categoryDetailField((String, String, String) field) => TextField(
+        controller: _categoryDetailCtrls[field.$1],
+        textDirection: TextDirection.rtl,
+        decoration: InputDecoration(
+          labelText: field.$2,
+          hintText: field.$3.isEmpty ? null : field.$3,
+          border: const OutlineInputBorder(),
+        ),
+      );
 
   @override
   void initState() {
@@ -7498,6 +8203,14 @@ class _PostListingScreenState extends State<PostListingScreen> {
           const SnackBar(content: Text('יש להזין מחיר תקין, 0 או יותר')));
       return;
     }
+    if (_category == 'נדל״ן' &&
+        (parsedPrice <= 0 ||
+            _propertyRoomsCtrl.text.trim().isEmpty ||
+            _propertyAreaCtrl.text.trim().isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('במודעת נדל״ן נדרשים מחיר, מספר חדרים ושטח במ״ר')));
+      return;
+    }
     final listingType = parsedPrice == 0 ? 'free' : 'sale';
     if (_cityCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context)
@@ -7547,6 +8260,30 @@ class _PostListingScreenState extends State<PostListingScreen> {
             'color': _vehicleColorCtrl.text.trim(),
             'test_valid_until': _vehicleTestCtrl.text.trim(),
           },
+        if (_category == 'נדל״ן')
+          'property_details': {
+            'deal_type': _propertyDealType,
+            'property_type': _propertyType,
+            'street': _propertyStreetCtrl.text.trim(),
+            'rooms': _propertyRoomsCtrl.text.trim(),
+            'floor': _propertyFloorCtrl.text.trim(),
+            'total_floors': _propertyTotalFloorsCtrl.text.trim(),
+            'area_sqm': _propertyAreaCtrl.text.trim(),
+            'entry_date': _propertyEntryCtrl.text.trim(),
+            'arnona': _propertyArnonaCtrl.text.trim(),
+            'building_fee': _propertyVaadCtrl.text.trim(),
+            'furniture': _propertyFurniture,
+            'parking': _propertyParking,
+            'elevator': _propertyElevator,
+            'mamad': _propertyMamad,
+            'balcony': _propertyBalcony,
+            'accessible': _propertyAccessible,
+            'storage': _propertyStorage,
+            'air_conditioning': _propertyAirConditioning,
+            'pets_allowed': _propertyPets,
+          },
+        if (_category != 'רכב' && _category != 'נדל״ן')
+          'category_details': _categoryDetailsPayload(),
       };
       body['price'] = parsedPrice;
       final res = await http
@@ -7607,6 +8344,17 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _vehicleFuelCtrl.dispose();
     _vehicleColorCtrl.dispose();
     _vehicleTestCtrl.dispose();
+    _propertyStreetCtrl.dispose();
+    _propertyRoomsCtrl.dispose();
+    _propertyFloorCtrl.dispose();
+    _propertyTotalFloorsCtrl.dispose();
+    _propertyAreaCtrl.dispose();
+    _propertyEntryCtrl.dispose();
+    _propertyArnonaCtrl.dispose();
+    _propertyVaadCtrl.dispose();
+    for (final controller in _categoryDetailCtrls.values.toSet()) {
+      controller.dispose();
+    }
     _cityCtrl.dispose();
     super.dispose();
   }
@@ -7653,6 +8401,14 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       const SizedBox(height: 12),
                       _vehicleFields(),
                     ],
+                    if (_category == 'נדל״ן') ...[
+                      const SizedBox(height: 12),
+                      _propertyFields(),
+                    ],
+                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
+                      const SizedBox(height: 12),
+                      _categorySpecificFields(),
+                    ],
                     const SizedBox(height: 12),
                     // Title
                     TextField(
@@ -7671,17 +8427,25 @@ class _PostListingScreenState extends State<PostListingScreen> {
                             labelText: 'תיאור מפורט *',
                             hintText: _category == 'רכב'
                                 ? 'מצב הרכב, טיפולים, בעלות קודמת, פגמים וכל פרט חשוב'
-                                : 'מצב המוצר, מידות, גיל, פגמים וכל פרט חשוב',
+                                : _category == 'נדל״ן'
+                                    ? 'תיאור הנכס, הסביבה, כיווני אוויר, מצב השיפוץ וכל פרט חשוב'
+                                    : 'מצב המוצר, מידות, גיל, פגמים וכל פרט חשוב',
                             border: const OutlineInputBorder())),
                     const SizedBox(height: 12),
                     TextField(
                         controller: _priceCtrl,
                         keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                            labelText: 'מחיר (₪) — 0 למסירה',
+                        decoration: InputDecoration(
+                            labelText: _category == 'נדל״ן'
+                                ? (_propertyDealType == 'rent'
+                                    ? 'שכר דירה חודשי (₪) *'
+                                    : 'מחיר מכירה (₪) *')
+                                : 'מחיר (₪) — 0 למסירה',
                             hintText: '0',
-                            helperText: 'מחיר 0 יסווג את המודעה כמסירה',
-                            border: OutlineInputBorder(),
+                            helperText: _category == 'נדל״ן'
+                                ? 'יש להזין את המחיר המבוקש ללא פסיקים'
+                                : 'מחיר 0 יסווג את המודעה כמסירה',
+                            border: const OutlineInputBorder(),
                             prefixText: '₪ ')),
                     const SizedBox(height: 12),
                     SwitchListTile(
@@ -7691,7 +8455,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       value: _negotiable,
                       onChanged: (value) => setState(() => _negotiable = value),
                     ),
-                    if (_category != 'רכב') ...[
+                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
                         value: _condition,
@@ -7731,7 +8495,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       label: 'עיר או אזור *',
                       hint: 'התחל להקליד ובחר מהרשימה',
                     ),
-                    if (_category != 'רכב') ...[
+                    if (_category != 'רכב' && _category != 'נדל״ן') ...[
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
                         value: _deliveryMethod,
@@ -8090,6 +8854,192 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
+  Widget _propertyFields() {
+    Widget numberField(TextEditingController controller, String label,
+            {bool decimal = false}) =>
+        TextField(
+          controller: controller,
+          keyboardType: TextInputType.numberWithOptions(decimal: decimal),
+          inputFormatters: decimal
+              ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))]
+              : [FilteringTextInputFormatter.digitsOnly],
+          decoration: InputDecoration(
+              labelText: label, border: const OutlineInputBorder()),
+        );
+    Widget feature(String label, IconData icon, bool value,
+            ValueChanged<bool> onChanged) =>
+        CheckboxListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          secondary: Icon(icon, color: kPrimary, size: 20),
+          title: Text(label),
+          value: value,
+          onChanged: (checked) => onChanged(checked == true),
+        );
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F9FD),
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Row(children: [
+          Icon(Icons.apartment_outlined, color: kPrimary),
+          SizedBox(width: 8),
+          Text('מאפייני הנכס',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        ]),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              value: _propertyDealType,
+              decoration: const InputDecoration(
+                  labelText: 'סוג עסקה *', border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'rent', child: Text('השכרה')),
+                DropdownMenuItem(value: 'sale', child: Text('מכירה')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _propertyDealType = value ?? 'rent'),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              value: _propertyType,
+              decoration: const InputDecoration(
+                  labelText: 'סוג נכס *', border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'apartment', child: Text('דירה')),
+                DropdownMenuItem(value: 'house', child: Text('בית פרטי')),
+                DropdownMenuItem(value: 'garden', child: Text('דירת גן')),
+                DropdownMenuItem(value: 'penthouse', child: Text('פנטהאוז')),
+                DropdownMenuItem(value: 'duplex', child: Text('דופלקס')),
+                DropdownMenuItem(
+                    value: 'studio', child: Text('יחידת דיור / סטודיו')),
+                DropdownMenuItem(value: 'other', child: Text('אחר')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _propertyType = value ?? 'apartment'),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _propertyStreetCtrl,
+          textDirection: TextDirection.rtl,
+          decoration: const InputDecoration(
+            labelText: 'רחוב / שכונה',
+            helperText: 'אין חובה לפרסם מספר בית מדויק',
+            prefixIcon: Icon(Icons.location_on_outlined),
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+              child: numberField(_propertyRoomsCtrl, 'חדרים', decimal: true)),
+          const SizedBox(width: 8),
+          Expanded(child: numberField(_propertyAreaCtrl, 'שטח במ״ר')),
+          const SizedBox(width: 8),
+          Expanded(child: numberField(_propertyFloorCtrl, 'קומה')),
+          const SizedBox(width: 8),
+          Expanded(child: numberField(_propertyTotalFloorsCtrl, 'מתוך קומות')),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: _PropertyEntryDateField(
+              controller: _propertyEntryCtrl,
+              onChanged: () => setState(() {}),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              value: _propertyFurniture,
+              decoration: const InputDecoration(
+                  labelText: 'ריהוט', border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'none', child: Text('ללא ריהוט')),
+                DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
+                DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _propertyFurniture = value ?? 'none'),
+            ),
+          ),
+        ]),
+        if (_propertyDealType == 'rent') ...[
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(
+                child: numberField(_propertyArnonaCtrl, 'ארנונה לחודשיים (₪)')),
+            const SizedBox(width: 10),
+            Expanded(
+                child: numberField(_propertyVaadCtrl, 'ועד בית לחודש (₪)')),
+          ]),
+        ],
+        const SizedBox(height: 8),
+        const Text('מה יש בנכס?',
+            style: TextStyle(fontWeight: FontWeight.bold, color: kPrimary)),
+        Wrap(spacing: 8, runSpacing: 0, children: [
+          SizedBox(
+              width: 210,
+              child: feature(
+                  'חניה',
+                  Icons.local_parking_outlined,
+                  _propertyParking,
+                  (v) => setState(() => _propertyParking = v))),
+          SizedBox(
+              width: 210,
+              child: feature(
+                  'מעלית',
+                  Icons.elevator_outlined,
+                  _propertyElevator,
+                  (v) => setState(() => _propertyElevator = v))),
+          SizedBox(
+              width: 210,
+              child: feature('ממ״ד', Icons.shield_outlined, _propertyMamad,
+                  (v) => setState(() => _propertyMamad = v))),
+          SizedBox(
+              width: 210,
+              child: feature('מרפסת', Icons.balcony_outlined, _propertyBalcony,
+                  (v) => setState(() => _propertyBalcony = v))),
+          SizedBox(
+              width: 210,
+              child: feature(
+                  'נגישות',
+                  Icons.accessible_outlined,
+                  _propertyAccessible,
+                  (v) => setState(() => _propertyAccessible = v))),
+          SizedBox(
+              width: 210,
+              child: feature(
+                  'מחסן',
+                  Icons.inventory_2_outlined,
+                  _propertyStorage,
+                  (v) => setState(() => _propertyStorage = v))),
+          SizedBox(
+              width: 210,
+              child: feature(
+                  'מיזוג',
+                  Icons.ac_unit_outlined,
+                  _propertyAirConditioning,
+                  (v) => setState(() => _propertyAirConditioning = v))),
+          if (_propertyDealType == 'rent')
+            SizedBox(
+                width: 210,
+                child: feature('אפשר בעלי חיים', Icons.pets_outlined,
+                    _propertyPets, (v) => setState(() => _propertyPets = v))),
+        ]),
+      ]),
+    );
+  }
+
   Widget _vehicleFields() => Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -8232,10 +9182,30 @@ class _EditListingScreenState extends State<EditListingScreen> {
   final _vehicleFuelCtrl = TextEditingController();
   final _vehicleColorCtrl = TextEditingController();
   final _vehicleTestCtrl = TextEditingController();
+  final _propertyStreetCtrl = TextEditingController();
+  final _propertyRoomsCtrl = TextEditingController();
+  final _propertyFloorCtrl = TextEditingController();
+  final _propertyTotalFloorsCtrl = TextEditingController();
+  final _propertyAreaCtrl = TextEditingController();
+  final _propertyEntryCtrl = TextEditingController();
+  final _propertyArnonaCtrl = TextEditingController();
+  final _propertyVaadCtrl = TextEditingController();
+  final _categoryDetailCtrls = _newCategoryDetailControllers();
   String _category = 'אחר';
   String _condition = 'good';
   String _deliveryMethod = 'pickup';
   String _vehicleTransmission = 'automatic';
+  String _propertyDealType = 'rent';
+  String _propertyType = 'apartment';
+  String _propertyFurniture = 'none';
+  bool _propertyParking = false;
+  bool _propertyElevator = false;
+  bool _propertyMamad = false;
+  bool _propertyBalcony = false;
+  bool _propertyAccessible = false;
+  bool _propertyStorage = false;
+  bool _propertyAirConditioning = false;
+  bool _propertyPets = false;
   int _expiryDays = 30;
   bool _negotiable = false;
   bool _showPhone = false;
@@ -8247,6 +9217,50 @@ class _EditListingScreenState extends State<EditListingScreen> {
   bool _loading = true;
   bool _saving = false;
   String _mirroredTitle = '';
+
+  Map<String, String> _categoryDetailsPayload() => {
+        for (final field in _kCategoryDetailFields[_category] ?? const [])
+          if ((_categoryDetailCtrls[field.$1]?.text.trim() ?? '').isNotEmpty)
+            field.$1: _categoryDetailCtrls[field.$1]!.text.trim(),
+      };
+
+  Widget _editCategorySpecificFields() {
+    final fields = _kCategoryDetailFields[_category] ?? const [];
+    if (fields.isEmpty) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F9FD),
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('מאפייני $_category',
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        for (var index = 0; index < fields.length; index += 2) ...[
+          Row(children: [
+            Expanded(child: _editCategoryDetailField(fields[index])),
+            if (index + 1 < fields.length) ...[
+              const SizedBox(width: 10),
+              Expanded(child: _editCategoryDetailField(fields[index + 1])),
+            ],
+          ]),
+          if (index + 2 < fields.length) const SizedBox(height: 10),
+        ],
+      ]),
+    );
+  }
+
+  Widget _editCategoryDetailField((String, String, String) field) => TextField(
+        controller: _categoryDetailCtrls[field.$1],
+        textDirection: TextDirection.rtl,
+        decoration: InputDecoration(
+          labelText: field.$2,
+          hintText: field.$3.isEmpty ? null : field.$3,
+          border: const OutlineInputBorder(),
+        ),
+      );
 
   Widget _editVehicleFields() {
     Widget field(TextEditingController controller, String label,
@@ -8319,6 +9333,153 @@ class _EditListingScreenState extends State<EditListingScreen> {
     );
   }
 
+  Widget _editPropertyFields() {
+    Widget field(TextEditingController controller, String label,
+            {bool decimal = false}) =>
+        TextField(
+          controller: controller,
+          keyboardType: TextInputType.numberWithOptions(decimal: decimal),
+          inputFormatters: decimal
+              ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))]
+              : [FilteringTextInputFormatter.digitsOnly],
+          decoration: InputDecoration(
+              labelText: label, border: const OutlineInputBorder()),
+        );
+    Widget check(String label, bool value, ValueChanged<bool> changed) =>
+        CheckboxListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: Text(label),
+          value: value,
+          onChanged: (v) => changed(v == true),
+        );
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F9FD),
+        border: Border.all(color: kBorder),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Text('מאפייני הנכס',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+              child: DropdownButtonFormField<String>(
+            value: _propertyDealType,
+            decoration: const InputDecoration(
+                labelText: 'סוג עסקה', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'rent', child: Text('השכרה')),
+              DropdownMenuItem(value: 'sale', child: Text('מכירה')),
+            ],
+            onChanged: (v) => setState(() => _propertyDealType = v ?? 'rent'),
+          )),
+          const SizedBox(width: 10),
+          Expanded(
+              child: DropdownButtonFormField<String>(
+            value: _propertyType,
+            decoration: const InputDecoration(
+                labelText: 'סוג נכס', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'apartment', child: Text('דירה')),
+              DropdownMenuItem(value: 'house', child: Text('בית פרטי')),
+              DropdownMenuItem(value: 'garden', child: Text('דירת גן')),
+              DropdownMenuItem(value: 'penthouse', child: Text('פנטהאוז')),
+              DropdownMenuItem(value: 'duplex', child: Text('דופלקס')),
+              DropdownMenuItem(
+                  value: 'studio', child: Text('יחידת דיור / סטודיו')),
+              DropdownMenuItem(value: 'other', child: Text('אחר')),
+            ],
+            onChanged: (v) => setState(() => _propertyType = v ?? 'apartment'),
+          )),
+        ]),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _propertyStreetCtrl,
+          decoration: const InputDecoration(
+              labelText: 'רחוב / שכונה', border: OutlineInputBorder()),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: field(_propertyRoomsCtrl, 'חדרים', decimal: true)),
+          const SizedBox(width: 8),
+          Expanded(child: field(_propertyAreaCtrl, 'מ״ר')),
+          const SizedBox(width: 8),
+          Expanded(child: field(_propertyFloorCtrl, 'קומה')),
+          const SizedBox(width: 8),
+          Expanded(child: field(_propertyTotalFloorsCtrl, 'מתוך')),
+        ]),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+              child: _PropertyEntryDateField(
+            controller: _propertyEntryCtrl,
+            onChanged: () => setState(() {}),
+          )),
+          const SizedBox(width: 10),
+          Expanded(
+              child: DropdownButtonFormField<String>(
+            value: _propertyFurniture,
+            decoration: const InputDecoration(
+                labelText: 'ריהוט', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'none', child: Text('ללא ריהוט')),
+              DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
+              DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
+            ],
+            onChanged: (v) => setState(() => _propertyFurniture = v ?? 'none'),
+          )),
+        ]),
+        if (_propertyDealType == 'rent') ...[
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: field(_propertyArnonaCtrl, 'ארנונה לחודשיים (₪)')),
+            const SizedBox(width: 10),
+            Expanded(child: field(_propertyVaadCtrl, 'ועד בית לחודש (₪)')),
+          ]),
+        ],
+        Wrap(spacing: 8, children: [
+          SizedBox(
+              width: 180,
+              child: check('חניה', _propertyParking,
+                  (v) => setState(() => _propertyParking = v))),
+          SizedBox(
+              width: 180,
+              child: check('מעלית', _propertyElevator,
+                  (v) => setState(() => _propertyElevator = v))),
+          SizedBox(
+              width: 180,
+              child: check('ממ״ד', _propertyMamad,
+                  (v) => setState(() => _propertyMamad = v))),
+          SizedBox(
+              width: 180,
+              child: check('מרפסת', _propertyBalcony,
+                  (v) => setState(() => _propertyBalcony = v))),
+          SizedBox(
+              width: 180,
+              child: check('נגישות', _propertyAccessible,
+                  (v) => setState(() => _propertyAccessible = v))),
+          SizedBox(
+              width: 180,
+              child: check('מחסן', _propertyStorage,
+                  (v) => setState(() => _propertyStorage = v))),
+          SizedBox(
+              width: 180,
+              child: check('מיזוג', _propertyAirConditioning,
+                  (v) => setState(() => _propertyAirConditioning = v))),
+          if (_propertyDealType == 'rent')
+            SizedBox(
+                width: 180,
+                child: check('אפשר בעלי חיים', _propertyPets,
+                    (v) => setState(() => _propertyPets = v))),
+        ]),
+      ]),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -8366,6 +9527,17 @@ class _EditListingScreenState extends State<EditListingScreen> {
     _vehicleFuelCtrl.dispose();
     _vehicleColorCtrl.dispose();
     _vehicleTestCtrl.dispose();
+    _propertyStreetCtrl.dispose();
+    _propertyRoomsCtrl.dispose();
+    _propertyFloorCtrl.dispose();
+    _propertyTotalFloorsCtrl.dispose();
+    _propertyAreaCtrl.dispose();
+    _propertyEntryCtrl.dispose();
+    _propertyArnonaCtrl.dispose();
+    _propertyVaadCtrl.dispose();
+    for (final controller in _categoryDetailCtrls.values.toSet()) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -8382,8 +9554,17 @@ class _EditListingScreenState extends State<EditListingScreen> {
       final vehicle = item['vehicle_details'] is Map
           ? Map<String, dynamic>.from(item['vehicle_details'] as Map)
           : <String, dynamic>{};
+      final property = item['property_details'] is Map
+          ? Map<String, dynamic>.from(item['property_details'] as Map)
+          : <String, dynamic>{};
+      final categoryDetails = item['category_details'] is Map
+          ? Map<String, dynamic>.from(item['category_details'] as Map)
+          : <String, dynamic>{};
       setState(() {
         _category = item['category'] as String? ?? 'אחר';
+        for (final entry in categoryDetails.entries) {
+          _categoryDetailCtrls[entry.key]?.text = entry.value?.toString() ?? '';
+        }
         _titleCtrl.text = item['title'] as String? ?? '';
         _descCtrl.text = item['description'] as String? ?? '';
         _priceCtrl.text =
@@ -8407,6 +9588,26 @@ class _EditListingScreenState extends State<EditListingScreen> {
         _vehicleFuelCtrl.text = vehicle['fuel']?.toString() ?? '';
         _vehicleColorCtrl.text = vehicle['color']?.toString() ?? '';
         _vehicleTestCtrl.text = vehicle['test_valid_until']?.toString() ?? '';
+        _propertyDealType = property['deal_type']?.toString() ?? 'rent';
+        _propertyType = property['property_type']?.toString() ?? 'apartment';
+        _propertyStreetCtrl.text = property['street']?.toString() ?? '';
+        _propertyRoomsCtrl.text = property['rooms']?.toString() ?? '';
+        _propertyFloorCtrl.text = property['floor']?.toString() ?? '';
+        _propertyTotalFloorsCtrl.text =
+            property['total_floors']?.toString() ?? '';
+        _propertyAreaCtrl.text = property['area_sqm']?.toString() ?? '';
+        _propertyEntryCtrl.text = property['entry_date']?.toString() ?? '';
+        _propertyArnonaCtrl.text = property['arnona']?.toString() ?? '';
+        _propertyVaadCtrl.text = property['building_fee']?.toString() ?? '';
+        _propertyFurniture = property['furniture']?.toString() ?? 'none';
+        _propertyParking = property['parking'] == true;
+        _propertyElevator = property['elevator'] == true;
+        _propertyMamad = property['mamad'] == true;
+        _propertyBalcony = property['balcony'] == true;
+        _propertyAccessible = property['accessible'] == true;
+        _propertyStorage = property['storage'] == true;
+        _propertyAirConditioning = property['air_conditioning'] == true;
+        _propertyPets = property['pets_allowed'] == true;
         for (int i = 0; i < 8; i++) {
           _imageUrls[i] = i < imgs.length ? imgs[i] : null;
           _imageOutcomes[i] =
@@ -8533,6 +9734,30 @@ class _EditListingScreenState extends State<EditListingScreen> {
             'color': _vehicleColorCtrl.text.trim(),
             'test_valid_until': _vehicleTestCtrl.text.trim(),
           },
+        if (_category == 'נדל״ן')
+          'property_details': {
+            'deal_type': _propertyDealType,
+            'property_type': _propertyType,
+            'street': _propertyStreetCtrl.text.trim(),
+            'rooms': _propertyRoomsCtrl.text.trim(),
+            'floor': _propertyFloorCtrl.text.trim(),
+            'total_floors': _propertyTotalFloorsCtrl.text.trim(),
+            'area_sqm': _propertyAreaCtrl.text.trim(),
+            'entry_date': _propertyEntryCtrl.text.trim(),
+            'arnona': _propertyArnonaCtrl.text.trim(),
+            'building_fee': _propertyVaadCtrl.text.trim(),
+            'furniture': _propertyFurniture,
+            'parking': _propertyParking,
+            'elevator': _propertyElevator,
+            'mamad': _propertyMamad,
+            'balcony': _propertyBalcony,
+            'accessible': _propertyAccessible,
+            'storage': _propertyStorage,
+            'air_conditioning': _propertyAirConditioning,
+            'pets_allowed': _propertyPets,
+          },
+        if (_category != 'רכב' && _category != 'נדל״ן')
+          'category_details': _categoryDetailsPayload(),
       };
       final res = await http.put(
         Uri.parse('$kApi/listings/${widget.listingId}'),
@@ -8599,10 +9824,16 @@ class _EditListingScreenState extends State<EditListingScreen> {
                         TextField(
                             controller: _priceCtrl,
                             keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                                labelText: 'מחיר (₪) — 0 למסירה',
-                                helperText: 'מחיר 0 יסווג את המודעה כמסירה',
-                                border: OutlineInputBorder(),
+                            decoration: InputDecoration(
+                                labelText: _category == 'נדל״ן'
+                                    ? (_propertyDealType == 'rent'
+                                        ? 'שכר דירה חודשי (₪)'
+                                        : 'מחיר מכירה (₪)')
+                                    : 'מחיר (₪) — 0 למסירה',
+                                helperText: _category == 'נדל״ן'
+                                    ? 'המחיר המבוקש ללא פסיקים'
+                                    : 'מחיר 0 יסווג את המודעה כמסירה',
+                                border: const OutlineInputBorder(),
                                 prefixText: '₪ ')),
                         const SizedBox(height: 12),
                         InputDecorator(
@@ -8619,12 +9850,20 @@ class _EditListingScreenState extends State<EditListingScreen> {
                           const SizedBox(height: 12),
                           _editVehicleFields(),
                         ],
+                        if (_category == 'נדל״ן') ...[
+                          const SizedBox(height: 12),
+                          _editPropertyFields(),
+                        ],
+                        if (_category != 'רכב' && _category != 'נדל״ן') ...[
+                          const SizedBox(height: 12),
+                          _editCategorySpecificFields(),
+                        ],
                         const SizedBox(height: 12),
                         _LocationAutocompleteField(
                           controller: _cityCtrl,
                           label: 'עיר או יישוב',
                         ),
-                        if (_category != 'רכב') ...[
+                        if (_category != 'רכב' && _category != 'נדל״ן') ...[
                           const SizedBox(height: 12),
                           DropdownButtonFormField<String>(
                             value: _condition,
@@ -9153,6 +10392,12 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     final vehicleDetails = widget.item['vehicle_details'] is Map
         ? Map<String, dynamic>.from(widget.item['vehicle_details'] as Map)
         : <String, dynamic>{};
+    final propertyDetails = widget.item['property_details'] is Map
+        ? Map<String, dynamic>.from(widget.item['property_details'] as Map)
+        : <String, dynamic>{};
+    final categoryDetails = widget.item['category_details'] is Map
+        ? Map<String, dynamic>.from(widget.item['category_details'] as Map)
+        : <String, dynamic>{};
     final galleryHeight =
         (MediaQuery.sizeOf(context).width * 0.56).clamp(280.0, 520.0);
     return Scaffold(
@@ -9286,7 +10531,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   child: Text(
                       isFree
                           ? 'חינם'
-                          : '₪${widget.item['price']?.toStringAsFixed(0) ?? ''}',
+                          : '₪${widget.item['price']?.toStringAsFixed(0) ?? ''}${widget.item['category'] == 'נדל״ן' && propertyDetails['deal_type'] == 'rent' ? ' לחודש' : ''}',
                       style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
@@ -9318,20 +10563,23 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _ListingDetailBadge(
-                    icon: Icons.verified_outlined,
-                    text: conditionLabels[widget.item['item_condition']] ??
-                        'מצב טוב',
-                  ),
-                  _ListingDetailBadge(
-                    icon: Icons.inventory_2_outlined,
-                    text: 'כמות: ${widget.item['quantity'] ?? 1}',
-                  ),
-                  _ListingDetailBadge(
-                    icon: Icons.local_shipping_outlined,
-                    text: deliveryLabels[widget.item['delivery_method']] ??
-                        'איסוף עצמי',
-                  ),
+                  if (widget.item['category'] != 'רכב' &&
+                      widget.item['category'] != 'נדל״ן') ...[
+                    _ListingDetailBadge(
+                      icon: Icons.verified_outlined,
+                      text: conditionLabels[widget.item['item_condition']] ??
+                          'מצב טוב',
+                    ),
+                    _ListingDetailBadge(
+                      icon: Icons.inventory_2_outlined,
+                      text: 'כמות: ${widget.item['quantity'] ?? 1}',
+                    ),
+                    _ListingDetailBadge(
+                      icon: Icons.local_shipping_outlined,
+                      text: deliveryLabels[widget.item['delivery_method']] ??
+                          'איסוף עצמי',
+                    ),
+                  ],
                   if (!isFree && widget.item['negotiable'] == true)
                     const _ListingDetailBadge(
                       icon: Icons.handshake_outlined,
@@ -9410,6 +10658,144 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                                     'other': 'אחרת'
                                   }[vehicleDetails['transmission']] ?? vehicleDetails['transmission']}',
                             ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              if (widget.item['category'] == 'נדל״ן' &&
+                  propertyDetails.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F9FD),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: kBorder),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(children: [
+                        Icon(Icons.apartment_outlined, color: kPrimary),
+                        SizedBox(width: 8),
+                        Text('פרטי הנכס',
+                            style: TextStyle(
+                                fontSize: 17, fontWeight: FontWeight.bold)),
+                      ]),
+                      const SizedBox(height: 10),
+                      Wrap(spacing: 8, runSpacing: 8, children: [
+                        _ListingDetailBadge(
+                          icon: Icons.key_outlined,
+                          text: propertyDetails['deal_type'] == 'sale'
+                              ? 'למכירה'
+                              : 'להשכרה',
+                        ),
+                        _ListingDetailBadge(
+                          icon: Icons.home_outlined,
+                          text: const {
+                                'apartment': 'דירה',
+                                'house': 'בית פרטי',
+                                'garden': 'דירת גן',
+                                'penthouse': 'פנטהאוז',
+                                'duplex': 'דופלקס',
+                                'studio': 'יחידת דיור / סטודיו',
+                                'other': 'נכס אחר',
+                              }[propertyDetails['property_type']] ??
+                              'נכס',
+                        ),
+                        for (final entry in const {
+                          'street': 'רחוב / שכונה',
+                          'rooms': 'חדרים',
+                          'area_sqm': 'שטח במ״ר',
+                          'floor': 'קומה',
+                          'total_floors': 'מספר קומות בבניין',
+                          'entry_date': 'כניסה',
+                          'arnona': 'ארנונה לחודשיים ₪',
+                          'building_fee': 'ועד בית לחודש ₪',
+                        }.entries)
+                          if ((propertyDetails[entry.key] ?? '')
+                              .toString()
+                              .trim()
+                              .isNotEmpty)
+                            _ListingDetailBadge(
+                              icon: Icons.check_circle_outline,
+                              text:
+                                  '${entry.value}: ${propertyDetails[entry.key]}',
+                            ),
+                        _ListingDetailBadge(
+                          icon: Icons.chair_outlined,
+                          text: const {
+                                'none': 'ללא ריהוט',
+                                'partial': 'ריהוט חלקי',
+                                'full': 'מרוהטת',
+                              }[propertyDetails['furniture']] ??
+                              'ללא ריהוט',
+                        ),
+                        for (final feature in const {
+                          'parking': ('חניה', Icons.local_parking_outlined),
+                          'elevator': ('מעלית', Icons.elevator_outlined),
+                          'mamad': ('ממ״ד', Icons.shield_outlined),
+                          'balcony': ('מרפסת', Icons.balcony_outlined),
+                          'accessible': ('נגישות', Icons.accessible_outlined),
+                          'storage': ('מחסן', Icons.inventory_2_outlined),
+                          'air_conditioning': ('מיזוג', Icons.ac_unit_outlined),
+                          'pets_allowed': (
+                            'אפשר בעלי חיים',
+                            Icons.pets_outlined
+                          ),
+                        }.entries)
+                          if (propertyDetails[feature.key] == true)
+                            _ListingDetailBadge(
+                              icon: feature.value.$2,
+                              text: feature.value.$1,
+                            ),
+                      ]),
+                    ],
+                  ),
+                ),
+              ],
+              if (widget.item['category'] != 'רכב' &&
+                  widget.item['category'] != 'נדל״ן' &&
+                  categoryDetails.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF4F9FD),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: kBorder),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        const Icon(Icons.fact_check_outlined, color: kPrimary),
+                        const SizedBox(width: 8),
+                        Text('מאפייני ${widget.item['category']}',
+                            style: const TextStyle(
+                                fontSize: 17, fontWeight: FontWeight.bold)),
+                      ]),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final field in _kCategoryDetailFields[
+                                  widget.item['category']] ??
+                              const [])
+                            if ((categoryDetails[field.$1] ?? '')
+                                .toString()
+                                .trim()
+                                .isNotEmpty)
+                              _ListingDetailBadge(
+                                icon: Icons.check_circle_outline,
+                                text:
+                                    '${field.$2}: ${categoryDetails[field.$1]}',
+                              ),
                         ],
                       ),
                     ],
@@ -9768,7 +11154,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             }
             if (appUser != null) {
               appUser['device_name'] = local['name'];
-              appUser['saved'] = false;
               if (!deviceResults.any((u) => u['id'] == appUser!['id'])) {
                 deviceResults.add(appUser);
               }
@@ -9791,6 +11176,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     ) {
       final merged = <Map<String, dynamic>>[];
       for (final item in [...primary, ...secondary]) {
+        // Contacts that were already saved belong in the conversations list,
+        // not in the friend discovery dialog.
+        if (item['saved'] == true) continue;
         final key = item['id']?.toString() ??
             '${item['phone'] ?? ''}|${item['email'] ?? ''}';
         if (!merged.any((existing) =>
@@ -9801,6 +11189,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         }
       }
       merged.sort((a, b) {
+        final sourceOrder = (a['device_only'] == true ? 1 : 0)
+            .compareTo(b['device_only'] == true ? 1 : 0);
+        if (sourceOrder != 0) return sourceOrder;
         final aName = (a['device_name'] ?? a['name'] ?? '')
             .toString()
             .trim()
@@ -9913,7 +11304,16 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             if (response.statusCode == 200) {
               await widget.onContactsChanged();
               if (!dialogContext.mounted) return;
-              setDialogState(() => user['saved'] = true);
+              setDialogState(() {
+                user['saved'] = true;
+                final userId = user['id']?.toString();
+                bool sameUser(Map<String, dynamic> item) =>
+                    userId != null && item['id']?.toString() == userId;
+                results.removeWhere(sameUser);
+                initialResults.removeWhere(sameUser);
+                deviceResults.removeWhere(sameUser);
+                directoryResults.removeWhere(sameUser);
+              });
             }
           }
 
@@ -10022,7 +11422,16 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             insetPadding:
                 const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
             contentPadding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            title: const Text('חיפוש ושמירת חבר'),
+            title: Row(
+              children: [
+                Expanded(child: const Text('חיפוש ושמירת חבר')),
+                IconButton(
+                  tooltip: 'סגור',
+                  onPressed: () => Navigator.pop(dialogContext),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
             content: SizedBox(
               width: math.min(520, media.size.width - 56),
               height: contentHeight,
@@ -10086,9 +11495,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                               title: Text((user['device_name'] ?? user['name'])
                                   .toString()),
                               subtitle: Text(
-                                (user['phone'] as String?)?.isNotEmpty == true
-                                    ? user['phone'] as String
-                                    : user['email'] as String? ?? '',
+                                '${deviceOnly ? 'איש קשר מהטלפון' : 'משתמש בתשובה'}  •  '
+                                '${(user['phone'] as String?)?.isNotEmpty == true ? user['phone'] as String : user['email'] as String? ?? ''}',
                               ),
                               trailing: deviceOnly
                                   ? TextButton(
@@ -10110,12 +11518,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 ],
               ),
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('סגור'),
-              ),
-            ],
           );
         },
       ),
@@ -11082,47 +12484,60 @@ class _CompactMenuItem extends StatelessWidget {
       );
 }
 
-class _AllowedReceivingFilterIcons extends StatelessWidget {
+class _BlockedReceivingFilterIcons extends StatelessWidget {
   final Map<String, bool>? filter;
   final bool forGroup;
+  final bool onHeader;
 
-  const _AllowedReceivingFilterIcons(
-      {required this.filter, this.forGroup = false});
+  const _BlockedReceivingFilterIcons({
+    required this.filter,
+    this.forGroup = false,
+    this.onHeader = true,
+  });
 
   static const _items = <String, (IconData, String)>{
-    'text': (Icons.chat_bubble_outline, 'מאפשרת לקבל הודעות טקסט'),
-    'video': (Icons.videocam_outlined, 'מאפשרת לקבל סרטוני וידאו מסווגים'),
+    'text': (Icons.comments_disabled_outlined, 'לא מוכן לקבל הודעות טקסט'),
+    'video': (Icons.videocam_off_outlined, 'לא מוכן לקבל סרטוני וידאו'),
     'nonHumanImages': (
-      Icons.landscape_outlined,
-      'מאפשרת לקבל תמונות נוף או חפצים'
+      Icons.image_not_supported_outlined,
+      'לא מוכן לקבל תמונות נוף או חפצים'
     ),
-    'men': (Icons.man, 'מאפשרת לקבל תמונות גברים'),
-    'women': (Icons.woman, 'מאפשרת לקבל תמונות נשים'),
-    'children': (Icons.child_care, 'מאפשרת לקבל תמונות ילדים'),
+    'men': (Icons.man, 'לא מוכן לקבל תמונות גברים'),
+    'women': (Icons.woman, 'לא מוכן לקבל תמונות נשים'),
+    'children': (Icons.child_care, 'לא מוכן לקבל תמונות ילדים'),
   };
 
   @override
   Widget build(BuildContext context) {
-    final allowed =
-        _items.entries.where((entry) => filter?[entry.key] == true).toList();
-    if (allowed.isEmpty) return const SizedBox.shrink();
+    final blocked =
+        _items.entries.where((entry) => filter?[entry.key] == false).toList();
+    if (blocked.isEmpty) return const SizedBox.shrink();
     return Row(
       mainAxisSize: MainAxisSize.min,
-      children: allowed
+      children: blocked
           .map((entry) => Tooltip(
-                message: forGroup ? 'הקבוצה ${entry.value.$2}' : entry.value.$2,
+                message: forGroup
+                    ? entry.value.$2.replaceFirst('לא מוכן', 'הקבוצה לא מוכנה')
+                    : entry.value.$2,
                 child: Padding(
                   padding: const EdgeInsetsDirectional.only(start: 3),
                   child: Container(
                     width: 22,
                     height: 22,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.16),
+                      color: onHeader
+                          ? const Color(0xFFD84343)
+                          : const Color(0xFFFFE7E7),
                       shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white54, width: 0.7),
+                      border: Border.all(
+                        color: onHeader ? Colors.white70 : Colors.red.shade300,
+                        width: 0.8,
+                      ),
                     ),
                     alignment: Alignment.center,
-                    child: Icon(entry.value.$1, size: 15, color: Colors.white),
+                    child: Icon(entry.value.$1,
+                        size: 15,
+                        color: onHeader ? Colors.white : Colors.red.shade700),
                   ),
                 ),
               ))
@@ -12313,6 +13728,13 @@ class _ChatScreenState extends State<ChatScreen> {
     await _send();
   }
 
+  Future<void> _shareMyContact() async {
+    final contact = await _confirmMyContactShare(context, widget.token);
+    if (contact == null || !mounted) return;
+    _msgCtrl.text = _sharedContactText(contact);
+    await _send();
+  }
+
   void _showAttachMenu() {
     showModalBottomSheet(
       context: context,
@@ -12385,6 +13807,16 @@ class _ChatScreenState extends State<ChatScreen> {
               onTap: () {
                 Navigator.pop(context);
                 _sharePhoneContact();
+              },
+            ),
+            const SizedBox(height: 10),
+            _AttachOption(
+              icon: Icons.badge_outlined,
+              label: 'שתף את הפרטים שלי',
+              color: kPrimary,
+              onTap: () {
+                Navigator.pop(context);
+                _shareMyContact();
               },
             ),
             const SizedBox(height: 16),
@@ -12986,7 +14418,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
                             color: Colors.white)),
-                    _AllowedReceivingFilterIcons(
+                    _BlockedReceivingFilterIcons(
                         filter: _recipientReceivingFilter),
                   ],
                 ),
@@ -14288,6 +15720,46 @@ class _SharedContactCard extends StatelessWidget {
   final Map<String, dynamic> contact;
   const _SharedContactCard(this.contact);
 
+  Future<void> _saveContact(BuildContext context, String name, String phone,
+      String email, Uri uri) async {
+    if (kIsWeb) {
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('לא ניתן להוריד את איש הקשר')),
+        );
+      }
+      return;
+    }
+
+    try {
+      final granted = await FlutterContacts.requestPermission();
+      if (!granted) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('נדרשת הרשאה לשמירת אנשי קשר')),
+          );
+        }
+        return;
+      }
+      final newContact = Contact()..name.first = name;
+      if (phone.isNotEmpty) newContact.phones = [Phone(phone)];
+      if (email.isNotEmpty) newContact.emails = [Email(email)];
+      await newContact.insert();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$name נשמר באנשי הקשר')),
+        );
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שמירת איש הקשר נכשלה')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final name = contact['name']?.toString() ?? 'איש קשר';
@@ -14328,8 +15800,7 @@ class _SharedContactCard extends StatelessWidget {
         SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: () =>
-                  launchUrl(uri, mode: LaunchMode.externalApplication),
+              onPressed: () => _saveContact(context, name, phone, email, uri),
               icon: const Icon(Icons.person_add_alt_1),
               label: const Text('שמור בטלפון'),
             )),
@@ -14344,8 +15815,7 @@ class _BetshuvaInvitePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => InkWell(
-        onTap: () =>
-            launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
+        onTap: () => _confirmAndOpenExternalLink(context, url),
         child: Container(
           width: 330,
           clipBehavior: Clip.antiAlias,
@@ -14391,6 +15861,135 @@ class _BetshuvaInvitePreview extends StatelessWidget {
           ]),
         ),
       );
+}
+
+String? _firstHttpUrl(String text) {
+  final match =
+      RegExp(r'https?://[^\s<>"׳״]+', caseSensitive: false).firstMatch(text);
+  if (match == null) return null;
+  return match.group(0)?.replaceFirst(RegExp(r'[.,!?)\]}]+$'), '');
+}
+
+class _WebsiteLinkPreview extends StatefulWidget {
+  final String url;
+  final String token;
+  const _WebsiteLinkPreview(this.url, this.token);
+
+  @override
+  State<_WebsiteLinkPreview> createState() => _WebsiteLinkPreviewState();
+}
+
+class _WebsiteLinkPreviewState extends State<_WebsiteLinkPreview> {
+  static final Map<String, Map<String, dynamic>> _cache = {};
+  Map<String, dynamic>? _data;
+  bool _failed = false;
+
+  bool get _isBetshuva {
+    final host = Uri.tryParse(widget.url)?.host.toLowerCase() ?? '';
+    return host == 'betshuva.com' || host.endsWith('.betshuva.com');
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_isBetshuva) _load();
+  }
+
+  Future<void> _load() async {
+    final cached = _cache[widget.url];
+    if (cached != null) {
+      setState(() => _data = cached);
+      return;
+    }
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/link-preview')
+            .replace(queryParameters: {'url': widget.url}),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) throw Exception();
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map) throw Exception();
+      final data = Map<String, dynamic>.from(decoded);
+      _cache[widget.url] = data;
+      if (mounted) setState(() => _data = data);
+    } catch (_) {
+      if (mounted) setState(() => _failed = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isBetshuva) return _BetshuvaInvitePreview(widget.url);
+    final uri = Uri.tryParse(widget.url);
+    final domain = _data?['domain']?.toString() ?? uri?.host ?? widget.url;
+    final title = _data?['title']?.toString().trim() ?? '';
+    final description = _data?['description']?.toString().trim() ?? '';
+    final image = _data?['image']?.toString().trim() ?? '';
+    return InkWell(
+      onTap: _data == null
+          ? null
+          : () => _confirmAndOpenExternalLink(context, widget.url),
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        width: 330,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: kBorder),
+        ),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (image.isNotEmpty)
+            _PersistentMediaImage(
+              url: image,
+              width: 330,
+              height: 150,
+              fit: BoxFit.cover,
+              errorBuilder: (_) => const SizedBox.shrink(),
+            )
+          else if (_data == null && !_failed)
+            const SizedBox(
+              height: 64,
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            )
+          else
+            Container(
+              height: 72,
+              color: const Color(0xFFE8F4FD),
+              child: const Icon(Icons.link, size: 34, color: kPrimary),
+            ),
+          Padding(
+            padding: const EdgeInsets.all(11),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (title.isNotEmpty)
+                  Text(title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                if (description.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(description,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontSize: 13, color: kSubtext)),
+                ],
+                const SizedBox(height: 4),
+                Text(domain,
+                    textDirection: TextDirection.ltr,
+                    style: const TextStyle(fontSize: 12, color: kSubtext)),
+              ],
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
 }
 
 class _MessageBubble extends StatelessWidget {
@@ -14464,11 +16063,7 @@ class _MessageBubble extends StatelessWidget {
     // זיהוי קישור מודעה פנימי: betshuva://listing/{id}
     final rawText = message['text'] as String? ?? '';
     final sharedContact = !isFile ? _sharedContactFromText(rawText) : null;
-    final inviteMatch = !isFile
-        ? RegExp(
-                r'https://betshuva\.com/betshuva-app/invite-v2\.html\?invite=[\w-]+')
-            .firstMatch(rawText)
-        : null;
+    final sharedUrl = !isFile ? _firstHttpUrl(rawText) : null;
     final linkRegex = RegExp(r'betshuva://listing/([\w\-]+)');
     final linkMatch = !isFile ? linkRegex.firstMatch(rawText) : null;
     final listingId = linkMatch?.group(1);
@@ -14696,9 +16291,9 @@ class _MessageBubble extends StatelessWidget {
                 textAlign: TextAlign.right,
               ),
 
-            if (inviteMatch != null) ...[
+            if (sharedUrl != null) ...[
               const SizedBox(height: 8),
-              _BetshuvaInvitePreview(inviteMatch.group(0)!),
+              _WebsiteLinkPreview(sharedUrl, token),
             ],
 
             // כרטיסיית קישור למודעה
@@ -17625,6 +19220,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 await _send();
               },
             ),
+            const SizedBox(height: 10),
+            _AttachOption(
+              icon: Icons.badge_outlined,
+              label: 'שתף את הפרטים שלי',
+              color: kPrimary,
+              onTap: () async {
+                Navigator.pop(context);
+                final contact = await _confirmMyContactShare(
+                  context,
+                  widget.token,
+                  isGroup: true,
+                );
+                if (contact == null || !mounted) return;
+                _msgCtrl.text = _sharedContactText(contact);
+                await _send();
+              },
+            ),
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -18654,7 +20266,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               fontSize: 16, fontWeight: FontWeight.bold),
                         ),
                       ),
-                      _AllowedReceivingFilterIcons(
+                      _BlockedReceivingFilterIcons(
                         filter: _groupReceivingFilter,
                         forGroup: true,
                       ),
@@ -18815,11 +20427,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           final sharedContact = msg['fileUrl'] == null
                               ? _sharedContactFromText(groupText)
                               : null;
-                          final inviteLink = msg['fileUrl'] == null
-                              ? RegExp(
-                                      r'https://betshuva\.com/betshuva-app/invite-v2\.html\?invite=[\w-]+')
-                                  .firstMatch(groupText)
-                                  ?.group(0)
+                          final sharedUrl = msg['fileUrl'] == null
+                              ? _firstHttpUrl(groupText)
                               : null;
                           final isEducationAnnouncement =
                               (msg['text'] as String? ?? '').startsWith('📋 ');
@@ -19186,9 +20795,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                 height: 1.4),
                                             textDirection: TextDirection.rtl,
                                           ),
-                                        if (inviteLink != null) ...[
+                                        if (sharedUrl != null) ...[
                                           const SizedBox(height: 8),
-                                          _BetshuvaInvitePreview(inviteLink),
+                                          _WebsiteLinkPreview(
+                                              sharedUrl, widget.token),
                                         ],
                                         const SizedBox(height: 4),
                                         Row(

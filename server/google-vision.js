@@ -308,6 +308,89 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
   }
 }
 
+async function scanGoogleFaceDetection(buffer, options = {}) {
+  const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
+  const configured = googleSafeSearchConfigured(apiKey);
+  const startedAt = performance.now();
+  const baseResult = {
+    provider: 'google-cloud-vision',
+    feature: 'FACE_DETECTION',
+    configured,
+    available: false,
+    faceDetected: false,
+    faceCount: 0,
+    faces: [],
+    durationMs: 0,
+  };
+
+  if (!configured) return { ...baseResult, status: 'not_configured' };
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return {
+    ...baseResult,
+    status: 'error',
+    errorCode: 'INVALID_IMAGE',
+    error: 'Image buffer is empty',
+    durationMs: Math.round(performance.now() - startedAt),
+  };
+
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const timeoutMs = Number(options.timeoutMs ?? process.env.GOOGLE_VISION_TIMEOUT_MS) ||
+    DEFAULT_TIMEOUT_MS;
+  try {
+    const prepared = await prepareInlineImage(buffer);
+    const response = await fetchImpl(GOOGLE_VISION_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'X-Goog-Api-Key': apiKey,
+      },
+      body: JSON.stringify({
+        requests: [{
+          image: { content: prepared.buffer.toString('base64') },
+          features: [{ type: 'FACE_DETECTION', maxResults: 30 }],
+        }],
+      }),
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(timeoutMs, 60000))),
+    });
+    const data = await response.json().catch(() => ({}));
+    const annotationResponse = data.responses?.[0];
+    const apiError = data.error || annotationResponse?.error;
+    if (!response.ok || apiError) {
+      const error = new Error(apiError?.message || `Google Vision HTTP ${response.status}`);
+      error.code = apiError?.status || apiError?.code || `HTTP_${response.status}`;
+      throw error;
+    }
+    const annotations = Array.isArray(annotationResponse?.faceAnnotations)
+      ? annotationResponse.faceAnnotations
+      : [];
+    const faces = annotations.map(face => ({
+      detectionConfidence: Number(face.detectionConfidence) || 0,
+      boundingPoly: face.boundingPoly || null,
+    }));
+    return {
+      ...baseResult,
+      available: true,
+      status: faces.length ? 'face_detected' : 'passed',
+      faceDetected: faces.length > 0,
+      faceCount: faces.length,
+      faces,
+      inputBytes: prepared.inputBytes,
+      sentBytes: prepared.sentBytes,
+      transformed: prepared.transformed,
+      durationMs: Math.round(performance.now() - startedAt),
+    };
+  } catch (error) {
+    const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
+    return {
+      ...baseResult,
+      status: 'error',
+      errorCode,
+      error: safeErrorMessage(error),
+      retryable: !['IMAGE_TOO_LARGE', 'IMAGE_PREPARATION_FAILED'].includes(errorCode),
+      durationMs: Math.round(performance.now() - startedAt),
+    };
+  }
+}
+
 module.exports = {
   ALL_CATEGORIES,
   LIKELIHOOD_RANK,
@@ -318,6 +401,7 @@ module.exports = {
   normalizeBlockThreshold,
   normalizePersonThreshold,
   prepareInlineImage,
+  scanGoogleFaceDetection,
   scanGoogleObjectLocalization,
   scanGoogleSafeSearch,
 };

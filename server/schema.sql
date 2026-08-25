@@ -361,6 +361,7 @@ CREATE TABLE IF NOT EXISTS listings (
   contact_phone_visible BOOLEAN NOT NULL DEFAULT FALSE,
   license_plate  TEXT,
   vehicle_details JSONB,
+  property_details JSONB,
   status         TEXT NOT NULL DEFAULT 'active', -- active | sold | expired
   view_count     INTEGER NOT NULL DEFAULT 0,
   contact_count  INTEGER NOT NULL DEFAULT 0,

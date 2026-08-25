@@ -8,6 +8,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
+const dns        = require('dns').promises;
+const net        = require('net');
 const multer     = require('multer');
 const path       = require('path');
 const fs         = require('fs/promises');
@@ -18,6 +20,7 @@ const { getPool } = require('./db');
 const {
   googleSafeSearchConfigured,
   normalizeBlockThreshold,
+  scanGoogleFaceDetection,
   scanGoogleObjectLocalization,
   scanGoogleSafeSearch,
 } = require('./google-vision');
@@ -36,6 +39,206 @@ const WELCOME_MESSAGE =
   'ברוך הבא לבתשובה 🌿\n\nשמחים שהצטרפת אלינו. כאן תקבל עדכונים חשובים, הודעות מערכת וטיפים שיעזרו לך להשתמש באפליקציה בבטחה ובנוחות.\n\nכך מוסיפים חברים:\n1. לחץ על סמל הוספת החבר (אדם עם סימן +) בחלק העליון של מסך השיחות.\n2. חפש לפי שם, מספר טלפון או כתובת אימייל.\n3. לחץ על „שמור” ליד האדם הרצוי.\n4. החבר יופיע ברשימת השיחות ותוכל לפתוח איתו שיחה.\n\nאם איש הקשר עדיין לא רשום, לחץ על „הזמן” כדי לשלוח לו קישור הצטרפות.\n\nמאחלים לך שיחות טובות ומועילות!';
 
 const BUILTIN_EXPRESSION_ROOT = path.join(__dirname, '..', 'expression-library');
+const linkPreviewCache = new Map();
+const linkSafetyCache = new Map();
+const LINK_BLOCKED_MESSAGE =
+  'הקישור לא פורסם: בדיקת האבטחה או בדיקת התוכן לא הושלמה בהצלחה';
+
+function isPrivatePreviewAddress(address) {
+  if (net.isIP(address) === 4) {
+    const parts = address.split('.').map(Number);
+    return parts[0] === 10 || parts[0] === 127 || parts[0] === 0 ||
+      parts[0] >= 224 || parts[0] === 169 && parts[1] === 254 ||
+      parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31 ||
+      parts[0] === 192 && parts[1] === 168 ||
+      parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127;
+  }
+  const normalized = address.toLowerCase();
+  return normalized === '::1' || normalized === '::' ||
+    normalized.startsWith('fc') || normalized.startsWith('fd') ||
+    normalized.startsWith('fe8') || normalized.startsWith('fe9') ||
+    normalized.startsWith('fea') || normalized.startsWith('feb');
+}
+
+async function validatePreviewUrl(rawUrl) {
+  const url = new URL(rawUrl);
+  if (url.protocol !== 'https:') throw new Error('HTTPS is required');
+  if (url.username || url.password || !['', '443'].includes(url.port))
+    throw new Error('unsafe URL');
+  const host = url.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local'))
+    throw new Error('unsafe host');
+  const addresses = net.isIP(host)
+    ? [{ address: host }]
+    : await dns.lookup(host, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(item => isPrivatePreviewAddress(item.address)))
+    throw new Error('unsafe address');
+  return url;
+}
+
+function extractMessageUrls(value) {
+  const matches = String(value || '').match(/https?:\/\/[^\s<>"'\]\[(){}]+/gi) || [];
+  return [...new Set(matches.map(item => item.replace(/[.,!?;:]+$/g, '')))];
+}
+
+function sameBetshuvaHost(url) {
+  const host = url.hostname.toLowerCase();
+  return host === 'betshuva.com' || host.endsWith('.betshuva.com');
+}
+
+async function googleUrlThreats(url) {
+  const apiKey = String(process.env.GOOGLE_SAFE_BROWSING_API_KEY ||
+    process.env.GOOGLE_VISION_API_KEY || '').trim();
+  if (!apiKey) throw new Error('Safe Browsing is not configured');
+  const endpoint = new URL('https://safebrowsing.googleapis.com/v5/urls:search');
+  endpoint.searchParams.append('urls', url.toString());
+  endpoint.searchParams.set('key', apiKey);
+  const response = await fetch(endpoint, { signal: AbortSignal.timeout(7000) });
+  if (!response.ok) throw new Error(`Safe Browsing HTTP ${response.status}`);
+  const data = await response.json();
+  return Array.isArray(data.threats) ? data.threats : [];
+}
+
+async function fetchPreviewPage(rawUrl) {
+  let current = await validatePreviewUrl(rawUrl);
+  let response;
+  for (let redirects = 0; redirects <= 3; redirects++) {
+    response = await fetch(current, {
+      redirect: 'manual',
+      headers: {
+        'User-Agent': 'Betshuva-LinkSafety/1.0 (+https://betshuva.com)',
+        Accept: 'text/html,application/xhtml+xml;q=0.9',
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get('location');
+    if (!location || redirects === 3) throw new Error('too many redirects');
+    current = await validatePreviewUrl(new URL(location, current).toString());
+  }
+  if (!response?.ok) throw new Error(`HTTP ${response?.status || 0}`);
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml'))
+    throw new Error('not an HTML page');
+  if (Number(response.headers.get('content-length') || 0) > 1_500_000)
+    throw new Error('page too large');
+  const html = await readPreviewHtml(response);
+  return { current, html, metadata: previewMetadata(html, current) };
+}
+
+async function fetchPublicImage(rawUrl, maxBytes = 10_000_000) {
+  let current = await validatePreviewUrl(rawUrl);
+  let response;
+  for (let redirects = 0; redirects <= 2; redirects++) {
+    response = await fetch(current, { redirect: 'manual',
+      headers: { Accept: 'image/*' }, signal: AbortSignal.timeout(7000) });
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get('location');
+    if (!location || redirects === 2) throw new Error('too many image redirects');
+    current = await validatePreviewUrl(new URL(location, current).toString());
+  }
+  if (!response?.ok || !String(response.headers.get('content-type') || '').toLowerCase()
+      .startsWith('image/')) throw new Error('invalid preview image');
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('empty preview image');
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) { await reader.cancel(); throw new Error('preview image too large'); }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function inspectExternalLink(rawUrl) {
+  const cached = linkSafetyCache.get(rawUrl);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const original = await validatePreviewUrl(rawUrl);
+  if (sameBetshuvaHost(original)) return { safe: true, url: original.toString() };
+  // External links pass only when every reputation, page and preview-image
+  // check succeeds. Any unavailable or inconclusive check throws and the
+  // message is rejected before it is stored or broadcast.
+  const originalThreats = await googleUrlThreats(original);
+  if (originalThreats.length) throw new Error('known unsafe URL');
+  const page = await fetchPreviewPage(original);
+  if (page.current.toString() !== original.toString()) {
+    const redirectThreats = await googleUrlThreats(page.current);
+    if (redirectThreats.length) throw new Error('unsafe redirect');
+  }
+  const searchable = `${page.current.hostname} ${page.metadata.title} ${page.metadata.description}`
+    .toLowerCase();
+  const prohibited = /(?:porn|xxx|sexcam|escort|hentai|פорно|פורנו|זנות|עריפת|רצח בשידור)/i;
+  if (prohibited.test(searchable)) throw new Error('prohibited page content');
+  let safeImage = null;
+  if (page.metadata.image) {
+    const imageUrl = new URL(page.metadata.image, page.current);
+    const imageBytes = await fetchPublicImage(imageUrl);
+    const scan = await scanGoogleSafeSearch(imageBytes, { threshold: 'LIKELY' });
+    if (!scan.available || scan.status === 'error' || scan.uncertain || scan.blocked ||
+        ['LIKELY', 'VERY_LIKELY'].includes(scan.categories?.violence))
+      throw new Error('unsafe or unverified preview image');
+    safeImage = imageUrl.toString();
+  }
+  const value = { safe: true, url: page.current.toString(),
+    domain: page.current.hostname.replace(/^www\./, ''),
+    title: page.metadata.title || page.current.hostname.replace(/^www\./, ''),
+    description: page.metadata.description, image: safeImage };
+  linkSafetyCache.set(rawUrl, { value, expiresAt: Date.now() + 60 * 60 * 1000 });
+  if (linkSafetyCache.size > 500) linkSafetyCache.delete(linkSafetyCache.keys().next().value);
+  return value;
+}
+
+async function verifyMessageLinks(text) {
+  const urls = extractMessageUrls(text);
+  if (urls.length > 5) throw new Error('too many links');
+  for (const url of urls) await inspectExternalLink(url);
+}
+
+function decodePreviewText(value) {
+  return String(value || '')
+    .replace(/&amp;/gi, '&').replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'").replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+function previewMetadata(html, finalUrl) {
+  const metadata = {};
+  for (const match of html.matchAll(/<meta\s+[^>]*>/gi)) {
+    const attrs = {};
+    for (const attr of match[0].matchAll(/([\w:-]+)\s*=\s*["']([^"']*)["']/g))
+      attrs[attr[1].toLowerCase()] = attr[2];
+    const key = String(attrs.property || attrs.name || '').toLowerCase();
+    if (key && attrs.content && metadata[key] == null) metadata[key] = attrs.content;
+  }
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = decodePreviewText(metadata['og:title'] || metadata['twitter:title'] || titleMatch?.[1]);
+  const description = decodePreviewText(metadata['og:description'] ||
+    metadata['twitter:description'] || metadata.description);
+  const imageRaw = metadata['og:image:secure_url'] || metadata['og:image'] ||
+    metadata['twitter:image'];
+  let image = null;
+  try { if (imageRaw) image = new URL(imageRaw, finalUrl).toString(); } catch (_) {}
+  return { title, description, image };
+}
+
+async function readPreviewHtml(response, maxBytes = 1_500_000) {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) { await reader.cancel(); throw new Error('page too large'); }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
 const EXPRESSION_CATALOG_PATH = path.join(BUILTIN_EXPRESSION_ROOT, 'catalog.json');
 const EXPRESSION_PUBLIC_BASE = '/betshuva-app/expression-library';
 let builtinExpressionHashesPromise = null;
@@ -2847,6 +3050,13 @@ io.on('connection', async (socket) => {
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
       return;
     }
+    if (text) {
+      try { await verifyMessageLinks(text); } catch (error) {
+        console.warn('Blocked private link:', error.message);
+        socket.emit('message:rejected', { toUserId, reason: LINK_BLOCKED_MESSAGE });
+        return;
+      }
+    }
     try {
       const pool = await getPool();
       if (toUserId === SYSTEM_USER_ID) {
@@ -2908,7 +3118,7 @@ io.on('connection', async (socket) => {
            fileUrl || null, fileName || null]);
         relay(toUserId, 'message:request', {
           id: request.rows[0].id, senderId: socket.user.id,
-          senderName: socket.user.name, text, fileName,
+          senderName: socket.user.name,
           createdAt: request.rows[0].created_at,
         });
         sendPush(toUserId, 'בקשת הודעה חדשה',
@@ -2983,6 +3193,14 @@ io.on('connection', async (socket) => {
       socket.emit('message:rejected', { groupId, clientMessageId,
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
       return;
+    }
+    if (text) {
+      try { await verifyMessageLinks(text); } catch (error) {
+        console.warn('Blocked group link:', error.message);
+        socket.emit('message:rejected', { groupId, clientMessageId,
+          reason: LINK_BLOCKED_MESSAGE });
+        return;
+      }
     }
     try {
       const pool = await getPool();
@@ -3511,6 +3729,11 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
     const result = await pool.query(
       `SELECT u.id, u.name, u.profile_pic_url, u.city, u.phone, u.email,
               c.filter_override, c.pinned_at,
+              COALESCE((SELECT recipient_contact.filter_override
+                        FROM user_contacts recipient_contact
+                        WHERE recipient_contact.owner_id=u.id
+                          AND recipient_contact.contact_id=$1),
+                       u.content_filter) AS receiving_filter,
               last_msg.body AS last_message,
               last_msg.type AS last_message_type,
               last_msg.created_at AS last_message_at,
@@ -3757,7 +3980,9 @@ app.post('/api/contacts/match', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT id, name, profile_pic_url, phone, email
+      `SELECT id, name, profile_pic_url, phone, email,
+              EXISTS(SELECT 1 FROM user_contacts c
+                     WHERE c.owner_id=$1 AND c.contact_id=users.id) AS saved
        FROM users
        WHERE (phone = ANY($2::text[]) OR lower(email) = ANY($3::text[]))
          AND NOT (name = 'משתמש' AND gender IS NULL)
@@ -3991,6 +4216,12 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       code: 'CHAT_CONTENT_BLOCKED',
     });
   }
+  if (text) {
+    try { await verifyMessageLinks(text); } catch (error) {
+      console.warn('Blocked private HTTP link:', error.message);
+      return res.status(422).json({ error: LINK_BLOCKED_MESSAGE, code: 'UNSAFE_LINK' });
+    }
+  }
   try {
     const pool = await getPool();
     if (toUserId === SYSTEM_USER_ID) {
@@ -4059,7 +4290,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       const sid = onlineUsers.get(toUserId);
       if (sid) io.to(sid).emit('message:request', {
         id: requestRow.id, senderId, senderName: req.user.name,
-        text, fileName, createdAt: requestRow.created_at,
+        createdAt: requestRow.created_at,
       });
       sendPush(toUserId, 'בקשת חברות חדשה',
         fileUrl
@@ -4137,8 +4368,7 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
     const pool = await getPool();
     const result = await pool.query(
       `SELECT mr.id, mr.sender_id, u.name AS sender_name,
-              u.profile_pic_url, mr.body, mr.type, mr.file_url,
-              mr.file_name, mr.created_at
+              u.profile_pic_url, mr.created_at
        FROM message_requests mr
        JOIN users u ON u.id=mr.sender_id
        WHERE mr.recipient_id=$1
@@ -4436,6 +4666,35 @@ app.get('/api/profile', auth, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
     res.json(result.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// A user's own contact card is intentionally available only to adults.
+// Address and location data are never included in this response.
+app.get('/api/profile/share-card', authWithDbCheck, async (req, res) => {
+  if (req.user.isTeen) {
+    return res.status(403).json({
+      error: 'שיתוף פרטי קשר אישיים זמין לבגירים בלבד',
+      code: 'ADULTS_ONLY',
+    });
+  }
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT name, phone, email
+       FROM users
+       WHERE id=$1 AND birth_date <= CURRENT_DATE - INTERVAL '18 years'`,
+      [req.user.id]);
+    if (!result.rows.length) {
+      return res.status(403).json({
+        error: 'שיתוף פרטי קשר אישיים זמין לבגירים בלבד',
+        code: 'ADULTS_ONLY',
+      });
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── Profile: notification and privacy preferences ────────────────
@@ -4763,6 +5022,75 @@ function listingDescriptionWithTitle(title, description) {
     : `${cleanTitle}\n\n${cleanDescription}`.trim();
 }
 
+app.get('/api/link-preview', auth, async (req, res) => {
+  const rawUrl = String(req.query.url || '').trim();
+  if (!rawUrl || rawUrl.length > 2048)
+    return res.status(400).json({ error: 'קישור לא תקין' });
+  try {
+    const value = await inspectExternalLink(rawUrl);
+    linkPreviewCache.set(rawUrl, { value, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
+    if (linkPreviewCache.size > 500)
+      linkPreviewCache.delete(linkPreviewCache.keys().next().value);
+    res.json(value);
+  } catch (error) {
+    res.status(422).json({ error: 'לא ניתן להציג תצוגה מקדימה לקישור' });
+  }
+});
+
+function validPropertyEntryDate(value) {
+  const text = String(value || '').trim();
+  if (!text || text === 'מיידי') return true;
+  const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return false;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+const LISTING_CATEGORIES = [
+  'רכב', 'נדל״ן', 'רהיטים', 'אלקטרוניקה', 'מחשבים',
+  'טלפונים וטאבלטים', 'מוצרי חשמל', 'בגדים והנעלה', 'תינוקות וילדים',
+  'ספרים', 'יודאיקה ותשמישי קדושה', 'כלי בית ומטבח', 'צעצועים ומשחקים',
+  'ספורט ופנאי', 'אופניים וקורקינטים', 'כלי עבודה', 'גינה וחצר',
+  'כלי נגינה', 'ציוד משרדי', 'ציוד לבעלי חיים', 'אספנות ואמנות', 'אחר',
+];
+
+const LISTING_CATEGORY_DETAIL_KEYS = {
+  'רהיטים': ['item_type', 'material', 'dimensions', 'color', 'assembly', 'age', 'defects'],
+  'אלקטרוניקה': ['item_type', 'brand', 'model', 'purchase_year', 'warranty', 'connectivity', 'included', 'defects'],
+  'מחשבים': ['computer_type', 'brand', 'model', 'processor', 'memory', 'storage', 'graphics', 'screen', 'operating_system', 'battery', 'warranty', 'included'],
+  'טלפונים וטאבלטים': ['device_type', 'brand', 'model', 'storage', 'color', 'battery', 'sim', 'warranty', 'included', 'defects'],
+  'מוצרי חשמל': ['appliance_type', 'brand', 'model', 'dimensions', 'energy_rating', 'purchase_year', 'warranty', 'installation', 'defects'],
+  'בגדים והנעלה': ['item_type', 'audience', 'size', 'brand', 'color', 'material', 'season', 'measurements'],
+  'תינוקות וילדים': ['item_type', 'age_range', 'brand', 'dimensions', 'safety_standard', 'expiry_date', 'washable', 'included'],
+  'ספרים': ['book_type', 'title_author', 'publisher', 'language', 'edition', 'binding', 'pages', 'dedication'],
+  'יודאיקה ותשמישי קדושה': ['item_type', 'custom', 'material', 'community_style', 'scribe_or_maker', 'dimensions', 'certification', 'condition_notes'],
+  'כלי בית ומטבח': ['item_type', 'brand', 'material', 'dimensions', 'capacity', 'dishwasher_safe', 'set_contents'],
+  'צעצועים ומשחקים': ['item_type', 'age_range', 'brand', 'players', 'language', 'complete', 'batteries', 'safety_notes'],
+  'ספורט ופנאי': ['sport_type', 'item_type', 'brand', 'size', 'weight', 'skill_level', 'included', 'defects'],
+  'אופניים וקורקינטים': ['vehicle_type', 'brand', 'model', 'wheel_size', 'frame_size', 'gears', 'electric', 'battery', 'range', 'included'],
+  'כלי עבודה': ['tool_type', 'brand', 'model', 'power_source', 'voltage', 'power', 'accessories', 'warranty'],
+  'גינה וחצר': ['item_type', 'brand', 'dimensions', 'material', 'power_source', 'weather_resistant', 'assembly', 'included'],
+  'כלי נגינה': ['instrument_type', 'brand', 'model', 'size', 'year', 'country', 'accessories', 'service_history'],
+  'ציוד משרדי': ['item_type', 'brand', 'model', 'dimensions', 'compatibility', 'quantity_per_pack', 'included'],
+  'ציוד לבעלי חיים': ['animal_type', 'item_type', 'brand', 'size', 'dimensions', 'material', 'washable', 'safety_notes'],
+  'אספנות ואמנות': ['item_type', 'artist_or_maker', 'year_period', 'material', 'dimensions', 'signed', 'provenance', 'certificate'],
+  'אחר': ['item_type', 'brand', 'model', 'dimensions', 'material', 'included', 'defects'],
+};
+
+function sanitizeListingCategoryDetails(category, value) {
+  const allowed = new Set(LISTING_CATEGORY_DETAIL_KEYS[category] || []);
+  if (!allowed.size || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = Object.entries(value)
+    .filter(([key]) => allowed.has(key))
+    .map(([key, fieldValue]) => [key, fieldValue == null ? null : String(fieldValue).trim().slice(0, 240)])
+    .filter(([, fieldValue]) => fieldValue);
+  return entries.length ? Object.fromEntries(entries) : null;
+}
+
 app.get('/api/vehicles/:plate', auth, async (req, res) => {
   const plate = normalizeLicensePlate(req.params.plate);
   if (!plate) return res.status(400).json({ error: 'מספר הרישוי חייב להכיל 7 או 8 ספרות' });
@@ -4790,7 +5118,7 @@ app.post('/api/listings', auth, async (req, res) => {
           image_url, image_urls, category, item_condition, negotiable,
           quantity, delivery_method, pickup_details,
           contact_phone_visible, expires_in_days, license_plate,
-          vehicle_details } = req.body;
+          vehicle_details, property_details, category_details } = req.body;
   const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   if (title.trim().length > 120) return res.status(400).json({ error: 'הכותרת ארוכה מדי' });
@@ -4801,7 +5129,7 @@ app.post('/api/listings', auth, async (req, res) => {
   const normalizedPrice = Number(price) || 0;
   const normalizedType = normalizedPrice > 0 ? 'sale' : 'free';
   const validTypes = ['free', 'sale'];
-  const validCats  = ['רכב','רהיטים','אלקטרוניקה','בגדים','ספרים','כלי בית','צעצועים','אחר'];
+  const safeCategory = LISTING_CATEGORIES.includes(category) ? category : 'אחר';
   const validConditions = ['new','like_new','good','fair','for_parts'];
   const validDelivery = ['pickup','delivery','both'];
   const parsedQuantity = Math.max(1, Math.min(999, Number.parseInt(quantity, 10) || 1));
@@ -4816,6 +5144,18 @@ app.post('/api/listings', auth, async (req, res) => {
     ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 20).map(([key, value]) =>
       [String(key).slice(0, 40), value == null ? null : String(value).slice(0, 120)]))
     : null;
+  const safePropertyDetails = category === 'נדל״ן' && property_details &&
+    typeof property_details === 'object' && !Array.isArray(property_details)
+    ? Object.fromEntries(Object.entries(property_details).slice(0, 30).map(([key, value]) =>
+      [String(key).slice(0, 40), typeof value === 'boolean'
+        ? value : value == null ? null : String(value).slice(0, 160)]))
+    : null;
+  const safeCategoryDetails = sanitizeListingCategoryDetails(safeCategory, category_details);
+  if (category === 'נדל״ן' && (normalizedPrice <= 0 ||
+      !safePropertyDetails?.rooms || !safePropertyDetails?.area_sqm))
+    return res.status(400).json({ error: 'במודעת נדל״ן נדרשים מחיר, מספר חדרים ושטח במ״ר' });
+  if (category === 'נדל״ן' && !validPropertyEntryDate(safePropertyDetails?.entry_date))
+    return res.status(400).json({ error: 'יש לבחור תאריך כניסה תקין' });
   try {
     const pool = await getPool();
     // use user's stored location if not provided
@@ -4830,19 +5170,19 @@ app.post('/api/listings', auth, async (req, res) => {
       `INSERT INTO listings
        (user_id,type,title,description,price,city,latitude,longitude,image_url,category,
         item_condition,negotiable,quantity,delivery_method,pickup_details,
-        contact_phone_visible,license_plate,vehicle_details,expires_at)
+        contact_phone_visible,license_plate,vehicle_details,property_details,category_details,expires_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-               $17,$18,now() + ($19::text || ' days')::interval)
+               $17,$18,$19,$20,now() + ($21::text || ' days')::interval)
        RETURNING id`,
       [req.user.id, normalizedType, title.trim(),
        listingDescriptionWithTitle(title, description) || null,
        normalizedType === 'sale' ? normalizedPrice : null, listCity || null, lat || null, lng || null,
-       allImages[0] || null, validCats.includes(category) ? category : 'אחר',
+       allImages[0] || null, safeCategory,
        validConditions.includes(item_condition) ? item_condition : 'good',
        normalizedType === 'sale' && negotiable === true, parsedQuantity,
        validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
        pickup_details?.trim() || null, contact_phone_visible === true,
-       safePlate, safeVehicleDetails, expiryDays]);
+       safePlate, safeVehicleDetails, safePropertyDetails, safeCategoryDetails, expiryDays]);
     const listingId = result.rows[0].id;
     if (allImages.length) {
       for (let i = 0; i < allImages.length; i++) {
@@ -4858,7 +5198,7 @@ app.post('/api/listings', auth, async (req, res) => {
 app.get('/api/listings', auth, async (req, res) => {
   if (req.user.isTeen) return res.json([]);
   const { type, category, city, radius, status, page = 1, mine,
-          q, minPrice, maxPrice, sort = 'newest' } = req.query;
+          q, minPrice, maxPrice, condition, sort = 'newest' } = req.query;
   const pageSize = 20;
   const offset   = (parseInt(page) - 1) * pageSize;
   const rowFrom  = offset + 1;
@@ -4876,6 +5216,23 @@ app.get('/api/listings', auth, async (req, res) => {
 
     if (type)     where += ` AND l.type=${addParam(type)}`;
     if (category) where += ` AND l.category=${addParam(category)}`;
+    if (condition && ['new','like_new','good','fair','for_parts'].includes(condition))
+      where += ` AND l.item_condition=${addParam(condition)}`;
+    if (category) {
+      const specialKeys = category === 'רכב'
+        ? ['manufacturer','model','year','fuel','transmission','color']
+        : category === 'נדל״ן'
+          ? ['deal_type','property_type','street','rooms','area_sqm','floor','entry_date','furniture']
+          : LISTING_CATEGORY_DETAIL_KEYS[category] || [];
+      const detailColumn = category === 'רכב' ? 'l.vehicle_details'
+        : category === 'נדל״ן' ? 'l.property_details' : 'l.category_details';
+      for (const key of specialKeys) {
+        const rawValue = req.query[`detail_${key}`];
+        if (typeof rawValue !== 'string' || !rawValue.trim()) continue;
+        const normalizedValue = rawValue.trim().slice(0, 120);
+        where += ` AND COALESCE(${detailColumn}->>${addParam(key)}, '') ILIKE ${addParam(`%${normalizedValue}%`)}`;
+      }
+    }
     if (city && city !== 'כל הארץ') {
       const areaCities = {
         'אזור המרכז': ['תל אביב-יפו','ראשון לציון','פתח תקווה','בני ברק','חולון','רמת גן','רחובות','לוד','רמלה','גבעתיים','מודיעין','נס ציונה'],
@@ -4891,7 +5248,10 @@ app.get('/api/listings', auth, async (req, res) => {
     }
     if (q && String(q).trim()) {
       const search = addParam(`%${String(q).trim()}%`);
-      where += ` AND (l.title ILIKE ${search} OR l.description ILIKE ${search})`;
+      where += ` AND (l.title ILIKE ${search} OR l.description ILIKE ${search}
+        OR COALESCE(l.category_details::text, '') ILIKE ${search}
+        OR COALESCE(l.vehicle_details::text, '') ILIKE ${search}
+        OR COALESCE(l.property_details::text, '') ILIKE ${search})`;
     }
     const parsedMinPrice = Number(minPrice);
     const parsedMaxPrice = Number(maxPrice);
@@ -4922,7 +5282,7 @@ app.get('/api/listings', auth, async (req, res) => {
              image_url, images, category, status, created_at,
              item_condition, negotiable, quantity, delivery_method,
              pickup_details, contact_phone_visible,
-             license_plate, vehicle_details,
+             license_plate, vehicle_details, property_details, category_details,
              view_count, contact_count,
              seller_id, seller_name, seller_pic, seller_phone,
              dist AS distance_km
@@ -4938,7 +5298,7 @@ app.get('/api/listings', auth, async (req, res) => {
                l.category, l.status, l.created_at, l.item_condition,
                l.negotiable, l.quantity, l.delivery_method,
                l.pickup_details, l.contact_phone_visible,
-               l.license_plate, l.vehicle_details,
+               l.license_plate, l.vehicle_details, l.property_details, l.category_details,
                l.view_count, l.contact_count, l.latitude, l.longitude,
                u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
                CASE WHEN l.contact_phone_visible THEN u.phone ELSE NULL END AS seller_phone,
@@ -5015,7 +5375,7 @@ app.put('/api/listings/:id', auth, async (req, res) => {
   const { title, description, price, city, image_urls, item_condition,
           negotiable, quantity, delivery_method, pickup_details,
           contact_phone_visible, expires_in_days, license_plate,
-          vehicle_details } = req.body;
+          vehicle_details, property_details, category_details } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const normalizedPrice = Number(price) || 0;
   const safeType   = normalizedPrice > 0 ? 'sale' : 'free';
@@ -5041,6 +5401,18 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 20).map(([key, value]) =>
         [String(key).slice(0, 40), value == null ? null : String(value).slice(0, 120)]))
       : null;
+    const safePropertyDetails = fixedCategory === 'נדל״ן' && property_details &&
+      typeof property_details === 'object' && !Array.isArray(property_details)
+      ? Object.fromEntries(Object.entries(property_details).slice(0, 30).map(([key, value]) =>
+        [String(key).slice(0, 40), typeof value === 'boolean'
+          ? value : value == null ? null : String(value).slice(0, 160)]))
+      : null;
+    const safeCategoryDetails = sanitizeListingCategoryDetails(fixedCategory, category_details);
+    if (fixedCategory === 'נדל״ן' && (normalizedPrice <= 0 ||
+        !safePropertyDetails?.rooms || !safePropertyDetails?.area_sqm))
+      return res.status(400).json({ error: 'במודעת נדל״ן נדרשים מחיר, מספר חדרים ושטח במ״ר' });
+    if (fixedCategory === 'נדל״ן' && !validPropertyEntryDate(safePropertyDetails?.entry_date))
+      return res.status(400).json({ error: 'יש לבחור תאריך כניסה תקין' });
     const previousImages = await pool.query(
       `SELECT url FROM listing_images WHERE listing_id=$1
        UNION SELECT image_url AS url FROM listings
@@ -5051,9 +5423,9 @@ app.put('/api/listings/:id', auth, async (req, res) => {
        price=$4, city=$5, image_url=$6, item_condition=$7,
        negotiable=$8, quantity=$9, delivery_method=$10,
        pickup_details=$11, contact_phone_visible=$12,
-       license_plate=$13, vehicle_details=$14,
-       expires_at=now() + ($15::text || ' days')::interval
-       WHERE id=$16 AND user_id=$17`,
+       license_plate=$13, vehicle_details=$14, property_details=$15,
+       category_details=$16, expires_at=now() + ($17::text || ' days')::interval
+       WHERE id=$18 AND user_id=$19`,
       [safeType, title.trim(), listingDescriptionWithTitle(title, description) || null,
        safeType === 'sale' ? normalizedPrice : null,
        city || null, allImages[0] || null,
@@ -5061,7 +5433,8 @@ app.put('/api/listings/:id', auth, async (req, res) => {
        safeType === 'sale' && negotiable === true, parsedQuantity,
        validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
        pickup_details?.trim() || null, contact_phone_visible === true,
-       safePlate, safeVehicleDetails, expiryDays, req.params.id, req.user.id]);
+       safePlate, safeVehicleDetails, safePropertyDetails, safeCategoryDetails, expiryDays,
+       req.params.id, req.user.id]);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'לא נמצא' });
     await pool.query('DELETE FROM listing_images WHERE listing_id=$1', [req.params.id]);
     for (let i = 0; i < allImages.length; i++) {
@@ -5323,21 +5696,30 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         categories.some(category => ['men', 'women', 'children', 'people'].includes(category));
       const uncertain = classification?.uncertain === true ||
         !classification?.category || categories.length === 0;
-      // Object Localization is an escalation step, not a scan applied to every
-      // image: it runs only after a local person hit or an uncertain local result.
+      // Google checks are escalation steps, not scans applied to every image.
+      // A strong local person result is authoritative. Object Localization may
+      // add evidence, and Face Detection resolves the specific case where it
+      // misses a clearly visible face, but neither may turn a local person hit
+      // into an approval.
       const needsGooglePersonCheck = hasPeople || uncertain;
       const googleObjectLocalization = needsGooglePersonCheck
         ? await scanGoogleObjectLocalization(file.buffer)
         : null;
-      const googleConfirmedNoPeople = needsGooglePersonCheck &&
-        googleObjectLocalization?.available === true &&
-        googleObjectLocalization.personDetected === false;
       if (googleObjectLocalization) scanResult.googleObjectLocalization =
         googleObjectLocalization;
-      const confirmedPeople =
+      const googleFaceDetection = hasPeople &&
+        googleObjectLocalization?.available === true &&
+        googleObjectLocalization.personDetected === false
+        ? await scanGoogleFaceDetection(file.buffer)
+        : null;
+      if (googleFaceDetection) scanResult.googleFaceDetection = googleFaceDetection;
+      const confirmedPeople = hasPeople ||
         googleObjectLocalization?.available === true &&
           googleObjectLocalization.personDetected === true ||
-        hasPeople && !googleConfirmedNoPeople;
+        googleFaceDetection?.available === true && googleFaceDetection.faceDetected === true;
+      const googleConfirmedNoPeople = !hasPeople && uncertain &&
+        googleObjectLocalization?.available === true &&
+        googleObjectLocalization.personDetected === false;
       const confidentNonHuman = googleConfirmedNoPeople ||
         (classification?.category === 'nonHumanImages' &&
           classification?.uncertain !== true && !hasPeople);
@@ -5354,6 +5736,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
           fileName: file.originalname, fileUrl: url, reason, classification,
           faces: scanResult?.faces || [],
           googleObjectLocalization,
+          googleFaceDetection,
         }, req.ip);
         return res.json({
           url, fileName: file.originalname, fileSize: file.size,
@@ -5486,6 +5869,7 @@ app.get('/api/groups', auth, async (req, res) => {
     const pool = await getPool();
     const result = await pool.query(`
       SELECT g.id, g.name, g.description, g.profile_pic_url, g.is_broadcast, g.send_permission, g.filter_level,
+             g.content_filter,
              gm.role, gm.status, gm.pinned_at,
              group_admin.id AS admin_id, group_admin.name AS admin_name,
              (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count,
@@ -5623,6 +6007,12 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       error: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
       code: 'CHAT_CONTENT_BLOCKED',
     });
+  }
+  if (text) {
+    try { await verifyMessageLinks(text); } catch (error) {
+      console.warn('Blocked group HTTP link:', error.message);
+      return res.status(422).json({ error: LINK_BLOCKED_MESSAGE, code: 'UNSAFE_LINK' });
+    }
   }
   if (!text && !fileUrl)
     return res.status(400).json({ error: 'חסר תוכן להודעה' });
@@ -8091,6 +8481,11 @@ async function initPendingTable() {
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_phone_visible BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS license_plate TEXT`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS vehicle_details JSONB`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS property_details JSONB`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS category_details JSONB`);
+    await pool.query(`UPDATE listings SET category='בגדים והנעלה' WHERE category='בגדים'`);
+    await pool.query(`UPDATE listings SET category='כלי בית ומטבח' WHERE category='כלי בית'`);
+    await pool.query(`UPDATE listings SET category='צעצועים ומשחקים' WHERE category='צעצועים'`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS listing_views (
         listing_id  UUID NOT NULL,

@@ -6,6 +6,7 @@ const sharp = require('sharp');
 const {
   MAX_INLINE_IMAGE_BYTES,
   evaluateSafeSearch,
+  scanGoogleFaceDetection,
   scanGoogleObjectLocalization,
   scanGoogleSafeSearch,
 } = require('../server/google-vision');
@@ -152,6 +153,37 @@ test('Object Localization errors remain unavailable and cannot approve an image'
   assert.equal(result.available, false);
   assert.equal(result.personDetected, false);
   assert.equal(result.status, 'error');
+});
+
+test('Face Detection requests only faces and reports a detected face', async () => {
+  let feature;
+  const result = await scanGoogleFaceDetection(Buffer.from('image'), {
+    apiKey: 'server-key',
+    fetchImpl: async (_url, options) => {
+      feature = JSON.parse(options.body).requests[0].features;
+      return response({ responses: [{ faceAnnotations: [
+        { detectionConfidence: 0.97, boundingPoly: { vertices: [] } },
+      ] }] });
+    },
+  });
+
+  assert.deepEqual(feature, [{ type: 'FACE_DETECTION', maxResults: 30 }]);
+  assert.equal(result.available, true);
+  assert.equal(result.faceDetected, true);
+  assert.equal(result.faceCount, 1);
+  assert.equal(result.status, 'face_detected');
+});
+
+test('Face Detection returns passed when Google finds no face', async () => {
+  const result = await scanGoogleFaceDetection(Buffer.from('image'), {
+    apiKey: 'server-key',
+    fetchImpl: async () => response({ responses: [{}] }),
+  });
+
+  assert.equal(result.available, true);
+  assert.equal(result.faceDetected, false);
+  assert.equal(result.faceCount, 0);
+  assert.equal(result.status, 'passed');
 });
 
 test('large uploads are converted for Google without modifying the original buffer', async () => {
