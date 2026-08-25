@@ -5091,6 +5091,19 @@ function sanitizeListingCategoryDetails(category, value) {
   return entries.length ? Object.fromEntries(entries) : null;
 }
 
+function sanitizeListingContactPreferences(value, legacyPhoneVisible = false) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const preferences = {
+    in_app: source.in_app !== false,
+    email: source.email === true,
+    phone: source.phone === true || legacyPhoneVisible === true,
+    contact_hours: String(source.contact_hours || '').trim().slice(0, 120),
+  };
+  if (!preferences.in_app && !preferences.email && !preferences.phone)
+    preferences.in_app = true;
+  return preferences;
+}
+
 app.get('/api/vehicles/:plate', auth, async (req, res) => {
   const plate = normalizeLicensePlate(req.params.plate);
   if (!plate) return res.status(400).json({ error: 'מספר הרישוי חייב להכיל 7 או 8 ספרות' });
@@ -5118,7 +5131,8 @@ app.post('/api/listings', auth, async (req, res) => {
           image_url, image_urls, category, item_condition, negotiable,
           quantity, delivery_method, pickup_details,
           contact_phone_visible, expires_in_days, license_plate,
-          vehicle_details, property_details, category_details } = req.body;
+          vehicle_details, property_details, category_details,
+          contact_preferences } = req.body;
   const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   if (title.trim().length > 120) return res.status(400).json({ error: 'הכותרת ארוכה מדי' });
@@ -5151,6 +5165,8 @@ app.post('/api/listings', auth, async (req, res) => {
         ? value : value == null ? null : String(value).slice(0, 160)]))
     : null;
   const safeCategoryDetails = sanitizeListingCategoryDetails(safeCategory, category_details);
+  const safeContactPreferences = sanitizeListingContactPreferences(
+    contact_preferences, contact_phone_visible);
   if (category === 'נדל״ן' && (normalizedPrice <= 0 ||
       !safePropertyDetails?.rooms || !safePropertyDetails?.area_sqm))
     return res.status(400).json({ error: 'במודעת נדל״ן נדרשים מחיר, מספר חדרים ושטח במ״ר' });
@@ -5170,9 +5186,9 @@ app.post('/api/listings', auth, async (req, res) => {
       `INSERT INTO listings
        (user_id,type,title,description,price,city,latitude,longitude,image_url,category,
         item_condition,negotiable,quantity,delivery_method,pickup_details,
-        contact_phone_visible,license_plate,vehicle_details,property_details,category_details,expires_at)
+        contact_phone_visible,contact_preferences,license_plate,vehicle_details,property_details,category_details,expires_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-               $17,$18,$19,$20,now() + ($21::text || ' days')::interval)
+               $17,$18,$19,$20,$21,now() + ($22::text || ' days')::interval)
        RETURNING id`,
       [req.user.id, normalizedType, title.trim(),
        listingDescriptionWithTitle(title, description) || null,
@@ -5181,8 +5197,9 @@ app.post('/api/listings', auth, async (req, res) => {
        validConditions.includes(item_condition) ? item_condition : 'good',
        normalizedType === 'sale' && negotiable === true, parsedQuantity,
        validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
-       pickup_details?.trim() || null, contact_phone_visible === true,
-       safePlate, safeVehicleDetails, safePropertyDetails, safeCategoryDetails, expiryDays]);
+       pickup_details?.trim() || null, safeContactPreferences.phone,
+       safeContactPreferences, safePlate, safeVehicleDetails, safePropertyDetails,
+       safeCategoryDetails, expiryDays]);
     const listingId = result.rows[0].id;
     if (allImages.length) {
       for (let i = 0; i < allImages.length; i++) {
@@ -5281,10 +5298,10 @@ app.get('/api/listings', auth, async (req, res) => {
       SELECT id, type, title, description, price, city,
              image_url, images, category, status, created_at,
              item_condition, negotiable, quantity, delivery_method,
-             pickup_details, contact_phone_visible,
+             pickup_details, contact_phone_visible, contact_preferences,
              license_plate, vehicle_details, property_details, category_details,
              view_count, contact_count,
-             seller_id, seller_name, seller_pic, seller_phone,
+             seller_id, seller_name, seller_pic, seller_phone, seller_email,
              dist AS distance_km
       FROM (
         SELECT l.id, l.type, l.title, l.description, l.price, l.city,
@@ -5297,11 +5314,14 @@ app.get('/api/listings', auth, async (req, res) => {
                ) AS images,
                l.category, l.status, l.created_at, l.item_condition,
                l.negotiable, l.quantity, l.delivery_method,
-               l.pickup_details, l.contact_phone_visible,
+               l.pickup_details, l.contact_phone_visible, l.contact_preferences,
                l.license_plate, l.vehicle_details, l.property_details, l.category_details,
                l.view_count, l.contact_count, l.latitude, l.longitude,
                u.id AS seller_id, u.name AS seller_name, u.profile_pic_url AS seller_pic,
-               CASE WHEN l.contact_phone_visible THEN u.phone ELSE NULL END AS seller_phone,
+               CASE WHEN COALESCE((l.contact_preferences->>'phone')::boolean, l.contact_phone_visible)
+                    THEN u.phone ELSE NULL END AS seller_phone,
+               CASE WHEN COALESCE((l.contact_preferences->>'email')::boolean, false)
+                    THEN u.email ELSE NULL END AS seller_email,
                ${distExpr} AS dist,
                ROW_NUMBER() OVER (ORDER BY ${orderBy}) AS _rn
         FROM listings l JOIN users u ON u.id = l.user_id
@@ -5333,7 +5353,10 @@ app.get('/api/listings/:id', auth, async (req, res) => {
     const result = await pool.query(
       `SELECT l.*, u.name AS seller_name, u.profile_pic_url AS seller_pic,
               u.id AS seller_id,
-              CASE WHEN l.contact_phone_visible THEN u.phone ELSE NULL END AS seller_phone
+              CASE WHEN COALESCE((l.contact_preferences->>'phone')::boolean, l.contact_phone_visible)
+                   THEN u.phone ELSE NULL END AS seller_phone,
+              CASE WHEN COALESCE((l.contact_preferences->>'email')::boolean, false)
+                   THEN u.email ELSE NULL END AS seller_email
        FROM listings l JOIN users u ON u.id = l.user_id WHERE l.id=$1`, [req.params.id]);
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
     const item = result.rows[0];
@@ -5359,7 +5382,7 @@ app.put('/api/listings/:id/status', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
   const { status } = req.body;
-  const valid = ['active', 'sold', 'expired'];
+  const valid = ['active', 'paused', 'sold', 'given', 'expired'];
   if (!valid.includes(status)) return res.status(400).json({ error: 'סטטוס לא תקין' });
   try {
     const pool = await getPool();
@@ -5375,7 +5398,8 @@ app.put('/api/listings/:id', auth, async (req, res) => {
   const { title, description, price, city, image_urls, item_condition,
           negotiable, quantity, delivery_method, pickup_details,
           contact_phone_visible, expires_in_days, license_plate,
-          vehicle_details, property_details, category_details } = req.body;
+          vehicle_details, property_details, category_details,
+          contact_preferences } = req.body;
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const normalizedPrice = Number(price) || 0;
   const safeType   = normalizedPrice > 0 ? 'sale' : 'free';
@@ -5408,6 +5432,8 @@ app.put('/api/listings/:id', auth, async (req, res) => {
           ? value : value == null ? null : String(value).slice(0, 160)]))
       : null;
     const safeCategoryDetails = sanitizeListingCategoryDetails(fixedCategory, category_details);
+    const safeContactPreferences = sanitizeListingContactPreferences(
+      contact_preferences, contact_phone_visible);
     if (fixedCategory === 'נדל״ן' && (normalizedPrice <= 0 ||
         !safePropertyDetails?.rooms || !safePropertyDetails?.area_sqm))
       return res.status(400).json({ error: 'במודעת נדל״ן נדרשים מחיר, מספר חדרים ושטח במ״ר' });
@@ -5422,18 +5448,20 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       `UPDATE listings SET type=$1, title=$2, description=$3,
        price=$4, city=$5, image_url=$6, item_condition=$7,
        negotiable=$8, quantity=$9, delivery_method=$10,
-       pickup_details=$11, contact_phone_visible=$12,
-       license_plate=$13, vehicle_details=$14, property_details=$15,
-       category_details=$16, expires_at=now() + ($17::text || ' days')::interval
-       WHERE id=$18 AND user_id=$19`,
+       pickup_details=$11, contact_phone_visible=$12, contact_preferences=$13,
+       license_plate=$14, vehicle_details=$15, property_details=$16,
+       category_details=$17, expires_at=now() + ($18::text || ' days')::interval
+       WHERE id=$19 AND user_id=$20`,
       [safeType, title.trim(), listingDescriptionWithTitle(title, description) || null,
        safeType === 'sale' ? normalizedPrice : null,
        city || null, allImages[0] || null,
        validConditions.includes(item_condition) ? item_condition : 'good',
        safeType === 'sale' && negotiable === true, parsedQuantity,
        validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
-       pickup_details?.trim() || null, contact_phone_visible === true,
-       safePlate, safeVehicleDetails, safePropertyDetails, safeCategoryDetails, expiryDays,
+       pickup_details?.trim() || null,
+       safeContactPreferences.phone,
+       safeContactPreferences, safePlate, safeVehicleDetails, safePropertyDetails,
+       safeCategoryDetails, expiryDays,
        req.params.id, req.user.id]);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'לא נמצא' });
     await pool.query('DELETE FROM listing_images WHERE listing_id=$1', [req.params.id]);
@@ -6231,6 +6259,10 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
   })).filter(question => question.text && question.options.length >= 2);
   if (formType === 'survey' && cleanQuestions.length !== questions.length)
     return res.status(400).json({ error: 'כל שאלת סקר חייבת לכלול לפחות שתי אפשרויות' });
+  const fileUrl = formType === 'survey' ? null : String(req.body.fileUrl || '').trim() || null;
+  const fileName = formType === 'survey' ? null : String(req.body.fileName || '').trim() || null;
+  if (formType === 'signature' && !fileUrl)
+    return res.status(400).json({ error: 'במסמך לחתימה חובה לצרף מסמך' });
   let dueAt = null;
   if (req.body.dueAt) {
     dueAt = new Date(req.body.dueAt);
@@ -6249,8 +6281,9 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
        (group_id,created_by,form_type,title,description,file_url,file_name,questions,anonymous,due_at)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [req.params.id, req.user.id, formType, title, description || null,
-       req.body.fileUrl || null, req.body.fileName || null,
-       JSON.stringify(cleanQuestions), formType === 'survey' && req.body.anonymous === true, dueAt]);
+       fileUrl, fileName,
+       JSON.stringify(formType === 'survey' ? cleanQuestions : []),
+       formType === 'survey' && req.body.anonymous === true, dueAt]);
     const members = await pool.query(
       `SELECT user_id FROM group_members
        WHERE group_id=$1 AND status='member' AND user_id<>$2`,
@@ -8479,6 +8512,12 @@ async function initPendingTable() {
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS delivery_method TEXT NOT NULL DEFAULT 'pickup'`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS pickup_details TEXT`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_phone_visible BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_preferences JSONB NOT NULL DEFAULT '{"in_app":true,"email":false,"phone":false,"contact_hours":""}'::jsonb`);
+    await pool.query(`UPDATE listings
+      SET contact_preferences = jsonb_build_object(
+        'in_app', true, 'email', false, 'phone', true, 'contact_hours', '')
+      WHERE contact_phone_visible = true
+        AND COALESCE((contact_preferences->>'phone')::boolean, false) = false`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS license_plate TEXT`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS vehicle_details JSONB`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS property_details JSONB`);

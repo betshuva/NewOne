@@ -737,8 +737,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.98';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.98.apk';
+const kVersion = '1.2.99';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.99.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -6418,6 +6418,448 @@ List<(String, String, String)> _listingSearchFields(String category) {
   return _kCategoryDetailFields[category] ?? const [];
 }
 
+const Map<String, List<String>> _kCommonPopularValues = {
+  'color': [
+    'שחור',
+    'לבן',
+    'אפור',
+    'כסוף',
+    'כחול',
+    'אדום',
+    'ירוק',
+    'חום',
+    'בז׳',
+    'זהב'
+  ],
+  'warranty': ['ללא אחריות', 'עד 3 חודשים', 'עד 6 חודשים', 'עד שנה', 'מעל שנה'],
+  'condition_notes': ['חדש', 'כמו חדש', 'מצב טוב', 'דורש בדיקה', 'דורש תיקון'],
+  'language': ['עברית', 'אנגלית', 'יידיש', 'רוסית', 'צרפתית', 'ערבית'],
+  'material': [
+    'עץ מלא',
+    'עץ תעשייתי',
+    'מתכת',
+    'פלסטיק',
+    'זכוכית',
+    'בד',
+    'עור',
+    'קרמיקה',
+    'כסף',
+    'נירוסטה'
+  ],
+  'power_source': ['חשמל', 'סוללה נטענת', 'סוללות', 'בנזין', 'ידני'],
+  'washable': ['כביסה במכונה', 'כביסה ביד', 'ניקוי במטלית', 'לא ניתן לכביסה'],
+  'included': [
+    'מוצר בלבד',
+    'אריזה מקורית',
+    'מטען',
+    'כבל',
+    'אביזרים',
+    'כל החלקים המקוריים'
+  ],
+};
+
+const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
+  'רהיטים': {
+    'item_type': [
+      'ספה',
+      'שולחן',
+      'כיסא',
+      'ארון',
+      'מיטה',
+      'שידה',
+      'ספרייה',
+      'מזנון',
+      'כוורת',
+      'שולחן כתיבה'
+    ],
+    'material': [
+      'עץ מלא',
+      'עץ תעשייתי',
+      'מתכת',
+      'זכוכית',
+      'פלסטיק',
+      'בד',
+      'עור'
+    ],
+    'assembly': ['מגיע מורכב', 'מתפרק להובלה', 'דורש הרכבה', 'לא ניתן לפירוק'],
+  },
+  'אלקטרוניקה': {
+    'item_type': [
+      'טלוויזיה',
+      'מצלמה',
+      'רמקול',
+      'אוזניות',
+      'מקרן',
+      'קונסולת משחק',
+      'נתב',
+      'שעון חכם',
+      'נגן'
+    ],
+    'brand': [
+      'Samsung',
+      'LG',
+      'Sony',
+      'Apple',
+      'Xiaomi',
+      'JBL',
+      'Canon',
+      'Nikon',
+      'Philips',
+      'Panasonic'
+    ],
+    'connectivity': [
+      'Bluetooth',
+      'Wi-Fi',
+      'HDMI',
+      'USB-C',
+      'USB',
+      'AUX',
+      'Ethernet'
+    ],
+  },
+  'מחשבים': {
+    'computer_type': [
+      'מחשב נייד',
+      'מחשב נייח',
+      'מחשב גיימינג',
+      'מיני מחשב',
+      'All-in-One',
+      'Chromebook'
+    ],
+    'brand': [
+      'Dell',
+      'Lenovo',
+      'HP',
+      'Asus',
+      'Acer',
+      'Apple',
+      'Microsoft',
+      'MSI'
+    ],
+    'processor': [
+      'Intel Core i3',
+      'Intel Core i5',
+      'Intel Core i7',
+      'Intel Core i9',
+      'AMD Ryzen 3',
+      'AMD Ryzen 5',
+      'AMD Ryzen 7',
+      'Apple M1',
+      'Apple M2',
+      'Apple M3'
+    ],
+    'memory': ['4GB', '8GB', '16GB', '32GB', '64GB'],
+    'storage': [
+      '128GB SSD',
+      '256GB SSD',
+      '512GB SSD',
+      '1TB SSD',
+      '1TB HDD',
+      '2TB HDD'
+    ],
+    'operating_system': [
+      'Windows 11',
+      'Windows 10',
+      'macOS',
+      'ChromeOS',
+      'Linux',
+      'ללא מערכת הפעלה'
+    ],
+  },
+  'טלפונים וטאבלטים': {
+    'device_type': [
+      'טלפון חכם',
+      'טלפון כשר',
+      'טאבלט',
+      'שעון חכם',
+      'קורא ספרים'
+    ],
+    'brand': [
+      'Apple',
+      'Samsung',
+      'Xiaomi',
+      'Google',
+      'OnePlus',
+      'Nokia',
+      'Lenovo',
+      'Huawei'
+    ],
+    'storage': ['32GB', '64GB', '128GB', '256GB', '512GB', '1TB'],
+    'sim': ['SIM יחיד', 'Dual SIM', 'eSIM', 'SIM + eSIM', 'ללא SIM'],
+  },
+  'מוצרי חשמל': {
+    'appliance_type': [
+      'מקרר',
+      'מכונת כביסה',
+      'מייבש כביסה',
+      'תנור',
+      'כיריים',
+      'מדיח כלים',
+      'מזגן',
+      'מקפיא',
+      'מיקרוגל',
+      'שואב אבק',
+      'קומקום',
+      'מיקסר'
+    ],
+    'brand': [
+      'Samsung',
+      'LG',
+      'Bosch',
+      'Siemens',
+      'Electrolux',
+      'AEG',
+      'Sharp',
+      'Tadiran',
+      'Amcor',
+      'Sauter',
+      'Morphy Richards'
+    ],
+    'energy_rating': ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+    'installation': [
+      'לא נדרשת',
+      'חיבור לחשמל',
+      'חיבור למים',
+      'מתקין מוסמך',
+      'פירוק והובלה מיוחדת'
+    ],
+  },
+  'בגדים והנעלה': {
+    'item_type': [
+      'חולצה',
+      'מכנסיים',
+      'שמלה',
+      'חצאית',
+      'חליפה',
+      'מעיל',
+      'נעליים',
+      'כובע',
+      'תיק'
+    ],
+    'audience': [
+      'גברים',
+      'נשים',
+      'נערים',
+      'נערות',
+      'ילדים',
+      'ילדות',
+      'תינוקות'
+    ],
+    'size': ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'מידה אחידה'],
+    'season': ['קיץ', 'חורף', 'מעבר', 'כל השנה'],
+  },
+  'תינוקות וילדים': {
+    'item_type': [
+      'עגלה',
+      'כיסא בטיחות',
+      'לול',
+      'מיטת תינוק',
+      'טרמפולינה',
+      'מנשא',
+      'כיסא אוכל',
+      'אמבטיה',
+      'ביגוד'
+    ],
+    'age_range': [
+      'לידה–6 חודשים',
+      '6–12 חודשים',
+      'שנה–שנתיים',
+      '2–4 שנים',
+      '4–6 שנים',
+      '6–10 שנים'
+    ],
+  },
+  'ספרים': {
+    'book_type': [
+      'ספרי קודש',
+      'הלכה',
+      'גמרא',
+      'חסידות',
+      'מוסר',
+      'סידור',
+      'מחזור',
+      'ספרי ילדים',
+      'לימוד',
+      'עיון',
+      'רומן'
+    ],
+    'binding': ['כריכה קשה', 'כריכה רכה', 'כריכת עור', 'סט כרכים'],
+  },
+  'יודאיקה ותשמישי קדושה': {
+    'item_type': [
+      'תפילין',
+      'מזוזה',
+      'טלית',
+      'סידור',
+      'חנוכייה',
+      'פמוטים',
+      'גביע קידוש',
+      'כיסוי חלה',
+      'שופר',
+      'מגילת אסתר'
+    ],
+    'custom': ['אשכנז', 'ספרד', 'עדות המזרח', 'תימן', 'חב״ד', 'ברסלב'],
+    'material': ['כסף', 'כסף מצופה', 'נירוסטה', 'עץ', 'עור', 'קטיפה', 'קלף'],
+    'certification': ['עם תעודה', 'עבר הגהה', 'דורש הגהה', 'ללא תעודה'],
+  },
+  'כלי בית ומטבח': {
+    'item_type': [
+      'סירים',
+      'מחבתות',
+      'צלחות',
+      'כוסות',
+      'סכו״ם',
+      'תבניות',
+      'כלי אחסון',
+      'מצעים',
+      'מגבות'
+    ],
+    'dishwasher_safe': ['מתאים למדיח', 'לא מתאים למדיח', 'לא ידוע'],
+  },
+  'צעצועים ומשחקים': {
+    'item_type': [
+      'משחק קופסה',
+      'פאזל',
+      'בובות',
+      'קוביות',
+      'לגו',
+      'משחק חשיבה',
+      'יצירה',
+      'רכב צעצוע',
+      'משחק חצר'
+    ],
+    'age_range': ['0–2', '2–4', '4–6', '6–8', '8–12', '12 ומעלה'],
+    'complete': ['כל החלקים קיימים', 'חסרים חלקים', 'לא נבדק'],
+  },
+  'ספורט ופנאי': {
+    'sport_type': [
+      'כושר',
+      'כדורגל',
+      'כדורסל',
+      'שחייה',
+      'ריצה',
+      'טיולים',
+      'קמפינג',
+      'טניס',
+      'דיג'
+    ],
+    'skill_level': ['מתחילים', 'בינוני', 'מתקדמים', 'מקצועי'],
+  },
+  'אופניים וקורקינטים': {
+    'vehicle_type': [
+      'אופני עיר',
+      'אופני הרים',
+      'אופני כביש',
+      'אופני ילדים',
+      'אופניים חשמליים',
+      'קורקינט',
+      'קורקינט חשמלי'
+    ],
+    'wheel_size': ['12', '14', '16', '20', '24', '26', '27.5', '28', '29'],
+    'electric': ['רגיל', 'חשמלי'],
+  },
+  'כלי עבודה': {
+    'tool_type': [
+      'מקדחה',
+      'מברגה',
+      'מסור',
+      'משחזת',
+      'פטישון',
+      'קומפרסור',
+      'רתכת',
+      'כלי יד',
+      'ארגז כלים'
+    ],
+    'brand': [
+      'Bosch',
+      'Makita',
+      'DeWalt',
+      'Milwaukee',
+      'Einhell',
+      'Ryobi',
+      'Black & Decker',
+      'Stanley'
+    ],
+    'voltage': ['12V', '18V', '20V', '24V', '36V', '220V'],
+  },
+  'גינה וחצר': {
+    'item_type': [
+      'מכסחת דשא',
+      'חרמש',
+      'מפוח',
+      'גריל',
+      'ריהוט גן',
+      'אדנית',
+      'כלי גינון',
+      'מחסן גינה',
+      'שמשייה'
+    ],
+    'weather_resistant': [
+      'עמיד למים',
+      'עמיד לשמש',
+      'לשימוש מקורה',
+      'דורש כיסוי'
+    ],
+  },
+  'כלי נגינה': {
+    'instrument_type': [
+      'גיטרה',
+      'פסנתר',
+      'אורגן',
+      'כינור',
+      'חליל',
+      'תופים',
+      'סקסופון',
+      'קלרינט',
+      'עוד',
+      'ציוד הגברה'
+    ],
+  },
+  'ציוד משרדי': {
+    'item_type': [
+      'מדפסת',
+      'סורק',
+      'מגרסה',
+      'שולחן',
+      'כיסא משרדי',
+      'ארון',
+      'ציוד כתיבה',
+      'דיו וטונר'
+    ],
+  },
+  'ציוד לבעלי חיים': {
+    'animal_type': ['כלב', 'חתול', 'ציפור', 'דגים', 'מכרסם', 'זוחל'],
+    'item_type': [
+      'כלוב',
+      'מיטה',
+      'מנשא',
+      'רצועה',
+      'קערה',
+      'צעצוע',
+      'אקווריום',
+      'מתקן גירוד'
+    ],
+  },
+  'אספנות ואמנות': {
+    'item_type': [
+      'ציור',
+      'הדפס',
+      'פסל',
+      'מטבעות',
+      'בולים',
+      'עתיקות',
+      'פריט וינטג׳',
+      'מזכרות'
+    ],
+    'signed': ['חתום', 'לא חתום', 'חתימה לא מזוהה'],
+  },
+};
+
+List<String> _popularValuesFor(String category, String key) =>
+    _kPopularCategoryValues[category]?[key] ??
+    _kCommonPopularValues[key] ??
+    const [];
+
 const _kIsraeliLocations = [
   'כל הארץ',
   'אזור המרכז',
@@ -6474,6 +6916,94 @@ String _listingPublishedAt(dynamic value, {bool compact = false}) {
   final hour = parsed.hour.toString().padLeft(2, '0');
   final minute = parsed.minute.toString().padLeft(2, '0');
   return 'פורסם ב־$day/$month/${parsed.year} בשעה $hour:$minute';
+}
+
+class _PopularValueField extends StatefulWidget {
+  final TextEditingController controller;
+  final String label;
+  final String? hint;
+  final List<String> options;
+  const _PopularValueField({
+    required this.controller,
+    required this.label,
+    required this.options,
+    this.hint,
+  });
+
+  @override
+  State<_PopularValueField> createState() => _PopularValueFieldState();
+}
+
+class _PopularValueFieldState extends State<_PopularValueField> {
+  final _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.options.isEmpty) {
+      return TextField(
+        controller: widget.controller,
+        textDirection: TextDirection.rtl,
+        decoration: InputDecoration(
+          labelText: widget.label,
+          hintText: widget.hint,
+          border: const OutlineInputBorder(),
+        ),
+      );
+    }
+    return RawAutocomplete<String>(
+      textEditingController: widget.controller,
+      focusNode: _focusNode,
+      displayStringForOption: (option) => option,
+      optionsBuilder: (value) {
+        final query = value.text.trim().toLowerCase();
+        return widget.options.where(
+            (option) => query.isEmpty || option.toLowerCase().contains(query));
+      },
+      onSelected: (option) => widget.controller.text = option,
+      fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
+          TextField(
+        controller: controller,
+        focusNode: focusNode,
+        textDirection: TextDirection.rtl,
+        decoration: InputDecoration(
+          labelText: widget.label,
+          hintText: widget.hint,
+          helperText: 'אפשר לבחור מהרשימה או להקליד ערך אחר',
+          suffixIcon: const Icon(Icons.arrow_drop_down),
+          border: const OutlineInputBorder(),
+        ),
+      ),
+      optionsViewBuilder: (context, onSelected, options) => Align(
+        alignment: Alignment.topRight,
+        child: Material(
+          elevation: 8,
+          borderRadius: BorderRadius.circular(10),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 250, maxWidth: 360),
+            child: ListView.builder(
+              padding: EdgeInsets.zero,
+              shrinkWrap: true,
+              itemCount: options.length,
+              itemBuilder: (_, index) {
+                final option = options.elementAt(index);
+                return ListTile(
+                  dense: true,
+                  title: Text(option, textDirection: TextDirection.rtl),
+                  onTap: () => onSelected(option),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _LocationAutocompleteField extends StatefulWidget {
@@ -7047,7 +7577,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
     );
   }
 
-  Widget _advancedDetailField((String, String, String) field,
+  Widget _advancedDetailField(String category, (String, String, String) field,
       Map<String, TextEditingController> controllers) {
     const options = <String, List<(String, String)>>{
       'deal_type': [('rent', 'השכרה'), ('sale', 'מכירה')],
@@ -7093,15 +7623,11 @@ class _ListingsScreenState extends State<ListingsScreen> {
         onChanged: (value) => controller.text = value ?? '',
       );
     }
-    return TextField(
+    return _PopularValueField(
       controller: controller,
-      textDirection: TextDirection.rtl,
-      decoration: InputDecoration(
-        labelText: field.$2,
-        hintText: field.$3.isEmpty ? null : field.$3,
-        isDense: true,
-        border: const OutlineInputBorder(),
-      ),
+      label: field.$2,
+      hint: field.$3.isEmpty ? null : field.$3,
+      options: _popularValuesFor(category, field.$1),
     );
   }
 
@@ -7203,7 +7729,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
                                     const SizedBox(height: 10),
                                     for (final field in _listingSearchFields(
                                         tmpCategory)) ...[
-                                      _advancedDetailField(field, detailCtrls),
+                                      _advancedDetailField(
+                                          tmpCategory, field, detailCtrls),
                                       const SizedBox(height: 9),
                                     ],
                                   ],
@@ -7510,6 +8037,90 @@ class _ListingCard extends StatelessWidget {
 }
 
 // ── My Listings Screen ────────────────────────────────────────────
+class _ListingContactPreferences extends StatelessWidget {
+  final bool inApp;
+  final bool email;
+  final bool phone;
+  final TextEditingController hoursController;
+  final void Function(String key, bool value) onChanged;
+
+  const _ListingContactPreferences({
+    required this.inApp,
+    required this.email,
+    required this.phone,
+    required this.hoursController,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF4F9FD),
+          border: Border.all(color: kBorder),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Row(children: [
+            Icon(Icons.contact_phone_outlined, color: kPrimary),
+            SizedBox(width: 8),
+            Text('איך נוח ליצור איתך קשר?',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ]),
+          const SizedBox(height: 4),
+          Text('אפשר לבחור דרך אחת או לשלב כמה דרכים',
+              style: TextStyle(color: kSubtext, fontSize: 12)),
+          CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            value: inApp,
+            onChanged: (v) => onChanged('in_app', v ?? false),
+            title: const Text('הודעות בתוך בתשובה'),
+            subtitle: const Text('מומלץ — פרטי הקשר נשארים פרטיים'),
+            secondary: const Icon(Icons.chat_bubble_outline, color: kPrimary),
+          ),
+          CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            value: email,
+            onChanged: (v) => onChanged('email', v ?? false),
+            title: const Text('אימייל'),
+            secondary: const Icon(Icons.email_outlined, color: kPrimary),
+          ),
+          CheckboxListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            value: phone,
+            onChanged: (v) => onChanged('phone', v ?? false),
+            title: const Text('שיחת טלפון'),
+            secondary: const Icon(Icons.phone_outlined, color: kPrimary),
+          ),
+          TextField(
+            controller: hoursController,
+            textDirection: TextDirection.rtl,
+            maxLength: 120,
+            decoration: const InputDecoration(
+              labelText: 'שעות נוחות ליצירת קשר (לא חובה)',
+              hintText: 'לדוגמה: ימים א׳–ה׳, 18:00–21:00',
+              prefixIcon: Icon(Icons.schedule_outlined),
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(Icons.nights_stay_outlined,
+                color: Color(0xFF17699F), size: 19),
+            SizedBox(width: 8),
+            Expanded(
+                child: Text(
+              'מתוך כבוד לשבת ולמועדי ישראל, נשמח שלא ליצור קשר בשבת ובחג.',
+              style: TextStyle(color: Color(0xFF315D7A), height: 1.35),
+            )),
+          ]),
+        ]),
+      );
+}
+
 class MyListingsScreen extends StatefulWidget {
   final String token;
   const MyListingsScreen({super.key, required this.token});
@@ -7545,14 +8156,14 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
     }
   }
 
-  Future<void> _markSold(String id) async {
+  Future<void> _setStatus(String id, String status) async {
     await http.put(
       Uri.parse('$kApi/listings/$id/status'),
       headers: {
         'Authorization': 'Bearer ${widget.token}',
         'Content-Type': 'application/json'
       },
-      body: jsonEncode({'status': 'sold'}),
+      body: jsonEncode({'status': status}),
     );
     _load();
   }
@@ -7619,7 +8230,10 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
                     itemCount: _items.length,
                     itemBuilder: (_, i) => _MyListingCard(
                       item: _items[i],
-                      onMarkSold: () => _markSold(_items[i]['id']),
+                      onPause: () => _setStatus(_items[i]['id'], 'paused'),
+                      onResume: () => _setStatus(_items[i]['id'], 'active'),
+                      onComplete: () => _setStatus(_items[i]['id'],
+                          _items[i]['type'] == 'free' ? 'given' : 'sold'),
                       onDelete: () => _delete(_items[i]['id']),
                       onEdit: () => _edit(_items[i]['id']),
                     ),
@@ -7631,12 +8245,16 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
 
 class _MyListingCard extends StatelessWidget {
   final Map<String, dynamic> item;
-  final VoidCallback onMarkSold;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final VoidCallback onComplete;
   final VoidCallback onDelete;
   final VoidCallback onEdit;
   const _MyListingCard(
       {required this.item,
-      required this.onMarkSold,
+      required this.onPause,
+      required this.onResume,
+      required this.onComplete,
       required this.onDelete,
       required this.onEdit});
 
@@ -7690,11 +8308,14 @@ class _MyListingCard extends StatelessWidget {
                             ? const Color(0xFF065F46)
                             : const Color(0xFF5B21B6)),
                     _badge(
-                        status == 'active'
-                            ? 'פעיל'
-                            : status == 'sold'
-                                ? 'נסגר'
-                                : 'פג תוקף',
+                        const {
+                              'active': 'פעיל',
+                              'paused': 'מוקפא',
+                              'sold': 'נמכר',
+                              'given': 'נמסר',
+                              'expired': 'פג תוקף',
+                            }[status] ??
+                            status,
                         isActive
                             ? const Color(0xFFDCFCE7)
                             : const Color(0xFFF3F4F6),
@@ -7720,8 +8341,15 @@ class _MyListingCard extends StatelessWidget {
                 onEdit),
             const SizedBox(width: 6),
             if (isActive) ...[
-              _actionBtn('סגור', const Color(0xFFD1FAE5),
-                  const Color(0xFF065F46), onMarkSold),
+              _actionBtn('הקפא', const Color(0xFFFFF3CD),
+                  const Color(0xFF7A5200), onPause),
+              const SizedBox(width: 6),
+              _actionBtn(isFree ? 'נמסר' : 'נמכר', const Color(0xFFD1FAE5),
+                  const Color(0xFF065F46), onComplete),
+              const SizedBox(width: 6),
+            ] else if (status == 'paused') ...[
+              _actionBtn('הפעל מחדש', const Color(0xFFD1FAE5),
+                  const Color(0xFF065F46), onResume),
               const SizedBox(width: 6),
             ],
             _actionBtn('מחק', const Color(0xFFFEE2E2), const Color(0xFF991B1B),
@@ -7875,7 +8503,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
   String _deliveryMethod = 'pickup';
   int _expiryDays = 30;
   bool _negotiable = false;
-  bool _showPhone = false;
+  bool _contactInApp = true;
+  bool _contactEmail = false;
+  bool _contactPhone = false;
+  final _contactHoursCtrl = TextEditingController();
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   final List<_FileUploadOutcome?> _imageOutcomes =
@@ -7936,14 +8567,12 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
-  Widget _categoryDetailField((String, String, String) field) => TextField(
-        controller: _categoryDetailCtrls[field.$1],
-        textDirection: TextDirection.rtl,
-        decoration: InputDecoration(
-          labelText: field.$2,
-          hintText: field.$3.isEmpty ? null : field.$3,
-          border: const OutlineInputBorder(),
-        ),
+  Widget _categoryDetailField((String, String, String) field) =>
+      _PopularValueField(
+        controller: _categoryDetailCtrls[field.$1]!,
+        label: field.$2,
+        hint: field.$3.isEmpty ? null : field.$3,
+        options: _popularValuesFor(_category, field.$1),
       );
 
   @override
@@ -8186,6 +8815,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
   }
 
   Future<void> _submit() async {
+    if (!_contactInApp && !_contactEmail && !_contactPhone && !_contactPhone) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('יש לבחור לפחות דרך אחת ליצירת קשר')));
+      return;
+    }
     if (_titleCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('נדרשת כותרת')));
@@ -8242,7 +8876,13 @@ class _PostListingScreenState extends State<PostListingScreen> {
         'quantity': int.tryParse(_quantityCtrl.text) ?? 1,
         'delivery_method': _deliveryMethod,
         'pickup_details': _pickupCtrl.text.trim(),
-        'contact_phone_visible': _showPhone,
+        'contact_phone_visible': _contactPhone,
+        'contact_preferences': {
+          'in_app': _contactInApp,
+          'email': _contactEmail,
+          'phone': _contactPhone,
+          'contact_hours': _contactHoursCtrl.text.trim(),
+        },
         'expires_in_days': _expiryDays,
         if (city.isNotEmpty) 'city': city,
         if (urls.isNotEmpty) 'image_urls': urls,
@@ -8334,6 +8974,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _priceCtrl.dispose();
     _quantityCtrl.dispose();
     _pickupCtrl.dispose();
+    _contactHoursCtrl.dispose();
     _plateLookupTimer?.cancel();
     _plateCtrl.dispose();
     _vehicleManufacturerCtrl.dispose();
@@ -8528,14 +9169,18 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       ),
                     ],
                     const SizedBox(height: 8),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('הצגת מספר הטלפון במודעה'),
-                      subtitle:
-                          const Text('כבוי כברירת מחדל; תמיד אפשר לפנות בצ׳אט'),
-                      value: _showPhone,
-                      onChanged: (value) => setState(() => _showPhone = value),
+                    _ListingContactPreferences(
+                      inApp: _contactInApp,
+                      email: _contactEmail,
+                      phone: _contactPhone,
+                      hoursController: _contactHoursCtrl,
+                      onChanged: (key, value) => setState(() {
+                        if (key == 'in_app') _contactInApp = value;
+                        if (key == 'email') _contactEmail = value;
+                        if (key == 'phone') _contactPhone = value;
+                      }),
                     ),
+                    const SizedBox(height: 12),
                     DropdownButtonFormField<int>(
                       value: _expiryDays,
                       decoration: const InputDecoration(
@@ -9208,7 +9853,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
   bool _propertyPets = false;
   int _expiryDays = 30;
   bool _negotiable = false;
-  bool _showPhone = false;
+  bool _contactInApp = true;
+  bool _contactEmail = false;
+  bool _contactPhone = false;
+  final _contactHoursCtrl = TextEditingController();
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   final List<_FileUploadOutcome?> _imageOutcomes =
@@ -9252,14 +9900,12 @@ class _EditListingScreenState extends State<EditListingScreen> {
     );
   }
 
-  Widget _editCategoryDetailField((String, String, String) field) => TextField(
-        controller: _categoryDetailCtrls[field.$1],
-        textDirection: TextDirection.rtl,
-        decoration: InputDecoration(
-          labelText: field.$2,
-          hintText: field.$3.isEmpty ? null : field.$3,
-          border: const OutlineInputBorder(),
-        ),
+  Widget _editCategoryDetailField((String, String, String) field) =>
+      _PopularValueField(
+        controller: _categoryDetailCtrls[field.$1]!,
+        label: field.$2,
+        hint: field.$3.isEmpty ? null : field.$3,
+        options: _popularValuesFor(_category, field.$1),
       );
 
   Widget _editVehicleFields() {
@@ -9518,6 +10164,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
     _cityCtrl.dispose();
     _quantityCtrl.dispose();
     _pickupCtrl.dispose();
+    _contactHoursCtrl.dispose();
     _plateCtrl.dispose();
     _vehicleManufacturerCtrl.dispose();
     _vehicleModelCtrl.dispose();
@@ -9575,7 +10222,14 @@ class _EditListingScreenState extends State<EditListingScreen> {
         _quantityCtrl.text = item['quantity']?.toString() ?? '1';
         _deliveryMethod = item['delivery_method']?.toString() ?? 'pickup';
         _pickupCtrl.text = item['pickup_details']?.toString() ?? '';
-        _showPhone = item['contact_phone_visible'] == true;
+        final contact = item['contact_preferences'] is Map
+            ? Map<String, dynamic>.from(item['contact_preferences'] as Map)
+            : <String, dynamic>{};
+        _contactInApp = contact['in_app'] != false;
+        _contactEmail = contact['email'] == true;
+        _contactPhone = contact['phone'] == true ||
+            (contact.isEmpty && item['contact_phone_visible'] == true);
+        _contactHoursCtrl.text = contact['contact_hours']?.toString() ?? '';
         _plateCtrl.text = item['license_plate']?.toString() ?? '';
         _vehicleManufacturerCtrl.text =
             vehicle['manufacturer']?.toString() ?? '';
@@ -9683,6 +10337,11 @@ class _EditListingScreenState extends State<EditListingScreen> {
   }
 
   Future<void> _submit() async {
+    if (!_contactInApp && !_contactEmail && !_contactPhone && !_contactPhone) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('יש לבחור לפחות דרך אחת ליצירת קשר')));
+      return;
+    }
     if (_titleCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('נדרשת כותרת')));
@@ -9715,7 +10374,13 @@ class _EditListingScreenState extends State<EditListingScreen> {
         'quantity': int.tryParse(_quantityCtrl.text) ?? 1,
         'delivery_method': _deliveryMethod,
         'pickup_details': _pickupCtrl.text.trim(),
-        'contact_phone_visible': _showPhone,
+        'contact_phone_visible': _contactPhone,
+        'contact_preferences': {
+          'in_app': _contactInApp,
+          'email': _contactEmail,
+          'phone': _contactPhone,
+          'contact_hours': _contactHoursCtrl.text.trim(),
+        },
         'expires_in_days': _expiryDays,
         if (city.isNotEmpty) 'city': city,
         'image_urls': urls,
@@ -9933,13 +10598,18 @@ class _EditListingScreenState extends State<EditListingScreen> {
                           onChanged: (value) =>
                               setState(() => _negotiable = value),
                         ),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('הצגת מספר הטלפון במודעה'),
-                          value: _showPhone,
-                          onChanged: (value) =>
-                              setState(() => _showPhone = value),
+                        _ListingContactPreferences(
+                          inApp: _contactInApp,
+                          email: _contactEmail,
+                          phone: _contactPhone,
+                          hoursController: _contactHoursCtrl,
+                          onChanged: (key, value) => setState(() {
+                            if (key == 'in_app') _contactInApp = value;
+                            if (key == 'email') _contactEmail = value;
+                            if (key == 'phone') _contactPhone = value;
+                          }),
                         ),
+                        const SizedBox(height: 12),
                         DropdownButtonFormField<int>(
                           value: _expiryDays,
                           decoration: const InputDecoration(
@@ -10336,11 +11006,17 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   }
 
   Future<void> _setStatus(String newStatus) async {
-    final label = newStatus == 'sold' ? 'נמכר' : 'נמסר';
+    final label = const {
+          'active': 'פעילה',
+          'paused': 'מוקפאת',
+          'sold': 'נמכרה',
+          'given': 'נמסרה',
+        }[newStatus] ??
+        newStatus;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('סמן כ$label?'),
+        title: Text('המודעה תהיה $label'),
         content: Text('לשנות את סטטוס המודעה ל"$label"?'),
         actions: [
           TextButton(
@@ -10376,6 +11052,9 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   Widget build(BuildContext context) {
     final isFree = widget.item['type'] == 'free';
     final isOwner = widget.me?['id'] == widget.item['seller_id'];
+    final contact = widget.item['contact_preferences'] is Map
+        ? Map<String, dynamic>.from(widget.item['contact_preferences'] as Map)
+        : <String, dynamic>{'in_app': true};
     final images = _images.take(8).toList(growable: false);
     const conditionLabels = {
       'new': 'חדש',
@@ -10814,18 +11493,35 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   subtitle: Text(widget.item['pickup_details'].toString()),
                 ),
               ],
-              if ((widget.item['seller_phone'] ?? '')
-                  .toString()
-                  .trim()
-                  .isNotEmpty) ...[
-                const SizedBox(height: 6),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEAF5FC),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFC6E2F4)),
+                ),
+                child: const Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.nights_stay_outlined, color: kPrimary),
+                      SizedBox(width: 9),
+                      Expanded(
+                          child: Text(
+                        'מתוך כבוד לשבת ולמועדי ישראל, נשמח ליצור קשר בימות החול.',
+                        style:
+                            TextStyle(color: Color(0xFF315D7A), height: 1.35),
+                      )),
+                    ]),
+              ),
+              if ((contact['contact_hours'] ?? '').toString().trim().isNotEmpty)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.phone_outlined, color: kPrimary),
-                  title: const Text('טלפון ליצירת קשר'),
-                  subtitle: Text(widget.item['seller_phone'].toString()),
+                  leading: const Icon(Icons.schedule_outlined, color: kPrimary),
+                  title: const Text('שעות נוחות ליצירת קשר'),
+                  subtitle: Text(contact['contact_hours'].toString()),
                 ),
-              ],
               const SizedBox(height: 20),
               // Seller info
               Container(
@@ -10869,7 +11565,9 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 10),
-                if (_status != 'active')
+                if (_status == 'sold' ||
+                    _status == 'given' ||
+                    _status == 'expired')
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(vertical: 10),
@@ -10880,7 +11578,11 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      _status == 'sold' ? 'נמכר / נמסר' : 'פג תוקף',
+                      _status == 'sold'
+                          ? 'נמכר'
+                          : _status == 'given'
+                              ? 'נמסר'
+                              : 'פג תוקף',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontWeight: FontWeight.bold,
@@ -10890,37 +11592,77 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                               : const Color(0xFF065F46)),
                     ),
                   )
-                else
+                else ...[
                   Row(children: [
                     Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFD1FAE5),
-                          foregroundColor: const Color(0xFF065F46),
-                          minimumSize: const Size(0, 46),
-                          elevation: 0,
+                        child: OutlinedButton.icon(
+                      onPressed: () =>
+                          _setStatus(_status == 'paused' ? 'active' : 'paused'),
+                      icon: Icon(_status == 'paused'
+                          ? Icons.play_arrow_outlined
+                          : Icons.pause_outlined),
+                      label: Text(
+                          _status == 'paused' ? 'הפעל מחדש' : 'הקפא מודעה'),
+                    )),
+                    if (_status == 'active') const SizedBox(width: 8),
+                    if (_status == 'active')
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFD1FAE5),
+                            foregroundColor: const Color(0xFF065F46),
+                            minimumSize: const Size(0, 46),
+                            elevation: 0,
+                          ),
+                          onPressed: () =>
+                              _setStatus(isFree ? 'given' : 'sold'),
+                          icon:
+                              const Icon(Icons.check_circle_outline, size: 18),
+                          label: Text(isFree ? 'סמן כנמסר' : 'סמן כנמכר',
+                              style: TextStyle(fontWeight: FontWeight.bold)),
                         ),
-                        onPressed: () => _setStatus('sold'),
-                        icon: const Icon(Icons.check_circle_outline, size: 18),
-                        label: const Text('נמסר / נמכר',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
                       ),
-                    ),
                   ]),
-              ] else
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: kPrimary,
-                      minimumSize: const Size(double.infinity, 50)),
-                  onPressed: _openChat,
-                  icon: const Icon(Icons.chat_bubble_outline,
-                      color: Colors.white),
-                  label: const Text('שלח הודעה למפרסם',
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold)),
-                ),
+                ],
+              ] else ...[
+                if (contact['in_app'] != false)
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: kPrimary,
+                        minimumSize: const Size(double.infinity, 50)),
+                    onPressed: _openChat,
+                    icon: const Icon(Icons.chat_bubble_outline,
+                        color: Colors.white),
+                    label: const Text('שלח הודעה למפרסם',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold)),
+                  ),
+                if (contact['email'] == true &&
+                    (widget.item['seller_email'] ?? '').toString().isNotEmpty)
+                  OutlinedButton.icon(
+                    onPressed: () => launchUrl(Uri(
+                      scheme: 'mailto',
+                      path: widget.item['seller_email'].toString(),
+                    )),
+                    icon: const Icon(Icons.email_outlined),
+                    label: const Text('שלח אימייל'),
+                  ),
+                if (contact['phone'] == true &&
+                    (widget.item['seller_phone'] ?? '').toString().isNotEmpty)
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    if (contact['phone'] == true)
+                      OutlinedButton.icon(
+                        onPressed: () => launchUrl(Uri(
+                          scheme: 'tel',
+                          path: widget.item['seller_phone'].toString(),
+                        )),
+                        icon: const Icon(Icons.phone_outlined),
+                        label: const Text('התקשר'),
+                      ),
+                  ]),
+              ],
             ]),
           ),
         ]),
@@ -23712,6 +24454,21 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
           () => _dueAt = DateTime(date.year, date.month, date.day, 23, 59));
   }
 
+  void _selectType(String type) {
+    if (type == _type) return;
+    setState(() {
+      _type = type;
+      _error = null;
+      if (type == 'survey') {
+        _fileUrl = null;
+        _fileName = null;
+      } else {
+        _questions.clear();
+        _anonymous = false;
+      }
+    });
+  }
+
   Future<void> _submit() async {
     if (_title.text.trim().isEmpty) {
       setState(() => _error = 'יש להזין כותרת');
@@ -23719,6 +24476,10 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
     }
     if (_type == 'survey' && _questions.isEmpty) {
       setState(() => _error = 'יש להוסיף לפחות שאלת סקר אחת');
+      return;
+    }
+    if (_type == 'signature' && _fileUrl == null) {
+      setState(() => _error = 'במסמך לחתימה חובה לצרף מסמך');
       return;
     }
     setState(() {
@@ -23736,10 +24497,10 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
             'formType': _type,
             'title': _title.text.trim(),
             'description': _description.text.trim(),
-            'fileUrl': _fileUrl,
-            'fileName': _fileName,
-            'questions': _questions,
-            'anonymous': _anonymous,
+            'fileUrl': _type == 'survey' ? null : _fileUrl,
+            'fileName': _type == 'survey' ? null : _fileName,
+            'questions': _type == 'survey' ? _questions : const [],
+            'anonymous': _type == 'survey' && _anonymous,
             if (_dueAt != null) 'dueAt': _dueAt!.toUtc().toIso8601String()
           }));
       final data = jsonDecode(response.body);
@@ -23761,6 +24522,8 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
             title: const Text('יצירת אישור או סקר'), backgroundColor: kPrimary),
         body: ListView(padding: const EdgeInsets.all(18), children: [
           SegmentedButton<String>(
+              multiSelectionEnabled: false,
+              emptySelectionAllowed: false,
               segments: const [
                 ButtonSegment(
                     value: 'approval',
@@ -23775,11 +24538,8 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
                     icon: Icon(Icons.poll_outlined),
                     label: Text('סקר')),
               ],
-              selected: {
-                _type
-              },
-              onSelectionChanged: (value) =>
-                  setState(() => _type = value.first)),
+              selected: {_type},
+              onSelectionChanged: (value) => _selectType(value.single)),
           const SizedBox(height: 18),
           TextField(
               controller: _title,
@@ -23795,22 +24555,28 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
               decoration: const InputDecoration(
                   labelText: 'הסבר להורים', alignLabelWithHint: true)),
           const SizedBox(height: 12),
-          Card(
-              child: ListTile(
-                  leading: _uploading
-                      ? const CircularProgressIndicator()
-                      : const Icon(Icons.attach_file),
-                  title: Text(_fileName ?? 'צירוף תמונה או מסמך'),
-                  subtitle: const Text('PDF, Word או תמונה'),
-                  trailing: _fileName != null
-                      ? IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () => setState(() {
-                                _fileName = null;
-                                _fileUrl = null;
-                              }))
-                      : null,
-                  onTap: _uploading ? null : _pickDocument)),
+          if (_type != 'survey')
+            Card(
+                child: ListTile(
+                    leading: _uploading
+                        ? const CircularProgressIndicator()
+                        : const Icon(Icons.attach_file),
+                    title: Text(_fileName ??
+                        (_type == 'signature'
+                            ? 'צירוף מסמך לחתימה *'
+                            : 'צירוף תמונה או מסמך (אופציונלי)')),
+                    subtitle: Text(_type == 'signature'
+                        ? 'חובה לצרף PDF, Word או תמונה'
+                        : 'PDF, Word או תמונה'),
+                    trailing: _fileName != null
+                        ? IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () => setState(() {
+                                  _fileName = null;
+                                  _fileUrl = null;
+                                }))
+                        : null,
+                    onTap: _uploading ? null : _pickDocument)),
           Card(
               child: ListTile(
                   leading: const Icon(Icons.event_outlined),
