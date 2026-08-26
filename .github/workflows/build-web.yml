@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - flutter_app/**
+      - scripts/build-web-release.sh
       - .github/workflows/build-web.yml
   workflow_dispatch:
 
@@ -27,32 +28,14 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install dependencies
-        working-directory: flutter_app
-        run: flutter pub get
-
-      - name: Build Web
-        working-directory: flutter_app
-        run: flutter build web --release --base-href "/betshuva-app/"
-
-      - name: Sync web build to repo root
-        run: |
-          rm -rf assets canvaskit icons
-          rm -f flutter.js flutter_bootstrap.js flutter_service_worker.js main.dart.js manifest.json
-          cp -r flutter_app/build/web/assets flutter_app/build/web/canvaskit flutter_app/build/web/icons .
-          cp flutter_app/build/web/flutter.js \
-             flutter_app/build/web/flutter_bootstrap.js \
-             flutter_app/build/web/main.dart.js \
-             .
-          cp flutter_app/web/firebase-messaging-sw.js \
-             flutter_app/web/manifest.json \
-             .
+      - name: Build, validate and sync Web
+        run: scripts/build-web-release.sh
 
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A flutter.js flutter_bootstrap.js main.dart.js manifest.json firebase-messaging-sw.js assets/ canvaskit/ icons/ flutter_app/pubspec.lock
+          git add -A index.html flutter.js flutter_bootstrap.js flutter_service_worker.js main.dart.js manifest.json firebase-messaging-sw.js assets/ canvaskit/ icons/ flutter_app/pubspec.lock
           git diff --cached --quiet && echo "No changes" || \
             git commit -m "build: update web v$(grep '^version:' flutter_app/pubspec.yaml | awk '{print $2}') [skip ci]"
           git push origin HEAD:main
