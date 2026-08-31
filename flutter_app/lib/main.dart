@@ -16,6 +16,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -52,6 +53,69 @@ Map<String, dynamic>? _sharedContactFromText(String text) {
   } catch (_) {
     return null;
   }
+}
+
+class _MessageInputHistory {
+  final List<String> _entries = [];
+  int _index = 0;
+  String _draft = '';
+
+  void record(String text) {
+    if (text.isEmpty) return;
+    if (_entries.isEmpty || _entries.last != text) _entries.add(text);
+    _index = _entries.length;
+    _draft = '';
+  }
+
+  void navigate(TextEditingController controller, {required bool older}) {
+    if (_entries.isEmpty) return;
+    if (older) {
+      if (_index == _entries.length) _draft = controller.text;
+      if (_index > 0) _index--;
+    } else {
+      if (_index < _entries.length) _index++;
+    }
+    final text = _index == _entries.length ? _draft : _entries[_index];
+    controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+}
+
+KeyEventResult _handleMessageInputNavigation(TextEditingController controller,
+    _MessageInputHistory history, KeyEvent event) {
+  if (event is KeyUpEvent ||
+      HardwareKeyboard.instance.isShiftPressed ||
+      HardwareKeyboard.instance.isControlPressed ||
+      HardwareKeyboard.instance.isAltPressed ||
+      HardwareKeyboard.instance.isMetaPressed) {
+    return KeyEventResult.ignored;
+  }
+
+  final key = event.logicalKey;
+  if (key == LogicalKeyboardKey.arrowUp ||
+      key == LogicalKeyboardKey.arrowDown) {
+    history.navigate(controller, older: key == LogicalKeyboardKey.arrowUp);
+    return KeyEventResult.handled;
+  }
+
+  final isLeft = key == LogicalKeyboardKey.arrowLeft;
+  final isRight = key == LogicalKeyboardKey.arrowRight;
+  if (!isLeft && !isRight) return KeyEventResult.ignored;
+
+  final selection = controller.selection;
+  if (!selection.isValid) return KeyEventResult.ignored;
+
+  // In an RTL run, moving visually left advances through the logical string,
+  // while moving visually right goes back. Enforce that mapping explicitly;
+  // Flutter Web can otherwise apply the surrounding Directionality twice.
+  final current = selection.isCollapsed
+      ? selection.extentOffset
+      : (isLeft ? selection.end : selection.start);
+  final next = (current + (isLeft ? 1 : -1)).clamp(0, controller.text.length);
+  controller.selection = TextSelection.collapsed(offset: next);
+  return KeyEventResult.handled;
 }
 
 Future<Map<String, String>?> _manualSharedContact(BuildContext context) async {
@@ -737,8 +801,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.2.99';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.2.99.apk';
+const kVersion = '1.3.0';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.3.0.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -991,6 +1055,8 @@ class _PersistentMediaImage extends StatefulWidget {
 
 class _PersistentMediaImageState extends State<_PersistentMediaImage> {
   late Future<Uint8List?> _bytes;
+  Timer? _retryTimer;
+  int _retryAttempt = 0;
 
   @override
   void initState() {
@@ -1002,8 +1068,26 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
   void didUpdateWidget(covariant _PersistentMediaImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
+      _retryTimer?.cancel();
+      _retryAttempt = 0;
       _bytes = _loadPersistentMedia(widget.url);
     }
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
+
+  void _scheduleRetry() {
+    if (_retryAttempt >= 4 || _retryTimer?.isActive == true) return;
+    final delay = Duration(seconds: 1 << _retryAttempt);
+    _retryAttempt++;
+    _retryTimer = Timer(delay, () {
+      if (!mounted) return;
+      setState(() => _bytes = _loadPersistentMedia(widget.url));
+    });
   }
 
   @override
@@ -1013,6 +1097,7 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
       builder: (context, snapshot) {
         final bytes = snapshot.data;
         if (bytes != null && bytes.isNotEmpty) {
+          _retryTimer?.cancel();
           return Image.memory(
             bytes,
             width: widget.width,
@@ -1027,6 +1112,7 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
           return widget.loadingBuilder?.call(context) ??
               SizedBox(width: widget.width, height: widget.height);
         }
+        _scheduleRetry();
         return widget.errorBuilder?.call(context) ?? const SizedBox.shrink();
       },
     );
@@ -1059,9 +1145,55 @@ Future<void> _persistRecentImageUrls(
   }
 }
 
+String _groupMessagesCacheKey(Object? userId, Object? groupId) =>
+    'cache_group_msgs_${userId ?? ''}_${groupId ?? ''}';
+
+Future<void> _clearGroupMessagesCache(Object? userId, Object? groupId) async {
+  if (userId == null || groupId == null) return;
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(_groupMessagesCacheKey(userId, groupId));
+}
+
 Future<void> _forwardChatMessage(BuildContext context, String token,
         IO.Socket? socket, Map<String, dynamic> message) =>
     _forwardChatMessages(context, token, socket, [message]);
+
+Future<void> _requestImageReclassification(
+    BuildContext context, String token, Map<String, dynamic> image) async {
+  final fileUrl = image['fileUrl']?.toString();
+  if (fileUrl == null || fileUrl.isEmpty) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('בדיקת הסיווג החוזרת התחילה…')),
+  );
+  try {
+    final response = await http.post(
+      Uri.parse('$kApi/media/reclassify'),
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'fileUrl': fileUrl}),
+    );
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    if (!context.mounted) return;
+    if (response.statusCode == 200) {
+      image['classification'] = body['classification'];
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('בדיקת הסיווג הושלמה. התוצאה עודכנה.'),
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(body['error']?.toString() ?? 'בדיקת הסיווג נכשלה'),
+      ));
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('שגיאת תקשורת בבדיקת הסיווג')),
+      );
+    }
+  }
+}
 
 Future<void> _forwardChatMessages(BuildContext context, String token,
     IO.Socket? socket, List<Map<String, dynamic>> messages) async {
@@ -1135,29 +1267,17 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
       var fileName = message['fileName'] as String?;
       var fileType = message['fileType'] as String?;
       final localPath = message['localPath'] as String?;
-      if (localPath != null || fileUrl != null) {
+      // A server-hosted, already approved file is forwarded by reference. The
+      // server reuses its immutable moderation result and applies only the new
+      // destination filter. Local files still require a normal upload/scan.
+      if (localPath != null) {
         final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
           ..headers['Authorization'] = 'Bearer $token'
           ..fields[target['kind'] == 'group' ? 'groupId' : 'toUserId'] =
               target['id'].toString();
-        if (localPath != null) {
-          request.files.add(await http.MultipartFile.fromPath('file', localPath,
-              filename: fileName,
-              contentType: _mimeFromFileName(fileName ?? localPath)));
-        } else {
-          final source = await http
-              .get(Uri.parse(_absoluteMediaUrl(fileUrl!)))
-              .timeout(const Duration(seconds: 30));
-          if (source.statusCode != 200) {
-            throw Exception('Could not download forwarded file');
-          }
-          final forwardedName = fileName ??
-              Uri.parse(_absoluteMediaUrl(fileUrl)).pathSegments.last;
-          request.files.add(http.MultipartFile.fromBytes(
-              'file', source.bodyBytes,
-              filename: forwardedName,
-              contentType: _mimeFromFileName(forwardedName)));
-        }
+        request.files.add(await http.MultipartFile.fromPath('file', localPath,
+            filename: fileName,
+            contentType: _mimeFromFileName(fileName ?? localPath)));
         final upload =
             await request.send().timeout(const Duration(seconds: 60));
         final uploadBody = await upload.stream.bytesToString();
@@ -1252,6 +1372,12 @@ bool get kPhoneClient =>
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks(
+      const ['Twemoji'],
+      await rootBundle.loadString('assets/twemoji/ATTRIBUTION.txt'),
+    );
+  });
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -1575,7 +1701,7 @@ class _SplashScreenState extends State<SplashScreen>
 Map<String, bool> _newAccountFilter() => {
       'text': true,
       'video': false,
-      'nonHumanImages': false,
+      'nonHumanImages': true,
       'men': false,
       'women': false,
       'children': false,
@@ -1914,8 +2040,10 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       } else {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', token);
-        Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => MainShell(token: token)));
+        Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+                builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
       }
     } catch (e) {
       debugPrint('Google sign-in failed: $e');
@@ -2506,8 +2634,10 @@ class _AuthScreenState extends State<AuthScreen> {
       } else {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', token);
-        Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => MainShell(token: token)));
+        Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+                builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
       }
     } catch (e) {
       debugPrint('Google sign-in failed: $e');
@@ -3841,6 +3971,141 @@ class _AuthScreenState extends State<AuthScreen> {
 }
 
 // ── Phone Setup Screen (after Google Sign-In) ────────────────────
+class GoogleDriveBackupOfferScreen extends StatefulWidget {
+  final String token;
+  const GoogleDriveBackupOfferScreen({super.key, required this.token});
+
+  @override
+  State<GoogleDriveBackupOfferScreen> createState() =>
+      _GoogleDriveBackupOfferScreenState();
+}
+
+class _GoogleDriveBackupOfferScreenState
+    extends State<GoogleDriveBackupOfferScreen> {
+  bool _loading = false;
+  bool _connected = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStatus();
+  }
+
+  Future<void> _loadStatus() async {
+    try {
+      final response = await http.get(Uri.parse('$kApi/backup/google/status'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (!mounted || response.statusCode != 200) return;
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      setState(() => _connected = body['connected'] == true);
+    } catch (_) {}
+  }
+
+  Future<void> _continue() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('token', widget.token);
+    if (!mounted) return;
+    Navigator.pushReplacement(context,
+        MaterialPageRoute(builder: (_) => MainShell(token: widget.token)));
+  }
+
+  Future<void> _enableBackup() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      if (_connected) {
+        final response = await http.post(Uri.parse('$kApi/backup/automatic'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Content-Type': 'application/json'
+            },
+            body: jsonEncode({'enabled': true}));
+        if (response.statusCode != 200) {
+          final body = jsonDecode(response.body) as Map<String, dynamic>;
+          throw Exception(body['error'] ?? 'הפעלת הגיבוי נכשלה');
+        }
+        await _continue();
+        return;
+      }
+      final response = await http.get(
+          Uri.parse('$kApi/backup/google/connect?autoEnable=true'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200)
+        throw Exception(body['error'] ?? 'חיבור Google Drive אינו זמין');
+      final opened = await launchUrl(
+          Uri.parse(body['authorizationUrl'] as String),
+          mode: LaunchMode.externalApplication);
+      if (!opened) throw Exception('לא ניתן לפתוח את מסך האישור של Google');
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = error.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: kBg,
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.cloud_sync_outlined,
+                      size: 72, color: kPrimary),
+                  const SizedBox(height: 18),
+                  const Text('גיבוי מוצפן ב־Google Drive',
+                      textAlign: TextAlign.center,
+                      style:
+                          TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  Text(
+                    _connected
+                        ? 'Google Drive כבר מחובר. אפשר להפעיל עכשיו גיבוי אוטומטי מוצפן.'
+                        : 'באישורך נחבר תיקייה פרטית ומוסתרת של בתשובה ב־Google Drive ונפעיל גיבוי אוטומטי מוצפן.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('ניתן לנתק או לכבות בכל עת בהגדרות.',
+                      style: TextStyle(color: kSubtext)),
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(_error!, style: const TextStyle(color: Colors.red)),
+                  ],
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _loading ? null : _enableBackup,
+                      icon: _loading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.cloud_done_outlined),
+                      label: const Text('אישור והפעלת גיבוי'),
+                    ),
+                  ),
+                  TextButton(
+                      onPressed: _loading ? null : _continue,
+                      child: const Text('לא עכשיו')),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
 class GooglePhoneSetupScreen extends StatefulWidget {
   final String token;
   final bool requireVerification;
@@ -3917,8 +4182,10 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('token', token);
           if (!mounted) return;
-          Navigator.pushReplacement(context,
-              MaterialPageRoute(builder: (_) => MainShell(token: token)));
+          Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                  builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
         } else {
           setState(() {
             _error = data['error'] as String? ?? 'שמירת המספר נכשלה';
@@ -3997,8 +4264,10 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', token);
         if (!mounted) return;
-        Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => MainShell(token: token)));
+        Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+                builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
       } else {
         final d = jsonDecode(res.body);
         setState(() {
@@ -4603,6 +4872,12 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                           ],
                         ),
                       ),
+                      if (_currentIndex < (widget.messages?.length ?? 0)) ...[
+                        _ImageClassificationBadges(
+                          message: widget.messages![_currentIndex],
+                        ),
+                        const SizedBox(width: 6),
+                      ],
                       IconButton(
                         icon: const Icon(Icons.download, color: Colors.white),
                         onPressed: () => _downloadChatFile(
@@ -5197,6 +5472,13 @@ class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen> {
       if (!mounted) return;
       if (response.statusCode == 200) {
         widget.onCompleted();
+      } else if (response.statusCode == 409 &&
+          data['code'] == 'BIRTH_DATE_ALREADY_SET') {
+        // The initial status request may have failed during a brief restart.
+        // A 409 here is an authenticated confirmation that this account
+        // already has an immutable birth date, so do not trap it in the
+        // legacy completion screen.
+        widget.onCompleted();
       } else {
         setState(() {
           _error = data['error'] as String? ?? 'שמירת תאריך הלידה נכשלה';
@@ -5298,6 +5580,18 @@ class _MainShellContentState extends State<_MainShellContent> {
   final Map<String, Timer> _userTypingTimers = {};
   final List<Map<String, dynamic>> _messageRequests = [];
   bool _showingMessageRequest = false;
+
+  String? get _accountId => _me?['id']?.toString();
+  String? get _usersCacheKey =>
+      _accountId == null ? null : 'cache_users_$_accountId';
+
+  Future<void> _clearLocalAccountState() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('token');
+    await prefs.remove('cache_users'); // Legacy, unscoped cache.
+    final cacheKey = _usersCacheKey;
+    if (cacheKey != null) await prefs.remove(cacheKey);
+  }
 
   List<Map<String, dynamic>> _withoutScanBot(List<Map<String, dynamic>> users) {
     final sorted =
@@ -5431,35 +5725,100 @@ class _MainShellContentState extends State<_MainShellContent> {
     final request = _messageRequests.first;
     final senderName =
         request['sender_name'] ?? request['senderName'] ?? 'משתמש';
-    final accepted = await showDialog<bool>(
+    Map<String, bool> readFilter(dynamic raw) => raw is Map
+        ? raw.map((key, value) => MapEntry(key.toString(), value == true))
+        : <String, bool>{};
+    var selectedFilter = _newAccountFilter();
+    final counterpartFilter = readFilter(request['expected_filter']);
+    final decision = await showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('בקשת הודעה'),
-        content: Text(
-            '$senderName רוצה לשלוח לך הודעה.\n\nלהוסיף אותו כחבר ולאפשר את קבלת ההודעה?'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('דחה')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('אשר והוסף כחבר')),
-        ],
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Row(children: [
+            const Icon(Icons.person_add_outlined, color: kPrimary),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Text('בקשת חברות מאת $senderName',
+                  textAlign: TextAlign.right),
+            ),
+          ]),
+          content: SizedBox(
+            width: 760,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '$senderName רוצה להוסיף אותך כחבר ולשלוח לך הודעה. לפני האישור ניתן לבחור מה יוצג עבורך בקשר זה.',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  _InvitationFilterComparisonTable(
+                    groupName: senderName.toString(),
+                    groupFilter: counterpartFilter,
+                    personalFilter: selectedFilter,
+                    counterpartKind: 'החבר',
+                    counterpartFilterLabel: 'הסינון של $senderName',
+                    personalFilterLabel: 'הסינון שלי עבור $senderName',
+                    counterpartIcon: Icons.person_outline,
+                    onPersonalFilterChanged: (updated) =>
+                        setDialogState(() => selectedFilter = updated),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, {
+                'accepted': true,
+                'filter': selectedFilter,
+              }),
+              icon: const Icon(Icons.person_add_outlined),
+              label: const Text('אשר והוסף כחבר'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, {'accepted': false}),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('דחה'),
+            ),
+          ],
+        ),
       ),
     );
+    final accepted = decision?['accepted'] == true;
+    final chosenFilter = decision?['filter'];
     try {
       final id = request['id'];
-      if (accepted == true) {
-        await http.post(Uri.parse('$kApi/message-requests/$id/accept'),
-            headers: {'Authorization': 'Bearer ${widget.token}'});
+      late final http.Response response;
+      if (accepted) {
+        response =
+            await http.post(Uri.parse('$kApi/message-requests/$id/accept'),
+                headers: {
+                  'Authorization': 'Bearer ${widget.token}',
+                  'Content-Type': 'application/json',
+                },
+                body: jsonEncode({'filter': chosenFilter}));
+        if (response.statusCode != 200) throw Exception('accept failed');
         await _refreshConversationState();
       } else {
-        await http.delete(Uri.parse('$kApi/message-requests/$id'),
+        response = await http.delete(Uri.parse('$kApi/message-requests/$id'),
             headers: {'Authorization': 'Bearer ${widget.token}'});
+        if (response.statusCode != 200) throw Exception('decline failed');
       }
-    } catch (_) {}
-    if (accepted == true) {
+    } catch (_) {
+      _showingMessageRequest = false;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('לא ניתן להשלים כעת את אישור החבר. נסה שוב.'),
+        ));
+      }
+      return;
+    }
+    if (accepted) {
       final senderId = request['sender_id'] ?? request['senderId'];
       _messageRequests.removeWhere(
           (item) => (item['sender_id'] ?? item['senderId']) == senderId);
@@ -5650,7 +6009,10 @@ class _MainShellContentState extends State<_MainShellContent> {
     // Load from cache first for instant offline display
     try {
       final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString('cache_users');
+      // Never reuse the old global cache: it may belong to a deleted account.
+      await prefs.remove('cache_users');
+      final cacheKey = _usersCacheKey;
+      final cached = cacheKey == null ? null : prefs.getString(cacheKey);
       if (cached != null && _users.isEmpty) {
         setState(() => _users = _withoutScanBot(
             (jsonDecode(cached) as List).cast<Map<String, dynamic>>()));
@@ -5669,7 +6031,8 @@ class _MainShellContentState extends State<_MainShellContent> {
               _users = _withoutScanBot(data.cast<Map<String, dynamic>>()));
         }
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('cache_users', res.body);
+        final cacheKey = _usersCacheKey;
+        if (cacheKey != null) await prefs.setString(cacheKey, res.body);
       } else if (res.statusCode == 403) {
         _requirePhoneSetup();
       } else if (res.statusCode == 401) {
@@ -5720,11 +6083,10 @@ class _MainShellContentState extends State<_MainShellContent> {
     });
     _socket!.on('message:request', (data) {
       if (!mounted || data is! Map) return;
-      final request = Map<String, dynamic>.from(data);
-      if (!_messageRequests.any((item) => item['id'] == request['id'])) {
-        _messageRequests.add(request);
-      }
-      _showNextMessageRequest();
+      // The realtime event is intentionally small. Reload the complete request
+      // so the approval screen always has both filter columns, exactly like a
+      // group invitation, instead of silently defaulting missing values.
+      _loadMessageRequests();
     });
 
     // הודעה חדשה בזמן שהאפליקציה פתוחה — עדכן badge
@@ -5779,8 +6141,7 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   Future<void> _leaveAccount({required bool showRegistration}) async {
     _socket?.disconnect();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('token');
+    await _clearLocalAccountState();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(
@@ -5789,9 +6150,9 @@ class _MainShellContentState extends State<_MainShellContent> {
     );
   }
 
-  void _forceLogout({bool showRegistration = false}) {
+  Future<void> _forceLogout({bool showRegistration = false}) async {
     _socket?.disconnect();
-    SharedPreferences.getInstance().then((prefs) => prefs.remove('token'));
+    await _clearLocalAccountState();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -6182,8 +6543,11 @@ const _kCategories = [
 const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
   'רהיטים': [
     ('item_type', 'סוג הרהיט', 'שולחן, ארון, מיטה...'),
+    ('room', 'מתאים לחדר', ''),
+    ('style', 'סגנון', ''),
     ('material', 'חומר', 'עץ מלא, מתכת...'),
     ('dimensions', 'מידות', 'רוחב × עומק × גובה'),
+    ('seats_or_capacity', 'מספר מקומות / קיבולת', ''),
     ('color', 'צבע', ''),
     ('assembly', 'פירוק והרכבה', 'מתפרק / דורש הובלה שלם'),
     ('age', 'גיל המוצר', ''),
@@ -6193,35 +6557,74 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('item_type', 'סוג המוצר', ''),
     ('brand', 'יצרן', ''),
     ('model', 'דגם מדויק', ''),
+    ('model_number', 'מספר דגם יצרן', ''),
+    ('product_type', 'תת־סוג', ''),
     ('purchase_year', 'שנת רכישה', ''),
     ('warranty', 'אחריות', 'עד מתי וממי'),
     ('connectivity', 'חיבורים וקישוריות', ''),
+    ('power_specs', 'מתח והספק', ''),
+    ('dimensions_weight', 'מידות ומשקל', ''),
     ('included', 'מה כלול', 'מטען, שלט, אריזה...'),
     ('defects', 'תקלות או פגמים', '')
   ],
   'מחשבים': [
     ('computer_type', 'סוג מחשב', 'נייד / נייח / מיני'),
     ('brand', 'יצרן', ''),
+    ('series', 'סדרה / משפחת דגמים', ''),
     ('model', 'דגם מדויק', ''),
+    ('manufacturer_model', 'מספר דגם יצרן', 'לדוגמה 5379 / 21K3'),
+    ('model_year', 'שנת דגם', ''),
     ('processor', 'מעבד', ''),
+    ('processor_generation', 'דור מעבד', ''),
     ('memory', 'זיכרון RAM', ''),
+    ('memory_type', 'סוג ומהירות RAM', 'DDR4 / DDR5 ומהירות'),
     ('storage', 'אחסון', 'נפח וסוג SSD/HDD'),
+    ('storage_interface', 'ממשק אחסון', 'NVMe / SATA / eMMC'),
+    ('drive_count', 'מספר כוננים', ''),
     ('graphics', 'כרטיס מסך', ''),
-    ('screen', 'מסך', 'גודל, רזולוציה'),
+    ('graphics_memory', 'זיכרון גרפי', ''),
+    ('screen_size', 'גודל מסך', ''),
+    ('screen_resolution', 'רזולוציית מסך', ''),
+    ('panel_type', 'סוג פאנל', ''),
+    ('refresh_rate', 'קצב רענון', ''),
+    ('touch_screen', 'מסך מגע', ''),
     ('operating_system', 'מערכת הפעלה', ''),
     ('battery', 'מצב סוללה', ''),
+    ('battery_cycles', 'מחזורי טעינה', ''),
+    ('charger_power', 'הספק מטען', ''),
+    ('ports', 'חיבורים', 'USB-C, HDMI, Thunderbolt...'),
+    ('wireless', 'קישוריות אלחוטית', 'Wi-Fi / Bluetooth'),
+    ('keyboard', 'מקלדת', 'עברית / תאורה / מקלדת מספרית'),
+    ('webcam', 'מצלמה וזיהוי פנים', ''),
+    ('upgradeability', 'אפשרויות שדרוג', ''),
     ('warranty', 'אחריות', ''),
-    ('included', 'ציוד נלווה', '')
+    ('included', 'ציוד נלווה', ''),
+    ('purchase_proof', 'חשבונית וקופסה', ''),
+    ('defects', 'תקלות ותיקונים', '')
   ],
   'טלפונים וטאבלטים': [
     ('device_type', 'סוג מכשיר', 'טלפון / טאבלט / שעון'),
     ('brand', 'יצרן', ''),
     ('model', 'דגם מדויק', ''),
+    ('model_number', 'מספר דגם', 'לדוגמה A3294 / SM-S938B'),
+    ('model_year', 'שנת דגם', ''),
     ('storage', 'נפח אחסון', ''),
+    ('ram', 'זיכרון RAM', ''),
+    ('network', 'דור רשת', ''),
+    ('screen_size', 'גודל מסך', ''),
+    ('operating_system', 'מערכת הפעלה', ''),
     ('color', 'צבע', ''),
     ('battery', 'בריאות סוללה', ''),
     ('sim', 'SIM וקישוריות', ''),
+    ('esim', 'תמיכת eSIM', ''),
+    ('water_resistance', 'עמידות למים', ''),
+    ('carrier_lock', 'נעילת מפעיל', ''),
+    ('kosher_status', 'כשרות המכשיר', ''),
+    ('battery_cycles', 'מחזורי טעינה', ''),
+    ('screen_condition', 'מצב המסך', ''),
+    ('repair_history', 'היסטוריית תיקונים', ''),
     ('warranty', 'אחריות', ''),
+    ('purchase_proof', 'חשבונית וקופסה', ''),
     ('included', 'מה כלול', ''),
     ('defects', 'תקלות או תיקונים', '')
   ],
@@ -6229,29 +6632,39 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('appliance_type', 'סוג המכשיר', ''),
     ('brand', 'יצרן', ''),
     ('model', 'דגם', ''),
+    ('model_number', 'מספר דגם', ''),
+    ('capacity', 'קיבולת / נפח', ''),
+    ('power', 'הספק / צריכה', ''),
     ('dimensions', 'מידות', ''),
     ('energy_rating', 'דירוג אנרגטי', ''),
     ('purchase_year', 'שנת רכישה', ''),
     ('warranty', 'אחריות', ''),
     ('installation', 'התקנה נדרשת', ''),
+    ('noise_level', 'רמת רעש', ''),
     ('defects', 'תקלות או פגמים', '')
   ],
   'בגדים והנעלה': [
     ('item_type', 'סוג הפריט', ''),
     ('audience', 'מיועד עבור', 'גברים / נשים / ילדים'),
     ('size', 'מידה', ''),
+    ('fit', 'גזרה', ''),
+    ('shoe_size', 'מידת נעל', ''),
     ('brand', 'מותג', ''),
     ('color', 'צבע', ''),
     ('material', 'בד / חומר', ''),
     ('season', 'עונה', ''),
+    ('closure', 'סגירה', 'רוכסן / כפתורים / שרוכים'),
     ('measurements', 'מידות מדויקות', '')
   ],
   'תינוקות וילדים': [
     ('item_type', 'סוג הפריט', ''),
     ('age_range', 'טווח גיל או משקל', ''),
+    ('weight_limit', 'משקל מינימום / מקסימום', ''),
     ('brand', 'יצרן', ''),
     ('dimensions', 'מידות', ''),
     ('safety_standard', 'תקן בטיחות', ''),
+    ('manufacture_date', 'תאריך ייצור', ''),
+    ('accident_history', 'היסטוריית תאונה', 'לכיסאות בטיחות ועגלות'),
     ('expiry_date', 'תוקף', 'אם רלוונטי'),
     ('washable', 'ניקוי וכביסה', ''),
     ('included', 'חלקים נלווים', '')
@@ -6260,8 +6673,10 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('book_type', 'סוג הספר', 'קודש, לימוד, ילדים...'),
     ('title_author', 'מחבר / עורך', ''),
     ('publisher', 'הוצאה', ''),
+    ('isbn', 'ISBN / מסת״ב', ''),
     ('language', 'שפה', ''),
     ('edition', 'מהדורה ושנת הדפסה', ''),
+    ('volume_count', 'מספר כרכים', ''),
     ('binding', 'כריכה', ''),
     ('pages', 'מספר כרכים / עמודים', ''),
     ('dedication', 'הקדשה או סימונים', '')
@@ -6269,11 +6684,13 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
   'יודאיקה ותשמישי קדושה': [
     ('item_type', 'סוג הפריט', ''),
     ('custom', 'נוסח / מנהג', ''),
+    ('kosher_status', 'מצב כשרות', ''),
     ('material', 'חומר', ''),
     ('community_style', 'סגנון / עדה', ''),
     ('scribe_or_maker', 'סופר / יצרן', ''),
     ('dimensions', 'מידות', ''),
     ('certification', 'הגהה / תעודה', ''),
+    ('inspection_date', 'מועד בדיקה אחרונה', ''),
     ('condition_notes', 'מצב הלכתי ופיזי', '')
   ],
   'כלי בית ומטבח': [
@@ -6282,6 +6699,8 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('material', 'חומר', ''),
     ('dimensions', 'מידות', ''),
     ('capacity', 'נפח / קיבולת', ''),
+    ('heat_source', 'התאמה למקור חום', ''),
+    ('max_temperature', 'טמפרטורה מרבית', ''),
     ('dishwasher_safe', 'התאמה למדיח', ''),
     ('set_contents', 'תכולת הסט', '')
   ],
@@ -6290,8 +6709,10 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('age_range', 'טווח גיל', ''),
     ('brand', 'יצרן', ''),
     ('players', 'מספר משתתפים', ''),
+    ('play_duration', 'משך משחק', ''),
     ('language', 'שפה', ''),
     ('complete', 'שלמות החלקים', ''),
+    ('piece_count', 'מספר חלקים', ''),
     ('batteries', 'סוללות', ''),
     ('safety_notes', 'הערות בטיחות', '')
   ],
@@ -6301,6 +6722,8 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('brand', 'יצרן', ''),
     ('size', 'מידה', ''),
     ('weight', 'משקל', ''),
+    ('dimensions', 'מידות מדויקות', ''),
+    ('material', 'חומר', ''),
     ('skill_level', 'רמת משתמש', ''),
     ('included', 'אביזרים כלולים', ''),
     ('defects', 'בלאי ופגמים', '')
@@ -6311,10 +6734,15 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('model', 'דגם', ''),
     ('wheel_size', 'גודל גלגל', ''),
     ('frame_size', 'מידת שלדה', ''),
+    ('frame_material', 'חומר שלדה', ''),
     ('gears', 'הילוכים', ''),
+    ('brakes', 'סוג בלמים', ''),
+    ('suspension', 'מתלים', ''),
     ('electric', 'חשמלי / רגיל', ''),
     ('battery', 'סוללה', ''),
     ('range', 'טווח נסיעה', ''),
+    ('motor_power', 'הספק מנוע', ''),
+    ('mileage', 'קילומטראז׳', ''),
     ('included', 'אביזרים', '')
   ],
   'כלי עבודה': [
@@ -6324,6 +6752,9 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('power_source', 'מקור כוח', 'חשמל / סוללה / ידני'),
     ('voltage', 'מתח', ''),
     ('power', 'הספק', ''),
+    ('speed', 'מהירות / סל״ד', ''),
+    ('chuck_or_disc', 'קוטר / פוטר', ''),
+    ('battery_capacity', 'קיבולת סוללה', ''),
     ('accessories', 'אביזרים', ''),
     ('warranty', 'אחריות', '')
   ],
@@ -6331,9 +6762,11 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('item_type', 'סוג הפריט', ''),
     ('brand', 'יצרן', ''),
     ('dimensions', 'מידות', ''),
+    ('area_coverage', 'שטח כיסוי', ''),
     ('material', 'חומר', ''),
     ('power_source', 'מקור כוח', ''),
     ('weather_resistant', 'עמידות במזג אוויר', ''),
+    ('water_connection', 'חיבור מים', ''),
     ('assembly', 'הרכבה', ''),
     ('included', 'מה כלול', '')
   ],
@@ -6341,9 +6774,12 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('instrument_type', 'סוג הכלי', ''),
     ('brand', 'יצרן', ''),
     ('model', 'דגם', ''),
+    ('serial_number', 'מספר סידורי', ''),
     ('size', 'גודל', ''),
     ('year', 'שנת ייצור', ''),
     ('country', 'ארץ ייצור', ''),
+    ('finish', 'גימור / צבע', ''),
+    ('electronic_connectivity', 'חיבורים אלקטרוניים', ''),
     ('accessories', 'אביזרים ונרתיק', ''),
     ('service_history', 'טיפולים ותיקונים', '')
   ],
@@ -6353,6 +6789,8 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('model', 'דגם', ''),
     ('dimensions', 'מידות', ''),
     ('compatibility', 'תאימות', ''),
+    ('print_technology', 'טכנולוגיה', 'לייזר / הזרקת דיו / תרמי'),
+    ('page_count', 'מונה הדפסות', ''),
     ('quantity_per_pack', 'כמות באריזה', ''),
     ('included', 'מה כלול', '')
   ],
@@ -6361,9 +6799,11 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('item_type', 'סוג הציוד', ''),
     ('brand', 'יצרן', ''),
     ('size', 'מידה', ''),
+    ('animal_weight', 'מתאים למשקל', ''),
     ('dimensions', 'מידות', ''),
     ('material', 'חומר', ''),
     ('washable', 'אפשרות ניקוי', ''),
+    ('expiry_date', 'תוקף', 'למזון ותכשירים'),
     ('safety_notes', 'הערות בטיחות', '')
   ],
   'אספנות ואמנות': [
@@ -6372,8 +6812,10 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('year_period', 'שנה / תקופה', ''),
     ('material', 'חומר וטכניקה', ''),
     ('dimensions', 'מידות', ''),
+    ('edition_number', 'מספר במהדורה', ''),
     ('signed', 'חתימה', ''),
     ('provenance', 'מקור והיסטוריה', ''),
+    ('restoration', 'שחזור / תיקונים', ''),
     ('certificate', 'תעודה / הערכה', '')
   ],
   'אחר': [
@@ -6395,11 +6837,23 @@ Map<String, TextEditingController> _newCategoryDetailControllers() => {
 List<(String, String, String)> _listingSearchFields(String category) {
   if (category == 'רכב') {
     return const [
+      ('vehicle_type', 'סוג רכב', ''),
       ('manufacturer', 'יצרן', 'לדוגמה Toyota'),
       ('model', 'דגם', ''),
+      ('trim', 'תת־דגם / רמת גימור', ''),
       ('year', 'שנת ייצור', ''),
+      ('mileage', 'קילומטראז׳ עד', ''),
       ('fuel', 'סוג דלק', ''),
       ('transmission', 'תיבת הילוכים', 'automatic / manual'),
+      ('engine_volume', 'נפח מנוע', ''),
+      ('engine_power', 'הספק מנוע', ''),
+      ('drivetrain', 'הנעה', ''),
+      ('doors', 'מספר דלתות', ''),
+      ('seats', 'מספר מושבים', ''),
+      ('ownership', 'בעלות', ''),
+      ('battery_capacity', 'קיבולת סוללה', ''),
+      ('range', 'טווח חשמלי', ''),
+      ('safety_systems', 'מערכות בטיחות', ''),
       ('color', 'צבע', ''),
     ];
   }
@@ -6418,7 +6872,716 @@ List<(String, String, String)> _listingSearchFields(String category) {
   return _kCategoryDetailFields[category] ?? const [];
 }
 
+const List<(String, String, String)> _kVehicleExtraFields = [
+  ('vehicle_type', 'סוג רכב', ''),
+  ('trim', 'תת־דגם / רמת גימור', ''),
+  ('registration_date', 'מועד עלייה לכביש', ''),
+  ('doors', 'מספר דלתות', ''),
+  ('seats', 'מספר מושבים', ''),
+  ('engine_volume', 'נפח מנוע', 'בסמ״ק'),
+  ('engine_power', 'הספק', 'כוחות סוס'),
+  ('turbo', 'מגדש / טורבו', ''),
+  ('drivetrain', 'סוג הנעה', ''),
+  ('gear_count', 'מספר הילוכים', ''),
+  ('ownership', 'בעלות נוכחית', ''),
+  ('previous_ownership', 'בעלות קודמת', ''),
+  ('service_history', 'היסטוריית טיפולים', ''),
+  ('accident_history', 'תאונות ופגיעות שלדה', ''),
+  ('keys', 'מספר מפתחות', ''),
+  ('tire_condition', 'מצב צמיגים', ''),
+  ('battery_condition', 'מצב סוללה', 'ברכב חשמלי / היברידי'),
+  ('battery_capacity', 'קיבולת סוללה', 'בקוט״ש'),
+  ('range', 'טווח חשמלי', 'בק״מ'),
+  ('charging', 'טעינה', 'חיבור ומהירות טעינה'),
+  ('fuel_consumption', 'צריכת דלק / חשמל', ''),
+  ('airbags', 'מספר כריות אוויר', ''),
+  ('safety_systems', 'מערכות בטיחות', ''),
+  ('mechanical_condition', 'מצב מכני', ''),
+  ('import_type', 'מקור הרכב', ''),
+  ('features', 'אבזור עיקרי', ''),
+  ('warranty', 'אחריות', ''),
+];
+
+const List<String> _kVehicleManufacturers = [
+  'Toyota',
+  'Hyundai',
+  'Kia',
+  'Mazda',
+  'Skoda',
+  'Volkswagen',
+  'Seat',
+  'Cupra',
+  'Suzuki',
+  'Mitsubishi',
+  'Nissan',
+  'Honda',
+  'Subaru',
+  'Ford',
+  'Chevrolet',
+  'Renault',
+  'Peugeot',
+  'Citroën',
+  'Opel',
+  'Fiat',
+  'Dacia',
+  'MG',
+  'BYD',
+  'Geely',
+  'Tesla',
+  'Chery',
+  'Jaecoo',
+  'Lynk & Co',
+  'Zeekr',
+  'Mercedes-Benz',
+  'BMW',
+  'Audi',
+  'Volvo',
+  'Lexus',
+  'Land Rover',
+  'Jeep',
+  'Isuzu',
+  'Maxus',
+  'SsangYong / KGM'
+];
+
+const Map<String, List<String>> _kVehicleModels = {
+  'Toyota': [
+    'Aygo',
+    'Yaris',
+    'Yaris Cross',
+    'Corolla',
+    'Corolla Cross',
+    'Camry',
+    'C-HR',
+    'RAV4',
+    'Highlander',
+    'Land Cruiser',
+    'Prius',
+    'Proace',
+    'Hilux'
+  ],
+  'Hyundai': [
+    'i10',
+    'i20',
+    'i25 / Accent',
+    'i30',
+    'Elantra',
+    'Sonata',
+    'Kona',
+    'Venue',
+    'Tucson',
+    'Santa Fe',
+    'Palisade',
+    'Ioniq',
+    'Ioniq 5',
+    'Ioniq 6'
+  ],
+  'Kia': [
+    'Picanto',
+    'Rio',
+    'Ceed',
+    'Forte',
+    'Cerato',
+    'Niro',
+    'Stonic',
+    'Seltos',
+    'Sportage',
+    'Sorento',
+    'Carnival',
+    'EV3',
+    'EV6',
+    'EV9'
+  ],
+  'Mazda': [
+    'Mazda 2',
+    'Mazda 3',
+    'Mazda 6',
+    'CX-3',
+    'CX-30',
+    'CX-5',
+    'CX-60',
+    'CX-90',
+    'MX-5'
+  ],
+  'Skoda': [
+    'Fabia',
+    'Scala',
+    'Octavia',
+    'Superb',
+    'Kamiq',
+    'Karoq',
+    'Kodiaq',
+    'Enyaq'
+  ],
+  'Volkswagen': [
+    'Polo',
+    'Golf',
+    'Jetta',
+    'Passat',
+    'T-Cross',
+    'T-Roc',
+    'Tiguan',
+    'Touareg',
+    'Caddy',
+    'Transporter',
+    'ID.3',
+    'ID.4'
+  ],
+  'Seat': ['Ibiza', 'Leon', 'Arona', 'Ateca', 'Tarraco'],
+  'Cupra': ['Leon', 'Formentor', 'Ateca', 'Born', 'Tavascan'],
+  'Suzuki': [
+    'Alto',
+    'Celerio',
+    'Ignis',
+    'Swift',
+    'Baleno',
+    'S-Cross',
+    'Vitara',
+    'Jimny'
+  ],
+  'Mitsubishi': [
+    'Space Star',
+    'Lancer',
+    'ASX',
+    'Eclipse Cross',
+    'Outlander',
+    'Pajero',
+    'L200'
+  ],
+  'Nissan': [
+    'Micra',
+    'Sentra',
+    'Juke',
+    'Qashqai',
+    'X-Trail',
+    'Leaf',
+    'Ariya',
+    'Navara'
+  ],
+  'Honda': ['Jazz', 'Civic', 'Accord', 'HR-V', 'CR-V', 'ZR-V', 'e:Ny1'],
+  'Subaru': [
+    'Impreza',
+    'XV / Crosstrek',
+    'Forester',
+    'Outback',
+    'BRZ',
+    'Solterra'
+  ],
+  'Ford': [
+    'Ka',
+    'Fiesta',
+    'Focus',
+    'Mondeo',
+    'Puma',
+    'Kuga',
+    'Edge',
+    'Explorer',
+    'Mustang',
+    'Mustang Mach-E',
+    'Ranger',
+    'Transit'
+  ],
+  'Chevrolet': [
+    'Spark',
+    'Aveo',
+    'Cruze',
+    'Malibu',
+    'Trax',
+    'Trailblazer',
+    'Equinox',
+    'Traverse',
+    'Tahoe',
+    'Silverado'
+  ],
+  'Renault': [
+    'Clio',
+    'Megane',
+    'Captur',
+    'Kadjar',
+    'Austral',
+    'Arkana',
+    'Koleos',
+    'Zoe',
+    'Kangoo'
+  ],
+  'Peugeot': [
+    '108',
+    '208',
+    '308',
+    '2008',
+    '3008',
+    '5008',
+    'Partner',
+    'Traveller'
+  ],
+  'Citroën': [
+    'C1',
+    'C3',
+    'C4',
+    'C5 Aircross',
+    'Berlingo',
+    'Jumpy',
+    'Spacetourer'
+  ],
+  'Opel': [
+    'Corsa',
+    'Astra',
+    'Insignia',
+    'Mokka',
+    'Crossland',
+    'Grandland',
+    'Combo',
+    'Zafira'
+  ],
+  'Fiat': ['500', 'Panda', 'Punto', 'Tipo', '500X', 'Doblo', 'Ducato'],
+  'Dacia': ['Sandero', 'Logan', 'Duster', 'Jogger', 'Spring'],
+  'MG': ['MG3', 'ZS', 'HS', 'Marvel R', 'MG4', 'MG5'],
+  'BYD': ['Dolphin', 'Atto 3', 'Seal', 'Seal U', 'Han', 'Tang'],
+  'Geely': ['Geometry C', 'EX5'],
+  'Tesla': ['Model 3', 'Model Y', 'Model S', 'Model X'],
+  'Chery': ['Tiggo 4 Pro', 'Tiggo 7 Pro', 'Tiggo 8 Pro', 'FX'],
+  'Jaecoo': ['J7', 'J8'],
+  'Zeekr': ['X', '001', '7X'],
+  'Mercedes-Benz': [
+    'A-Class',
+    'C-Class',
+    'E-Class',
+    'S-Class',
+    'CLA',
+    'GLA',
+    'GLB',
+    'GLC',
+    'GLE',
+    'V-Class',
+    'EQA',
+    'EQB',
+    'EQE',
+    'EQS'
+  ],
+  'BMW': [
+    'סדרה 1',
+    'סדרה 2',
+    'סדרה 3',
+    'סדרה 4',
+    'סדרה 5',
+    'סדרה 7',
+    'X1',
+    'X2',
+    'X3',
+    'X5',
+    'iX1',
+    'i4',
+    'i5',
+    'iX'
+  ],
+  'Audi': [
+    'A1',
+    'A3',
+    'A4',
+    'A5',
+    'A6',
+    'Q2',
+    'Q3',
+    'Q4 e-tron',
+    'Q5',
+    'Q7',
+    'e-tron GT'
+  ],
+  'Volvo': [
+    'S60',
+    'S90',
+    'V40',
+    'XC40',
+    'XC60',
+    'XC90',
+    'EX30',
+    'C40 Recharge'
+  ],
+  'Lexus': ['CT', 'IS', 'ES', 'UX', 'NX', 'RX', 'RZ'],
+  'Land Rover': [
+    'Defender',
+    'Discovery',
+    'Discovery Sport',
+    'Range Rover',
+    'Range Rover Sport',
+    'Range Rover Velar',
+    'Range Rover Evoque'
+  ],
+  'Jeep': [
+    'Renegade',
+    'Compass',
+    'Cherokee',
+    'Grand Cherokee',
+    'Wrangler',
+    'Avenger'
+  ],
+  'Isuzu': ['D-Max', 'MU-X'],
+};
+
+const Map<String, List<String>> _kVehicleFieldOptions = {
+  'vehicle_type': [
+    'מיני',
+    'סופר מיני',
+    'משפחתי',
+    'מנהלים',
+    'סטיישן',
+    'האצ׳בק',
+    'קופה',
+    'קבריולה',
+    'קרוסאובר',
+    'SUV',
+    'שטח',
+    'מיניוואן',
+    'מסחרי',
+    'טנדר'
+  ],
+  'trim': ['בסיסית', 'ביניים', 'מאובזרת', 'ספורט', 'יוקרה'],
+  'doors': ['2', '3', '4', '5'],
+  'seats': ['2', '4', '5', '6', '7', '8', '9 ומעלה'],
+  'fuel': ['בנזין', 'דיזל', 'היברידי', 'פלאג־אין היברידי', 'חשמלי', 'גז'],
+  'turbo': ['ללא', 'טורבו', 'טווין־טורבו', 'מגדש־על', 'לא ידוע'],
+  'drivetrain': ['הנעה קדמית', 'הנעה אחורית', 'הנעה כפולה AWD', '4×4'],
+  'gear_count': ['1', '4', '5', '6', '7', '8', '9', '10'],
+  'ownership': [
+    'פרטית',
+    'ליסינג פרטי',
+    'ליסינג תפעולי',
+    'חברה',
+    'השכרה',
+    'מונית',
+    'מדינה'
+  ],
+  'previous_ownership': [
+    'פרטית',
+    'ליסינג',
+    'חברה',
+    'השכרה',
+    'מונית',
+    'לא ידוע'
+  ],
+  'service_history': [
+    'היסטוריה מלאה במוסך מורשה',
+    'היסטוריה מלאה במוסך כללי',
+    'היסטוריה חלקית',
+    'ללא תיעוד'
+  ],
+  'accident_history': [
+    'ללא תאונות ידועות',
+    'תיקוני פח וצבע בלבד',
+    'הוחלפו חלקי מרכב',
+    'פגיעת שלדה',
+    'אובדן להלכה בעבר',
+    'לא ידוע'
+  ],
+  'keys': ['מפתח אחד', 'שני מפתחות', 'שלושה מפתחות'],
+  'tire_condition': ['חדשים', 'מצב טוב', 'בלאי בינוני', 'דורשים החלפה'],
+  'battery_condition': [
+    'מעל 90%',
+    '80%–90%',
+    '70%–79%',
+    'מתחת ל־70%',
+    'לא נבדקה',
+    'לא רלוונטי'
+  ],
+  'battery_capacity': [
+    'עד 30 קוט״ש',
+    '31–45 קוט״ש',
+    '46–60 קוט״ש',
+    '61–75 קוט״ש',
+    '76–90 קוט״ש',
+    'מעל 90 קוט״ש'
+  ],
+  'charging': [
+    'AC חד־פאזי',
+    'AC תלת־פאזי',
+    'טעינה מהירה DC',
+    'AC + DC',
+    'לא ידוע'
+  ],
+  'airbags': ['2', '4', '6', '7', '8', '9 ומעלה', 'לא ידוע'],
+  'safety_systems': [
+    'בלימה אוטונומית',
+    'תיקון סטייה מנתיב',
+    'בקרת שיוט אדפטיבית',
+    'זיהוי שטח מת',
+    'חבילת בטיחות מלאה',
+    'ללא מערכות מקוריות',
+    'לא ידוע'
+  ],
+  'mechanical_condition': [
+    'מצוין',
+    'טוב מאוד',
+    'טוב',
+    'דרוש טיפול',
+    'דרוש תיקון',
+    'לא נבדק'
+  ],
+  'import_type': ['יבואן רשמי', 'יבוא מקביל', 'יבוא אישי', 'לא ידוע'],
+  'warranty': [
+    'ללא אחריות',
+    'אחריות יצרן',
+    'אחריות סוללה',
+    'אחריות סוחר',
+    'אחריות מורחבת'
+  ],
+};
+
+(String, String) _generatedVehicleListingText(Map<String, String> values) {
+  String value(String key) => values[key]?.trim() ?? '';
+  String formattedNumber(String key) {
+    final raw = value(key);
+    final digits = raw.replaceAll(RegExp(r'[,\s]'), '');
+    final number = int.tryParse(digits);
+    if (number == null) return raw;
+    return number.toString().replaceAllMapped(
+          RegExp(r'\B(?=(\d{3})+(?!\d))'),
+          (_) => ',',
+        );
+  }
+
+  final titleParts = <String>[
+    value('manufacturer'),
+    value('model'),
+    value('trim'),
+    value('year'),
+  ].where((part) => part.isNotEmpty).toList();
+  if (titleParts.isEmpty && value('vehicle_type').isNotEmpty) {
+    titleParts.add(value('vehicle_type'));
+  }
+  final title = titleParts.join(' ');
+  final rows = <(String, String)>[
+    ('סוג רכב', value('vehicle_type')),
+    (
+      'יצרן ודגם',
+      [value('manufacturer'), value('model')]
+          .where((part) => part.isNotEmpty)
+          .join(' ')
+    ),
+    ('רמת גימור', value('trim')),
+    ('שנת ייצור', value('year')),
+    ('עלייה לכביש', value('registration_date')),
+    ('דלתות', value('doors')),
+    ('מושבים', value('seats')),
+    (
+      'קילומטראז׳',
+      value('mileage').isEmpty ? '' : '${formattedNumber('mileage')} ק״מ'
+    ),
+    ('יד', value('hand')),
+    ('בעלות', value('ownership')),
+    ('בעלות קודמת', value('previous_ownership')),
+    (
+      'מנוע',
+      [
+        value('fuel'),
+        value('engine_volume').isEmpty ? '' : '${value('engine_volume')} סמ״ק',
+        value('engine_power').isEmpty ? '' : '${value('engine_power')} כ״ס'
+      ].where((part) => part.isNotEmpty).join(' · ')
+    ),
+    ('מגדש', value('turbo')),
+    ('תיבת הילוכים', value('transmission')),
+    ('מספר הילוכים', value('gear_count')),
+    ('הנעה', value('drivetrain')),
+    ('צבע', value('color')),
+    ('טסט עד', value('test_valid_until')),
+    ('טיפולים', value('service_history')),
+    ('תאונות', value('accident_history')),
+    ('מפתחות', value('keys')),
+    ('מצב צמיגים', value('tire_condition')),
+    ('מצב סוללה', value('battery_condition')),
+    ('קיבולת סוללה', value('battery_capacity')),
+    ('טווח חשמלי', value('range').isEmpty ? '' : '${value('range')} ק״מ'),
+    ('טעינה', value('charging')),
+    ('צריכת דלק / חשמל', value('fuel_consumption')),
+    ('כריות אוויר', value('airbags')),
+    ('מערכות בטיחות', value('safety_systems')),
+    ('מצב מכני', value('mechanical_condition')),
+    ('מקור הרכב', value('import_type')),
+    ('אבזור', value('features')),
+    ('אחריות', value('warranty')),
+  ];
+  final details = rows
+      .where((row) => row.$2.isNotEmpty)
+      .map((row) => '${row.$1}: ${row.$2}')
+      .join('\n');
+  final description = [
+    if (title.isNotEmpty) title,
+    if (details.isNotEmpty) details,
+  ].join('\n\n');
+  return (title, description);
+}
+
+(String, String) _generatedCategoryListingText(
+  String category,
+  Map<String, String> values,
+) {
+  final fields = _kCategoryDetailFields[category] ?? const [];
+  String value(String key) => values[key]?.trim() ?? '';
+  List<String> titleKeys;
+  switch (category) {
+    case 'מחשבים':
+      titleKeys = ['brand', 'series', 'model', 'processor'];
+      break;
+    case 'טלפונים וטאבלטים':
+      titleKeys = ['brand', 'model', 'storage'];
+      break;
+    case 'אלקטרוניקה':
+      titleKeys = ['item_type', 'brand', 'model'];
+      break;
+    case 'מוצרי חשמל':
+      titleKeys = ['appliance_type', 'brand', 'model'];
+      break;
+    case 'בגדים והנעלה':
+      titleKeys = ['item_type', 'brand', 'size'];
+      break;
+    case 'תינוקות וילדים':
+      titleKeys = ['item_type', 'brand', 'age_range'];
+      break;
+    case 'ספרים':
+      titleKeys = ['book_type', 'title_author', 'publisher'];
+      break;
+    case 'יודאיקה ותשמישי קדושה':
+      titleKeys = ['item_type', 'custom', 'material'];
+      break;
+    case 'כלי בית ומטבח':
+      titleKeys = ['item_type', 'brand', 'material'];
+      break;
+    case 'צעצועים ומשחקים':
+      titleKeys = ['item_type', 'brand', 'age_range'];
+      break;
+    case 'ספורט ופנאי':
+      titleKeys = ['sport_type', 'item_type', 'brand'];
+      break;
+    case 'אופניים וקורקינטים':
+      titleKeys = ['vehicle_type', 'brand', 'model'];
+      break;
+    case 'כלי עבודה':
+      titleKeys = ['tool_type', 'brand', 'model'];
+      break;
+    case 'גינה וחצר':
+      titleKeys = ['item_type', 'brand', 'dimensions'];
+      break;
+    case 'כלי נגינה':
+      titleKeys = ['instrument_type', 'brand', 'model'];
+      break;
+    case 'ציוד משרדי':
+      titleKeys = ['item_type', 'brand', 'model'];
+      break;
+    case 'ציוד לבעלי חיים':
+      titleKeys = ['animal_type', 'item_type', 'brand'];
+      break;
+    case 'אספנות ואמנות':
+      titleKeys = ['item_type', 'artist_or_maker', 'year_period'];
+      break;
+    case 'רהיטים':
+      titleKeys = ['item_type', 'material', 'style'];
+      break;
+    default:
+      titleKeys = ['item_type', 'brand', 'model'];
+      break;
+  }
+  final seen = <String>{};
+  final title = titleKeys
+      .map(value)
+      .where((part) => part.isNotEmpty && seen.add(part))
+      .take(4)
+      .join(' ');
+  final rows = fields
+      .map((field) => (field.$2, value(field.$1)))
+      .where((row) => row.$2.isNotEmpty)
+      .map((row) => '${row.$1}: ${row.$2}')
+      .join('\n');
+  return (
+    title,
+    [if (title.isNotEmpty) title, if (rows.isNotEmpty) rows].join('\n\n')
+  );
+}
+
+(String, String) _generatedPropertyListingText(Map<String, String> values) {
+  String value(String key) => values[key]?.trim() ?? '';
+  final deal = {'rent': 'להשכרה', 'sale': 'למכירה'}[value('deal_type')] ?? '';
+  final property = {
+        'apartment': 'דירה',
+        'house': 'בית פרטי',
+        'garden': 'דירת גן',
+        'penthouse': 'פנטהאוז',
+        'duplex': 'דופלקס',
+        'studio': 'יחידת דיור / סטודיו',
+        'other': 'נכס'
+      }[value('property_type')] ??
+      value('property_type');
+  final location = [value('street'), value('city')]
+      .where((part) => part.isNotEmpty)
+      .join(', ');
+  final title =
+      [property, deal, location].where((part) => part.isNotEmpty).join(' ');
+  final rows = <(String, String)>[
+    ('סוג עסקה', deal),
+    ('סוג נכס', property),
+    ('מיקום', location),
+    ('חדרים', value('rooms')),
+    ('שטח', value('area_sqm').isEmpty ? '' : '${value('area_sqm')} מ״ר'),
+    ('קומה', value('floor')),
+    ('מתוך קומות', value('total_floors')),
+    ('כניסה', value('entry_date')),
+    ('ריהוט', value('furniture')),
+    ('ארנונה לחודשיים', value('arnona')),
+    ('ועד בית לחודש', value('building_fee')),
+    ('מאפיינים', value('features')),
+  ]
+      .where((row) => row.$2.isNotEmpty)
+      .map((row) => '${row.$1}: ${row.$2}')
+      .join('\n');
+  return (
+    title,
+    [if (title.isNotEmpty) title, if (rows.isNotEmpty) rows].join('\n\n')
+  );
+}
+
 const Map<String, List<String>> _kCommonPopularValues = {
+  'model_year': [
+    '2026',
+    '2025',
+    '2024',
+    '2023',
+    '2022',
+    '2021',
+    '2020',
+    '2019',
+    '2018',
+    '2017',
+    '2016 ומטה'
+  ],
+  'purchase_year': [
+    '2026',
+    '2025',
+    '2024',
+    '2023',
+    '2022',
+    '2021',
+    '2020',
+    '2019',
+    '2018 ומטה'
+  ],
+  'purchase_proof': [
+    'חשבונית וקופסה',
+    'חשבונית בלבד',
+    'קופסה בלבד',
+    'ללא חשבונית וקופסה'
+  ],
+  'fit': ['צמודה', 'רגילה', 'רחבה', 'אוברסייז', 'גזרה גבוהה', 'גזרה נמוכה'],
+  'closure': ['ללא סגירה', 'רוכסן', 'כפתורים', 'שרוכים', 'סקוץ׳', 'אבזם'],
+  'frame_material': ['אלומיניום', 'קרבון', 'פלדה', 'כרומולי', 'מגנזיום'],
+  'brakes': [
+    'דיסק הידראולי',
+    'דיסק מכני',
+    'V-Brake',
+    'בלמי חישוק',
+    'בלם תוף',
+    'בלם רגל'
+  ],
+  'suspension': ['ללא שיכוך', 'מזלג קדמי', 'שיכוך מלא', 'מזלג קשיח'],
+  'touch_screen': ['כן', 'לא', 'מסך מגע עם עט'],
+  'dishwasher_safe': ['מתאים למדיח', 'לא מתאים למדיח', 'חלקים מסוימים בלבד'],
   'color': [
     'שחור',
     'לבן',
@@ -6518,6 +7681,53 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
     ],
   },
   'מחשבים': {
+    'model_year': [
+      '2026',
+      '2025',
+      '2024',
+      '2023',
+      '2022',
+      '2021',
+      '2020',
+      '2019',
+      '2018',
+      '2017',
+      '2016',
+      '2015 ומטה'
+    ],
+    'processor_generation': [
+      'Intel Core Ultra 200',
+      'Intel Core Ultra 100',
+      'Intel דור 14',
+      'Intel דור 13',
+      'Intel דור 12',
+      'Intel דור 11',
+      'Intel דור 10',
+      'AMD Ryzen AI 300',
+      'AMD Ryzen 9000',
+      'AMD Ryzen 8000',
+      'AMD Ryzen 7000',
+      'AMD Ryzen 6000',
+      'Apple M4',
+      'Apple M3',
+      'Apple M2',
+      'Apple M1',
+      'לא ידוע'
+    ],
+    'memory_type': [
+      'DDR3',
+      'DDR4 2400MHz',
+      'DDR4 2666MHz',
+      'DDR4 3200MHz',
+      'DDR5 4800MHz',
+      'DDR5 5200MHz',
+      'DDR5 5600MHz',
+      'LPDDR4X',
+      'LPDDR5',
+      'LPDDR5X',
+      'זיכרון מאוחד Apple',
+      'לא ידוע'
+    ],
     'computer_type': [
       'מחשב נייד',
       'מחשב נייח',
@@ -6537,18 +7747,82 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
       'MSI'
     ],
     'processor': [
-      'Intel Core i3',
-      'Intel Core i5',
-      'Intel Core i7',
-      'Intel Core i9',
-      'AMD Ryzen 3',
-      'AMD Ryzen 5',
-      'AMD Ryzen 7',
+      'Intel Core i3-8130U',
+      'Intel Core i5-8250U',
+      'Intel Core i5-8350U',
+      'Intel Core i7-8550U',
+      'Intel Core i7-8850H',
+      'Intel Core i3-10110U',
+      'Intel Core i5-10210U',
+      'Intel Core i5-1035G1',
+      'Intel Core i7-10510U',
+      'Intel Core i7-10750H',
+      'Intel Core i3-1115G4',
+      'Intel Core i5-1135G7',
+      'Intel Core i5-11400H',
+      'Intel Core i7-1165G7',
+      'Intel Core i7-11800H',
+      'Intel Core i3-1215U',
+      'Intel Core i5-1235U',
+      'Intel Core i5-1240P',
+      'Intel Core i5-12500H',
+      'Intel Core i7-1255U',
+      'Intel Core i7-1260P',
+      'Intel Core i7-12700H',
+      'Intel Core i3-1315U',
+      'Intel Core i5-1335U',
+      'Intel Core i5-1340P',
+      'Intel Core i5-13500H',
+      'Intel Core i7-1355U',
+      'Intel Core i7-1360P',
+      'Intel Core i7-13700H',
+      'Intel Core i9-13900H',
+      'Intel Core 5 120U',
+      'Intel Core 7 150U',
+      'Intel Core Ultra 5 125H',
+      'Intel Core Ultra 5 135U',
+      'Intel Core Ultra 7 155H',
+      'Intel Core Ultra 7 165H',
+      'Intel Core Ultra 9 185H',
+      'AMD Ryzen 3 5300U',
+      'AMD Ryzen 5 5500U',
+      'AMD Ryzen 5 5600H',
+      'AMD Ryzen 7 5700U',
+      'AMD Ryzen 7 5800H',
+      'AMD Ryzen 5 6600H',
+      'AMD Ryzen 7 6800H',
+      'AMD Ryzen 5 7530U',
+      'AMD Ryzen 7 7730U',
+      'AMD Ryzen 7 7840HS',
+      'AMD Ryzen 9 7940HS',
+      'AMD Ryzen 5 8640HS',
+      'AMD Ryzen 7 8840HS',
+      'AMD Ryzen AI 9 HX 370',
       'Apple M1',
+      'Apple M1 Pro',
+      'Apple M1 Max',
       'Apple M2',
-      'Apple M3'
+      'Apple M2 Pro',
+      'Apple M2 Max',
+      'Apple M3',
+      'Apple M3 Pro',
+      'Apple M3 Max',
+      'Apple M4',
+      'Apple M4 Pro',
+      'Apple M4 Max'
     ],
-    'memory': ['4GB', '8GB', '16GB', '32GB', '64GB'],
+    'memory': [
+      '4GB',
+      '8GB',
+      '12GB',
+      '16GB',
+      '24GB',
+      '32GB',
+      '48GB',
+      '64GB',
+      '96GB',
+      '128GB'
+    ],
     'storage': [
       '128GB SSD',
       '256GB SSD',
@@ -6557,6 +7831,17 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
       '1TB HDD',
       '2TB HDD'
     ],
+    'storage_interface': [
+      'eMMC',
+      'SATA HDD',
+      'SATA SSD',
+      'M.2 SATA',
+      'NVMe PCIe 3.0',
+      'NVMe PCIe 4.0',
+      'NVMe PCIe 5.0',
+      'Apple SSD'
+    ],
+    'drive_count': ['כונן אחד', 'שני כוננים', 'שלושה כוננים ומעלה'],
     'operating_system': [
       'Windows 11',
       'Windows 10',
@@ -6565,8 +7850,113 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
       'Linux',
       'ללא מערכת הפעלה'
     ],
+    'screen_size': [
+      '11.6 אינץ׳',
+      '12.3 אינץ׳',
+      '13 אינץ׳',
+      '13.3 אינץ׳',
+      '13.6 אינץ׳',
+      '14 אינץ׳',
+      '14.5 אינץ׳',
+      '15 אינץ׳',
+      '15.6 אינץ׳',
+      '16 אינץ׳',
+      '16.1 אינץ׳',
+      '17.3 אינץ׳',
+      '18 אינץ׳',
+      '21.5 אינץ׳',
+      '24 אינץ׳',
+      '27 אינץ׳'
+    ],
+    'screen_resolution': [
+      '1366×768 HD',
+      '1920×1080 Full HD',
+      '1920×1200 WUXGA',
+      '2240×1400 2.2K',
+      '2560×1440 QHD',
+      '2560×1600 WQXGA',
+      '2880×1800 2.8K',
+      '3024×1964 Retina',
+      '3456×2234 Retina',
+      '3840×2160 4K'
+    ],
+    'panel_type': [
+      'TN',
+      'IPS',
+      'VA',
+      'OLED',
+      'Mini-LED',
+      'Retina IPS',
+      'Liquid Retina XDR'
+    ],
+    'charger_power': [
+      '30W',
+      '45W',
+      '60W',
+      '65W',
+      '67W',
+      '90W',
+      '100W',
+      '120W',
+      '135W',
+      '140W',
+      '170W',
+      '230W',
+      '240W',
+      '300W ומעלה'
+    ],
+    'wireless': [
+      'Wi-Fi 5 + Bluetooth 4.2',
+      'Wi-Fi 5 + Bluetooth 5',
+      'Wi-Fi 6 + Bluetooth 5',
+      'Wi-Fi 6E + Bluetooth 5.2',
+      'Wi-Fi 7 + Bluetooth 5.4'
+    ],
+    'webcam': [
+      'ללא מצלמה',
+      '720p',
+      '1080p',
+      '1440p',
+      'מצלמת IR ל-Windows Hello',
+      'Face ID / Center Stage',
+      'תריס פרטיות'
+    ],
+    'upgradeability': [
+      'RAM וכונן ניתנים לשדרוג',
+      'כונן בלבד ניתן לשדרוג',
+      'RAM בלבד ניתן לשדרוג',
+      'זיכרון מולחם — ללא שדרוג',
+      'לא נבדק'
+    ],
   },
   'טלפונים וטאבלטים': {
+    'ram': ['2GB', '3GB', '4GB', '6GB', '8GB', '12GB', '16GB', '24GB'],
+    'network': ['דור 2 בלבד', 'דור 3', '4G / LTE', '5G', 'Wi-Fi בלבד'],
+    'screen_size': [
+      'עד 5 אינץ׳',
+      '5–5.9 אינץ׳',
+      '6–6.4 אינץ׳',
+      '6.5–6.9 אינץ׳',
+      '7–8.9 אינץ׳',
+      '9–11 אינץ׳',
+      '12 אינץ׳ ומעלה'
+    ],
+    'operating_system': [
+      'Android',
+      'iOS',
+      'iPadOS',
+      'HarmonyOS',
+      'מערכת כשרה',
+      'אחר'
+    ],
+    'esim': ['תומך eSIM', 'לא תומך eSIM', 'לא ידוע'],
+    'water_resistance': [
+      'IP68',
+      'IP67',
+      'IP54',
+      'עמיד להתזות',
+      'ללא עמידות ידועה'
+    ],
     'device_type': [
       'טלפון חכם',
       'טלפון כשר',
@@ -6580,6 +7970,7 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
       'Xiaomi',
       'Google',
       'OnePlus',
+      'Motorola',
       'Nokia',
       'Lenovo',
       'Huawei'
@@ -6704,12 +8095,12 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
   },
   'כלי בית ומטבח': {
     'item_type': [
-      'סירים',
-      'מחבתות',
+      'סירים ומחבתות',
       'צלחות',
       'כוסות',
       'סכו״ם',
-      'תבניות',
+      'כלי אפייה',
+      'סכינים',
       'כלי אחסון',
       'מצעים',
       'מגבות'
@@ -6820,6 +8211,8 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
       'מדפסת',
       'סורק',
       'מגרסה',
+      'מקרן',
+      'מקלדת ועכבר',
       'שולחן',
       'כיסא משרדי',
       'ארון',
@@ -6855,10 +8248,1645 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
   },
 };
 
-List<String> _popularValuesFor(String category, String key) =>
-    _kPopularCategoryValues[category]?[key] ??
-    _kCommonPopularValues[key] ??
-    const [];
+const Map<String, Map<String, (String, Map<String, List<String>>)>>
+    _kDependentPopularValues = {
+  'טלפונים וטאבלטים': {
+    'model': (
+      'brand',
+      {
+        'Apple': [
+          'iPhone 17 Pro Max',
+          'iPhone 17 Pro',
+          'iPhone Air',
+          'iPhone 17',
+          'iPhone 17e',
+          'iPhone 16 Pro Max',
+          'iPhone 16 Pro',
+          'iPhone 16 Plus',
+          'iPhone 16',
+          'iPhone 16e',
+          'iPhone 15 Pro Max',
+          'iPhone 15 Pro',
+          'iPhone 15 Plus',
+          'iPhone 15',
+          'iPhone 14 Pro Max',
+          'iPhone 14 Pro',
+          'iPhone 14 Plus',
+          'iPhone 14',
+          'iPhone 13 Pro Max',
+          'iPhone 13 Pro',
+          'iPhone 13',
+          'iPhone 13 mini',
+          'iPhone SE (דור 3)',
+          'iPhone 12 Pro Max',
+          'iPhone 12 Pro',
+          'iPhone 12',
+          'iPhone 12 mini',
+          'iPhone 11 Pro Max',
+          'iPhone 11 Pro',
+          'iPhone 11',
+          'iPhone XS Max',
+          'iPhone XS',
+          'iPhone XR',
+          'iPhone X',
+          'iPhone 8 Plus',
+          'iPhone 8',
+          'iPhone 7 Plus',
+          'iPhone 7',
+          'iPhone SE (דור 2)',
+          'iPad Pro',
+          'iPad Air',
+          'iPad',
+          'iPad mini',
+          'Apple Watch Ultra',
+          'Apple Watch Series',
+          'Apple Watch SE'
+        ],
+        'Samsung': [
+          'Galaxy S26 Ultra',
+          'Galaxy S26+',
+          'Galaxy S26',
+          'Galaxy S25 Ultra',
+          'Galaxy S25+',
+          'Galaxy S25',
+          'Galaxy S24 Ultra',
+          'Galaxy S24+',
+          'Galaxy S24',
+          'Galaxy Z Fold7',
+          'Galaxy Z Flip7',
+          'Galaxy Z Fold6',
+          'Galaxy Z Flip6',
+          'Galaxy A57 5G',
+          'Galaxy A37 5G',
+          'Galaxy A56 5G',
+          'Galaxy A36 5G',
+          'Galaxy A26 5G',
+          'Galaxy A16',
+          'Galaxy S23 Ultra',
+          'Galaxy S23+',
+          'Galaxy S23',
+          'Galaxy S22 Ultra',
+          'Galaxy S22+',
+          'Galaxy S22',
+          'Galaxy S21 Ultra',
+          'Galaxy S21 FE',
+          'Galaxy S21',
+          'Galaxy Note20 Ultra',
+          'Galaxy Note20',
+          'Galaxy A55 5G',
+          'Galaxy A54 5G',
+          'Galaxy A53 5G',
+          'Galaxy A35 5G',
+          'Galaxy A34 5G',
+          'Galaxy A25 5G',
+          'Galaxy A15',
+          'Galaxy Tab S11',
+          'Galaxy Tab S10',
+          'Galaxy Tab A9',
+          'Galaxy Watch Ultra',
+          'Galaxy Watch7'
+        ],
+        'Xiaomi': [
+          'Xiaomi 17 Ultra',
+          'Xiaomi 17',
+          'Xiaomi 17T Pro',
+          'Xiaomi 17T',
+          'Xiaomi 15 Ultra',
+          'Xiaomi 15',
+          'Xiaomi 15T Pro',
+          'Xiaomi 15T',
+          'REDMI Note 15 Pro+ 5G',
+          'REDMI Note 15 Pro 5G',
+          'REDMI Note 15 5G',
+          'REDMI Note 15',
+          'REDMI 15 5G',
+          'REDMI 15',
+          'REDMI 15C',
+          'REDMI A5',
+          'POCO F8 Ultra',
+          'POCO F8 Pro',
+          'POCO X8 Pro',
+          'POCO M8 Pro 5G',
+          'Xiaomi Pad 8 Pro',
+          'Xiaomi Pad 8'
+        ],
+        'Google': [
+          'Pixel 10 Pro Fold',
+          'Pixel 10 Pro XL',
+          'Pixel 10 Pro',
+          'Pixel 10',
+          'Pixel 10a',
+          'Pixel 9 Pro Fold',
+          'Pixel 9 Pro XL',
+          'Pixel 9 Pro',
+          'Pixel 9',
+          'Pixel 9a',
+          'Pixel 8 Pro',
+          'Pixel 8',
+          'Pixel 8a',
+          'Pixel Tablet',
+          'Pixel Watch 4',
+          'Pixel Watch 3'
+        ],
+        'OnePlus': [
+          'OnePlus 15',
+          'OnePlus 13',
+          'OnePlus 13R',
+          'OnePlus 12',
+          'OnePlus 12R',
+          'OnePlus Open',
+          'OnePlus Nord 5',
+          'OnePlus Nord 4',
+          'OnePlus Pad 3',
+          'OnePlus Watch 3'
+        ],
+        'Nokia': [
+          'Nokia G42 5G',
+          'Nokia G22',
+          'Nokia X30 5G',
+          'Nokia C32',
+          'Nokia 3210 4G',
+          'Nokia 2660 Flip',
+          'Nokia 105 4G'
+        ],
+        'Lenovo': [
+          'Lenovo Tab Extreme',
+          'Lenovo Tab Plus',
+          'Lenovo Tab M11',
+          'Lenovo Tab M10',
+          'Lenovo Legion Tab',
+          'Lenovo Idea Tab Pro'
+        ],
+        'Huawei': [
+          'Huawei Pura 80 Ultra',
+          'Huawei Pura 80 Pro',
+          'Huawei Pura 80',
+          'Huawei Mate 70 Pro',
+          'Huawei Mate X6',
+          'Huawei nova 13 Pro',
+          'Huawei nova 13',
+          'Huawei MatePad Pro',
+          'Huawei Watch GT 5'
+        ],
+        'Motorola': [
+          'motorola razr ultra',
+          'motorola razr',
+          'motorola edge 60 pro',
+          'motorola edge 60',
+          'moto g85 5G',
+          'moto g75 5G',
+          'moto g55 5G'
+        ],
+      }
+    ),
+    'capacity': (
+      'appliance_type',
+      {
+        'מקרר': [
+          'עד 250 ליטר',
+          '251–400 ליטר',
+          '401–550 ליטר',
+          '551–700 ליטר',
+          'מעל 700 ליטר'
+        ],
+        'מקפיא': [
+          'עד 100 ליטר',
+          '101–200 ליטר',
+          '201–300 ליטר',
+          'מעל 300 ליטר'
+        ],
+        'מכונת כביסה': [
+          '5–6 ק״ג',
+          '7 ק״ג',
+          '8 ק״ג',
+          '9 ק״ג',
+          '10 ק״ג',
+          '11–12 ק״ג'
+        ],
+        'מייבש כביסה': ['7 ק״ג', '8 ק״ג', '9 ק״ג', '10 ק״ג ומעלה'],
+        'תנור': ['עד 50 ליטר', '51–65 ליטר', '66–75 ליטר', 'מעל 75 ליטר'],
+        'מיקרוגל': ['עד 20 ליטר', '21–25 ליטר', '26–30 ליטר', 'מעל 30 ליטר'],
+        'מדיח כלים': [
+          'קומפקטי',
+          '45 ס״מ',
+          '60 ס״מ',
+          '12 מערכות כלים',
+          '14 מערכות כלים'
+        ],
+      }
+    ),
+    'power': (
+      'appliance_type',
+      {
+        'מזגן': [
+          '1 כ״ס',
+          '1.25 כ״ס',
+          '1.5 כ״ס',
+          '2 כ״ס',
+          '2.5 כ״ס',
+          '3 כ״ס ומעלה'
+        ],
+        'מיקרוגל': ['700W', '800W', '900W', '1000W ומעלה'],
+        'קומקום': ['1500W', '1800W', '2000W', '2200W'],
+        'מיקסר': ['עד 500W', '500–900W', '1000–1500W', 'מעל 1500W'],
+        'שואב אבק': ['עד 500W', '500–1000W', '1000–2000W', 'מעל 2000W'],
+      }
+    ),
+  },
+  'מחשבים': {
+    'series': (
+      'brand',
+      {
+        'Dell': [
+          'Inspiron',
+          'XPS',
+          'Latitude',
+          'Precision',
+          'Vostro',
+          'OptiPlex',
+          'Alienware',
+          'Dell G Series'
+        ],
+        'Lenovo': [
+          'ThinkPad X',
+          'ThinkPad T',
+          'ThinkPad E',
+          'ThinkPad L',
+          'ThinkPad P',
+          'ThinkBook',
+          'IdeaPad',
+          'Yoga',
+          'Legion',
+          'LOQ'
+        ],
+        'HP': [
+          'HP Laptop',
+          'Pavilion',
+          'Envy',
+          'Spectre',
+          'ProBook',
+          'EliteBook',
+          'ZBook',
+          'Victus',
+          'OMEN'
+        ],
+        'Asus': [
+          'Zenbook',
+          'Vivobook',
+          'ExpertBook',
+          'Chromebook',
+          'TUF Gaming',
+          'ROG Zephyrus',
+          'ROG Strix'
+        ],
+        'Acer': [
+          'Aspire',
+          'Swift',
+          'TravelMate',
+          'Chromebook',
+          'Nitro',
+          'Predator'
+        ],
+        'Apple': [
+          'MacBook Air',
+          'MacBook Pro',
+          'Mac mini',
+          'iMac',
+          'Mac Studio',
+          'Mac Pro'
+        ],
+        'Microsoft': [
+          'Surface Laptop',
+          'Surface Pro',
+          'Surface Laptop Studio',
+          'Surface Studio'
+        ],
+        'MSI': [
+          'Modern',
+          'Prestige',
+          'Summit',
+          'Cyborg',
+          'Katana',
+          'Stealth',
+          'Raider',
+          'Titan'
+        ],
+      }
+    ),
+    'model': (
+      'series',
+      {
+        'Inspiron': [
+          'Inspiron 13 5310',
+          'Inspiron 14 5410',
+          'Inspiron 14 5430',
+          'Inspiron 14 5440',
+          'Inspiron 14 2-in-1 7440',
+          'Inspiron 15 3511',
+          'Inspiron 15 3520',
+          'Inspiron 15 3530',
+          'Inspiron 15 5510',
+          'Inspiron 15 5570',
+          'Inspiron 15 5579',
+          'Inspiron 16 5630',
+          'Inspiron 16 Plus 7640'
+        ],
+        'XPS': [
+          'XPS 13 9310',
+          'XPS 13 9320 Plus',
+          'XPS 13 9340',
+          'XPS 13 9350',
+          'XPS 14 9440',
+          'XPS 15 9500',
+          'XPS 15 9510',
+          'XPS 15 9520',
+          'XPS 15 9530',
+          'XPS 16 9640',
+          'XPS 17 9700',
+          'XPS 17 9730'
+        ],
+        'Latitude': [
+          'Latitude 3310',
+          'Latitude 3420',
+          'Latitude 3520',
+          'Latitude 5420',
+          'Latitude 5430',
+          'Latitude 5440',
+          'Latitude 5450',
+          'Latitude 5520',
+          'Latitude 5540',
+          'Latitude 7420',
+          'Latitude 7430',
+          'Latitude 7440',
+          'Latitude 7450'
+        ],
+        'Precision': [
+          'Precision 3551',
+          'Precision 3561',
+          'Precision 3581',
+          'Precision 3591',
+          'Precision 5550',
+          'Precision 5560',
+          'Precision 5680',
+          'Precision 7680'
+        ],
+        'Vostro': [
+          'Vostro 3400',
+          'Vostro 3510',
+          'Vostro 3520',
+          'Vostro 5410',
+          'Vostro 5510',
+          'Vostro 5620'
+        ],
+        'OptiPlex': [
+          'OptiPlex 3060',
+          'OptiPlex 3070',
+          'OptiPlex 3080',
+          'OptiPlex 5000',
+          'OptiPlex 7010',
+          'OptiPlex 7020',
+          'OptiPlex 7090 Micro'
+        ],
+        'Alienware': [
+          'Alienware m15 R7',
+          'Alienware m16 R2',
+          'Alienware m18 R2',
+          'Alienware x14 R2',
+          'Alienware x16 R2'
+        ],
+        'Dell G Series': [
+          'Dell G3 15 3500',
+          'Dell G5 15 5500',
+          'Dell G15 5511',
+          'Dell G15 5520',
+          'Dell G15 5530'
+        ],
+        'ThinkPad X': [
+          'ThinkPad X1 Carbon Gen 8',
+          'ThinkPad X1 Carbon Gen 9',
+          'ThinkPad X1 Carbon Gen 10',
+          'ThinkPad X1 Carbon Gen 11',
+          'ThinkPad X1 Carbon Gen 12',
+          'ThinkPad X1 Yoga',
+          'ThinkPad X13 Gen 4'
+        ],
+        'ThinkPad T': [
+          'ThinkPad T14 Gen 1',
+          'ThinkPad T14 Gen 2',
+          'ThinkPad T14 Gen 3',
+          'ThinkPad T14 Gen 4',
+          'ThinkPad T14 Gen 5',
+          'ThinkPad T14s',
+          'ThinkPad T16'
+        ],
+        'ThinkPad E': [
+          'ThinkPad E14 Gen 2',
+          'ThinkPad E14 Gen 3',
+          'ThinkPad E14 Gen 4',
+          'ThinkPad E14 Gen 5',
+          'ThinkPad E16 Gen 1'
+        ],
+        'ThinkPad L': [
+          'ThinkPad L13',
+          'ThinkPad L14 Gen 3',
+          'ThinkPad L14 Gen 4',
+          'ThinkPad L15 Gen 4'
+        ],
+        'ThinkPad P': [
+          'ThinkPad P1 Gen 6',
+          'ThinkPad P14s Gen 4',
+          'ThinkPad P16 Gen 2',
+          'ThinkPad P16s'
+        ],
+        'ThinkBook': [
+          'ThinkBook 13s',
+          'ThinkBook 14 G4',
+          'ThinkBook 14 G6',
+          'ThinkBook 15 G4',
+          'ThinkBook 16 G6',
+          'ThinkBook Plus'
+        ],
+        'IdeaPad': [
+          'IdeaPad 1 15',
+          'IdeaPad 3 14',
+          'IdeaPad 3 15',
+          'IdeaPad Slim 3 15',
+          'IdeaPad Slim 5 14',
+          'IdeaPad Slim 5 16',
+          'IdeaPad Gaming 3'
+        ],
+        'Yoga': [
+          'Yoga Slim 6',
+          'Yoga Slim 7',
+          'Yoga Slim 7 Pro',
+          'Yoga 7 2-in-1',
+          'Yoga 9i 2-in-1',
+          'Yoga Pro 7',
+          'Yoga Pro 9i'
+        ],
+        'Legion': [
+          'Legion 5',
+          'Legion 5 Pro',
+          'Legion Slim 5',
+          'Legion 7',
+          'Legion Pro 5',
+          'Legion Pro 7'
+        ],
+        'LOQ': ['LOQ 15IRH8', 'LOQ 15APH8', 'LOQ 15IRX9', 'LOQ 16IRH8'],
+        'HP Laptop': ['HP 14s', 'HP 15s', 'HP Laptop 15', 'HP Laptop 17'],
+        'Pavilion': [
+          'Pavilion 14',
+          'Pavilion 15',
+          'Pavilion x360 14',
+          'Pavilion Plus 14',
+          'Pavilion Gaming 15'
+        ],
+        'Envy': [
+          'Envy 13',
+          'Envy 14',
+          'Envy 16',
+          'Envy x360 13',
+          'Envy x360 15'
+        ],
+        'Spectre': ['Spectre x360 13', 'Spectre x360 14', 'Spectre x360 16'],
+        'ProBook': [
+          'ProBook 430 G8',
+          'ProBook 440 G9',
+          'ProBook 440 G10',
+          'ProBook 450 G8',
+          'ProBook 450 G9',
+          'ProBook 450 G10'
+        ],
+        'EliteBook': [
+          'EliteBook 630 G10',
+          'EliteBook 640 G10',
+          'EliteBook 830 G8',
+          'EliteBook 840 G8',
+          'EliteBook 840 G9',
+          'EliteBook 840 G10',
+          'EliteBook 850 G8',
+          'EliteBook 860 G10'
+        ],
+        'ZBook': [
+          'ZBook Firefly 14',
+          'ZBook Firefly 16',
+          'ZBook Power 15',
+          'ZBook Studio 16',
+          'ZBook Fury 16'
+        ],
+        'Victus': ['Victus 15', 'Victus 16'],
+        'OMEN': [
+          'OMEN 16',
+          'OMEN 17',
+          'OMEN Transcend 14',
+          'OMEN Transcend 16'
+        ],
+        'Zenbook': [
+          'Zenbook 13 OLED',
+          'Zenbook 14 OLED',
+          'Zenbook S 13 OLED',
+          'Zenbook S 14',
+          'Zenbook Duo',
+          'Zenbook Pro 14'
+        ],
+        'Vivobook': [
+          'Vivobook 14',
+          'Vivobook 15',
+          'Vivobook 16',
+          'Vivobook S 14',
+          'Vivobook S 15',
+          'Vivobook Pro 15'
+        ],
+        'ExpertBook': [
+          'ExpertBook B1',
+          'ExpertBook B3',
+          'ExpertBook B5',
+          'ExpertBook B9'
+        ],
+        'Chromebook': [
+          'Chromebook CX1',
+          'Chromebook CX3',
+          'Chromebook Flip CX5',
+          'Acer Chromebook 314',
+          'Acer Chromebook 315',
+          'Acer Chromebook Spin 714'
+        ],
+        'TUF Gaming': [
+          'TUF Gaming A15',
+          'TUF Gaming A16',
+          'TUF Gaming A17',
+          'TUF Gaming F15',
+          'TUF Gaming F16',
+          'TUF Dash F15'
+        ],
+        'ROG Zephyrus': [
+          'ROG Zephyrus G14',
+          'ROG Zephyrus G16',
+          'ROG Zephyrus M16',
+          'ROG Zephyrus Duo 16'
+        ],
+        'ROG Strix': [
+          'ROG Strix G16',
+          'ROG Strix G18',
+          'ROG Strix SCAR 16',
+          'ROG Strix SCAR 18'
+        ],
+        'Aspire': [
+          'Aspire 3 A315',
+          'Aspire 5 A515',
+          'Aspire 7 A715',
+          'Aspire Go 14',
+          'Aspire Go 15'
+        ],
+        'Swift': [
+          'Swift 3',
+          'Swift Go 14',
+          'Swift Go 16',
+          'Swift X 14',
+          'Swift Edge 16'
+        ],
+        'TravelMate': ['TravelMate P2', 'TravelMate P4', 'TravelMate P6'],
+        'Nitro': ['Nitro 5 AN515', 'Nitro V 15', 'Nitro 16', 'Nitro 17'],
+        'Predator': [
+          'Predator Helios Neo 16',
+          'Predator Helios 16',
+          'Predator Helios 18',
+          'Predator Triton 14'
+        ],
+        'MacBook Air': [
+          'MacBook Air 11 2015',
+          'MacBook Air 13 2017',
+          'MacBook Air 13 M1 2020',
+          'MacBook Air 13 M2 2022',
+          'MacBook Air 15 M2 2023',
+          'MacBook Air 13 M3 2024',
+          'MacBook Air 15 M3 2024',
+          'MacBook Air 13 M4',
+          'MacBook Air 15 M4'
+        ],
+        'MacBook Pro': [
+          'MacBook Pro 13 2017',
+          'MacBook Pro 15 2018',
+          'MacBook Pro 16 2019',
+          'MacBook Pro 13 M1 2020',
+          'MacBook Pro 14 M1 Pro 2021',
+          'MacBook Pro 16 M1 Pro 2021',
+          'MacBook Pro 14 M2 Pro 2023',
+          'MacBook Pro 16 M2 Pro 2023',
+          'MacBook Pro 14 M3 2023',
+          'MacBook Pro 16 M3 Pro 2023',
+          'MacBook Pro 14 M4',
+          'MacBook Pro 16 M4 Pro'
+        ],
+        'Mac mini': [
+          'Mac mini 2018',
+          'Mac mini M1 2020',
+          'Mac mini M2 2023',
+          'Mac mini M2 Pro 2023',
+          'Mac mini M4',
+          'Mac mini M4 Pro'
+        ],
+        'iMac': [
+          'iMac 21.5 2017',
+          'iMac 27 2020',
+          'iMac 24 M1 2021',
+          'iMac 24 M3 2023',
+          'iMac 24 M4'
+        ],
+        'Mac Studio': [
+          'Mac Studio M1 Max',
+          'Mac Studio M1 Ultra',
+          'Mac Studio M2 Max',
+          'Mac Studio M2 Ultra'
+        ],
+        'Mac Pro': ['Mac Pro 2013', 'Mac Pro 2019', 'Mac Pro M2 Ultra'],
+        'Surface Laptop': [
+          'Surface Laptop 3',
+          'Surface Laptop 4',
+          'Surface Laptop 5',
+          'Surface Laptop 6',
+          'Surface Laptop 7'
+        ],
+        'Surface Pro': [
+          'Surface Pro 7',
+          'Surface Pro 7+',
+          'Surface Pro 8',
+          'Surface Pro 9',
+          'Surface Pro 10',
+          'Surface Pro 11'
+        ],
+        'Surface Laptop Studio': [
+          'Surface Laptop Studio',
+          'Surface Laptop Studio 2'
+        ],
+        'Surface Studio': ['Surface Studio 2', 'Surface Studio 2+'],
+        'Modern': ['Modern 14', 'Modern 15'],
+        'Prestige': ['Prestige 13 AI Evo', 'Prestige 14', 'Prestige 16 AI Evo'],
+        'Summit': [
+          'Summit E13 AI Evo',
+          'Summit E14 Flip Evo',
+          'Summit E16 Flip'
+        ],
+        'Cyborg': ['Cyborg 14', 'Cyborg 15'],
+        'Katana': ['Katana 15', 'Katana 17', 'Katana A15 AI'],
+        'Stealth': [
+          'Stealth 14 Studio',
+          'Stealth 16 AI Studio',
+          'Stealth 18 AI Studio'
+        ],
+        'Raider': ['Raider GE68 HX', 'Raider GE78 HX'],
+        'Titan': ['Titan GT77 HX', 'Titan 18 HX'],
+      }
+    ),
+  },
+  'מוצרי חשמל': {
+    'model': (
+      'appliance_type',
+      {
+        'מקרר': [
+          'מקפיא עליון',
+          'מקפיא תחתון',
+          'דלת ליד דלת',
+          '4 דלתות',
+          'מקרר משרדי'
+        ],
+        'מכונת כביסה': [
+          'פתח קדמי 7 ק״ג',
+          'פתח קדמי 8 ק״ג',
+          'פתח קדמי 9 ק״ג',
+          'פתח קדמי 10–12 ק״ג',
+          'פתח עליון'
+        ],
+        'מייבש כביסה': [
+          'קונדנסור',
+          'משאבת חום',
+          'צינור פליטה',
+          '7 ק״ג',
+          '8 ק״ג',
+          '9 ק״ג'
+        ],
+        'תנור': ['בנוי', 'משולב כיריים', 'דו־תאי', 'פירוליטי', 'טוסטר אובן'],
+        'מזגן': [
+          'עילי 1 כ״ס',
+          'עילי 1.5 כ״ס',
+          'עילי 2 כ״ס',
+          'מיני מרכזי',
+          'נייד'
+        ],
+        'שואב אבק': ['אלחוטי', 'רובוטי', 'נגרר', 'שוטף רצפות', 'שואב חלונות'],
+      }
+    ),
+  },
+  'ספורט ופנאי': {
+    'item_type': (
+      'sport_type',
+      {
+        'כושר': [
+          'הליכון',
+          'אופני כושר',
+          'אליפטיקל',
+          'ספת משקולות',
+          'משקולות',
+          'מזרן',
+          'גומיות התנגדות'
+        ],
+        'כדורגל': ['כדור', 'נעלי כדורגל', 'שער', 'מדים', 'כפפות שוער'],
+        'כדורסל': ['כדור', 'סל', 'נעליים', 'מדים'],
+        'שחייה': ['משקפת', 'סנפירים', 'בגד ים', 'כובע', 'מצופים'],
+        'קמפינג': [
+          'אוהל',
+          'שק שינה',
+          'מזרן',
+          'צידנית',
+          'גזייה',
+          'כיסא מתקפל',
+          'תאורה'
+        ],
+      }
+    ),
+  },
+  'ציוד לבעלי חיים': {
+    'item_type': (
+      'animal_type',
+      {
+        'כלב': [
+          'מיטה',
+          'כלוב אילוף',
+          'מנשא',
+          'רצועה',
+          'רתמה',
+          'קערה',
+          'צעצוע',
+          'מלונה'
+        ],
+        'חתול': ['מתקן גירוד', 'ארגז חול', 'מנשא', 'מיטה', 'קערה', 'צעצוע'],
+        'ציפור': ['כלוב', 'סטנד', 'מתקן אוכל', 'צעצוע', 'אמבטיה'],
+        'דגים': ['אקווריום', 'פילטר', 'משאבה', 'תאורה', 'מחמם', 'קישוט'],
+        'מכרסם': ['כלוב', 'גלגל', 'בית', 'מתקן שתייה', 'מנשא'],
+      }
+    ),
+  },
+  'כלי נגינה': {
+    'brand': (
+      'instrument_type',
+      {
+        'גיטרה': [
+          'Fender',
+          'Gibson',
+          'Yamaha',
+          'Ibanez',
+          'Taylor',
+          'Martin',
+          'Epiphone',
+          'Cort'
+        ],
+        'פסנתר': [
+          'Yamaha',
+          'Kawai',
+          'Roland',
+          'Casio',
+          'Steinway & Sons',
+          'Petrof'
+        ],
+        'אורגן': ['Yamaha', 'Korg', 'Roland', 'Casio', 'Nord', 'Kurzweil'],
+        'כינור': ['Yamaha', 'Stentor', 'Gliga', 'Eastman', 'Höfner'],
+        'קלרינט': ['Buffet Crampon', 'Yamaha', 'Selmer', 'Jupiter'],
+      }
+    ),
+  },
+  'אלקטרוניקה': {
+    'brand': (
+      'item_type',
+      {
+        'טלוויזיה': [
+          'Samsung',
+          'LG',
+          'Sony',
+          'TCL',
+          'Hisense',
+          'Philips',
+          'Xiaomi'
+        ],
+        'מצלמה': [
+          'Canon',
+          'Nikon',
+          'Sony',
+          'Fujifilm',
+          'Panasonic',
+          'GoPro',
+          'DJI'
+        ],
+        'רמקול': ['JBL', 'Bose', 'Sony', 'Marshall', 'Sonos', 'Harman Kardon'],
+        'אוזניות': ['Apple', 'Samsung', 'Sony', 'Bose', 'JBL', 'Sennheiser'],
+        'מקרן': ['Epson', 'BenQ', 'Optoma', 'ViewSonic', 'Xiaomi'],
+        'קונסולת משחק': ['Sony PlayStation', 'Microsoft Xbox', 'Nintendo'],
+        'נתב': ['TP-Link', 'ASUS', 'D-Link', 'Netgear', 'Ubiquiti'],
+      }
+    ),
+  },
+  'בגדים והנעלה': {
+    'size': (
+      'audience',
+      {
+        'גברים': ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', '4XL'],
+        'נשים': ['32', '34', '36', '38', '40', '42', '44', '46', '48'],
+        'נערים': ['10', '12', '14', '16', '18'],
+        'נערות': ['10', '12', '14', '16', '18'],
+        'ילדים': ['2', '4', '6', '8', '10', '12', '14'],
+        'ילדות': ['2', '4', '6', '8', '10', '12', '14'],
+        'תינוקות': [
+          'Newborn',
+          '0–3 חודשים',
+          '3–6 חודשים',
+          '6–12 חודשים',
+          '12–18 חודשים',
+          '18–24 חודשים'
+        ],
+      }
+    ),
+  },
+  'תינוקות וילדים': {
+    'brand': (
+      'item_type',
+      {
+        'עגלה': [
+          'Bugaboo',
+          'Cybex',
+          'Baby Jogger',
+          'Peg Perego',
+          'Joie',
+          'Mima',
+          'Uppababy'
+        ],
+        'כיסא בטיחות': [
+          'Britax',
+          'Cybex',
+          'Maxi-Cosi',
+          'Joie',
+          'Chicco',
+          'Graco',
+          'Evenflo'
+        ],
+        'מנשא': ['Ergobaby', 'BabyBjörn', 'Tula', 'Chicco', 'Infantino'],
+        'כיסא אוכל': ['Stokke', 'IKEA', 'Chicco', 'Peg Perego', 'Joie'],
+        'מיטת תינוק': ['IKEA', 'Shilav', 'Sauthon', 'Stokke', 'Baby Michel'],
+      }
+    ),
+  },
+  'כלי בית ומטבח': {
+    'brand': (
+      'item_type',
+      {
+        'סירים ומחבתות': [
+          'Soltam',
+          'Tefal',
+          'Food Appeal',
+          'Berlinger Haus',
+          'Arcosteel'
+        ],
+        'סכו״ם': ['Naaman', 'Soltam', 'Amefa', 'Villeroy & Boch'],
+        'כלי אפייה': ['Pyrex', 'Nordic Ware', 'Wilton', 'Food Appeal'],
+        'סכינים': ['Arcos', 'Victorinox', 'Zwilling', 'Wüsthof', 'Global'],
+        'כלי אחסון': ['LocknLock', 'Tupperware', 'Sistema', 'IKEA'],
+      }
+    ),
+  },
+  'אופניים וקורקינטים': {
+    'brand': (
+      'vehicle_type',
+      {
+        'אופני הרים': [
+          'Trek',
+          'Giant',
+          'Specialized',
+          'Merida',
+          'Scott',
+          'Cannondale',
+          'Kona'
+        ],
+        'אופני כביש': [
+          'Trek',
+          'Giant',
+          'Specialized',
+          'Cannondale',
+          'Bianchi',
+          'Cervélo'
+        ],
+        'אופניים חשמליים': [
+          'Magnum',
+          'Green Bike',
+          'Koning',
+          'Stark',
+          'Fisher',
+          'Brompton'
+        ],
+        'קורקינט חשמלי': [
+          'Xiaomi',
+          'Segway-Ninebot',
+          'Inokim',
+          'Kaabo',
+          'Nami',
+          'Dualtron'
+        ],
+        'אופני ילדים': ['Trek', 'Giant', 'Specialized', 'Raleigh', 'BMX'],
+      }
+    ),
+  },
+  'כלי עבודה': {
+    'brand': (
+      'tool_type',
+      {
+        'מברגה': [
+          'Makita',
+          'Bosch',
+          'DeWalt',
+          'Milwaukee',
+          'Metabo',
+          'Einhell',
+          'Ryobi'
+        ],
+        'מקדחה': [
+          'Bosch',
+          'Makita',
+          'DeWalt',
+          'Milwaukee',
+          'Metabo',
+          'Black+Decker'
+        ],
+        'פטישון': [
+          'Hilti',
+          'Bosch Professional',
+          'Makita',
+          'DeWalt',
+          'Milwaukee'
+        ],
+        'מסור': ['Makita', 'Bosch', 'DeWalt', 'Milwaukee', 'Festool', 'Metabo'],
+        'משחזת': ['Bosch', 'Makita', 'DeWalt', 'Metabo', 'Milwaukee'],
+      }
+    ),
+  },
+  'ציוד משרדי': {
+    'brand': (
+      'item_type',
+      {
+        'מדפסת': ['HP', 'Brother', 'Canon', 'Epson', 'Xerox', 'Lexmark'],
+        'סורק': ['Epson', 'Canon', 'Brother', 'Fujitsu', 'HP'],
+        'מגרסה': ['Fellowes', 'Rexel', 'Leitz', 'HSM'],
+        'מקרן': ['Epson', 'BenQ', 'Optoma', 'ViewSonic'],
+        'מקלדת ועכבר': ['Logitech', 'Microsoft', 'Dell', 'HP', 'Razer'],
+      }
+    ),
+  },
+};
+
+const Map<String, Map<String, List<String>>> _kExtendedPopularValues = {
+  'רהיטים': {
+    'age': ['עד שנה', '1–3 שנים', '3–5 שנים', '5–10 שנים', 'מעל 10 שנים'],
+    'defects': [
+      'ללא פגמים',
+      'שריטות קלות',
+      'כתמים',
+      'שבר או סדק',
+      'חלק חסר',
+      'דורש ריפוד',
+      'דורש תיקון'
+    ],
+  },
+  'אלקטרוניקה': {
+    'purchase_year': [
+      '2026',
+      '2025',
+      '2024',
+      '2023',
+      '2022',
+      '2021',
+      '2020',
+      'לפני 2020'
+    ],
+    'included': [
+      'מוצר בלבד',
+      'אריזה מקורית',
+      'שלט',
+      'כבל חשמל',
+      'מטען',
+      'מעמד',
+      'חוברת הפעלה',
+      'כל האביזרים המקוריים'
+    ],
+    'defects': [
+      'ללא תקלות',
+      'שריטות קוסמטיות',
+      'סוללה חלשה',
+      'חיבור לא תקין',
+      'מסך פגום',
+      'דורש תיקון'
+    ],
+  },
+  'מחשבים': {
+    'graphics': [
+      'Intel UHD',
+      'Intel Iris Xe',
+      'Intel Arc',
+      'AMD Radeon',
+      'AMD Radeon 660M',
+      'AMD Radeon 680M',
+      'AMD Radeon 780M',
+      'NVIDIA MX250',
+      'NVIDIA MX350',
+      'NVIDIA MX450',
+      'NVIDIA GTX 1650',
+      'NVIDIA GTX 1660 Ti',
+      'NVIDIA RTX 2060',
+      'NVIDIA RTX 2070',
+      'NVIDIA RTX 3060',
+      'NVIDIA RTX 3070',
+      'NVIDIA RTX 3080',
+      'NVIDIA RTX 2050',
+      'NVIDIA RTX 3050',
+      'NVIDIA RTX 3050 Ti',
+      'NVIDIA RTX 4050',
+      'NVIDIA RTX 4060',
+      'NVIDIA RTX 4070',
+      'NVIDIA RTX 4080',
+      'NVIDIA RTX 4090',
+      'NVIDIA RTX 5050',
+      'NVIDIA RTX 5060',
+      'NVIDIA RTX 5070',
+      'Apple GPU 7/8 ליבות',
+      'Apple GPU 10 ליבות',
+      'Apple GPU 14/16 ליבות',
+      'Apple GPU 18/20 ליבות',
+      'Apple GPU 30/40 ליבות'
+    ],
+    'screen': [
+      '11–12 אינץ׳',
+      '13.3 אינץ׳',
+      '14 אינץ׳',
+      '15.6 אינץ׳',
+      '16 אינץ׳',
+      '17.3 אינץ׳',
+      'Full HD',
+      '2K / QHD',
+      '4K',
+      'מסך מגע'
+    ],
+    'refresh_rate': ['60Hz', '90Hz', '120Hz', '144Hz', '165Hz', '240Hz'],
+    'touch_screen': ['כן', 'לא', 'מסך מגע עם עט'],
+    'graphics_memory': [
+      'משותף',
+      '2GB',
+      '4GB',
+      '6GB',
+      '8GB',
+      '12GB',
+      '16GB ומעלה'
+    ],
+    'battery_cycles': [
+      'עד 100',
+      '101–300',
+      '301–500',
+      '501–800',
+      'מעל 800',
+      'לא ידוע'
+    ],
+    'ports': [
+      'USB-A',
+      'USB-C',
+      'USB-C עם טעינה',
+      'Thunderbolt 3',
+      'Thunderbolt 4',
+      'HDMI',
+      'DisplayPort',
+      'Ethernet',
+      'קורא כרטיסים',
+      'שקע אוזניות'
+    ],
+    'keyboard': [
+      'עברית ואנגלית',
+      'אנגלית בלבד',
+      'מקלדת מוארת',
+      'מקלדת מספרית',
+      'ללא תאורה',
+      'מקלדת נפרדת'
+    ],
+    'purchase_proof': [
+      'חשבונית וקופסה',
+      'חשבונית בלבד',
+      'קופסה בלבד',
+      'ללא חשבונית וקופסה'
+    ],
+    'defects': [
+      'ללא תקלות או תיקונים',
+      'שריטות קלות',
+      'שבר במארז',
+      'ציר רופף',
+      'מקלדת לא תקינה',
+      'מסך פגום',
+      'שקע טעינה פגום',
+      'דורש תיקון'
+    ],
+    'battery': [
+      'מצוינת — מעל 90%',
+      'טובה — 80%–90%',
+      'סבירה — 60%–79%',
+      'חלשה — מתחת ל־60%',
+      'דורשת החלפה',
+      'ללא סוללה'
+    ],
+    'included': [
+      'מחשב בלבד',
+      'מטען מקורי',
+      'מטען חלופי',
+      'תחנת עגינה',
+      'תיק',
+      'עכבר ומקלדת',
+      'אריזה מקורית'
+    ],
+  },
+  'טלפונים וטאבלטים': {
+    'model_year': [
+      '2026',
+      '2025',
+      '2024',
+      '2023',
+      '2022',
+      '2021',
+      '2020',
+      '2019',
+      '2018',
+      '2017',
+      '2016 ומטה'
+    ],
+    'battery': [
+      '100%',
+      '90%–99%',
+      '80%–89%',
+      '70%–79%',
+      'מתחת ל־70%',
+      'הוחלפה במקורית',
+      'הוחלפה בחלופית',
+      'לא ידוע'
+    ],
+    'included': [
+      'מכשיר בלבד',
+      'אריזה מקורית',
+      'מטען מקורי',
+      'כבל',
+      'כיסוי',
+      'מגן מסך',
+      'עט',
+      'כל האביזרים המקוריים'
+    ],
+    'defects': [
+      'ללא תקלות או תיקונים',
+      'שריטות קלות',
+      'מסך הוחלף',
+      'גב הוחלף',
+      'סוללה הוחלפה',
+      'מצלמה לא תקינה',
+      'שקע טעינה פגום',
+      'נעילת מפעיל',
+      'דורש תיקון'
+    ],
+    'carrier_lock': ['פתוח לכל הרשתות', 'נעול למפעיל', 'לא ידוע'],
+    'kosher_status': [
+      'מכשיר רגיל',
+      'כשר מאושר',
+      'תומך סים כשר',
+      'מסונן',
+      'לא ידוע'
+    ],
+    'battery_cycles': [
+      'עד 100',
+      '101–300',
+      '301–500',
+      '501–800',
+      'מעל 800',
+      'לא ידוע'
+    ],
+    'screen_condition': [
+      'ללא שריטות',
+      'שריטות קלות',
+      'שריטות בולטות',
+      'סדק',
+      'צריבה במסך',
+      'פיקסלים פגומים'
+    ],
+    'repair_history': [
+      'לא תוקן מעולם',
+      'מסך מקורי הוחלף',
+      'מסך חלופי הוחלף',
+      'סוללה מקורית הוחלפה',
+      'סוללה חלופית הוחלפה',
+      'גב הוחלף',
+      'תיקון לוח אם',
+      'לא ידוע'
+    ],
+    'purchase_proof': [
+      'חשבונית וקופסה',
+      'חשבונית בלבד',
+      'קופסה בלבד',
+      'ללא חשבונית וקופסה'
+    ],
+  },
+  'בגדים והנעלה': {
+    'brand': [
+      'Adidas',
+      'Nike',
+      'Puma',
+      'New Balance',
+      'Zara',
+      'H&M',
+      'Castro',
+      'Fox',
+      'Golf',
+      'Delta',
+      'Next',
+      'Carter’s'
+    ],
+    'material': [
+      'כותנה',
+      'פשתן',
+      'צמר',
+      'פוליאסטר',
+      'ויסקוזה',
+      'ג׳ינס',
+      'עור',
+      'דמוי עור',
+      'בד סינתטי'
+    ],
+  },
+  'תינוקות וילדים': {
+    'brand': [
+      'Cybex',
+      'Joie',
+      'Chicco',
+      'Peg Perego',
+      'Britax',
+      'Maxi-Cosi',
+      'Baby Jogger',
+      'Bugaboo',
+      'Stokke',
+      'IKEA',
+      'Fisher-Price'
+    ],
+    'safety_standard': [
+      'תקן אירופי ECE R129',
+      'תקן ECE R44/04',
+      'תקן ישראלי',
+      'עם תווית תקן',
+      'לא ידוע'
+    ],
+  },
+  'ספרים': {
+    'language': [
+      'עברית',
+      'אנגלית',
+      'יידיש',
+      'ארמית',
+      'רוסית',
+      'צרפתית',
+      'ערבית'
+    ],
+    'publisher': [
+      'ארטסקרול / מסורה',
+      'עוז והדר',
+      'קורן',
+      'פלדהיים',
+      'יפה נוף',
+      'אור החיים',
+      'ידיעות ספרים',
+      'כנרת זמורה דביר',
+      'עם עובד'
+    ],
+  },
+  'כלי בית ומטבח': {
+    'brand': [
+      'Sól-Tam',
+      'Naaman',
+      'Food Appeal',
+      'Tefal',
+      'Pyrex',
+      'Corelle',
+      'IKEA',
+      'KitchenAid',
+      'Joseph Joseph'
+    ],
+    'capacity': [
+      'עד 1 ליטר',
+      '1–2 ליטר',
+      '3–5 ליטר',
+      '6–10 ליטר',
+      'מעל 10 ליטר'
+    ],
+  },
+  'צעצועים ומשחקים': {
+    'brand': [
+      'LEGO',
+      'Playmobil',
+      'Fisher-Price',
+      'Melissa & Doug',
+      'Ravensburger',
+      'Hasbro',
+      'Mattel',
+      'Kodkod',
+      'FoxMind'
+    ],
+    'players': [
+      'שחקן יחיד',
+      '2 משתתפים',
+      '2–4 משתתפים',
+      '3–6 משתתפים',
+      'משחק קבוצתי'
+    ],
+    'batteries': [
+      'ללא סוללות',
+      'כולל סוללות',
+      'דורש AA',
+      'דורש AAA',
+      'נטען USB'
+    ],
+  },
+  'ספורט ופנאי': {
+    'brand': [
+      'Adidas',
+      'Nike',
+      'Puma',
+      'Under Armour',
+      'Decathlon',
+      'Wilson',
+      'Head',
+      'Speedo',
+      'Coleman',
+      'The North Face'
+    ],
+    'size': ['ילדים', 'XS', 'S', 'M', 'L', 'XL', 'מידה אחידה'],
+  },
+  'אופניים וקורקינטים': {
+    'brand': [
+      'Giant',
+      'Trek',
+      'Specialized',
+      'Merida',
+      'Scott',
+      'Cannondale',
+      'Kona',
+      'Brompton',
+      'Xiaomi',
+      'Segway-Ninebot',
+      'Inokim'
+    ],
+    'gears': [
+      'ללא הילוכים',
+      '3',
+      '6',
+      '7',
+      '8',
+      '9',
+      '10',
+      '11',
+      '12',
+      '18',
+      '21',
+      '24',
+      '27'
+    ],
+    'battery': [
+      '36V',
+      '48V',
+      '52V',
+      '60V',
+      'סוללה מקורית',
+      'סוללה חלופית',
+      'דורשת החלפה'
+    ],
+    'range': ['עד 15 ק״מ', '15–30 ק״מ', '30–50 ק״מ', '50–80 ק״מ', 'מעל 80 ק״מ'],
+  },
+  'גינה וחצר': {
+    'brand': [
+      'Bosch',
+      'Makita',
+      'STIHL',
+      'Husqvarna',
+      'Kärcher',
+      'Gardena',
+      'Einhell',
+      'Weber',
+      'Keter'
+    ],
+    'assembly': ['מורכב', 'מגיע מפורק', 'מתפרק להובלה', 'דורש מתקין'],
+  },
+  'כלי נגינה': {
+    'size': [
+      '1/4',
+      '1/2',
+      '3/4',
+      '4/4',
+      '61 קלידים',
+      '76 קלידים',
+      '88 קלידים',
+      'גודל מלא'
+    ],
+    'country': [
+      'ישראל',
+      'ארה״ב',
+      'יפן',
+      'גרמניה',
+      'סין',
+      'אינדונזיה',
+      'קוריאה',
+      'אירופה'
+    ],
+  },
+  'ציוד משרדי': {
+    'brand': [
+      'HP',
+      'Brother',
+      'Canon',
+      'Epson',
+      'Xerox',
+      'Samsung',
+      'Fellowes',
+      'Logitech',
+      'Microsoft'
+    ],
+    'compatibility': [
+      'Windows',
+      'macOS',
+      'Linux',
+      'USB',
+      'Wi-Fi',
+      'Bluetooth',
+      'AirPrint',
+      'Android / iOS'
+    ],
+  },
+  'ציוד לבעלי חיים': {
+    'brand': [
+      'Ferplast',
+      'KONG',
+      'Trixie',
+      'Royal Canin',
+      'Hagen',
+      'JBL',
+      'Eheim',
+      'Fluval'
+    ],
+  },
+  'אספנות ואמנות': {
+    'year_period': [
+      'עתיק — לפני 1900',
+      '1900–1949',
+      '1950–1979',
+      'שנות ה־80',
+      'שנות ה־90',
+      '2000–היום'
+    ],
+    'certificate': [
+      'עם תעודת מקוריות',
+      'עם הערכת שמאי',
+      'עם קבלה',
+      'ללא תעודה'
+    ],
+  },
+};
+
+const Map<String, List<String>> _kPhoneBrandsByDeviceType = {
+  'טלפון חכם': [
+    'Apple',
+    'Samsung',
+    'Xiaomi',
+    'Google',
+    'OnePlus',
+    'Motorola',
+    'Nokia',
+    'Huawei'
+  ],
+  'טלפון כשר': ['Nokia', 'Samsung', 'Qin', 'K-Way', 'First Phone', 'אחר'],
+  'טאבלט': [
+    'Apple',
+    'Samsung',
+    'Xiaomi',
+    'Lenovo',
+    'Huawei',
+    'Microsoft',
+    'Amazon'
+  ],
+  'שעון חכם': [
+    'Apple',
+    'Samsung',
+    'Google',
+    'Xiaomi',
+    'Huawei',
+    'Garmin',
+    'Amazfit'
+  ],
+  'קורא ספרים': [
+    'Amazon Kindle',
+    'Kobo',
+    'PocketBook',
+    'Onyx Boox',
+    'Remarkable'
+  ],
+};
+
+List<String> _phoneModelsForType(String type, List<String> models) {
+  if (type == 'טלפון חכם') {
+    return models
+        .where((m) =>
+            !m.contains('iPad') &&
+            !m.contains('Tab ') &&
+            !m.contains('Pad ') &&
+            !m.contains('Watch'))
+        .toList();
+  }
+  if (type == 'טאבלט') {
+    return models
+        .where((m) =>
+            m.contains('iPad') ||
+            m.contains('Tab ') ||
+            m.contains('Pad ') ||
+            m.contains('Tablet'))
+        .toList();
+  }
+  if (type == 'שעון חכם') {
+    return models.where((m) => m.contains('Watch')).toList();
+  }
+  if (type == 'טלפון כשר') {
+    return models
+        .where((m) =>
+            m.contains('3210') || m.contains('2660') || m.contains('105'))
+        .toList();
+  }
+  return models;
+}
+
+List<String> _popularValuesFor(String category, String key,
+    [Map<String, String> currentValues = const {}]) {
+  if (category == 'רכב') {
+    if (key == 'manufacturer') return _kVehicleManufacturers;
+    if (key == 'model') {
+      return _kVehicleModels[currentValues['manufacturer']?.trim()] ?? const [];
+    }
+    if (key == 'transmission') {
+      return const ['אוטומטית', 'ידנית', 'רובוטית', 'רציפה', 'אחרת'];
+    }
+    final options = _kVehicleFieldOptions[key];
+    if (options != null) return options;
+  }
+  if (category == 'טלפונים וטאבלטים' && key == 'brand') {
+    final type = currentValues['device_type']?.trim() ?? '';
+    final brands = _kPhoneBrandsByDeviceType[type];
+    if (brands != null) return brands;
+  }
+  final dependent = _kDependentPopularValues[category]?[key];
+  if (dependent != null) {
+    final selected = currentValues[dependent.$1]?.trim() ?? '';
+    final exact = dependent.$2[selected];
+    if (exact != null) {
+      if (category == 'טלפונים וטאבלטים' && key == 'model') {
+        return _phoneModelsForType(currentValues['device_type'] ?? '', exact);
+      }
+      return exact;
+    }
+  }
+  return _kPopularCategoryValues[category]?[key] ??
+      _kExtendedPopularValues[category]?[key] ??
+      _kCommonPopularValues[key] ??
+      const [];
+}
+
+void _refreshCategoryDependencies(
+  String category,
+  String changedKey,
+  Map<String, TextEditingController> controllers,
+) {
+  final dependencies = _kDependentPopularValues[category] ?? const {};
+  final changed = <String>[changedKey];
+  for (var index = 0; index < changed.length; index++) {
+    final parent = changed[index];
+    for (final entry in dependencies.entries) {
+      if (entry.value.$1 != parent || changed.contains(entry.key)) continue;
+      controllers[entry.key]?.clear();
+      changed.add(entry.key);
+    }
+  }
+  if (category == 'טלפונים וטאבלטים' && changedKey == 'device_type') {
+    final brand = controllers['brand'];
+    final allowedBrands = _popularValuesFor(category, 'brand', {
+      for (final entry in controllers.entries) entry.key: entry.value.text,
+    });
+    if (brand != null &&
+        brand.text.isNotEmpty &&
+        !allowedBrands.contains(brand.text)) {
+      brand.clear();
+    }
+    controllers['model']?.clear();
+  }
+  if (category == 'כלי נגינה' && changedKey == 'instrument_type') {
+    controllers['model']?.clear();
+  }
+}
 
 const _kIsraeliLocations = [
   'כל הארץ',
@@ -6923,10 +9951,12 @@ class _PopularValueField extends StatefulWidget {
   final String label;
   final String? hint;
   final List<String> options;
+  final ValueChanged<String>? onChanged;
   const _PopularValueField({
     required this.controller,
     required this.label,
     required this.options,
+    this.onChanged,
     this.hint,
   });
 
@@ -6936,6 +9966,87 @@ class _PopularValueField extends StatefulWidget {
 
 class _PopularValueFieldState extends State<_PopularValueField> {
   final _focusNode = FocusNode();
+
+  Future<void> _showAllOptions() async {
+    var query = '';
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final filtered = widget.options
+              .where(
+                  (value) => value.toLowerCase().contains(query.toLowerCase()))
+              .toList();
+          return Directionality(
+            textDirection: TextDirection.rtl,
+            child: FractionallySizedBox(
+              heightFactor: .78,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+                child: Column(children: [
+                  Container(
+                    width: 42,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFBDD0DF),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text('בחירת ${widget.label}',
+                      style: const TextStyle(
+                          fontSize: 19, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 12),
+                  TextField(
+                    autofocus: true,
+                    textDirection: TextDirection.rtl,
+                    onChanged: (value) => setSheetState(() => query = value),
+                    decoration: InputDecoration(
+                      hintText: 'חיפוש מתוך ${widget.options.length} אפשרויות',
+                      prefixIcon: const Icon(Icons.search),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: filtered.isEmpty
+                        ? const Center(
+                            child: Text(
+                                'לא נמצאה אפשרות — אפשר להקליד ידנית בשדה'))
+                        : ListView.separated(
+                            itemCount: filtered.length,
+                            separatorBuilder: (_, __) =>
+                                const Divider(height: 1),
+                            itemBuilder: (_, index) {
+                              final value = filtered[index];
+                              return ListTile(
+                                title: Text(value),
+                                trailing: widget.controller.text == value
+                                    ? const Icon(Icons.check_circle,
+                                        color: kPrimary)
+                                    : null,
+                                onTap: () => Navigator.pop(sheetContext, value),
+                              );
+                            },
+                          ),
+                  ),
+                ]),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    if (selected == null) return;
+    widget.controller.text = selected;
+    widget.onChanged?.call(selected);
+  }
 
   @override
   void dispose() {
@@ -6948,6 +10059,7 @@ class _PopularValueFieldState extends State<_PopularValueField> {
     if (widget.options.isEmpty) {
       return TextField(
         controller: widget.controller,
+        onChanged: widget.onChanged,
         textDirection: TextDirection.rtl,
         decoration: InputDecoration(
           labelText: widget.label,
@@ -6965,17 +10077,26 @@ class _PopularValueFieldState extends State<_PopularValueField> {
         return widget.options.where(
             (option) => query.isEmpty || option.toLowerCase().contains(query));
       },
-      onSelected: (option) => widget.controller.text = option,
+      onSelected: (option) {
+        widget.controller.text = option;
+        widget.onChanged?.call(option);
+      },
       fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
           TextField(
         controller: controller,
         focusNode: focusNode,
+        onChanged: widget.onChanged,
         textDirection: TextDirection.rtl,
         decoration: InputDecoration(
           labelText: widget.label,
           hintText: widget.hint,
-          helperText: 'אפשר לבחור מהרשימה או להקליד ערך אחר',
-          suffixIcon: const Icon(Icons.arrow_drop_down),
+          helperText:
+              '${widget.options.length} אפשרויות — אפשר גם להקליד ערך אחר',
+          suffixIcon: IconButton(
+            tooltip: 'הצג את כל האפשרויות',
+            onPressed: _showAllOptions,
+            icon: const Icon(Icons.arrow_drop_down_circle_outlined),
+          ),
           border: const OutlineInputBorder(),
         ),
       ),
@@ -7578,7 +10699,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
   }
 
   Widget _advancedDetailField(String category, (String, String, String) field,
-      Map<String, TextEditingController> controllers) {
+      Map<String, TextEditingController> controllers,
+      [VoidCallback? refresh]) {
     const options = <String, List<(String, String)>>{
       'deal_type': [('rent', 'השכרה'), ('sale', 'מכירה')],
       'property_type': [
@@ -7627,7 +10749,13 @@ class _ListingsScreenState extends State<ListingsScreen> {
       controller: controller,
       label: field.$2,
       hint: field.$3.isEmpty ? null : field.$3,
-      options: _popularValuesFor(category, field.$1),
+      options: _popularValuesFor(category, field.$1, {
+        for (final entry in controllers.entries) entry.key: entry.value.text,
+      }),
+      onChanged: (_) {
+        _refreshCategoryDependencies(category, field.$1, controllers);
+        refresh?.call();
+      },
     );
   }
 
@@ -7729,8 +10857,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
                                     const SizedBox(height: 10),
                                     for (final field in _listingSearchFields(
                                         tmpCategory)) ...[
-                                      _advancedDetailField(
-                                          tmpCategory, field, detailCtrls),
+                                      _advancedDetailField(tmpCategory, field,
+                                          detailCtrls, () => setS(() {})),
                                       const SizedBox(height: 9),
                                     ],
                                   ],
@@ -8487,6 +11615,9 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final _vehicleFuelCtrl = TextEditingController();
   final _vehicleColorCtrl = TextEditingController();
   final _vehicleTestCtrl = TextEditingController();
+  final _vehicleExtraCtrls = {
+    for (final field in _kVehicleExtraFields) field.$1: TextEditingController(),
+  };
   final _propertyStreetCtrl = TextEditingController();
   final _propertyRoomsCtrl = TextEditingController();
   final _propertyFloorCtrl = TextEditingController();
@@ -8529,6 +11660,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
   bool _propertyPets = false;
   Timer? _plateLookupTimer;
   String _mirroredTitle = '';
+  String _generatedVehicleTitle = '';
+  String _generatedVehicleDescription = '';
+  bool _titleManuallyEdited = false;
+  bool _descriptionManuallyEdited = false;
 
   Map<String, String> _categoryDetailsPayload() => {
         for (final field in _kCategoryDetailFields[_category] ?? const [])
@@ -8572,13 +11707,144 @@ class _PostListingScreenState extends State<PostListingScreen> {
         controller: _categoryDetailCtrls[field.$1]!,
         label: field.$2,
         hint: field.$3.isEmpty ? null : field.$3,
-        options: _popularValuesFor(_category, field.$1),
+        options: _popularValuesFor(_category, field.$1, {
+          for (final entry in _categoryDetailCtrls.entries)
+            entry.key: entry.value.text,
+        }),
+        onChanged: (_) => setState(() => _refreshCategoryDependencies(
+            _category, field.$1, _categoryDetailCtrls)),
       );
+
+  Map<String, String> _vehicleTextValues() => {
+        'manufacturer': _vehicleManufacturerCtrl.text,
+        'model': _vehicleModelCtrl.text,
+        'year': _vehicleYearCtrl.text,
+        'mileage': _vehicleMileageCtrl.text,
+        'hand': _vehicleHandCtrl.text,
+        'fuel': _vehicleFuelCtrl.text,
+        'color': _vehicleColorCtrl.text,
+        'test_valid_until': _vehicleTestCtrl.text,
+        'transmission': {
+              'automatic': 'אוטומטית',
+              'manual': 'ידנית',
+              'robotic': 'רובוטית',
+              'other': 'אחרת',
+            }[_vehicleTransmission] ??
+            _vehicleTransmission,
+        for (final entry in _vehicleExtraCtrls.entries)
+          entry.key: entry.value.text,
+      };
+
+  void _updateGeneratedVehicleText() {
+    if (_category != 'רכב') return;
+    final generated = _generatedVehicleListingText(_vehicleTextValues());
+    final mayReplaceTitle = !_titleManuallyEdited;
+    final mayReplaceDescription = !_descriptionManuallyEdited;
+    _generatedVehicleTitle = generated.$1;
+    _generatedVehicleDescription = generated.$2;
+    if (mayReplaceTitle && generated.$1.isNotEmpty) {
+      _titleCtrl.text = generated.$1;
+    }
+    if (mayReplaceDescription && generated.$2.isNotEmpty) {
+      _descCtrl.value = TextEditingValue(
+        text: generated.$2,
+        selection: TextSelection.collapsed(offset: generated.$2.length),
+      );
+      _mirroredTitle = generated.$1;
+    }
+  }
+
+  void _listenToVehicleFields() {
+    for (final controller in <TextEditingController>[
+      _vehicleManufacturerCtrl,
+      _vehicleModelCtrl,
+      _vehicleYearCtrl,
+      _vehicleMileageCtrl,
+      _vehicleHandCtrl,
+      _vehicleFuelCtrl,
+      _vehicleColorCtrl,
+      _vehicleTestCtrl,
+      ..._vehicleExtraCtrls.values,
+    ]) {
+      controller.addListener(_updateGeneratedVehicleText);
+    }
+  }
+
+  void _updateGeneratedCategoryText() {
+    if (_category == 'רכב') {
+      _updateGeneratedVehicleText();
+      return;
+    }
+    final values = <String, String>{
+      for (final entry in _categoryDetailCtrls.entries)
+        entry.key: entry.value.text,
+    };
+    (String, String) generated;
+    if (_category == 'נדל״ן') {
+      generated = _generatedPropertyListingText({
+        'deal_type': _propertyDealType,
+        'property_type': _propertyType,
+        'street': _propertyStreetCtrl.text,
+        'city': _cityCtrl.text,
+        'rooms': _propertyRoomsCtrl.text,
+        'area_sqm': _propertyAreaCtrl.text,
+        'floor': _propertyFloorCtrl.text,
+        'total_floors': _propertyTotalFloorsCtrl.text,
+        'entry_date': _propertyEntryCtrl.text,
+        'furniture': _propertyFurniture,
+        'arnona': _propertyArnonaCtrl.text,
+        'building_fee': _propertyVaadCtrl.text,
+        'features': [
+          if (_propertyParking) 'חניה',
+          if (_propertyElevator) 'מעלית',
+          if (_propertyMamad) 'ממ״ד',
+          if (_propertyBalcony) 'מרפסת',
+          if (_propertyAccessible) 'נגישות',
+          if (_propertyStorage) 'מחסן',
+          if (_propertyAirConditioning) 'מיזוג',
+          if (_propertyPets) 'אפשר בעלי חיים',
+        ].join(', '),
+      });
+    } else {
+      generated = _generatedCategoryListingText(_category, values);
+    }
+    final replaceTitle = !_titleManuallyEdited;
+    final replaceDescription = !_descriptionManuallyEdited;
+    _generatedVehicleTitle = generated.$1;
+    _generatedVehicleDescription = generated.$2;
+    if (replaceTitle && generated.$1.isNotEmpty) _titleCtrl.text = generated.$1;
+    if (replaceDescription && generated.$2.isNotEmpty) {
+      _descCtrl.value = TextEditingValue(
+        text: generated.$2,
+        selection: TextSelection.collapsed(offset: generated.$2.length),
+      );
+      _mirroredTitle = generated.$1;
+    }
+  }
+
+  void _listenToAllListingFields() {
+    for (final controller in <TextEditingController>[
+      ..._categoryDetailCtrls.values.toSet(),
+      _cityCtrl,
+      _propertyStreetCtrl,
+      _propertyRoomsCtrl,
+      _propertyFloorCtrl,
+      _propertyTotalFloorsCtrl,
+      _propertyAreaCtrl,
+      _propertyEntryCtrl,
+      _propertyArnonaCtrl,
+      _propertyVaadCtrl,
+    ]) {
+      controller.addListener(_updateGeneratedCategoryText);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _titleCtrl.addListener(_mirrorTitleIntoDescription);
+    _listenToVehicleFields();
+    _listenToAllListingFields();
     if (_cityCtrl.text.trim().isEmpty) _loadCityFromProfile();
   }
 
@@ -8690,6 +11956,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
       _vehicleFuelCtrl.text = details['fuel']?.toString() ?? '';
       _vehicleColorCtrl.text = details['color']?.toString() ?? '';
       _vehicleTestCtrl.text = details['test_valid_until']?.toString() ?? '';
+      _vehicleExtraCtrls['trim']?.text = details['trim']?.toString() ?? '';
+      _vehicleExtraCtrls['ownership']?.text =
+          details['ownership']?.toString() ?? '';
+      _vehicleExtraCtrls['registration_date']?.text =
+          details['road_date']?.toString() ?? '';
       if (_titleCtrl.text.trim().isEmpty) {
         _titleCtrl.text = [
           _vehicleManufacturerCtrl.text,
@@ -8899,6 +12170,9 @@ class _PostListingScreenState extends State<PostListingScreen> {
             'fuel': _vehicleFuelCtrl.text.trim(),
             'color': _vehicleColorCtrl.text.trim(),
             'test_valid_until': _vehicleTestCtrl.text.trim(),
+            for (final entry in _vehicleExtraCtrls.entries)
+              if (entry.value.text.trim().isNotEmpty)
+                entry.key: entry.value.text.trim(),
           },
         if (_category == 'נדל״ן')
           'property_details': {
@@ -8985,6 +12259,9 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _vehicleFuelCtrl.dispose();
     _vehicleColorCtrl.dispose();
     _vehicleTestCtrl.dispose();
+    for (final controller in _vehicleExtraCtrls.values) {
+      controller.dispose();
+    }
     _propertyStreetCtrl.dispose();
     _propertyRoomsCtrl.dispose();
     _propertyFloorCtrl.dispose();
@@ -9036,7 +12313,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
                           .map(
                               (c) => DropdownMenuItem(value: c, child: Text(c)))
                           .toList(),
-                      onChanged: (v) => setState(() => _category = v!),
+                      onChanged: (v) => setState(() {
+                        _category = v!;
+                        _updateGeneratedCategoryText();
+                      }),
                     ),
                     if (_category == 'רכב') ...[
                       const SizedBox(height: 12),
@@ -9054,6 +12334,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     // Title
                     TextField(
                         controller: _titleCtrl,
+                        onChanged: (_) => _titleManuallyEdited = true,
                         textDirection: TextDirection.rtl,
                         decoration: const InputDecoration(
                             labelText: 'כותרת המודעה *',
@@ -9062,6 +12343,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     // Description
                     TextField(
                         controller: _descCtrl,
+                        onChanged: (_) => _descriptionManuallyEdited = true,
                         textDirection: TextDirection.rtl,
                         maxLines: 3,
                         decoration: InputDecoration(
@@ -9262,10 +12544,27 @@ class _PostListingScreenState extends State<PostListingScreen> {
           ),
         ),
         const SizedBox(height: 10),
+        _PopularValueField(
+          controller: _vehicleExtraCtrls['vehicle_type']!,
+          label: 'סוג רכב',
+          options: _kVehicleFieldOptions['vehicle_type']!,
+        ),
+        const SizedBox(height: 10),
         Row(children: [
-          Expanded(child: field(_vehicleManufacturerCtrl, 'יצרן')),
+          Expanded(
+              child: _PopularValueField(
+            controller: _vehicleManufacturerCtrl,
+            label: 'יצרן',
+            options: _kVehicleManufacturers,
+            onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
+          )),
           const SizedBox(width: 10),
-          Expanded(child: field(_vehicleModelCtrl, 'דגם')),
+          Expanded(
+              child: _PopularValueField(
+            controller: _vehicleModelCtrl,
+            label: 'דגם',
+            options: _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
+          )),
         ]),
         const SizedBox(height: 10),
         Row(children: [
@@ -9287,8 +12586,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
             DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
             DropdownMenuItem(value: 'other', child: Text('אחרת')),
           ],
-          onChanged: (value) =>
-              setState(() => _vehicleTransmission = value ?? 'automatic'),
+          onChanged: (value) => setState(() {
+            _vehicleTransmission = value ?? 'automatic';
+            _updateGeneratedVehicleText();
+          }),
         ),
         const SizedBox(height: 10),
         Row(children: [
@@ -9298,6 +12599,40 @@ class _PostListingScreenState extends State<PostListingScreen> {
         ]),
         const SizedBox(height: 10),
         field(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+        const SizedBox(height: 10),
+        for (var index = 1;
+            index < _kVehicleExtraFields.length;
+            index += 2) ...[
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+                child: _PopularValueField(
+              controller: _vehicleExtraCtrls[_kVehicleExtraFields[index].$1]!,
+              label: _kVehicleExtraFields[index].$2,
+              hint: _kVehicleExtraFields[index].$3.isEmpty
+                  ? null
+                  : _kVehicleExtraFields[index].$3,
+              options: _kVehicleFieldOptions[_kVehicleExtraFields[index].$1] ??
+                  const [],
+            )),
+            if (index + 1 < _kVehicleExtraFields.length) ...[
+              const SizedBox(width: 10),
+              Expanded(
+                  child: _PopularValueField(
+                controller:
+                    _vehicleExtraCtrls[_kVehicleExtraFields[index + 1].$1]!,
+                label: _kVehicleExtraFields[index + 1].$2,
+                hint: _kVehicleExtraFields[index + 1].$3.isEmpty
+                    ? null
+                    : _kVehicleExtraFields[index + 1].$3,
+                options:
+                    _kVehicleFieldOptions[_kVehicleExtraFields[index + 1].$1] ??
+                        const [],
+              )),
+            ],
+          ]),
+          if (index + 2 < _kVehicleExtraFields.length)
+            const SizedBox(height: 10),
+        ],
       ]),
     );
   }
@@ -9333,10 +12668,27 @@ class _PostListingScreenState extends State<PostListingScreen> {
           ),
         ),
         const SizedBox(height: 10),
+        _PopularValueField(
+          controller: _vehicleExtraCtrls['vehicle_type']!,
+          label: 'סוג רכב',
+          options: _kVehicleFieldOptions['vehicle_type']!,
+        ),
+        const SizedBox(height: 10),
         Row(children: [
-          Expanded(child: field(_vehicleManufacturerCtrl, 'יצרן')),
+          Expanded(
+              child: _PopularValueField(
+            controller: _vehicleManufacturerCtrl,
+            label: 'יצרן',
+            options: _kVehicleManufacturers,
+            onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
+          )),
           const SizedBox(width: 10),
-          Expanded(child: field(_vehicleModelCtrl, 'דגם')),
+          Expanded(
+              child: _PopularValueField(
+            controller: _vehicleModelCtrl,
+            label: 'דגם',
+            options: _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
+          )),
         ]),
         const SizedBox(height: 10),
         Row(children: [
@@ -9358,8 +12710,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
             DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
             DropdownMenuItem(value: 'other', child: Text('אחרת')),
           ],
-          onChanged: (value) =>
-              setState(() => _vehicleTransmission = value ?? 'automatic'),
+          onChanged: (value) => setState(() {
+            _vehicleTransmission = value ?? 'automatic';
+            _updateGeneratedVehicleText();
+          }),
         ),
         const SizedBox(height: 10),
         Row(children: [
@@ -9369,6 +12723,40 @@ class _PostListingScreenState extends State<PostListingScreen> {
         ]),
         const SizedBox(height: 10),
         field(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+        const SizedBox(height: 10),
+        for (var index = 1;
+            index < _kVehicleExtraFields.length;
+            index += 2) ...[
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+                child: _PopularValueField(
+              controller: _vehicleExtraCtrls[_kVehicleExtraFields[index].$1]!,
+              label: _kVehicleExtraFields[index].$2,
+              hint: _kVehicleExtraFields[index].$3.isEmpty
+                  ? null
+                  : _kVehicleExtraFields[index].$3,
+              options: _kVehicleFieldOptions[_kVehicleExtraFields[index].$1] ??
+                  const [],
+            )),
+            if (index + 1 < _kVehicleExtraFields.length) ...[
+              const SizedBox(width: 10),
+              Expanded(
+                  child: _PopularValueField(
+                controller:
+                    _vehicleExtraCtrls[_kVehicleExtraFields[index + 1].$1]!,
+                label: _kVehicleExtraFields[index + 1].$2,
+                hint: _kVehicleExtraFields[index + 1].$3.isEmpty
+                    ? null
+                    : _kVehicleExtraFields[index + 1].$3,
+                options:
+                    _kVehicleFieldOptions[_kVehicleExtraFields[index + 1].$1] ??
+                        const [],
+              )),
+            ],
+          ]),
+          if (index + 2 < _kVehicleExtraFields.length)
+            const SizedBox(height: 10),
+        ],
       ]),
     );
   }
@@ -9520,7 +12908,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
           secondary: Icon(icon, color: kPrimary, size: 20),
           title: Text(label),
           value: value,
-          onChanged: (checked) => onChanged(checked == true),
+          onChanged: (checked) {
+            onChanged(checked == true);
+            _updateGeneratedCategoryText();
+          },
         );
     return Container(
       padding: const EdgeInsets.all(14),
@@ -9547,8 +12938,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
                 DropdownMenuItem(value: 'rent', child: Text('השכרה')),
                 DropdownMenuItem(value: 'sale', child: Text('מכירה')),
               ],
-              onChanged: (value) =>
-                  setState(() => _propertyDealType = value ?? 'rent'),
+              onChanged: (value) => setState(() {
+                _propertyDealType = value ?? 'rent';
+                _updateGeneratedCategoryText();
+              }),
             ),
           ),
           const SizedBox(width: 10),
@@ -9567,8 +12960,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     value: 'studio', child: Text('יחידת דיור / סטודיו')),
                 DropdownMenuItem(value: 'other', child: Text('אחר')),
               ],
-              onChanged: (value) =>
-                  setState(() => _propertyType = value ?? 'apartment'),
+              onChanged: (value) => setState(() {
+                _propertyType = value ?? 'apartment';
+                _updateGeneratedCategoryText();
+              }),
             ),
           ),
         ]),
@@ -9613,8 +13008,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
                 DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
                 DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
               ],
-              onChanged: (value) =>
-                  setState(() => _propertyFurniture = value ?? 'none'),
+              onChanged: (value) => setState(() {
+                _propertyFurniture = value ?? 'none';
+                _updateGeneratedCategoryText();
+              }),
             ),
           ),
         ]),
@@ -9705,7 +13102,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
           ]),
           const SizedBox(height: 6),
           Text(
-              'מספר הרישוי אינו חובה. אם יוזן, ננסה להשלים פרטים מהמאגר הממשלתי.',
+              'אפשר לדלג על מספר הרישוי ולמלא ידנית את כל מאפייני הרכב. אם יוזן מספר, ננסה להשלים חלק מהפרטים מהמאגר הממשלתי.',
               style: TextStyle(color: kSubtext, fontSize: 12)),
           const SizedBox(height: 12),
           TextField(
@@ -9740,11 +13137,28 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     fontSize: 12)),
           ],
           const SizedBox(height: 12),
+          _PopularValueField(
+            controller: _vehicleExtraCtrls['vehicle_type']!,
+            label: 'סוג רכב',
+            options: _kVehicleFieldOptions['vehicle_type']!,
+          ),
+          const SizedBox(height: 10),
           Row(children: [
             Expanded(
-                child: _vehicleTextField(_vehicleManufacturerCtrl, 'יצרן')),
+                child: _PopularValueField(
+              controller: _vehicleManufacturerCtrl,
+              label: 'יצרן',
+              options: _kVehicleManufacturers,
+              onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
+            )),
             const SizedBox(width: 10),
-            Expanded(child: _vehicleTextField(_vehicleModelCtrl, 'דגם')),
+            Expanded(
+                child: _PopularValueField(
+              controller: _vehicleModelCtrl,
+              label: 'דגם',
+              options:
+                  _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
+            )),
           ]),
           const SizedBox(height: 10),
           Row(children: [
@@ -9771,8 +13185,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
               DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
               DropdownMenuItem(value: 'other', child: Text('אחרת')),
             ],
-            onChanged: (value) =>
-                setState(() => _vehicleTransmission = value ?? 'automatic'),
+            onChanged: (value) => setState(() {
+              _vehicleTransmission = value ?? 'automatic';
+              _updateGeneratedVehicleText();
+            }),
           ),
           const SizedBox(height: 10),
           Row(children: [
@@ -9782,11 +13198,34 @@ class _PostListingScreenState extends State<PostListingScreen> {
           ]),
           const SizedBox(height: 10),
           _vehicleTextField(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+          const SizedBox(height: 10),
+          for (var index = 1;
+              index < _kVehicleExtraFields.length;
+              index += 2) ...[
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: _vehicleExtraField(_kVehicleExtraFields[index])),
+              if (index + 1 < _kVehicleExtraFields.length) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                    child: _vehicleExtraField(_kVehicleExtraFields[index + 1])),
+              ],
+            ]),
+            if (index + 2 < _kVehicleExtraFields.length)
+              const SizedBox(height: 10),
+          ],
           const SizedBox(height: 6),
           Text(
               'המידע מהמשרד הממשלתי הוא מידע מסייע ואינו תחליף לבדיקת הרכב והרישיון.',
               style: TextStyle(color: kSubtext, fontSize: 11)),
         ]),
+      );
+
+  Widget _vehicleExtraField((String, String, String) field) =>
+      _PopularValueField(
+        controller: _vehicleExtraCtrls[field.$1]!,
+        label: field.$2,
+        hint: field.$3.isEmpty ? null : field.$3,
+        options: _kVehicleFieldOptions[field.$1] ?? const [],
       );
 
   Widget _vehicleTextField(TextEditingController controller, String label,
@@ -9827,6 +13266,9 @@ class _EditListingScreenState extends State<EditListingScreen> {
   final _vehicleFuelCtrl = TextEditingController();
   final _vehicleColorCtrl = TextEditingController();
   final _vehicleTestCtrl = TextEditingController();
+  final _vehicleExtraCtrls = {
+    for (final field in _kVehicleExtraFields) field.$1: TextEditingController(),
+  };
   final _propertyStreetCtrl = TextEditingController();
   final _propertyRoomsCtrl = TextEditingController();
   final _propertyFloorCtrl = TextEditingController();
@@ -9865,6 +13307,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
   bool _loading = true;
   bool _saving = false;
   String _mirroredTitle = '';
+  String _generatedVehicleTitle = '';
+  String _generatedVehicleDescription = '';
+  bool _titleManuallyEdited = false;
+  bool _descriptionManuallyEdited = false;
 
   Map<String, String> _categoryDetailsPayload() => {
         for (final field in _kCategoryDetailFields[_category] ?? const [])
@@ -9905,7 +13351,12 @@ class _EditListingScreenState extends State<EditListingScreen> {
         controller: _categoryDetailCtrls[field.$1]!,
         label: field.$2,
         hint: field.$3.isEmpty ? null : field.$3,
-        options: _popularValuesFor(_category, field.$1),
+        options: _popularValuesFor(_category, field.$1, {
+          for (final entry in _categoryDetailCtrls.entries)
+            entry.key: entry.value.text,
+        }),
+        onChanged: (_) => setState(() => _refreshCategoryDependencies(
+            _category, field.$1, _categoryDetailCtrls)),
       );
 
   Widget _editVehicleFields() {
@@ -9939,10 +13390,27 @@ class _EditListingScreenState extends State<EditListingScreen> {
           ),
         ),
         const SizedBox(height: 10),
+        _PopularValueField(
+          controller: _vehicleExtraCtrls['vehicle_type']!,
+          label: 'סוג רכב',
+          options: _kVehicleFieldOptions['vehicle_type']!,
+        ),
+        const SizedBox(height: 10),
         Row(children: [
-          Expanded(child: field(_vehicleManufacturerCtrl, 'יצרן')),
+          Expanded(
+              child: _PopularValueField(
+            controller: _vehicleManufacturerCtrl,
+            label: 'יצרן',
+            options: _kVehicleManufacturers,
+            onChanged: (_) => setState(() => _vehicleModelCtrl.clear()),
+          )),
           const SizedBox(width: 10),
-          Expanded(child: field(_vehicleModelCtrl, 'דגם')),
+          Expanded(
+              child: _PopularValueField(
+            controller: _vehicleModelCtrl,
+            label: 'דגם',
+            options: _kVehicleModels[_vehicleManufacturerCtrl.text] ?? const [],
+          )),
         ]),
         const SizedBox(height: 10),
         Row(children: [
@@ -9964,8 +13432,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
             DropdownMenuItem(value: 'robotic', child: Text('רובוטית')),
             DropdownMenuItem(value: 'other', child: Text('אחרת')),
           ],
-          onChanged: (value) =>
-              setState(() => _vehicleTransmission = value ?? 'automatic'),
+          onChanged: (value) => setState(() {
+            _vehicleTransmission = value ?? 'automatic';
+            _updateGeneratedVehicleText();
+          }),
         ),
         const SizedBox(height: 10),
         Row(children: [
@@ -9975,6 +13445,40 @@ class _EditListingScreenState extends State<EditListingScreen> {
         ]),
         const SizedBox(height: 10),
         field(_vehicleTestCtrl, 'תוקף מבחן רישוי (טסט)'),
+        const SizedBox(height: 10),
+        for (var index = 1;
+            index < _kVehicleExtraFields.length;
+            index += 2) ...[
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+                child: _PopularValueField(
+              controller: _vehicleExtraCtrls[_kVehicleExtraFields[index].$1]!,
+              label: _kVehicleExtraFields[index].$2,
+              hint: _kVehicleExtraFields[index].$3.isEmpty
+                  ? null
+                  : _kVehicleExtraFields[index].$3,
+              options: _kVehicleFieldOptions[_kVehicleExtraFields[index].$1] ??
+                  const [],
+            )),
+            if (index + 1 < _kVehicleExtraFields.length) ...[
+              const SizedBox(width: 10),
+              Expanded(
+                  child: _PopularValueField(
+                controller:
+                    _vehicleExtraCtrls[_kVehicleExtraFields[index + 1].$1]!,
+                label: _kVehicleExtraFields[index + 1].$2,
+                hint: _kVehicleExtraFields[index + 1].$3.isEmpty
+                    ? null
+                    : _kVehicleExtraFields[index + 1].$3,
+                options:
+                    _kVehicleFieldOptions[_kVehicleExtraFields[index + 1].$1] ??
+                        const [],
+              )),
+            ],
+          ]),
+          if (index + 2 < _kVehicleExtraFields.length)
+            const SizedBox(height: 10),
+        ],
       ]),
     );
   }
@@ -9998,7 +13502,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
           controlAffinity: ListTileControlAffinity.leading,
           title: Text(label),
           value: value,
-          onChanged: (v) => changed(v == true),
+          onChanged: (v) {
+            changed(v == true);
+            _updateGeneratedCategoryText();
+          },
         );
     return Container(
       padding: const EdgeInsets.all(14),
@@ -10021,7 +13528,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
               DropdownMenuItem(value: 'rent', child: Text('השכרה')),
               DropdownMenuItem(value: 'sale', child: Text('מכירה')),
             ],
-            onChanged: (v) => setState(() => _propertyDealType = v ?? 'rent'),
+            onChanged: (v) => setState(() {
+              _propertyDealType = v ?? 'rent';
+              _updateGeneratedCategoryText();
+            }),
           )),
           const SizedBox(width: 10),
           Expanded(
@@ -10039,7 +13549,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
                   value: 'studio', child: Text('יחידת דיור / סטודיו')),
               DropdownMenuItem(value: 'other', child: Text('אחר')),
             ],
-            onChanged: (v) => setState(() => _propertyType = v ?? 'apartment'),
+            onChanged: (v) => setState(() {
+              _propertyType = v ?? 'apartment';
+              _updateGeneratedCategoryText();
+            }),
           )),
         ]),
         const SizedBox(height: 10),
@@ -10076,7 +13589,10 @@ class _EditListingScreenState extends State<EditListingScreen> {
               DropdownMenuItem(value: 'partial', child: Text('ריהוט חלקי')),
               DropdownMenuItem(value: 'full', child: Text('מרוהטת')),
             ],
-            onChanged: (v) => setState(() => _propertyFurniture = v ?? 'none'),
+            onChanged: (v) => setState(() {
+              _propertyFurniture = v ?? 'none';
+              _updateGeneratedCategoryText();
+            }),
           )),
         ]),
         if (_propertyDealType == 'rent') ...[
@@ -10126,10 +13642,135 @@ class _EditListingScreenState extends State<EditListingScreen> {
     );
   }
 
+  Map<String, String> _vehicleTextValues() => {
+        'manufacturer': _vehicleManufacturerCtrl.text,
+        'model': _vehicleModelCtrl.text,
+        'year': _vehicleYearCtrl.text,
+        'mileage': _vehicleMileageCtrl.text,
+        'hand': _vehicleHandCtrl.text,
+        'fuel': _vehicleFuelCtrl.text,
+        'color': _vehicleColorCtrl.text,
+        'test_valid_until': _vehicleTestCtrl.text,
+        'transmission': {
+              'automatic': 'אוטומטית',
+              'manual': 'ידנית',
+              'robotic': 'רובוטית',
+              'other': 'אחרת',
+            }[_vehicleTransmission] ??
+            _vehicleTransmission,
+        for (final entry in _vehicleExtraCtrls.entries)
+          entry.key: entry.value.text,
+      };
+
+  void _updateGeneratedVehicleText() {
+    if (_category != 'רכב') return;
+    final generated = _generatedVehicleListingText(_vehicleTextValues());
+    final mayReplaceTitle = !_titleManuallyEdited;
+    final mayReplaceDescription = !_descriptionManuallyEdited;
+    _generatedVehicleTitle = generated.$1;
+    _generatedVehicleDescription = generated.$2;
+    if (mayReplaceTitle && generated.$1.isNotEmpty) {
+      _titleCtrl.text = generated.$1;
+    }
+    if (mayReplaceDescription && generated.$2.isNotEmpty) {
+      _descCtrl.value = TextEditingValue(
+        text: generated.$2,
+        selection: TextSelection.collapsed(offset: generated.$2.length),
+      );
+      _mirroredTitle = generated.$1;
+    }
+  }
+
+  void _listenToVehicleFields() {
+    for (final controller in <TextEditingController>[
+      _vehicleManufacturerCtrl,
+      _vehicleModelCtrl,
+      _vehicleYearCtrl,
+      _vehicleMileageCtrl,
+      _vehicleHandCtrl,
+      _vehicleFuelCtrl,
+      _vehicleColorCtrl,
+      _vehicleTestCtrl,
+      ..._vehicleExtraCtrls.values,
+    ]) {
+      controller.addListener(_updateGeneratedVehicleText);
+    }
+  }
+
+  void _updateGeneratedCategoryText() {
+    if (_category == 'רכב') {
+      _updateGeneratedVehicleText();
+      return;
+    }
+    (String, String) generated;
+    if (_category == 'נדל״ן') {
+      generated = _generatedPropertyListingText({
+        'deal_type': _propertyDealType,
+        'property_type': _propertyType,
+        'street': _propertyStreetCtrl.text,
+        'city': _cityCtrl.text,
+        'rooms': _propertyRoomsCtrl.text,
+        'area_sqm': _propertyAreaCtrl.text,
+        'floor': _propertyFloorCtrl.text,
+        'total_floors': _propertyTotalFloorsCtrl.text,
+        'entry_date': _propertyEntryCtrl.text,
+        'furniture': _propertyFurniture,
+        'arnona': _propertyArnonaCtrl.text,
+        'building_fee': _propertyVaadCtrl.text,
+        'features': [
+          if (_propertyParking) 'חניה',
+          if (_propertyElevator) 'מעלית',
+          if (_propertyMamad) 'ממ״ד',
+          if (_propertyBalcony) 'מרפסת',
+          if (_propertyAccessible) 'נגישות',
+          if (_propertyStorage) 'מחסן',
+          if (_propertyAirConditioning) 'מיזוג',
+          if (_propertyPets) 'אפשר בעלי חיים',
+        ].join(', '),
+      });
+    } else {
+      generated = _generatedCategoryListingText(_category, {
+        for (final entry in _categoryDetailCtrls.entries)
+          entry.key: entry.value.text,
+      });
+    }
+    final replaceTitle = !_titleManuallyEdited;
+    final replaceDescription = !_descriptionManuallyEdited;
+    _generatedVehicleTitle = generated.$1;
+    _generatedVehicleDescription = generated.$2;
+    if (replaceTitle && generated.$1.isNotEmpty) _titleCtrl.text = generated.$1;
+    if (replaceDescription && generated.$2.isNotEmpty) {
+      _descCtrl.value = TextEditingValue(
+        text: generated.$2,
+        selection: TextSelection.collapsed(offset: generated.$2.length),
+      );
+      _mirroredTitle = generated.$1;
+    }
+  }
+
+  void _listenToAllListingFields() {
+    for (final controller in <TextEditingController>[
+      ..._categoryDetailCtrls.values.toSet(),
+      _cityCtrl,
+      _propertyStreetCtrl,
+      _propertyRoomsCtrl,
+      _propertyFloorCtrl,
+      _propertyTotalFloorsCtrl,
+      _propertyAreaCtrl,
+      _propertyEntryCtrl,
+      _propertyArnonaCtrl,
+      _propertyVaadCtrl,
+    ]) {
+      controller.addListener(_updateGeneratedCategoryText);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _titleCtrl.addListener(_mirrorTitleIntoDescription);
+    _listenToVehicleFields();
+    _listenToAllListingFields();
     _loadDetail();
   }
 
@@ -10174,6 +13815,9 @@ class _EditListingScreenState extends State<EditListingScreen> {
     _vehicleFuelCtrl.dispose();
     _vehicleColorCtrl.dispose();
     _vehicleTestCtrl.dispose();
+    for (final controller in _vehicleExtraCtrls.values) {
+      controller.dispose();
+    }
     _propertyStreetCtrl.dispose();
     _propertyRoomsCtrl.dispose();
     _propertyFloorCtrl.dispose();
@@ -10242,6 +13886,9 @@ class _EditListingScreenState extends State<EditListingScreen> {
         _vehicleFuelCtrl.text = vehicle['fuel']?.toString() ?? '';
         _vehicleColorCtrl.text = vehicle['color']?.toString() ?? '';
         _vehicleTestCtrl.text = vehicle['test_valid_until']?.toString() ?? '';
+        for (final entry in _vehicleExtraCtrls.entries) {
+          entry.value.text = vehicle[entry.key]?.toString() ?? '';
+        }
         _propertyDealType = property['deal_type']?.toString() ?? 'rent';
         _propertyType = property['property_type']?.toString() ?? 'apartment';
         _propertyStreetCtrl.text = property['street']?.toString() ?? '';
@@ -10267,6 +13914,11 @@ class _EditListingScreenState extends State<EditListingScreen> {
           _imageOutcomes[i] =
               i < imgs.length ? _FileUploadOutcome.approved : null;
         }
+        // Existing copy is treated as intentional user content. Automatic
+        // generation resumes only for a new listing whose fields were not
+        // manually edited.
+        _titleManuallyEdited = _titleCtrl.text.trim().isNotEmpty;
+        _descriptionManuallyEdited = _descCtrl.text.trim().isNotEmpty;
         _loading = false;
       });
     } catch (_) {
@@ -10398,6 +14050,9 @@ class _EditListingScreenState extends State<EditListingScreen> {
             'fuel': _vehicleFuelCtrl.text.trim(),
             'color': _vehicleColorCtrl.text.trim(),
             'test_valid_until': _vehicleTestCtrl.text.trim(),
+            for (final entry in _vehicleExtraCtrls.entries)
+              if (entry.value.text.trim().isNotEmpty)
+                entry.key: entry.value.text.trim(),
           },
         if (_category == 'נדל״ן')
           'property_details': {
@@ -10473,6 +14128,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                         const SizedBox(height: 16),
                         TextField(
                             controller: _titleCtrl,
+                            onChanged: (_) => _titleManuallyEdited = true,
                             textDirection: TextDirection.rtl,
                             decoration: const InputDecoration(
                                 labelText: 'כותרת המודעה *',
@@ -10480,6 +14136,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                         const SizedBox(height: 12),
                         TextField(
                             controller: _descCtrl,
+                            onChanged: (_) => _descriptionManuallyEdited = true,
                             textDirection: TextDirection.rtl,
                             maxLines: 3,
                             decoration: const InputDecoration(
@@ -11529,29 +15186,80 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                 decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(12)),
-                child: Row(children: [
-                  CircleAvatar(
-                      radius: 24,
-                      backgroundColor: kBorder,
-                      backgroundImage: widget.item['seller_pic'] != null
-                          ? NetworkImage(widget.item['seller_pic'])
-                          : null,
-                      child: widget.item['seller_pic'] == null
-                          ? Text((widget.item['seller_name'] ?? '?')[0],
-                              style: TextStyle(
-                                  color: kPrimary, fontWeight: FontWeight.bold))
-                          : null),
-                  const SizedBox(width: 12),
-                  Expanded(
-                      child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                        Text(widget.item['seller_name'] ?? '',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600, fontSize: 15)),
-                        Text('המפרסם',
-                            style: TextStyle(color: kSubtext, fontSize: 13)),
-                      ])),
+                child: Column(children: [
+                  Row(children: [
+                    CircleAvatar(
+                        radius: 24,
+                        backgroundColor: kBorder,
+                        backgroundImage: widget.item['seller_pic'] != null
+                            ? NetworkImage(widget.item['seller_pic'])
+                            : null,
+                        child: widget.item['seller_pic'] == null
+                            ? Text((widget.item['seller_name'] ?? '?')[0],
+                                style: TextStyle(
+                                    color: kPrimary,
+                                    fontWeight: FontWeight.bold))
+                            : null),
+                    const SizedBox(width: 12),
+                    Expanded(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                          Text(widget.item['seller_name'] ?? '',
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600, fontSize: 15)),
+                          Text('המפרסם',
+                              style: TextStyle(color: kSubtext, fontSize: 13)),
+                        ])),
+                  ]),
+                  if ((widget.item['seller_phone'] ?? '')
+                          .toString()
+                          .isNotEmpty ||
+                      (widget.item['seller_email'] ?? '')
+                          .toString()
+                          .isNotEmpty) ...[
+                    const Divider(height: 24),
+                    if ((widget.item['seller_phone'] ?? '')
+                        .toString()
+                        .isNotEmpty)
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading:
+                            const Icon(Icons.phone_outlined, color: kPrimary),
+                        title: const Text('טלפון'),
+                        subtitle: SelectableText(
+                            widget.item['seller_phone'].toString()),
+                        trailing: IconButton(
+                          tooltip: 'התקשר',
+                          onPressed: () => launchUrl(Uri(
+                            scheme: 'tel',
+                            path: widget.item['seller_phone'].toString(),
+                          )),
+                          icon: const Icon(Icons.call_outlined),
+                        ),
+                      ),
+                    if ((widget.item['seller_email'] ?? '')
+                        .toString()
+                        .isNotEmpty)
+                      ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading:
+                            const Icon(Icons.email_outlined, color: kPrimary),
+                        title: const Text('אימייל'),
+                        subtitle: SelectableText(
+                            widget.item['seller_email'].toString()),
+                        trailing: IconButton(
+                          tooltip: 'שלח אימייל',
+                          onPressed: () => launchUrl(Uri(
+                            scheme: 'mailto',
+                            path: widget.item['seller_email'].toString(),
+                          )),
+                          icon: const Icon(Icons.send_outlined),
+                        ),
+                      ),
+                  ],
                 ]),
               ),
               const SizedBox(height: 20),
@@ -11672,6 +15380,559 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
 }
 
 // ── Conversations Screen ──────────────────────────────────────────
+class CreateGroupScreen extends StatefulWidget {
+  final String token;
+  const CreateGroupScreen({super.key, required this.token});
+
+  @override
+  State<CreateGroupScreen> createState() => _CreateGroupScreenState();
+}
+
+class _CreateGroupScreenState extends State<CreateGroupScreen> {
+  final _nameCtrl = TextEditingController();
+  final _descriptionCtrl = TextEditingController();
+  final _searchCtrl = TextEditingController();
+  final Set<String> _selectedIds = {};
+  List<Map<String, dynamic>> _users = [];
+  Uint8List? _photoBytes;
+  XFile? _photo;
+  bool _loadingUsers = true;
+  bool _saving = false;
+  bool _announcementsOnly = false;
+  bool _filterConfirmed = false;
+  String _sendPermission = 'all';
+  String _filterLevel = 'standard';
+  final Map<String, bool> _contentFilter = _newAccountFilter();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUsers();
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _descriptionCtrl.dispose();
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadUsers() async {
+    try {
+      final response = await http.get(Uri.parse('$kApi/users/directory'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (response.statusCode == 200) {
+        final users = (jsonDecode(response.body) as List)
+            .cast<Map<String, dynamic>>()
+          ..sort((a, b) => (a['name'] ?? '')
+              .toString()
+              .compareTo((b['name'] ?? '').toString()));
+        if (mounted) setState(() => _users = users);
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('לא ניתן לטעון את רשימת אנשי הקשר')));
+      }
+    } finally {
+      if (mounted) setState(() => _loadingUsers = false);
+    }
+  }
+
+  Future<void> _pickPhoto() async {
+    final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 512,
+        maxHeight: 512,
+        imageQuality: 82);
+    if (picked == null) return;
+    final bytes = await picked.readAsBytes();
+    if (mounted)
+      setState(() {
+        _photo = picked;
+        _photoBytes = bytes;
+      });
+  }
+
+  String _normalizedPhone(String value) =>
+      value.replaceAll(RegExp(r'[^0-9+]'), '');
+
+  List<Map<String, dynamic>> get _filteredUsers {
+    final query = _searchCtrl.text.trim().toLowerCase();
+    if (query.isEmpty) return _users;
+    final normalized = _normalizedPhone(query);
+    return _users.where((user) {
+      final name = (user['name'] ?? '').toString().toLowerCase();
+      final email = (user['email'] ?? '').toString().toLowerCase();
+      final phone = _normalizedPhone((user['phone'] ?? '').toString());
+      return name.contains(query) ||
+          email.contains(query) ||
+          (normalized.isNotEmpty && phone.contains(normalized));
+    }).toList();
+  }
+
+  Future<void> _create() async {
+    final name = _nameCtrl.text.trim();
+    final description = _descriptionCtrl.text.trim();
+    if (name.length < 2 || name.length > 80) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שם הקבוצה חייב להכיל 2 עד 80 תווים')));
+      return;
+    }
+    if (!_filterConfirmed) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('יש להגדיר ולאשר את סינון הקבוצה לפני השמירה')));
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final response = await http.post(Uri.parse('$kApi/groups'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            'name': name,
+            'description': description,
+            'send_permission': _announcementsOnly ? 'admin' : _sendPermission,
+            'filter_level': _filterLevel,
+            'is_broadcast': _announcementsOnly,
+            'is_self': _selectedIds.isEmpty,
+            'content_filter': _contentFilter,
+          }));
+      final decoded = jsonDecode(response.body);
+      if (response.statusCode != 200 || decoded is! Map) {
+        throw Exception(decoded is Map
+            ? decoded['error']?.toString() ?? 'יצירת הקבוצה נכשלה'
+            : 'יצירת הקבוצה נכשלה');
+      }
+      final group = Map<String, dynamic>.from(decoded);
+      final groupId = group['id'].toString();
+
+      if (_photo != null) {
+        final upload = await _uploadFileRequest(
+          file: _photo!,
+          fileName: _photo!.name,
+          token: widget.token,
+          fields: {'groupId': groupId},
+        );
+        if (upload.outcome == _FileUploadOutcome.approved) {
+          final photoUrl = upload.data['url']?.toString();
+          if (photoUrl != null && photoUrl.isNotEmpty) {
+            final photoResponse = await http.put(
+              Uri.parse('$kApi/groups/$groupId/photo'),
+              headers: {
+                'Authorization': 'Bearer ${widget.token}',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({'profile_pic_url': photoUrl}),
+            );
+            if (photoResponse.statusCode == 200) {
+              group['profile_pic_url'] = photoUrl;
+            }
+          }
+        }
+      }
+
+      await Future.wait(_selectedIds.map((userId) => http.post(
+            Uri.parse('$kApi/groups/$groupId/members'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({'userId': userId}),
+          )));
+      group['member_count'] = _selectedIds.length + 1;
+      if (mounted) Navigator.pop(context, group);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(error.toString().replaceFirst('Exception: ', '')),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Widget _section(
+      {required IconData icon,
+      required String title,
+      required String subtitle,
+      required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: kBorder),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x10000000), blurRadius: 14, offset: Offset(0, 4))
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Container(
+              padding: const EdgeInsets.all(9),
+              decoration: BoxDecoration(
+                  color: const Color(0xFFE8F4FD),
+                  borderRadius: BorderRadius.circular(12)),
+              child: Icon(icon, color: kPrimary)),
+          const SizedBox(width: 11),
+          Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(title,
+                    style: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w800)),
+                Text(subtitle,
+                    style: const TextStyle(fontSize: 12, color: kSubtext))
+              ])),
+        ]),
+        const SizedBox(height: 16),
+        child,
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final users = _filteredUsers;
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4F8FB),
+      appBar: AppBar(title: const Text('יצירת קבוצה חדשה')),
+      body: SafeArea(
+          child: Center(
+              child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 780),
+        child: ListView(padding: const EdgeInsets.all(18), children: [
+          const Text('בואו נקים קבוצה',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                  fontSize: 25, fontWeight: FontWeight.w900, color: kPrimary)),
+          const SizedBox(height: 5),
+          const Text('ממלאים פרטים, בוחרים חברים וממשיכים להגדרות הסינון.',
+              textAlign: TextAlign.right, style: TextStyle(color: kSubtext)),
+          const SizedBox(height: 18),
+          _section(
+              icon: Icons.photo_camera_outlined,
+              title: 'תמונת הקבוצה',
+              subtitle: 'אופציונלי • כל תמונה עוברת סריקת בטיחות',
+              child: Center(
+                  child: InkWell(
+                      onTap: _saving ? null : _pickPhoto,
+                      borderRadius: BorderRadius.circular(60),
+                      child: Stack(children: [
+                        CircleAvatar(
+                            radius: 58,
+                            backgroundColor: const Color(0xFFE8F4FD),
+                            backgroundImage: _photoBytes == null
+                                ? null
+                                : MemoryImage(_photoBytes!),
+                            child: _photoBytes == null
+                                ? const Icon(Icons.groups_outlined,
+                                    size: 50, color: kPrimary)
+                                : null),
+                        Positioned(
+                            left: 0,
+                            bottom: 0,
+                            child: CircleAvatar(
+                                radius: 18,
+                                backgroundColor: kPrimary,
+                                child: const Icon(Icons.add_a_photo_outlined,
+                                    color: Colors.white, size: 19))),
+                      ])))),
+          const SizedBox(height: 14),
+          _section(
+              icon: Icons.edit_outlined,
+              title: 'פרטי הקבוצה',
+              subtitle: 'השם יוצג לכל חברי הקבוצה',
+              child: Column(children: [
+                TextField(
+                    controller: _nameCtrl,
+                    onChanged: (_) => setState(() {}),
+                    maxLength: 80,
+                    textDirection: TextDirection.rtl,
+                    decoration: const InputDecoration(
+                        labelText: 'שם הקבוצה *',
+                        hintText: 'לדוגמה: משפחת ישראלי')),
+                const SizedBox(height: 10),
+                TextField(
+                    controller: _descriptionCtrl,
+                    maxLength: 500,
+                    minLines: 3,
+                    maxLines: 5,
+                    textDirection: TextDirection.rtl,
+                    decoration: const InputDecoration(
+                        labelText: 'תיאור הקבוצה',
+                        hintText: 'מטרת הקבוצה וכללים חשובים (אופציונלי)')),
+              ])),
+          const SizedBox(height: 14),
+          _section(
+              icon: Icons.admin_panel_settings_outlined,
+              title: 'הרשאות הקבוצה',
+              subtitle: 'אפשר לשנות את ההרשאות גם לאחר היצירה',
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text('סוג הקבוצה',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    Wrap(spacing: 8, runSpacing: 8, children: [
+                      ChoiceChip(
+                          avatar: const Icon(Icons.forum_outlined, size: 18),
+                          label: const Text('קבוצה רגילה'),
+                          selected: !_announcementsOnly,
+                          onSelected: _saving
+                              ? null
+                              : (_) =>
+                                  setState(() => _announcementsOnly = false)),
+                      ChoiceChip(
+                          avatar: const Icon(Icons.campaign_outlined, size: 18),
+                          label: const Text('קבוצת עדכונים'),
+                          selected: _announcementsOnly,
+                          onSelected: _saving
+                              ? null
+                              : (_) => setState(() {
+                                    _announcementsOnly = true;
+                                    _sendPermission = 'admin';
+                                  })),
+                    ]),
+                    const SizedBox(height: 16),
+                    const Text('מי רשאי לשלוח הודעות?',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    Wrap(spacing: 8, runSpacing: 8, children: [
+                      ChoiceChip(
+                          avatar: const Icon(Icons.groups_outlined, size: 18),
+                          label: const Text('כל המשתתפים'),
+                          selected:
+                              !_announcementsOnly && _sendPermission == 'all',
+                          onSelected: _saving || _announcementsOnly
+                              ? null
+                              : (_) => setState(() => _sendPermission = 'all')),
+                      ChoiceChip(
+                          avatar: const Icon(Icons.shield_outlined, size: 18),
+                          label: const Text('מנהלים בלבד'),
+                          selected:
+                              _announcementsOnly || _sendPermission == 'admin',
+                          onSelected: _saving || _announcementsOnly
+                              ? null
+                              : (_) =>
+                                  setState(() => _sendPermission = 'admin')),
+                    ]),
+                    if (_announcementsOnly) ...[
+                      const SizedBox(height: 8),
+                      const Text(
+                          'בקבוצת עדכונים רק מנהלים יכולים לפרסם הודעות.',
+                          style: TextStyle(fontSize: 12, color: kSubtext)),
+                    ],
+                    const SizedBox(height: 16),
+                    const Text('רמת סינון התחלתית',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    Wrap(spacing: 8, runSpacing: 8, children: [
+                      ChoiceChip(
+                          label: const Text('רגילה'),
+                          selected: _filterLevel == 'standard',
+                          onSelected: _saving
+                              ? null
+                              : (_) =>
+                                  setState(() => _filterLevel = 'standard')),
+                      ChoiceChip(
+                          label: const Text('מחמירה'),
+                          selected: _filterLevel == 'strict',
+                          onSelected: _saving
+                              ? null
+                              : (_) => setState(() => _filterLevel = 'strict')),
+                    ]),
+                    const SizedBox(height: 10),
+                    const Row(children: [
+                      Icon(Icons.verified_user_outlined,
+                          color: kPrimary, size: 19),
+                      SizedBox(width: 8),
+                      Expanded(
+                          child: Text(
+                              'כל חבר שנבחר יקבל הזמנה ויצטרף רק לאחר אישור.',
+                              style: TextStyle(fontSize: 12, color: kSubtext))),
+                    ]),
+                  ])),
+          const SizedBox(height: 14),
+          _section(
+              icon: Icons.shield_outlined,
+              title: 'סינון הקבוצה',
+              subtitle: 'הקבוצה תישמר רק לאחר הגדרה ואישור של הסינון',
+              child: Column(children: [
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F4FD),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: kBorder),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.groups_outlined,
+                        color: kPrimary, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'שם הקבוצה: ${_nameCtrl.text.trim().isEmpty ? 'טרם הוגדר' : _nameCtrl.text.trim()}',
+                        textAlign: TextAlign.right,
+                        textDirection: TextDirection.rtl,
+                        style: const TextStyle(
+                          color: kPrimary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ]),
+                ),
+                ...<String, (String, IconData)>{
+                  'text': ('הודעות טקסט', Icons.text_fields),
+                  'video': ('וידאו', Icons.videocam_outlined),
+                  'nonHumanImages': (
+                    'תמונות נוף וחפצים',
+                    Icons.landscape_outlined
+                  ),
+                  'men': ('תמונות גברים', Icons.man),
+                  'women': ('תמונות נשים', Icons.woman),
+                  'children': ('תמונות ילדים', Icons.child_care),
+                }.entries.map((entry) => SwitchListTile(
+                      dense: true,
+                      secondary: Icon(entry.value.$2, color: kPrimary),
+                      title: Text(entry.value.$1),
+                      value: _contentFilter[entry.key] == true,
+                      onChanged: _saving
+                          ? null
+                          : (value) => setState(() {
+                                _contentFilter[entry.key] = value;
+                                _filterConfirmed = false;
+                              }),
+                    )),
+                const Divider(),
+                CheckboxListTile(
+                  value: _filterConfirmed,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('בדקתי ואני מאשר את סינון הקבוצה',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                  subtitle: const Text(
+                      'שינוי באחת האפשרויות יחייב אישור מחדש לפני השמירה'),
+                  onChanged: _saving
+                      ? null
+                      : (value) =>
+                          setState(() => _filterConfirmed = value == true),
+                ),
+              ])),
+          const SizedBox(height: 14),
+          _section(
+              icon: Icons.person_add_alt_1_outlined,
+              title: 'בחירת חברים',
+              subtitle: _selectedIds.isEmpty
+                  ? 'לא נבחרו חברים • תיווצר קבוצה לעצמי'
+                  : '${_selectedIds.length} נבחרו • ההצטרפות דורשת אישור שלהם',
+              child: Column(children: [
+                if (_selectedIds.isEmpty)
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F4FD),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: kBorder),
+                    ),
+                    child: const Row(children: [
+                      Icon(Icons.person_outline, color: kPrimary),
+                      SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          'אפשר להמשיך בלי לבחור חברים. רק אתה תהיה חבר ומנהל בקבוצה.',
+                          style: TextStyle(fontSize: 12, color: kTextDark),
+                        ),
+                      ),
+                    ]),
+                  ),
+                TextField(
+                    controller: _searchCtrl,
+                    onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        hintText: 'חיפוש לפי שם, טלפון או אימייל')),
+                const SizedBox(height: 8),
+                if (_loadingUsers)
+                  const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: CircularProgressIndicator())
+                else if (users.isEmpty)
+                  const Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Text('לא נמצאו אנשי קשר',
+                          style: TextStyle(color: kSubtext)))
+                else
+                  ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 330),
+                      child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: users.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (_, index) {
+                            final user = users[index];
+                            final id = user['id'].toString();
+                            final selected = _selectedIds.contains(id);
+                            return CheckboxListTile(
+                                value: selected,
+                                controlAffinity:
+                                    ListTileControlAffinity.leading,
+                                secondary: UserAvatar(
+                                    picUrl: user['profile_pic_url'] as String?,
+                                    name: (user['name'] ?? '').toString()),
+                                title: Text((user['name'] ?? '').toString()),
+                                subtitle: Text(
+                                    (user['phone'] ?? user['email'] ?? '')
+                                        .toString(),
+                                    style: const TextStyle(
+                                        fontSize: 12, color: kSubtext)),
+                                onChanged: _saving
+                                    ? null
+                                    : (_) => setState(() {
+                                          selected
+                                              ? _selectedIds.remove(id)
+                                              : _selectedIds.add(id);
+                                        }));
+                          })),
+              ])),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+              onPressed: _saving ? null : _create,
+              icon: _saving
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.arrow_forward),
+              label: Text(_saving
+                  ? 'יוצר את הקבוצה...'
+                  : _selectedIds.isEmpty
+                      ? 'צור קבוצה לעצמי'
+                      : 'צור קבוצה והמשך'),
+              style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(54),
+                  textStyle: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold))),
+          const SizedBox(height: 20),
+        ]),
+      ))),
+    );
+  }
+}
+
 class ConversationsScreen extends StatefulWidget {
   final List<Map<String, dynamic>> users;
   final String token;
@@ -11722,6 +15983,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   static const _tabs = ['כל השיחות', 'לא נקרא', 'קבוצות'];
   List<Map<String, dynamic>> _groups = [];
   bool _groupsLoaded = false;
+  bool _openingPendingGroupInvitation = false;
+  final Set<String> _openedPendingGroupInvitations = {};
   bool _searching = false;
   String _searchQuery = '';
   late final void Function(dynamic) _groupInvitedHandler;
@@ -11759,9 +16022,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   void initState() {
     super.initState();
     _loadGroups();
-    _groupInvitedHandler = (data) {
+    _groupInvitedHandler = (data) async {
       if (!mounted) return;
-      _loadGroups(force: true);
+      await _loadGroups(force: true);
+      if (!mounted) return;
       final groupName = data is Map ? data['groupName'] : null;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -11775,6 +16039,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
       if (!mounted || data is! Map) return;
       final groupId = data['groupId']?.toString();
       if (groupId == null) return;
+      _clearGroupMessagesCache(widget.me?['id'], groupId).ignore();
       setState(() =>
           _groups.removeWhere((group) => group['id']?.toString() == groupId));
     };
@@ -12278,84 +16543,70 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           _groups = (jsonDecode(res.body) as List).cast();
           _groupsLoaded = true;
         });
+        _openNextPendingGroupInvitation();
       }
     } catch (_) {}
   }
 
-  Future<void> _createGroup() async {
-    final nameCtrl = TextEditingController();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('קבוצה חדשה'),
-        content: TextField(
-          controller: nameCtrl,
-          textDirection: TextDirection.rtl,
-          decoration: const InputDecoration(labelText: 'שם הקבוצה'),
-          autofocus: true,
+  void _openNextPendingGroupInvitation() {
+    if (!mounted || _openingPendingGroupInvitation) return;
+    final index = _groups.indexWhere((group) {
+      final id = group['id']?.toString();
+      return group['status'] == 'pending' &&
+          id != null &&
+          !_openedPendingGroupInvitations.contains(id);
+    });
+    if (index == -1) return;
+    final group = _groups[index];
+    final groupId = group['id']!.toString();
+    _openedPendingGroupInvitations.add(groupId);
+    _openingPendingGroupInvitation = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      if (widget.onGroupSelected != null &&
+          MediaQuery.sizeOf(context).width >= 900) {
+        widget.onGroupSelected!(group, false);
+        _openingPendingGroupInvitation = false;
+        return;
+      }
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => GroupChatScreen(
+            group: group,
+            token: widget.token,
+            me: widget.me,
+            socket: widget.socket,
+          ),
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('ביטול')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('צור')),
-        ],
-      ),
+      );
+      if (!mounted) return;
+      _openingPendingGroupInvitation = false;
+      await _loadGroups(force: true);
+    });
+  }
+
+  Future<void> _createGroup() async {
+    final g = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => CreateGroupScreen(token: widget.token)),
     );
-    if (confirmed != true || nameCtrl.text.trim().isEmpty) return;
-    try {
-      final res = await http.post(Uri.parse('$kApi/groups'),
-          headers: {
-            'Authorization': 'Bearer ${widget.token}',
-            'Content-Type': 'application/json'
-          },
-          body: jsonEncode({'name': nameCtrl.text.trim()}));
-      if (res.statusCode == 200 && mounted) {
-        final g = jsonDecode(res.body) as Map<String, dynamic>;
-        widget.socket?.emit('group:join', {'groupId': g['id']});
-        await _loadGroups(force: true);
-        if (!mounted) return;
-        await Navigator.push<bool>(
+    if (g == null || !mounted) return;
+    widget.socket?.emit('group:join', {'groupId': g['id']});
+    await _loadGroups(force: true);
+    if (!mounted) return;
+    if (widget.onGroupSelected != null &&
+        MediaQuery.sizeOf(context).width >= 900) {
+      widget.onGroupSelected!(g, false);
+    } else {
+      Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => ContentFilterSettingsScreen(
-              token: widget.token,
-              groupId: g['id']?.toString(),
-              groupName: g['name'] as String?,
-              requireSave: true,
-            ),
-          ),
-        );
-        if (!mounted) return;
-        if (widget.onGroupSelected != null &&
-            MediaQuery.sizeOf(context).width >= 900) {
-          widget.onGroupSelected!(g, true);
-        } else {
-          Navigator.push(
-              context,
-              MaterialPageRoute(
-                  builder: (_) => GroupChatScreen(
-                      group: g,
-                      token: widget.token,
-                      me: widget.me,
-                      socket: widget.socket,
-                      openAddMembersOnStart: true)));
-        }
-      } else if (mounted) {
-        var error = 'לא ניתן ליצור את הקבוצה';
-        try {
-          error = (jsonDecode(res.body) as Map)['error']?.toString() ?? error;
-        } catch (_) {}
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error)));
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('שגיאת תקשורת ביצירת הקבוצה')));
-      }
+              builder: (_) => GroupChatScreen(
+                  group: g,
+                  token: widget.token,
+                  me: widget.me,
+                  socket: widget.socket)));
     }
   }
 
@@ -12452,6 +16703,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.group_add_outlined, color: Colors.white),
+            tooltip: 'יצירת קבוצה חדשה',
+            onPressed: _createGroup,
+          ),
           IconButton(
             icon: const Icon(Icons.person_add_alt_1, color: Colors.white),
             tooltip: 'חיפוש ושמירת חבר',
@@ -13230,11 +17486,13 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
   final Map<String, bool>? filter;
   final bool forGroup;
   final bool onHeader;
+  final bool blockedForSending;
 
   const _BlockedReceivingFilterIcons({
     required this.filter,
     this.forGroup = false,
     this.onHeader = true,
+    this.blockedForSending = false,
   });
 
   static const _items = <String, (IconData, String)>{
@@ -13258,9 +17516,13 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: blocked
           .map((entry) => Tooltip(
-                message: forGroup
-                    ? entry.value.$2.replaceFirst('לא מוכן', 'הקבוצה לא מוכנה')
-                    : entry.value.$2,
+                message: blockedForSending
+                    ? entry.value.$2
+                        .replaceFirst('לא מוכן לקבל', 'אי אפשר לשלוח')
+                    : forGroup
+                        ? entry.value.$2
+                            .replaceFirst('לא מוכן', 'הקבוצה לא מוכנה')
+                        : entry.value.$2,
                 child: Padding(
                   padding: const EdgeInsetsDirectional.only(start: 3),
                   child: Container(
@@ -13268,8 +17530,12 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
                     height: 22,
                     decoration: BoxDecoration(
                       color: onHeader
-                          ? const Color(0xFFD84343)
-                          : const Color(0xFFFFE7E7),
+                          ? (blockedForSending
+                              ? const Color(0xFFE58A00)
+                              : const Color(0xFFD84343))
+                          : (blockedForSending
+                              ? const Color(0xFFFFF0D6)
+                              : const Color(0xFFFFE7E7)),
                       shape: BoxShape.circle,
                       border: Border.all(
                         color: onHeader ? Colors.white70 : Colors.red.shade300,
@@ -13279,11 +17545,288 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
                     alignment: Alignment.center,
                     child: Icon(entry.value.$1,
                         size: 15,
-                        color: onHeader ? Colors.white : Colors.red.shade700),
+                        color: onHeader
+                            ? Colors.white
+                            : blockedForSending
+                                ? Colors.orange.shade800
+                                : Colors.red.shade700),
                   ),
                 ),
               ))
           .toList(),
+    );
+  }
+}
+
+Future<Map<String, bool>?> _chooseGroupInvitationFilter(
+  BuildContext context, {
+  required Map<String, bool> groupFilter,
+  required Map<String, bool> initialFilter,
+  String counterpart = 'הקבוצה',
+  String? groupName,
+}) {
+  final selected = Map<String, bool>.from(initialFilter);
+  final normalizedGroupName = groupName?.trim() ?? '';
+  final targetLabel =
+      normalizedGroupName.isEmpty ? counterpart : 'קבוצת $normalizedGroupName';
+  return showDialog<Map<String, bool>>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: Text('בחירת הסינון שלי עבור $targetLabel'),
+        content: SizedBox(
+          width: 760,
+          child: SingleChildScrollView(
+            child: _InvitationFilterComparisonTable(
+              groupName: groupName,
+              groupFilter: groupFilter,
+              personalFilter: selected,
+              counterpartFilterLabel: 'הסינון של $targetLabel',
+              personalFilterLabel: 'הסינון שלי עבור $targetLabel',
+              onPersonalFilterChanged: (updated) => setDialogState(() {
+                selected
+                  ..clear()
+                  ..addAll(updated);
+              }),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('ביטול'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, selected),
+            icon: const Icon(Icons.group_add_outlined),
+            label: const Text('אשר והצטרף'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _InvitationFilterComparisonTable extends StatelessWidget {
+  final String? groupName;
+  final Map<String, bool>? groupFilter;
+  final Map<String, bool>? personalFilter;
+  final ValueChanged<Map<String, bool>>? onPersonalFilterChanged;
+  final ValueChanged<Map<String, bool>>? onCounterpartFilterChanged;
+  final String counterpartKind;
+  final String counterpartFilterLabel;
+  final String personalFilterLabel;
+  final IconData counterpartIcon;
+
+  const _InvitationFilterComparisonTable({
+    this.groupName,
+    required this.groupFilter,
+    required this.personalFilter,
+    this.onPersonalFilterChanged,
+    this.onCounterpartFilterChanged,
+    this.counterpartKind = 'הקבוצה',
+    this.counterpartFilterLabel = 'סינון הקבוצה',
+    this.personalFilterLabel = 'הסינון האישי שלי',
+    this.counterpartIcon = Icons.groups_outlined,
+  });
+
+  static const _items = <String, (IconData, String, String)>{
+    'text': (Icons.text_fields, 'טקסט', 'הודעות טקסט רגילות'),
+    'nonHumanImages': (
+      Icons.landscape_outlined,
+      'תמונות נוף או חפצים',
+      'חפצים, נוף, צמחים ובעלי חיים'
+    ),
+    'men': (Icons.man, 'גברים', 'תמונות שסווגו כתמונות גברים'),
+    'women': (Icons.woman, 'נשים', 'תמונות שסווגו כתמונות נשים'),
+    'children': (Icons.child_care, 'ילדים', 'תמונות שסווגו כתמונות ילדים'),
+    'video': (Icons.videocam_outlined, 'וידאו', 'סרטונים שעברו סריקה וסיווג'),
+  };
+
+  List<String> get _visibleKeys {
+    final available = <String>{
+      ...?groupFilter?.keys,
+      ...?personalFilter?.keys,
+    };
+    return [
+      ..._items.keys.where(available.contains),
+      ...available.where((key) => !_items.containsKey(key)).toList()..sort(),
+    ];
+  }
+
+  (IconData, String, String) _itemFor(String key) =>
+      _items[key] ??
+      (Icons.filter_alt_outlined, key, 'סוג תוכן נוסף בהגדרות הסינון');
+
+  @override
+  Widget build(BuildContext context) {
+    if (groupFilter == null || personalFilter == null) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 10),
+        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    Widget cell(Widget child, {int flex = 1}) => Expanded(
+          flex: flex,
+          child: Container(
+            alignment: AlignmentDirectional.centerStart,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            child: child,
+          ),
+        );
+
+    Widget status(bool allowed, {bool editable = false, VoidCallback? onTap}) {
+      final color = allowed ? kPrimary : Colors.red.shade600;
+      return InkWell(
+        onTap: editable ? onTap : null,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 27,
+                height: 27,
+                decoration: BoxDecoration(
+                  color: allowed ? kPrimary : Colors.white,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(
+                    color: allowed ? kPrimary : const Color(0xFFAFC9DA),
+                    width: 1.5,
+                  ),
+                ),
+                child: allowed
+                    ? const Icon(Icons.check, size: 19, color: Colors.white)
+                    : null,
+              ),
+              const SizedBox(width: 7),
+              Text(allowed ? 'מותר' : 'חסום',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: color,
+                  )),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (groupName != null && groupName!.trim().isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEAF6FD),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFB9D8ED)),
+              ),
+              child: Row(children: [
+                Icon(counterpartIcon, color: kPrimary, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                    child: Text('שם $counterpartKind: ${groupName!.trim()}',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(
+                            color: kPrimary, fontWeight: FontWeight.w800))),
+              ]),
+            ),
+            const SizedBox(height: 10),
+          ],
+          Text(
+            'הגדרת $counterpartKind קובעת מה ניתן לשלוח. הבחירה האישית שלך קובעת מה יוצג עבורך.',
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontSize: 13, color: kSubtext, height: 1.45),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFC9D9E5)),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(children: [
+              Container(
+                color: const Color(0xFFE8F3FA),
+                child: Row(children: [
+                  cell(
+                      const Text('סוג התוכן והסבר',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(fontWeight: FontWeight.w800)),
+                      flex: 2),
+                  cell(Text(counterpartFilterLabel,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontWeight: FontWeight.w800))),
+                  cell(Text(personalFilterLabel,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontWeight: FontWeight.w800))),
+                ]),
+              ),
+              ..._visibleKeys.map((key) {
+                final item = _itemFor(key);
+                final mine = personalFilter![key] == true;
+                final groupAllows = groupFilter![key] == true;
+                void togglePersonal() {
+                  if (onPersonalFilterChanged == null) return;
+                  final updated = Map<String, bool>.from(personalFilter!);
+                  updated[key] = !mine;
+                  onPersonalFilterChanged!(updated);
+                }
+
+                void toggleCounterpart() {
+                  if (onCounterpartFilterChanged == null) return;
+                  final updated = Map<String, bool>.from(groupFilter!);
+                  updated[key] = !groupAllows;
+                  onCounterpartFilterChanged!(updated);
+                }
+
+                return Container(
+                  decoration: const BoxDecoration(
+                    border: Border(top: BorderSide(color: Color(0xFFE1E9EF))),
+                  ),
+                  child: Row(children: [
+                    cell(
+                        Row(children: [
+                          Icon(item.$1, size: 20, color: kPrimary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(item.$2,
+                                    textAlign: TextAlign.right,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700)),
+                                const SizedBox(height: 2),
+                                Text(item.$3,
+                                    textAlign: TextAlign.right,
+                                    style: const TextStyle(
+                                        fontSize: 11, color: kSubtext)),
+                              ],
+                            ),
+                          ),
+                        ]),
+                        flex: 2),
+                    cell(status(groupAllows,
+                        editable: onCounterpartFilterChanged != null,
+                        onTap: toggleCounterpart)),
+                    cell(status(mine,
+                        editable: onPersonalFilterChanged != null,
+                        onTap: togglePersonal)),
+                  ]),
+                );
+              }),
+            ]),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -13322,6 +17865,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   final _msgCtrl = TextEditingController();
+  final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
   final _scrollCtrl = ScrollController();
@@ -13340,6 +17884,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _recordTimer;
   String _voiceFileName = 'voice_message.webm';
   Map<String, bool>? _recipientReceivingFilter;
+  Map<String, bool>? _outgoingFilter;
 
   @override
   void initState() {
@@ -13362,6 +17907,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     _loadMessages();
     _loadRecipientReceivingFilter();
+    _loadOutgoingFilter();
     _setupSocket();
     // WebSocket delivery is best-effort (a browser can sleep or reconnect).
     // Quietly reconcile with the server so an incoming message can never stay
@@ -13378,7 +17924,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final response = await http.get(
         Uri.parse('$kApi/users/${widget.recipient['id']}/receiving-filter'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
+      ).timeout(const Duration(seconds: 10));
       if (!mounted || response.statusCode != 200) return;
       final body = jsonDecode(response.body);
       final raw = body is Map ? body['filter'] : null;
@@ -13389,6 +17935,46 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       });
     } catch (_) {}
+  }
+
+  Future<void> _loadOutgoingFilter() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-settings'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 10));
+      if (!mounted || response.statusCode != 200) return;
+      final body = jsonDecode(response.body);
+      final raw = body is Map ? body['filter'] : null;
+      if (raw is! Map) return;
+      setState(() => _outgoingFilter =
+          raw.map((key, value) => MapEntry(key.toString(), value == true)));
+    } catch (_) {}
+  }
+
+  Future<bool> _loadContactFilterComparison() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-comparison'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 10));
+      if (!mounted || response.statusCode != 200) return false;
+      final body = jsonDecode(response.body);
+      final recipient = body is Map ? body['recipientFilter'] : null;
+      final personal = body is Map ? body['personalFilter'] : null;
+      if (recipient is! Map || personal is! Map) return false;
+      setState(() {
+        _recipientReceivingFilter = recipient.map(
+          (key, value) => MapEntry(key.toString(), value == true),
+        );
+        _outgoingFilter = personal.map(
+          (key, value) => MapEntry(key.toString(), value == true),
+        );
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _loadMessages({bool silent = false}) async {
@@ -13485,6 +18071,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
+      if (map['delivery_summary'] != null)
+        'deliverySummary': map['delivery_summary'],
       if (map['reply_to_id'] != null)
         'replyTo': {
           'id': map['reply_to_id'],
@@ -13551,6 +18139,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'fileName': fileName,
         if (data['classification'] != null)
           'classification': data['classification'],
+        if (data['deliverySummary'] != null)
+          'deliverySummary': data['deliverySummary'],
         if (data['replyToId'] != null)
           'replyTo': {'id': data['replyToId'], 'text': data['replyBody'] ?? ''},
       };
@@ -13755,6 +18345,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
+    _msgHistory.record(text);
 
     // Edit mode
     if (_editingMsg != null) {
@@ -13917,6 +18508,17 @@ class _ChatScreenState extends State<ChatScreen> {
                       context, widget.token, msg, widget.me);
                 },
               ),
+            if (msg['fileType'] == 'image' && msg['fileUrl'] != null)
+              ListTile(
+                leading: const Icon(Icons.manage_search, color: kPrimary),
+                title: const Text('בדיקת סיווג נוספת'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _requestImageReclassification(
+                      context, widget.token, msg);
+                  if (mounted) setState(() {});
+                },
+              ),
             if (!isMe &&
                 msg['id'] != null &&
                 msg['id']?.toString().startsWith('temp_') != true)
@@ -14034,8 +18636,13 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.emit('chat:typing', {'toUserId': widget.recipient['id']});
   }
 
-  void _scrollToBottom() {
+  void _scrollToBottom({bool force = false}) {
     // עם reverse:true, הודעות חדשות נמצאות ב-minScrollExtent (ראש הרשימה הויזואלית)
+    // Never pull the user away from older messages while images finish
+    // loading or a background refresh replaces the message list.
+    final shouldScroll =
+        force || !_scrollCtrl.hasClients || _scrollCtrl.position.pixels <= 80;
+    if (!shouldScroll) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(
@@ -14047,8 +18654,8 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  void _openContactFilterSettings() {
-    Navigator.push(
+  Future<void> _openContactFilterSettings() async {
+    await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => ContentFilterSettingsScreen(
@@ -14057,6 +18664,7 @@ class _ChatScreenState extends State<ChatScreen> {
             contactName: widget.recipient['name'] as String?,
           ),
         ));
+    if (mounted) await _loadOutgoingFilter();
   }
 
   void _showContactPhoto(String imageUrl, String name) {
@@ -14182,15 +18790,16 @@ class _ChatScreenState extends State<ChatScreen> {
                     onTap: () => launchUrl(Uri.parse('mailto:$email')),
                   ),
                 const Divider(),
-                const Align(
+                Align(
                   alignment: Alignment.centerRight,
-                  child: Text('סינון תוכן לאיש הקשר',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                  child: Text('הסינון האישי שלי מול $name',
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w800)),
                 ),
                 const SizedBox(height: 6),
                 ...filterItems.entries.map((entry) {
-                  final allowed = _recipientReceivingFilter?[entry.key] == true;
+                  final loadingFilter = _outgoingFilter == null;
+                  final allowed = _outgoingFilter?[entry.key] == true;
                   return ListTile(
                     dense: true,
                     leading: Icon(entry.value.$2,
@@ -14205,9 +18814,14 @@ class _ChatScreenState extends State<ChatScreen> {
                             : const Color(0xFFF0F3F6),
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      child: Text(allowed ? 'מותר' : 'חסום',
+                      child: Text(
+                          loadingFilter ? 'טוען' : (allowed ? 'מותר' : 'חסום'),
                           style: TextStyle(
-                              color: allowed ? kPrimary : kSubtext,
+                              color: loadingFilter
+                                  ? kSubtext
+                                  : allowed
+                                      ? kPrimary
+                                      : kSubtext,
                               fontWeight: FontWeight.w700,
                               fontSize: 11)),
                     ),
@@ -14739,6 +19353,26 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted || files.isEmpty) return;
     final completed = ValueNotifier<int>(0);
     var refreshScanBot = false;
+    final startedAt = DateTime.now();
+    final uploadMessageIds = List.generate(
+        files.length, (index) => _newUploadMessageId('uploading_batch_$index'));
+    setState(() {
+      for (var index = 0; index < files.length; index++) {
+        _messages.add({
+          'id': uploadMessageIds[index],
+          'text': files[index].name,
+          'from': widget.me?['id'],
+          'time': _nowTime(),
+          'createdAt': startedAt.toIso8601String(),
+          'status': 'uploading',
+          'isFile': true,
+          'fileType': 'image',
+          'fileName': files[index].name,
+          'uploadStartedAt': startedAt.toIso8601String(),
+        });
+      }
+    });
+    _scrollToBottom();
     await _runImageUploadQueue(
       files,
       (file) => _uploadFileRequest(
@@ -14752,6 +19386,10 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       completed,
       onResult: (index, file, result) async {
+        if (mounted) {
+          setState(() => _messages.removeWhere(
+              (message) => message['id'] == uploadMessageIds[index]));
+        }
         final needsRefresh = await _applyPrivateUploadResult(
           result,
           file.name,
@@ -14806,6 +19444,26 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
     final showProgress = fileType != 'image' || isClipboardPaste;
+    final showInlineProgress = fileType == 'image' && !isClipboardPaste;
+    final uploadMessageId = _newUploadMessageId('uploading_');
+    final uploadStartedAt = DateTime.now();
+    if (showInlineProgress) {
+      setState(() {
+        _messages.add({
+          'id': uploadMessageId,
+          'text': fileName,
+          'from': widget.me?['id'],
+          'time': _nowTime(),
+          'createdAt': uploadStartedAt.toIso8601String(),
+          'status': 'uploading',
+          'isFile': true,
+          'fileType': fileType,
+          'fileName': fileName,
+          'uploadStartedAt': uploadStartedAt.toIso8601String(),
+        });
+      });
+      _scrollToBottom();
+    }
     final navigator =
         showProgress ? Navigator.of(context, rootNavigator: true) : null;
     final dialogFuture = showProgress
@@ -14844,6 +19502,10 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     if (dialogFuture != null) await dialogFuture;
     if (!mounted) return;
+    if (showInlineProgress) {
+      setState(() =>
+          _messages.removeWhere((message) => message['id'] == uploadMessageId));
+    }
     await _applyPrivateUploadResult(result, fileName, fileType,
         showNotice: fileType != 'image' || isClipboardPaste);
   }
@@ -14870,6 +19532,7 @@ class _ChatScreenState extends State<ChatScreen> {
             'isFile': true,
             'fileType': fileType,
             'fileName': fileName,
+            'uploadError': result.error ?? 'אירעה שגיאה בזמן העלאת התמונה',
           });
         });
         _scrollToBottom();
@@ -15119,6 +19782,178 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  static const _contactFilterLabels = <String, String>{
+    'text': 'הודעות טקסט',
+    'video': 'סרטוני וידאו',
+    'nonHumanImages': 'תמונות נוף וחפצים',
+    'men': 'תמונות גברים',
+    'women': 'תמונות נשים',
+    'children': 'תמונות ילדים',
+  };
+
+  List<String> _blockedContactFilterItems(Map<String, bool>? filter) =>
+      _contactFilterLabels.entries
+          .where((entry) => filter?[entry.key] == false)
+          .map((entry) => entry.value)
+          .toList();
+
+  Future<void> _showContactFilterStatus() async {
+    final recipientName = widget.recipient['name']?.toString() ?? 'החבר';
+    final loaded = await _loadContactFilterComparison();
+    if (!mounted) return;
+    if (!loaded ||
+        _recipientReceivingFilter == null ||
+        _outgoingFilter == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('לא ניתן לטעון כעת את נתוני הסינון'),
+          action: SnackBarAction(
+            label: 'נסה שוב',
+            onPressed: _showContactFilterStatus,
+          ),
+        ),
+      );
+      return;
+    }
+    var personalDraft = Map<String, bool>.from(_outgoingFilter!);
+    var dirty = false;
+    var saving = false;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.shield_outlined, color: kPrimary),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  'מצב הסינון מול $recipientName',
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.72,
+            ),
+            child: SizedBox(
+              width: 760,
+              child: SingleChildScrollView(
+                child: _InvitationFilterComparisonTable(
+                  groupName: recipientName,
+                  groupFilter: _recipientReceivingFilter,
+                  personalFilter: personalDraft,
+                  counterpartKind: 'החבר',
+                  counterpartFilterLabel: 'סינון החבר',
+                  personalFilterLabel: 'הסינון שלי עבור $recipientName',
+                  counterpartIcon: Icons.person_outline,
+                  onPersonalFilterChanged: (updated) => setDialogState(() {
+                    personalDraft = updated;
+                    dirty = true;
+                  }),
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            FilledButton.icon(
+              onPressed: !dirty || saving
+                  ? null
+                  : () async {
+                      setDialogState(() => saving = true);
+                      try {
+                        final response = await http.put(
+                          Uri.parse(
+                              '$kApi/contacts/${widget.recipient['id']}/filter-settings'),
+                          headers: {
+                            'Authorization': 'Bearer ${widget.token}',
+                            'Content-Type': 'application/json',
+                          },
+                          body: jsonEncode({'filter': personalDraft}),
+                        );
+                        if (!mounted) return;
+                        if (response.statusCode != 200) throw Exception();
+                        setState(
+                            () => _outgoingFilter = Map.from(personalDraft));
+                        if (dialogContext.mounted) {
+                          Navigator.pop(dialogContext);
+                        }
+                        ScaffoldMessenger.of(this.context).showSnackBar(
+                          const SnackBar(content: Text('הסינון האישי נשמר')),
+                        );
+                      } catch (_) {
+                        if (dialogContext.mounted) {
+                          setDialogState(() => saving = false);
+                        }
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(content: Text('שמירת הסינון נכשלה')),
+                          );
+                        }
+                      }
+                    },
+              icon: saving
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Icon(Icons.save_outlined, size: 18),
+              label: const Text('שמור'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('סגור'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _contactFilterStatusButton() {
+    if (widget.recipient['id'] == kScanBotId) {
+      return const SizedBox.shrink();
+    }
+    final hasRestrictions =
+        _blockedContactFilterItems(_recipientReceivingFilter).isNotEmpty ||
+            _blockedContactFilterItems(_outgoingFilter).isNotEmpty;
+    return Tooltip(
+      message: hasRestrictions
+          ? 'יש הגבלות תוכן — לחץ לפירוט'
+          : 'כל סוגי התוכן מותרים',
+      child: IconButton(
+        onPressed: _showContactFilterStatus,
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints.tightFor(width: 30, height: 28),
+        icon: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            const Icon(Icons.shield_outlined, size: 18, color: Colors.white70),
+            if (hasRestrictions)
+              PositionedDirectional(
+                top: -2,
+                end: -3,
+                child: Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: Colors.orangeAccent,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: kPrimary, width: 1),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final recipientName = widget.recipient['name'] as String? ?? '';
@@ -15160,8 +19995,6 @@ class _ChatScreenState extends State<ChatScreen> {
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
                             color: Colors.white)),
-                    _BlockedReceivingFilterIcons(
-                        filter: _recipientReceivingFilter),
                   ],
                 ),
                 Row(
@@ -15171,6 +20004,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     const SizedBox(width: 3),
                     const Text('מסונן · מקוון',
                         style: TextStyle(fontSize: 11, color: Colors.white70)),
+                    const SizedBox(width: 5),
+                    _contactFilterStatusButton(),
                   ],
                 ),
               ],
@@ -15332,32 +20167,14 @@ class _ChatScreenState extends State<ChatScreen> {
                           final messageIndex = _messages.length - 1 - i;
                           final msg = _messages[messageIndex];
                           final isMe = msg['from'] == widget.me?['id'];
-                          var imageRunStart = messageIndex;
-                          var imageRunEnd = messageIndex;
-                          if (_isGridImageMessage(msg)) {
-                            while (imageRunStart > 0 &&
-                                _isGridImageMessage(
-                                    _messages[imageRunStart - 1]) &&
-                                _sameImageSequenceSender(
-                                    msg, _messages[imageRunStart - 1])) {
-                              imageRunStart--;
-                            }
-                            while (imageRunEnd + 1 < _messages.length &&
-                                _isGridImageMessage(
-                                    _messages[imageRunEnd + 1]) &&
-                                _sameImageSequenceSender(
-                                    msg, _messages[imageRunEnd + 1])) {
-                              imageRunEnd++;
-                            }
-                            if (imageRunStart != imageRunEnd &&
-                                messageIndex != imageRunEnd) {
-                              return const SizedBox.shrink();
-                            }
-                          }
-                          final imageSequence = imageRunEnd > imageRunStart
-                              ? _messages.sublist(
-                                  imageRunStart, imageRunEnd + 1)
-                              : const <Map<String, dynamic>>[];
+                          // In group chats every image is a full message. Do
+                          // not combine consecutive uploads into gallery tiles;
+                          // this keeps every received image visible in the
+                          // conversation while the full-screen viewer can still
+                          // browse all conversation images.
+                          final imageRunStart = messageIndex;
+                          final imageRunEnd = messageIndex;
+                          const imageSequence = <Map<String, dynamic>>[];
                           final firstUnreadIndex = _messages.indexWhere(
                               (message) => message['isUnread'] == true);
                           final dateIndex = imageSequence.isNotEmpty
@@ -15475,26 +20292,31 @@ class _ChatScreenState extends State<ChatScreen> {
                           constraints: const BoxConstraints(),
                         ),
                         Expanded(
-                          child: TextField(
-                            controller: _msgCtrl,
-                            focusNode: _msgFocusNode,
-                            textDirection: TextDirection.rtl,
-                            maxLines: 4,
-                            minLines: 1,
-                            onChanged: (_) => _onTyping(),
-                            decoration: InputDecoration(
-                              hintText: 'כתוב הודעה...',
-                              hintTextDirection: TextDirection.rtl,
-                              hintStyle: const TextStyle(
-                                  fontSize: 13, color: kSubtext),
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 4, vertical: 9),
-                              border: InputBorder.none,
-                              isDense: true,
+                          child: Focus(
+                            onKeyEvent: (_, event) =>
+                                _handleMessageInputNavigation(
+                                    _msgCtrl, _msgHistory, event),
+                            child: TextField(
+                              controller: _msgCtrl,
+                              focusNode: _msgFocusNode,
+                              textDirection: TextDirection.rtl,
+                              maxLines: 4,
+                              minLines: 1,
+                              onChanged: (_) => _onTyping(),
+                              decoration: InputDecoration(
+                                hintText: 'כתוב הודעה...',
+                                hintTextDirection: TextDirection.rtl,
+                                hintStyle: const TextStyle(
+                                    fontSize: 13, color: kSubtext),
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 4, vertical: 9),
+                                border: InputBorder.none,
+                                isDense: true,
+                              ),
+                              style: const TextStyle(
+                                  fontSize: 13, color: kTextDark),
+                              onSubmitted: (_) => _send(),
                             ),
-                            style:
-                                const TextStyle(fontSize: 13, color: kTextDark),
-                            onSubmitted: (_) => _send(),
                           ),
                         ),
                         IconButton(
@@ -15700,9 +20522,35 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
     if (groupId == null) return;
     setState(() => _loading = true);
     try {
+      final preview = await http.get(
+        Uri.parse('$kApi/groups/$groupId/invitation-filter'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted || preview.statusCode != 200) {
+        if (mounted) setState(() => _loading = false);
+        return;
+      }
+      final previewData = jsonDecode(preview.body) as Map<String, dynamic>;
+      Map<String, bool> readFilter(dynamic raw) => raw is Map
+          ? raw.map((key, value) => MapEntry(key.toString(), value == true))
+          : <String, bool>{};
+      setState(() => _loading = false);
+      final selected = await _chooseGroupInvitationFilter(
+        context,
+        groupFilter: readFilter(previewData['groupFilter']),
+        initialFilter: _newAccountFilter(),
+        counterpart: _meta['groupName']?.toString() ?? 'הקבוצה',
+        groupName: _meta['groupName']?.toString(),
+      );
+      if (selected == null || !mounted) return;
+      setState(() => _loading = true);
       final res = await http.post(
         Uri.parse('$kApi/groups/$groupId/join'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'filter': selected}),
       );
       if (res.statusCode == 200 && mounted) {
         setState(() {
@@ -16187,6 +21035,288 @@ class _ImageStatusBadge extends StatelessWidget {
   }
 }
 
+class _GroupDeliverySummary extends StatelessWidget {
+  final Map<String, dynamic> summary;
+  const _GroupDeliverySummary(this.summary);
+
+  List<String> _names(String key) {
+    final raw = summary[key];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => item['name']?.toString() ?? '')
+        .where((name) => name.isNotEmpty)
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final deliveredCount = summary['deliveredCount'] as int? ?? 0;
+    final blockedCount = summary['blockedCount'] as int? ?? 0;
+    final deliveredNames = _names('deliveredTo');
+    final blockedNames = _names('blockedFor');
+    final details = <String>[
+      'נשלח בקבוצה',
+      if (deliveredNames.isNotEmpty) 'קיבלו: ${deliveredNames.join(', ')}',
+      if (blockedNames.isNotEmpty)
+        'נחסם בסינון האישי אצל: ${blockedNames.join(', ')}',
+    ].join('\n');
+    return Tooltip(
+      message: details,
+      waitDuration: const Duration(milliseconds: 250),
+      child: Container(
+        margin: const EdgeInsets.only(top: 7),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: blockedCount > 0
+              ? const Color(0xFFFFF3E0)
+              : const Color(0xFFE8F5E9),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: blockedCount > 0
+                ? const Color(0xFFFFB74D)
+                : const Color(0xFF81C784),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              blockedCount > 0 ? Icons.shield_outlined : Icons.done_all,
+              size: 14,
+              color: blockedCount > 0 ? Colors.orange.shade800 : kReadTick,
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                'נשלח בקבוצה: $deliveredCount קיבלו'
+                ' • $blockedCount נחסמו בסינון האישי',
+                textDirection: TextDirection.rtl,
+                softWrap: true,
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.3,
+                  fontWeight: FontWeight.bold,
+                  color: blockedCount > 0 ? Colors.orange.shade900 : kSubtext,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _UploadProcessingCard extends StatefulWidget {
+  final String fileName;
+  final DateTime startedAt;
+  const _UploadProcessingCard(
+      {required this.fileName, required this.startedAt});
+
+  @override
+  State<_UploadProcessingCard> createState() => _UploadProcessingCardState();
+}
+
+class _UploadProcessingCardState extends State<_UploadProcessingCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: _controller,
+        builder: (_, __) {
+          final elapsed = DateTime.now().difference(widget.startedAt).inSeconds;
+          return Container(
+            width: 285,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFFEAF6FD), Color(0xFFF8FCFF)],
+              ),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFB9D8ED)),
+            ),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Row(children: [
+                RotationTransition(
+                  turns: _controller,
+                  child:
+                      const Icon(Icons.auto_awesome, color: kPrimary, size: 25),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      const Text('מעלה וסורק את התמונה',
+                          style: TextStyle(fontWeight: FontWeight.w800)),
+                      Text(widget.fileName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              const TextStyle(fontSize: 11, color: kSubtext)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text('${elapsed}s',
+                    style: const TextStyle(
+                        color: kPrimary, fontWeight: FontWeight.bold)),
+              ]),
+              const SizedBox(height: 11),
+              LinearProgressIndicator(
+                value: _controller.value,
+                minHeight: 5,
+                borderRadius: BorderRadius.circular(5),
+                color: kPrimary,
+                backgroundColor: const Color(0xFFD7EAF6),
+              ),
+              const SizedBox(height: 7),
+              const Text('בדיקת בטיחות, זיהוי תוכן ואישור שליחה',
+                  style: TextStyle(fontSize: 10, color: kSubtext)),
+            ]),
+          );
+        },
+      );
+}
+
+class _UploadResultCard extends StatelessWidget {
+  final bool blocked;
+  final String title;
+  final String reason;
+  final String? imageUrl;
+  final String? fileName;
+  final String onlyYouText;
+  const _UploadResultCard(
+      {required this.blocked,
+      required this.title,
+      required this.reason,
+      this.imageUrl,
+      this.fileName,
+      this.onlyYouText = 'התמונה מוצגת רק לך ולא נשלחה'});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 300,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: blocked ? const Color(0xFFFFF2F2) : const Color(0xFFFFF8E8),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color:
+                  blocked ? const Color(0xFFF0B8B8) : const Color(0xFFF2D28B)),
+        ),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (blocked && imageUrl != null) ...[
+            GestureDetector(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ImagePreviewScreen(
+                    url: imageUrl!,
+                    filename: fileName,
+                  ),
+                ),
+              ),
+              child: Container(
+                width: double.infinity,
+                height: 180,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF2F4F7),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    _PersistentMediaImage(
+                      url: imageUrl!,
+                      width: double.infinity,
+                      height: 180,
+                      fit: BoxFit.contain,
+                      loadingBuilder: (_) => const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                      errorBuilder: (_) => const Center(
+                          child: Icon(Icons.broken_image_outlined)),
+                    ),
+                    Positioned(
+                      left: 7,
+                      top: 7,
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: const BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.zoom_in,
+                            size: 20, color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (fileName != null) ...[
+              const SizedBox(height: 5),
+              Text(fileName!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 10, color: kSubtext)),
+            ],
+            const SizedBox(height: 10),
+          ],
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(blocked ? Icons.gpp_bad_outlined : Icons.error_outline,
+                color: blocked ? Colors.red.shade700 : Colors.orange.shade800),
+            const SizedBox(width: 10),
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                  Text(title,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 5),
+                  Text(reason,
+                      textAlign: TextAlign.right,
+                      textDirection: TextDirection.rtl,
+                      style: const TextStyle(fontSize: 12, height: 1.45)),
+                  const SizedBox(height: 5),
+                  Text(onlyYouText,
+                      textAlign: TextAlign.right,
+                      textDirection: TextDirection.rtl,
+                      style: TextStyle(fontSize: 10, color: kSubtext)),
+                ])),
+          ]),
+        ]),
+      );
+}
+
+String _imageBlockTitle(Object? reason) {
+  final text = reason?.toString() ?? '';
+  if (text.contains('הסינון של הקבוצה') ||
+      text.contains('הגדרות הסינון של הקבוצה') ||
+      text.contains('הגדרות הקבוצה')) {
+    return 'התמונה נחסמה בהגדרות סינון הקבוצה';
+  }
+  if (text.contains('הגדרות הנמען') || text.contains('הסינון האישי')) {
+    return 'התמונה נחסמה בהגדרות הסינון האישיות';
+  }
+  return 'התמונה נחסמה בשלב בדיקת הבטיחות';
+}
+
 class _ImageClassificationBadges extends StatelessWidget {
   final Map<String, dynamic> message;
 
@@ -16262,6 +21392,13 @@ class _ImageClassificationBadges extends StatelessWidget {
 bool _isGridImageMessage(Map<String, dynamic> message) {
   final fileUrl = message['fileUrl'] as String?;
   if (fileUrl == null) return false;
+  final status = message['status']?.toString();
+  if (status == 'uploading' ||
+      status == 'failed' ||
+      status == 'pending_scan' ||
+      status == 'rejected_scan') {
+    return false;
+  }
   return _normalizeIncomingFileType(
         message['fileType'] as String?,
         fileUrl: fileUrl,
@@ -16327,8 +21464,14 @@ class _ConsecutiveImageGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final maxVisible = kIsWeb ? 8 : 4;
     final visible = messages.take(maxVisible).toList();
-    final gridWidth = kIsWeb ? 344.0 : 228.0;
-    final tileExtent = (gridWidth - 8 - 3) / 2;
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final gridWidth = kIsWeb
+        ? (viewportWidth >= 900 ? 520.0 : math.min(344.0, viewportWidth - 24))
+        : math.min(300.0, viewportWidth - 24);
+    // Leave a physical-pixel margin for Flutter Web's fractional layout
+    // rounding. With an exact fit the second tile can wrap onto a clipped
+    // second row, so the gallery contains two images but the chat shows one.
+    final tileExtent = (gridWidth - 8 - 3) / 2 - 1;
     final rowCount = (visible.length / 2).ceil();
     final gridHeight = rowCount * tileExtent + (rowCount - 1) * 3;
     return GestureDetector(
@@ -16360,16 +21503,13 @@ class _ConsecutiveImageGrid extends StatelessWidget {
           ),
           child: SizedBox(
             height: gridHeight,
-            child: GridView.builder(
-              physics: const NeverScrollableScrollPhysics(),
-              padding: EdgeInsets.zero,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 3,
-                mainAxisSpacing: 3,
-              ),
-              itemCount: visible.length,
-              itemBuilder: (_, index) {
+            // This must not be a nested Scrollable. On Flutter web even a
+            // GridView with NeverScrollableScrollPhysics can claim mouse-wheel
+            // events and make the surrounding conversation appear stuck.
+            child: Wrap(
+              spacing: 3,
+              runSpacing: 3,
+              children: List.generate(visible.length, (index) {
                 final message = visible[index];
                 final url = message['fileUrl'] as String;
                 final hiddenCount = messages.length - (maxVisible - 1);
@@ -16377,79 +21517,83 @@ class _ConsecutiveImageGrid extends StatelessWidget {
                     _conversationImageMessages(conversationMessages);
                 final selectedIndex =
                     _conversationImageIndex(conversationImages, message);
-                return GestureDetector(
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ImagePreviewScreen(
-                        url: url,
-                        filename: message['fileName'] as String?,
-                        urls: conversationImages
-                            .map((item) => item['fileUrl'] as String)
-                            .toList(),
-                        filenames: conversationImages
-                            .map((item) => item['fileName'] as String?)
-                            .toList(),
-                        dates: conversationImages
-                            .map((item) => _imageSentAtLabel(item))
-                            .toList(),
-                        messages: conversationImages,
-                        onMessageOptions: onMessageOptions,
-                        initialIndex: selectedIndex,
+                return SizedBox(
+                  width: tileExtent,
+                  height: tileExtent,
+                  child: GestureDetector(
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ImagePreviewScreen(
+                          url: url,
+                          filename: message['fileName'] as String?,
+                          urls: conversationImages
+                              .map((item) => item['fileUrl'] as String)
+                              .toList(),
+                          filenames: conversationImages
+                              .map((item) => item['fileName'] as String?)
+                              .toList(),
+                          dates: conversationImages
+                              .map((item) => _imageSentAtLabel(item))
+                              .toList(),
+                          messages: conversationImages,
+                          onMessageOptions: onMessageOptions,
+                          initialIndex: selectedIndex,
+                        ),
+                      ),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(9),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _PersistentMediaImage(
+                            url: url,
+                            fit: BoxFit.contain,
+                            loadingBuilder: (_) => const ColoredBox(
+                              color: kBorder,
+                              child: Center(
+                                child: CircularProgressIndicator(
+                                    color: kPrimary, strokeWidth: 2),
+                              ),
+                            ),
+                            errorBuilder: (_) => const ColoredBox(
+                              color: kBorder,
+                              child: Icon(Icons.broken_image, color: kSubtext),
+                            ),
+                          ),
+                          if (index == maxVisible - 1 &&
+                              messages.length > maxVisible) ...[
+                            ColoredBox(color: Colors.black.withOpacity(0.48)),
+                            Center(
+                              child: Text(
+                                '+$hiddenCount',
+                                textDirection: TextDirection.ltr,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                          Positioned(
+                            left: 5,
+                            bottom: 5,
+                            child:
+                                _ImageStatusBadge(message: message, isMe: isMe),
+                          ),
+                          Positioned(
+                            right: 5,
+                            top: 5,
+                            child: _ImageClassificationBadges(message: message),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(9),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        _PersistentMediaImage(
-                          url: url,
-                          fit: BoxFit.cover,
-                          loadingBuilder: (_) => const ColoredBox(
-                            color: kBorder,
-                            child: Center(
-                              child: CircularProgressIndicator(
-                                  color: kPrimary, strokeWidth: 2),
-                            ),
-                          ),
-                          errorBuilder: (_) => const ColoredBox(
-                            color: kBorder,
-                            child: Icon(Icons.broken_image, color: kSubtext),
-                          ),
-                        ),
-                        if (index == maxVisible - 1 &&
-                            messages.length > maxVisible) ...[
-                          ColoredBox(color: Colors.black.withOpacity(0.48)),
-                          Center(
-                            child: Text(
-                              '+$hiddenCount',
-                              textDirection: TextDirection.ltr,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 30,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ],
-                        Positioned(
-                          left: 5,
-                          bottom: 5,
-                          child:
-                              _ImageStatusBadge(message: message, isMe: isMe),
-                        ),
-                        Positioned(
-                          right: 5,
-                          top: 5,
-                          child: _ImageClassificationBadges(message: message),
-                        ),
-                      ],
-                    ),
-                  ),
                 );
-              },
+              }),
             ),
           ),
         ),
@@ -16623,6 +21767,7 @@ class _WebsiteLinkPreview extends StatefulWidget {
 
 class _WebsiteLinkPreviewState extends State<_WebsiteLinkPreview> {
   static final Map<String, Map<String, dynamic>> _cache = {};
+  static final Map<String, DateTime> _cacheExpiresAt = {};
   Map<String, dynamic>? _data;
   bool _failed = false;
 
@@ -16639,7 +21784,10 @@ class _WebsiteLinkPreviewState extends State<_WebsiteLinkPreview> {
 
   Future<void> _load() async {
     final cached = _cache[widget.url];
-    if (cached != null) {
+    final cacheExpiresAt = _cacheExpiresAt[widget.url];
+    if (cached != null &&
+        cacheExpiresAt != null &&
+        cacheExpiresAt.isAfter(DateTime.now())) {
       setState(() => _data = cached);
       return;
     }
@@ -16654,6 +21802,10 @@ class _WebsiteLinkPreviewState extends State<_WebsiteLinkPreview> {
       if (decoded is! Map) throw Exception();
       final data = Map<String, dynamic>.from(decoded);
       _cache[widget.url] = data;
+      final hasImage = data['image']?.toString().trim().isNotEmpty == true;
+      _cacheExpiresAt[widget.url] = DateTime.now().add(
+        hasImage ? const Duration(hours: 6) : const Duration(minutes: 1),
+      );
       if (mounted) setState(() => _data = data);
     } catch (_) {
       if (mounted) setState(() => _failed = true);
@@ -16795,6 +21947,51 @@ class _MessageBubble extends StatelessWidget {
       fileUrl: fileUrl,
       fileName: fileName,
     );
+    final uploadStatus = message['status']?.toString();
+    if (fileType == 'image' && uploadStatus == 'uploading') {
+      return Align(
+        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: _UploadProcessingCard(
+            fileName: fileName ?? 'תמונה',
+            startedAt: DateTime.tryParse(
+                    message['uploadStartedAt']?.toString() ?? '') ??
+                DateTime.now(),
+          ),
+        ),
+      );
+    }
+    if (fileType == 'image' && uploadStatus == 'failed') {
+      return Align(
+        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: _UploadResultCard(
+            blocked: false,
+            title: 'העלאת התמונה נכשלה',
+            reason: message['uploadError']?.toString() ??
+                'אירעה שגיאה בזמן העלאת התמונה',
+          ),
+        ),
+      );
+    }
+    if (fileType == 'image' && uploadStatus == 'rejected_scan') {
+      return Align(
+        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: _UploadResultCard(
+            blocked: true,
+            title: _imageBlockTitle(message['scanReason']),
+            reason: message['scanReason']?.toString() ??
+                'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה',
+            imageUrl: fileUrl,
+            fileName: fileName,
+          ),
+        ),
+      );
+    }
     final isImageFile = isFile && fileUrl != null && fileType == 'image';
     final isAudioFile = isFile && fileUrl != null && fileType == 'audio';
     final isVideoFile = isFile && fileUrl != null && fileType == 'video';
@@ -17526,8 +22723,6 @@ class _ExpressionPickerSheet extends StatefulWidget {
 }
 
 class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
-  String _category = 'חיוכים';
-  String _emojiQuery = '';
   final _gifSearch = TextEditingController();
   List<String> _recent = [];
   List<Map<String, dynamic>> _gifs = [];
@@ -17535,6 +22730,9 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   bool _loadingExpressionCatalog = true;
   bool _searchingGifs = false;
   String? _gifError;
+  List<Map<String, dynamic>> _twemojiItems = [];
+  String _twemojiCategory = 'פנים ורגשות';
+  String _twemojiQuery = '';
 
   @override
   void initState() {
@@ -17544,6 +22742,22 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
       setState(() => _recent = prefs.getStringList('recent_emojis') ?? []);
     });
     _loadExpressionCatalog();
+    _loadTwemojiAllowlist();
+  }
+
+  Future<void> _loadTwemojiAllowlist() async {
+    try {
+      final raw = await rootBundle.loadString(
+        'assets/twemoji/emoji_allowlist.json',
+      );
+      final items = (jsonDecode(raw) as List)
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
+          .where((item) =>
+              item['emoji'] is String && item['twemoji_code'] is String)
+          .toList();
+      if (mounted) setState(() => _twemojiItems = items);
+    } catch (_) {}
   }
 
   Future<void> _loadExpressionCatalog() async {
@@ -17629,10 +22843,106 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     }
   }
 
+  Widget _buildTwemojiPicker() {
+    final categories = _twemojiItems
+        .map((item) => item['category']?.toString() ?? '')
+        .where((category) => category.isNotEmpty)
+        .toSet()
+        .toList();
+    final query = _twemojiQuery.trim().toLowerCase();
+    final visible = _twemojiItems.where((item) {
+      if (query.isNotEmpty) {
+        return (item['label_he']?.toString().toLowerCase() ?? '')
+                .contains(query) ||
+            (item['emoji']?.toString() ?? '').contains(query) ||
+            (item['category']?.toString().toLowerCase() ?? '').contains(query);
+      }
+      return item['category'] == _twemojiCategory;
+    }).toList();
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+        child: TextField(
+          decoration: const InputDecoration(
+            hintText: 'חיפוש אימוג׳י מאושר…',
+            prefixIcon: Icon(Icons.search),
+            isDense: true,
+          ),
+          onChanged: (value) => setState(() => _twemojiQuery = value),
+        ),
+      ),
+      ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 88),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 6,
+            runSpacing: 6,
+            children: categories
+                .map((category) => ChoiceChip(
+                      label: Text(category),
+                      selected: _twemojiCategory == category,
+                      onSelected: (_) => setState(() {
+                        _twemojiCategory = category;
+                        _twemojiQuery = '';
+                      }),
+                    ))
+                .toList(),
+          ),
+        ),
+      ),
+      Expanded(
+        child: _twemojiItems.isEmpty
+            ? const Center(child: CircularProgressIndicator(color: kPrimary))
+            : GridView.builder(
+                padding: const EdgeInsets.all(12),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 8,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                ),
+                itemCount: visible.length,
+                itemBuilder: (_, index) {
+                  final item = visible[index];
+                  final emoji = item['emoji'].toString();
+                  final label = item['label_he']?.toString() ?? emoji;
+                  final code = item['twemoji_code'].toString();
+                  return Tooltip(
+                    message: label,
+                    child: Semantics(
+                      button: true,
+                      label: label,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => _chooseEmoji(emoji),
+                        child: Padding(
+                          padding: const EdgeInsets.all(5),
+                          child: SvgPicture.asset(
+                            'assets/twemoji/svg/$code.svg',
+                            semanticsLabel: label,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+      const Padding(
+        padding: EdgeInsets.fromLTRB(12, 0, 12, 8),
+        child: Text(
+          'Twemoji • רשימה מסוננת ומאושרת לבתשובה',
+          style: TextStyle(fontSize: 10, color: kSubtext),
+        ),
+      ),
+    ]);
+  }
+
   Widget _buildRemoteExpressionPicker(List<Map<String, dynamic>> categories) {
     return SafeArea(
       child: DefaultTabController(
-        length: categories.length,
+        length: categories.length + 1,
         child: SizedBox(
           height: MediaQuery.of(context).size.height * 0.68,
           child: Column(children: [
@@ -17651,24 +22961,27 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
             TabBar(
               isScrollable: categories.length > 4,
               labelColor: kPrimary,
-              tabs: categories
-                  .map((category) => Tab(
-                        icon: Icon(_expressionCategoryIcon(
-                            category['id']?.toString() ?? '')),
-                        text: category['title']?.toString() ?? '',
-                      ))
-                  .toList(),
+              tabs: [
+                const Tab(
+                    icon: Icon(Icons.emoji_emotions_outlined), text: 'אימוג׳י'),
+                ...categories.map((category) => Tab(
+                      icon: Icon(_expressionCategoryIcon(
+                          category['id']?.toString() ?? '')),
+                      text: category['title']?.toString() ?? '',
+                    )),
+              ],
             ),
             Expanded(
               child: TabBarView(
-                children: categories
-                    .map((category) => _RemoteExpressionGrid(
-                          items: (category['items'] as List? ?? const [])
-                              .whereType<Map>()
-                              .map((item) => Map<String, dynamic>.from(item))
-                              .toList(),
-                        ))
-                    .toList(),
+                children: [
+                  _buildTwemojiPicker(),
+                  ...categories.map((category) => _RemoteExpressionGrid(
+                        items: (category['items'] as List? ?? const [])
+                            .whereType<Map>()
+                            .map((item) => Map<String, dynamic>.from(item))
+                            .toList(),
+                      )),
+                ],
               ),
             ),
             const Padding(
@@ -17759,21 +23072,6 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   }
 
   Widget _legacyBuild(BuildContext context) {
-    final categoryValues = _category == 'אחרונים'
-        ? _recent
-        : (_emojiCategories[_category] ?? const <String>[]);
-    final query = _emojiQuery.trim();
-    final matchingCategories = _emojiCategories.entries
-        .where((entry) => entry.key.contains(query))
-        .expand((entry) => entry.value);
-    final emojis = query.isEmpty
-        ? categoryValues
-        : <String>{
-            ...matchingCategories,
-            ..._emojiCategories.values
-                .expand((items) => items)
-                .where((emoji) => emoji.contains(query)),
-          }.toList();
     return SafeArea(
       child: DefaultTabController(
         length: 3,
@@ -17787,50 +23085,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
             ]),
             Expanded(
                 child: TabBarView(children: [
-              Column(children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-                  child: TextField(
-                    decoration: const InputDecoration(
-                        hintText: 'חיפוש אימוג׳י...',
-                        prefixIcon: Icon(Icons.search),
-                        isDense: true),
-                    onChanged: (value) => setState(() => _emojiQuery = value),
-                  ),
-                ),
-                SizedBox(
-                    height: 42,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: _emojiCategories.keys
-                          .map((name) => Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 3),
-                                child: ChoiceChip(
-                                    label: Text(name),
-                                    selected: _category == name,
-                                    onSelected: (_) =>
-                                        setState(() => _category = name)),
-                              ))
-                          .toList(),
-                    )),
-                Expanded(
-                    child: emojis.isEmpty
-                        ? const Center(child: Text('אין אימוג׳ים להצגה'))
-                        : GridView.builder(
-                            padding: const EdgeInsets.all(12),
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: 8),
-                            itemCount: emojis.length,
-                            itemBuilder: (_, index) => InkWell(
-                              onTap: () => _chooseEmoji(emojis[index]),
-                              child: Center(
-                                  child: Text(emojis[index],
-                                      style: const TextStyle(fontSize: 28))),
-                            ),
-                          )),
-              ]),
+              _buildTwemojiPicker(),
               Column(children: [
                 Padding(
                   padding: const EdgeInsets.all(12),
@@ -18182,12 +23437,21 @@ class _GroupsScreenState extends State<GroupsScreen> {
                 '${data['addedByName']} הוסיף אותך לקבוצה "${data['groupName']}"')),
       );
     });
+    widget.socket?.on('group:deleted', (data) {
+      if (!mounted || data is! Map) return;
+      final groupId = data['groupId']?.toString();
+      if (groupId == null) return;
+      _clearGroupMessagesCache(widget.me?['id'], groupId).ignore();
+      setState(() =>
+          _groups.removeWhere((group) => group['id']?.toString() == groupId));
+    });
   }
 
   @override
   void dispose() {
     widget.socket?.off('group:message');
     widget.socket?.off('group:invited');
+    widget.socket?.off('group:deleted');
     super.dispose();
   }
 
@@ -18230,87 +23494,28 @@ class _GroupsScreenState extends State<GroupsScreen> {
   }
 
   Future<void> _createGroup() async {
-    final nameCtrl = TextEditingController();
-    final descCtrl = TextEditingController();
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('קבוצה חדשה'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              textDirection: TextDirection.rtl,
-              decoration: const InputDecoration(labelText: 'שם הקבוצה'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: descCtrl,
-              textDirection: TextDirection.rtl,
-              decoration: const InputDecoration(labelText: 'תיאור (אופציונלי)'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('ביטול')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('צור')),
-        ],
-      ),
+    final group = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => CreateGroupScreen(token: widget.token)),
     );
-    if (confirmed != true || nameCtrl.text.trim().isEmpty) return;
-    try {
-      final res = await http.post(
-        Uri.parse('$kApi/groups'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'name': nameCtrl.text.trim(),
-          'description': descCtrl.text.trim()
-        }),
-      );
-      if (res.statusCode == 200 && mounted) {
-        final group = jsonDecode(res.body) as Map<String, dynamic>;
-        widget.socket?.emit('group:join', {'groupId': group['id']});
-        await _loadGroups();
-        if (widget.onGroupSelected != null &&
-            MediaQuery.sizeOf(context).width >= 900) {
-          widget.onGroupSelected!(group, true);
-          return;
-        }
-        await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => GroupChatScreen(
-              group: group,
-              me: widget.me,
-              token: widget.token,
-              socket: widget.socket,
-              openAddMembersOnStart: true,
-            ),
-          ),
-        );
-        _loadGroups();
-      } else if (mounted) {
-        var error = 'לא ניתן ליצור את הקבוצה';
-        try {
-          error = (jsonDecode(res.body) as Map)['error']?.toString() ?? error;
-        } catch (_) {}
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error)));
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('שגיאת תקשורת ביצירת הקבוצה')));
-      }
+    if (group == null || !mounted) return;
+    widget.socket?.emit('group:join', {'groupId': group['id']});
+    await _loadGroups();
+    if (!mounted) return;
+    if (widget.onGroupSelected != null &&
+        MediaQuery.sizeOf(context).width >= 900) {
+      widget.onGroupSelected!(group, false);
+      return;
     }
+    await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => GroupChatScreen(
+                group: group,
+                me: widget.me,
+                token: widget.token,
+                socket: widget.socket)));
+    _loadGroups();
   }
 
   @override
@@ -18535,6 +23740,7 @@ class GroupChatScreen extends StatefulWidget {
 class _GroupChatScreenState extends State<GroupChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   final _msgCtrl = TextEditingController();
+  final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
   final _scrollCtrl = ScrollController();
@@ -18546,6 +23752,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   late final void Function(dynamic) _scanRejectedSocketHandler;
   late final void Function(dynamic) _educationUpdatedSocketHandler;
   late final void Function(dynamic) _messageRejectedSocketHandler;
+  late final void Function(dynamic) _groupDeletedSocketHandler;
   List<Map<String, dynamic>> _members = [];
   String _myStatus = 'member'; // 'member' or 'pending'
   Map<String, dynamic>? _editingMsg;
@@ -18554,8 +23761,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _processingInvite = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
+  Timer? _messageRefreshTimer;
+  String? _serverMessagesFingerprint;
   String _voiceFileName = 'voice_message.webm';
   Map<String, bool>? _groupReceivingFilter;
+  Map<String, bool>? _outgoingFilter;
+  Map<String, bool>? _invitationPersonalFilter;
+  Map<String, bool>? _acceptedFilterNotice;
+  String? _invitationFilterError;
 
   String get _groupId => widget.group['id'] as String;
 
@@ -18574,6 +23787,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _isAdmin = widget.group['role'] == 'admin';
     _myStatus = widget.group['status'] as String? ?? 'member';
     _reconcileGroupMembership();
+    _loadAcceptedFilterNotice();
     _setupSocket();
     if (_myStatus == 'member') {
       // A newly-created group is added after the socket connected, so its
@@ -18583,9 +23797,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _loadMessages();
       _loadMembers();
       _loadGroupReceivingFilter();
+      // Socket delivery can be missed while a browser tab sleeps or reconnects.
+      // Reconcile group history periodically, just like direct conversations.
+      _messageRefreshTimer = Timer.periodic(
+        const Duration(seconds: 4),
+        (_) => _loadMessages(silent: true),
+      );
     } else {
       // Do not reveal cached group content before an invitation is accepted.
       _loading = false;
+      _loadInvitationFilters();
     }
     if (_isAdmin) {
       if (widget.openAddMembersOnStart) {
@@ -18641,8 +23862,107 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _groupReceivingFilter = raw.map(
           (key, value) => MapEntry(key.toString(), value == true),
         );
+        final personal = body is Map ? body['personalFilter'] : null;
+        if (personal is Map) {
+          _outgoingFilter = personal
+              .map((key, value) => MapEntry(key.toString(), value == true));
+        }
       });
     } catch (_) {}
+  }
+
+  Future<bool> _loadInvitationFilters() async {
+    if (mounted) setState(() => _invitationFilterError = null);
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/groups/$_groupId/invitation-filter'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (!mounted) return false;
+      if (response.statusCode != 200) {
+        var message = 'לא ניתן לטעון את פרטי ההזמנה';
+        try {
+          final body = jsonDecode(response.body);
+          if (body is Map && body['error'] != null) {
+            message = body['error'].toString();
+          }
+        } catch (_) {}
+        setState(() => _invitationFilterError = message);
+        return false;
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      Map<String, bool> readFilter(dynamic raw) => raw is Map
+          ? raw.map((key, value) => MapEntry(key.toString(), value == true))
+          : <String, bool>{};
+      setState(() {
+        _groupReceivingFilter = readFilter(data['groupFilter']);
+        _invitationPersonalFilter = _newAccountFilter();
+      });
+      return true;
+    } catch (_) {
+      if (mounted) {
+        setState(() => _invitationFilterError =
+            'שגיאת חיבור בעת טעינת ההזמנה. אפשר לנסות שוב.');
+      }
+      return false;
+    }
+  }
+
+  String get _acceptedFilterNoticeKey =>
+      'accepted_group_filter_${widget.me?['id']}_$_groupId';
+
+  Future<void> _loadAcceptedFilterNotice() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_acceptedFilterNoticeKey);
+      if (raw == null || !mounted) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      setState(() => _acceptedFilterNotice =
+          decoded.map((key, value) => MapEntry(key.toString(), value == true)));
+    } catch (_) {}
+  }
+
+  Future<void> _saveAcceptedFilterNotice(Map<String, bool> filter) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_acceptedFilterNoticeKey, jsonEncode(filter));
+    if (mounted) {
+      setState(() => _acceptedFilterNotice = Map<String, bool>.from(filter));
+    }
+  }
+
+  Future<void> _updateMyGroupFilter() async {
+    await _loadGroupReceivingFilter();
+    if (!mounted) return;
+    final selected = await _chooseGroupInvitationFilter(
+      context,
+      groupFilter: _groupReceivingFilter ?? const <String, bool>{},
+      initialFilter:
+          _acceptedFilterNotice ?? _outgoingFilter ?? const <String, bool>{},
+      counterpart: widget.group['name']?.toString() ?? 'הקבוצה',
+      groupName: widget.group['name']?.toString(),
+    );
+    if (selected == null || !mounted) return;
+    final response = await http.put(
+      Uri.parse('$kApi/groups/$_groupId/personal-filter'),
+      headers: {
+        'Authorization': 'Bearer ${widget.token}',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({'filter': selected}),
+    );
+    if (!mounted) return;
+    if (response.statusCode != 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('עדכון הסינון האישי נכשל')));
+      return;
+    }
+    await _saveAcceptedFilterNotice(selected);
+    await _loadGroupReceivingFilter();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('הסינון האישי בקבוצה עודכן')));
+    }
   }
 
   Future<void> _loadMembers() async {
@@ -18713,13 +24033,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     };
   }
 
-  Future<void> _acceptPending() async {
+  Future<void> _acceptPending({bool useCurrentFilter = false}) async {
     if (_processingInvite) return;
+    if (_groupReceivingFilter == null || _invitationPersonalFilter == null) {
+      final loaded = await _loadInvitationFilters();
+      if (!loaded) return;
+    }
+    if (!mounted) return;
+    final selectedFilter = useCurrentFilter
+        ? Map<String, bool>.from(
+            _invitationPersonalFilter ?? const <String, bool>{})
+        : await _chooseGroupInvitationFilter(
+            context,
+            groupFilter: _groupReceivingFilter ?? const <String, bool>{},
+            initialFilter: _invitationPersonalFilter ?? const <String, bool>{},
+            counterpart: widget.group['name']?.toString() ?? 'הקבוצה',
+            groupName: widget.group['name']?.toString(),
+          );
+    if (selectedFilter == null || !mounted) return;
     setState(() => _processingInvite = true);
     try {
       final res = await http.post(
         Uri.parse('$kApi/groups/$_groupId/join'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'filter': selectedFilter}),
       );
       if (res.statusCode == 200 && mounted) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -18727,6 +24067,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _myStatus = 'member';
           widget.group['status'] = 'member';
         });
+        await _saveAcceptedFilterNotice(selectedFilter);
         // Join socket room
         widget.socket?.emit('group:join', {'groupId': _groupId});
         widget.socket?.emit('group:viewed', {'groupId': _groupId});
@@ -19273,13 +24614,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return 'צפה ב־${viewed.day.toString().padLeft(2, '0')}/${viewed.month.toString().padLeft(2, '0')} ${viewed.hour.toString().padLeft(2, '0')}:${viewed.minute.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _loadMessages() async {
-    final cacheKey = 'cache_group_msgs_${widget.me?['id']}_$_groupId';
+  Future<void> _loadMessages({bool silent = false}) async {
+    final cacheKey = _groupMessagesCacheKey(widget.me?['id'], _groupId);
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
       final cached = prefs.getString(cacheKey);
-      if (cached != null && mounted) {
+      if (!silent && cached != null && mounted) {
         final list = (jsonDecode(cached) as List).cast<Map<String, dynamic>>();
         setState(() {
           _messages
@@ -19301,6 +24642,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         final data = jsonDecode(res.body) as List;
         final normalized = data.map(_normalize).toList();
         _persistRecentImageUrls(normalized).ignore();
+        final fingerprint = jsonEncode(normalized);
+        if (silent && fingerprint == _serverMessagesFingerprint) return;
+        _serverMessagesFingerprint = fingerprint;
         setState(() {
           final pending = _messages
               .where((message) =>
@@ -19329,7 +24673,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             : normalized;
         await prefs.setString(cacheKey, jsonEncode(toCache));
       } else {
-        setState(() => _loading = false);
+        if (res.statusCode == 403 || res.statusCode == 404) {
+          await _clearGroupMessagesCache(widget.me?['id'], _groupId);
+          if (!mounted) return;
+          setState(() {
+            _messages.clear();
+            _loading = false;
+          });
+        } else {
+          setState(() => _loading = false);
+        }
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
@@ -19351,6 +24704,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
+      if (map['delivery_summary'] != null)
+        'deliverySummary': map['delivery_summary'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
       'fileUrl': map['file_url'],
       'fileName': map['file_name'],
@@ -19377,6 +24732,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   void _setupSocket() {
+    _groupDeletedSocketHandler = (data) {
+      if (data is! Map || data['groupId']?.toString() != _groupId) return;
+      _handleDeletedGroupEvent();
+    };
+    widget.socket?.on('group:deleted', _groupDeletedSocketHandler);
+
     widget.socket?.on('group:message', (data) {
       if (data['groupId'] != _groupId || !mounted) return;
       final fileUrl = data['fileUrl'] as String?;
@@ -19402,6 +24763,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'educationResponseStatus': data['educationResponseStatus'],
         if (data['classification'] != null)
           'classification': data['classification'],
+        if (data['deliverySummary'] != null)
+          'deliverySummary': data['deliverySummary'],
       };
       setState(() {
         final clientMessageId = data['clientMessageId'] as String?;
@@ -19526,6 +24889,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void dispose() {
     _clipboardImagePasteListener.dispose();
     _recordTimer?.cancel();
+    _messageRefreshTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('group:message');
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
@@ -19536,6 +24900,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.off('group:member_joined');
     widget.socket?.off('message:edited');
     widget.socket?.off('message:deleted');
+    widget.socket?.off('group:deleted', _groupDeletedSocketHandler);
     _msgCtrl.dispose();
     _msgFocusNode.dispose();
     _scrollCtrl.dispose();
@@ -19599,10 +24964,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
-  void _scrollToBottom() {
+  void _scrollToBottom({bool force = false}) {
+    // Group messages are chronological, so the visual bottom is maxScrollExtent.
+    // Preserve the user's position when scans and image updates rebuild the list.
+    final shouldScroll = force ||
+        !_scrollCtrl.hasClients ||
+        _scrollCtrl.position.maxScrollExtent - _scrollCtrl.position.pixels <=
+            80;
+    if (!shouldScroll) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(_scrollCtrl.position.minScrollExtent,
+        _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent,
             duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
       }
     });
@@ -19611,6 +24983,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _send() async {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
+    _msgHistory.record(text);
 
     // Edit mode
     if (_editingMsg != null) {
@@ -19701,6 +25074,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   Navigator.pop(context);
                   _setMessageImageAsProfile(
                       context, widget.token, msg, widget.me);
+                },
+              ),
+            if (msg['fileType'] == 'image' && msg['fileUrl'] != null)
+              ListTile(
+                leading: const Icon(Icons.manage_search, color: kPrimary),
+                title: const Text('בדיקת סיווג נוספת'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _requestImageReclassification(
+                      context, widget.token, msg);
+                  if (mounted) setState(() {});
                 },
               ),
             if (!isMe &&
@@ -20033,6 +25417,27 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _uploadGroupImageBatch(List<XFile> files) async {
     if (!mounted || files.isEmpty) return;
     final completed = ValueNotifier<int>(0);
+    final startedAt = DateTime.now();
+    final uploadMessageIds = List.generate(files.length,
+        (index) => _newUploadMessageId('uploading_group_batch_$index'));
+    setState(() {
+      for (var index = 0; index < files.length; index++) {
+        _messages.add({
+          'id': uploadMessageIds[index],
+          'text': files[index].name,
+          'senderName': widget.me?['name'] as String? ?? '',
+          'time': _nowTime(),
+          'createdAt': startedAt.toIso8601String(),
+          'isMe': true,
+          'status': 'uploading',
+          'isFile': true,
+          'fileType': 'image',
+          'fileName': files[index].name,
+          'uploadStartedAt': startedAt.toIso8601String(),
+        });
+      }
+    });
+    _scrollToBottom();
     await _runImageUploadQueue(
       files,
       (file) => _uploadFileRequest(
@@ -20042,11 +25447,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         fields: {'groupId': _groupId},
       ),
       completed,
-      onResult: (index, file, result) =>
-          _applyGroupUploadResult(result, file.name, 'image', false),
+      onResult: (index, file, result) async {
+        if (mounted) {
+          setState(() => _messages.removeWhere(
+              (message) => message['id'] == uploadMessageIds[index]));
+        }
+        await _applyGroupUploadResult(result, file.name, 'image', false);
+      },
     );
     completed.dispose();
     if (!mounted) return;
+    // Reconcile the whole batch with the server. Concurrent scan responses can
+    // arrive in a different order, and the server is the source of truth for
+    // every approved, pending, or rejected image in the selection.
+    await _loadMessages();
   }
 
   Future<void> _pickDocument() async {
@@ -20062,6 +25476,27 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
     final showProgress = fileType != 'image' || isClipboardPaste;
+    final showInlineProgress = fileType == 'image' && !isClipboardPaste;
+    final uploadMessageId = _newUploadMessageId('uploading_group_');
+    final uploadStartedAt = DateTime.now();
+    if (showInlineProgress) {
+      setState(() {
+        _messages.add({
+          'id': uploadMessageId,
+          'text': fileName,
+          'senderName': widget.me?['name'] as String? ?? '',
+          'time': _nowTime(),
+          'createdAt': uploadStartedAt.toIso8601String(),
+          'isMe': true,
+          'status': 'uploading',
+          'isFile': true,
+          'fileType': fileType,
+          'fileName': fileName,
+          'uploadStartedAt': uploadStartedAt.toIso8601String(),
+        });
+      });
+      _scrollToBottom();
+    }
     final navigator =
         showProgress ? Navigator.of(context, rootNavigator: true) : null;
     final dialogFuture = showProgress
@@ -20096,6 +25531,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
     if (dialogFuture != null) await dialogFuture;
     if (!mounted) return;
+    if (showInlineProgress) {
+      setState(() =>
+          _messages.removeWhere((message) => message['id'] == uploadMessageId));
+    }
     await _applyGroupUploadResult(
         result, fileName, fileType, fileType != 'image' || isClipboardPaste);
   }
@@ -20106,6 +25545,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final fileUrl = data['url'] as String?;
     switch (result.outcome) {
       case _FileUploadOutcome.failed:
+        setState(() {
+          _messages.add({
+            'id': _newUploadMessageId('failed_group_file_'),
+            'text': fileName,
+            'senderName': widget.me?['name'] as String? ?? '',
+            'time': _nowTime(),
+            'createdAt': DateTime.now().toIso8601String(),
+            'isMe': true,
+            'status': 'failed',
+            'isFile': true,
+            'fileType': fileType,
+            'fileName': fileName,
+            'uploadError': result.error ?? 'אירעה שגיאה בזמן העלאת התמונה',
+          });
+        });
+        _scrollToBottom();
         if (showNotice) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text(result.error ?? 'שגיאה בהעלאה'),
@@ -20246,6 +25701,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               'fileName': fileName,
               if (data['classification'] != null)
                 'classification': data['classification'],
+              if (sendData['deliverySummary'] != null)
+                'deliverySummary': sendData['deliverySummary'],
             });
           }
         });
@@ -20340,10 +25797,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (!mounted) return;
       if (response.statusCode == 200) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_acceptedFilterNoticeKey);
+        await _clearGroupMessagesCache(widget.me?['id'], _groupId);
+        widget.socket?.emit('group:leave', {'groupId': _groupId});
         _closeRemovedGroup();
       } else {
+        var message = 'לא ניתן לצאת מהקבוצה';
+        try {
+          final body = jsonDecode(response.body);
+          if (body is Map && body['error'] != null) {
+            message = body['error'].toString();
+          }
+        } catch (_) {}
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('לא ניתן לצאת מהקבוצה')),
+          SnackBar(content: Text(message)),
         );
       }
     } catch (_) {
@@ -20385,6 +25853,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (!mounted) return;
       if (response.statusCode == 200) {
+        await _clearGroupMessagesCache(widget.me?['id'], _groupId);
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('הקבוצה נמחקה')),
         );
@@ -20408,6 +25878,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         );
       }
     }
+  }
+
+  Future<void> _handleDeletedGroupEvent() async {
+    await _clearGroupMessagesCache(widget.me?['id'], _groupId);
+    if (!mounted) return;
+    setState(() => _messages.clear());
+    _closeRemovedGroup();
   }
 
   Future<void> _changeGroupPhoto() async {
@@ -20966,8 +26443,282 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
+  static const _groupFilterLabels = <String, String>{
+    'text': 'הודעות טקסט',
+    'video': 'סרטוני וידאו',
+    'nonHumanImages': 'תמונות נוף וחפצים',
+    'men': 'תמונות גברים',
+    'women': 'תמונות נשים',
+    'children': 'תמונות ילדים',
+  };
+
+  List<String> _blockedGroupFilterItems(Map<String, bool>? filter) =>
+      _groupFilterLabels.entries
+          .where((entry) => filter?[entry.key] == false)
+          .map((entry) => entry.value)
+          .toList();
+
+  bool get _isSelfGroup {
+    return widget.group['is_self'] == true;
+  }
+
+  Future<void> _showGroupFilterStatus() async {
+    await _loadGroupReceivingFilter();
+    if (!mounted) return;
+    if (_groupReceivingFilter == null || _outgoingFilter == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('לא ניתן לטעון כעת את נתוני הסינון')),
+      );
+      return;
+    }
+    var groupDraft = Map<String, bool>.from(_groupReceivingFilter!);
+    var personalDraft = Map<String, bool>.from(_outgoingFilter!);
+    var groupDirty = false;
+    var personalDirty = false;
+    var saving = false;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.shield_outlined, color: kPrimary),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  'מצב סינון הקבוצה — ${widget.group['name']?.toString() ?? 'קבוצה'}',
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 760,
+            child: SingleChildScrollView(
+              child: _InvitationFilterComparisonTable(
+                groupName: widget.group['name']?.toString(),
+                groupFilter: groupDraft,
+                personalFilter: personalDraft,
+                counterpartFilterLabel:
+                    'הסינון של קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                personalFilterLabel:
+                    'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                onCounterpartFilterChanged: _isAdmin
+                    ? (updated) => setDialogState(() {
+                          groupDraft = updated;
+                          groupDirty = true;
+                        })
+                    : null,
+                onPersonalFilterChanged: (updated) => setDialogState(() {
+                  personalDraft = updated;
+                  personalDirty = true;
+                }),
+              ),
+            ),
+          ),
+          actions: [
+            FilledButton.icon(
+              onPressed: saving || (!groupDirty && !personalDirty)
+                  ? null
+                  : () async {
+                      setDialogState(() => saving = true);
+                      try {
+                        if (groupDirty) {
+                          final response = await http.put(
+                            Uri.parse('$kApi/groups/$_groupId/filter-settings'),
+                            headers: {
+                              'Authorization': 'Bearer ${widget.token}',
+                              'Content-Type': 'application/json',
+                            },
+                            body: jsonEncode({'filter': groupDraft}),
+                          );
+                          if (response.statusCode != 200) throw Exception();
+                        }
+                        if (personalDirty) {
+                          final response = await http.put(
+                            Uri.parse('$kApi/groups/$_groupId/personal-filter'),
+                            headers: {
+                              'Authorization': 'Bearer ${widget.token}',
+                              'Content-Type': 'application/json',
+                            },
+                            body: jsonEncode({'filter': personalDraft}),
+                          );
+                          if (response.statusCode != 200) throw Exception();
+                        }
+                        if (!mounted) return;
+                        setState(() {
+                          _groupReceivingFilter = Map.from(groupDraft);
+                          _outgoingFilter = Map.from(personalDraft);
+                        });
+                        if (personalDirty) {
+                          await _saveAcceptedFilterNotice(personalDraft);
+                        }
+                        if (dialogContext.mounted) {
+                          Navigator.pop(dialogContext);
+                        }
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(
+                                content: Text('הגדרות הסינון נשמרו')),
+                          );
+                        }
+                      } catch (_) {
+                        if (dialogContext.mounted) {
+                          setDialogState(() => saving = false);
+                        }
+                        if (mounted) {
+                          ScaffoldMessenger.of(this.context).showSnackBar(
+                            const SnackBar(content: Text('שמירת הסינון נכשלה')),
+                          );
+                        }
+                      }
+                    },
+              icon: saving
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Icon(Icons.save_outlined, size: 18),
+              label: const Text('שמור'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('סגור'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _groupFilterStatusButton() {
+    final hasGroupRestrictions =
+        _blockedGroupFilterItems(_groupReceivingFilter).isNotEmpty;
+    final hasRestrictions = _isSelfGroup || _isAdmin
+        ? hasGroupRestrictions
+        : hasGroupRestrictions ||
+            _blockedGroupFilterItems(_outgoingFilter).isNotEmpty;
+    return Tooltip(
+      message: hasRestrictions
+          ? 'יש הגבלות תוכן — לחץ לפירוט'
+          : 'כל סוגי התוכן מותרים',
+      child: IconButton(
+        onPressed: _showGroupFilterStatus,
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints.tightFor(width: 30, height: 28),
+        icon: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            const Icon(Icons.shield_outlined, size: 18, color: Colors.white70),
+            if (hasRestrictions)
+              PositionedDirectional(
+                top: -2,
+                end: -3,
+                child: Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: Colors.orangeAccent,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: kPrimary, width: 1),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _acceptedFilterMessage() {
+    final filter = _acceptedFilterNotice!;
+    return Align(
+      alignment: Alignment.centerRight,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: math.min(820, MediaQuery.sizeOf(context).width - 24),
+        ),
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFB9D8ED)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x120D6EA8),
+                blurRadius: 8,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Directionality(
+            textDirection: TextDirection.rtl,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.shield_outlined,
+                        color: kPrimary, size: 22),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                          'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w800)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                _InvitationFilterComparisonTable(
+                  groupName: widget.group['name']?.toString(),
+                  groupFilter: _groupReceivingFilter,
+                  personalFilter: filter,
+                  counterpartFilterLabel:
+                      'הסינון של קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                  personalFilterLabel:
+                      'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                ),
+                const SizedBox(height: 9),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: InkWell(
+                    onTap: _updateMyGroupFilter,
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 3),
+                      child: Text('עדכון הסינון',
+                          style: TextStyle(
+                            color: kPrimary,
+                            fontWeight: FontWeight.w800,
+                            decoration: TextDecoration.underline,
+                          )),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                const Text('הודעה אישית זו אינה נשלחת לחברי הקבוצה',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(fontSize: 10, color: kSubtext)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final inviterName =
+        widget.group['invited_by_name']?.toString().trim() ?? '';
+    final groupDescription =
+        widget.group['description']?.toString().trim() ?? '';
     final chat = Scaffold(
       backgroundColor: kChatBg,
       appBar: AppBar(
@@ -21008,18 +26759,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               fontSize: 16, fontWeight: FontWeight.bold),
                         ),
                       ),
-                      _BlockedReceivingFilterIcons(
-                        filter: _groupReceivingFilter,
-                        forGroup: true,
-                      ),
                     ],
                   ),
-                  Text(
-                      _isTyping
-                          ? '$_typingName מקליד...'
-                          : '${widget.group['member_count'] ?? ''} חברים',
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.white70)),
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text(
+                        _isTyping
+                            ? '$_typingName מקליד...'
+                            : '${widget.group['member_count'] ?? ''} חברים',
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.white70)),
+                    const SizedBox(width: 5),
+                    _groupFilterStatusButton(),
+                  ]),
                 ],
               ),
             ),
@@ -21103,69 +26854,170 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         children: [
           // ── Pending banner ──────────────────────────────────────────
           if (_myStatus == 'pending')
-            Container(
-              width: double.infinity,
-              color: const Color(0xFFFFF3CD),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    'הוזמנת להצטרף לקבוצה זו',
-                    style: const TextStyle(
-                      color: Color(0xFF856404),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height *
+                    (MediaQuery.sizeOf(context).width >= 900 ? 0.78 : 0.68),
+              ),
+              child: Scrollbar(
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  primary: false,
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: Container(
+                    width: double.infinity,
+                    color: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          inviterName.isEmpty
+                              ? 'הוזמנת להצטרף לקבוצה זו'
+                              : 'הוזמנת על ידי $inviterName להצטרף לקבוצה זו',
+                          style: const TextStyle(
+                            color: kPrimary,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                          textDirection: TextDirection.rtl,
+                          textAlign: TextAlign.right,
+                        ),
+                        if (groupDescription.isNotEmpty) ...[
+                          const SizedBox(height: 5),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.info_outline,
+                                  size: 17, color: kPrimary),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  groupDescription,
+                                  textDirection: TextDirection.rtl,
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: kTextDark,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.start,
+                          children: [
+                            ElevatedButton(
+                              onPressed: _processingInvite
+                                  ? null
+                                  : () =>
+                                      _acceptPending(useCurrentFilter: true),
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: kPrimary),
+                              child: _processingInvite
+                                  ? const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: Colors.white))
+                                  : const Text('אשר והצטרף',
+                                      style: TextStyle(color: Colors.white)),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton(
+                              onPressed: _declinePending,
+                              style: TextButton.styleFrom(
+                                  foregroundColor: Colors.red),
+                              child: const Text('דחה'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        if (_invitationFilterError != null)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.red.shade200),
+                            ),
+                            child: Column(children: [
+                              Text(
+                                _invitationFilterError!,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.red.shade700),
+                              ),
+                              const SizedBox(height: 6),
+                              TextButton.icon(
+                                onPressed: _loadInvitationFilters,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('נסה שוב'),
+                              ),
+                            ]),
+                          )
+                        else
+                          _InvitationFilterComparisonTable(
+                            groupName: widget.group['name']?.toString(),
+                            groupFilter: _groupReceivingFilter,
+                            personalFilter: _invitationPersonalFilter,
+                            counterpartFilterLabel:
+                                'הסינון של קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                            personalFilterLabel:
+                                'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                            onPersonalFilterChanged: (filter) => setState(
+                                () => _invitationPersonalFilter = filter),
+                          ),
+                      ],
                     ),
-                    textDirection: TextDirection.rtl,
                   ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        onPressed: _declinePending,
-                        style:
-                            TextButton.styleFrom(foregroundColor: Colors.red),
-                        child: const Text('דחה'),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: _processingInvite ? null : _acceptPending,
-                        style:
-                            ElevatedButton.styleFrom(backgroundColor: kPrimary),
-                        child: _processingInvite
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white))
-                            : const Text('אשר הצטרפות',
-                                style: TextStyle(color: Colors.white)),
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
             ),
           Expanded(
             child: _loading
                 ? const Center(
                     child: CircularProgressIndicator(color: kPrimary))
-                : _messages.isEmpty
+                : _messages.isEmpty &&
+                        !(_myStatus == 'member' &&
+                            _acceptedFilterNotice != null)
                     ? const Center(
                         child: Text('אין הודעות עדיין',
                             style: TextStyle(color: kSubtext)))
                     : ListView.builder(
                         controller: _scrollCtrl,
-                        reverse: true,
+                        physics: const AlwaysScrollableScrollPhysics(),
                         padding: const EdgeInsets.all(10),
-                        itemCount: _messages.length,
+                        itemCount: _messages.length +
+                            (_myStatus == 'member' &&
+                                    _acceptedFilterNotice != null
+                                ? 1
+                                : 0),
                         itemBuilder: (_, i) {
-                          final messageIndex = _messages.length - 1 - i;
+                          final hasFilterNotice = _myStatus == 'member' &&
+                              _acceptedFilterNotice != null;
+                          if (hasFilterNotice && i == 0) {
+                            return _acceptedFilterMessage();
+                          }
+                          final messageIndex = i - (hasFilterNotice ? 1 : 0);
                           final msg = _messages[messageIndex];
                           final isMe = msg['isMe'] == true;
                           final groupText = msg['text'] as String? ?? '';
+                          final uploadStatus = msg['status']?.toString();
+                          final uploadFileType = _normalizeIncomingFileType(
+                            msg['fileType'] as String?,
+                            fileUrl: msg['fileUrl'] as String?,
+                            fileName: msg['fileName'] as String?,
+                          );
+                          final isImageUploadState =
+                              uploadFileType == 'image' &&
+                                  (uploadStatus == 'uploading' ||
+                                      uploadStatus == 'failed' ||
+                                      uploadStatus == 'rejected_scan');
                           final sharedContact = msg['fileUrl'] == null
                               ? _sharedContactFromText(groupText)
                               : null;
@@ -21174,6 +27026,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               : null;
                           final isEducationAnnouncement =
                               (msg['text'] as String? ?? '').startsWith('📋 ');
+                          final isFilterUpdateAnnouncement =
+                              groupText.startsWith('🛡️ סינון הקבוצה עודכן');
+                          final filterUpdateDetails = isFilterUpdateAnnouncement
+                              ? groupText.split('\n').skip(1).join('\n').trim()
+                              : '';
                           final educationStatus =
                               msg['educationResponseStatus']?.toString();
                           final educationFormClosed =
@@ -21242,7 +27099,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               if (firstUnreadIndex >= imageRunStart &&
                                   firstUnreadIndex <= imageRunEnd)
                                 const _UnreadMessagesDivider(),
-                              if (!isMe)
+                              if (!isMe && !isFilterUpdateAnnouncement)
                                 Padding(
                                   padding: const EdgeInsets.only(
                                       right: 8, bottom: 2),
@@ -21254,7 +27111,44 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                         fontWeight: FontWeight.bold),
                                   ),
                                 ),
-                              if (imageSequence.isNotEmpty)
+                              if (isImageUploadState)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: uploadStatus == 'uploading'
+                                      ? _UploadProcessingCard(
+                                          fileName:
+                                              msg['fileName']?.toString() ??
+                                                  'תמונה',
+                                          startedAt: DateTime.tryParse(
+                                                  msg['uploadStartedAt']
+                                                          ?.toString() ??
+                                                      '') ??
+                                              DateTime.now(),
+                                        )
+                                      : _UploadResultCard(
+                                          blocked:
+                                              uploadStatus == 'rejected_scan',
+                                          title: uploadStatus == 'rejected_scan'
+                                              ? _imageBlockTitle(
+                                                  msg['scanReason'])
+                                              : 'העלאת התמונה נכשלה',
+                                          reason: uploadStatus ==
+                                                  'rejected_scan'
+                                              ? msg['scanReason']?.toString() ??
+                                                  'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה'
+                                              : msg['uploadError']
+                                                      ?.toString() ??
+                                                  'אירעה שגיאה בזמן העלאת התמונה',
+                                          imageUrl:
+                                              uploadStatus == 'rejected_scan'
+                                                  ? msg['fileUrl'] as String?
+                                                  : null,
+                                          fileName: msg['fileName'] as String?,
+                                          onlyYouText:
+                                              'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
+                                        ),
+                                )
+                              else if (imageSequence.isNotEmpty)
                                 _ConsecutiveImageGrid(
                                     messages: imageSequence,
                                     conversationMessages: _messages,
@@ -21267,17 +27161,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                     onMessageOptions: _showMessageOptions)
                               else
                                 GestureDetector(
-                                  onTap: isEducationAnnouncement
-                                      ? () => _openEducationAnnouncement(msg)
-                                      : !kIsWeb && msg['fileUrl'] == null
-                                          ? () => _copyMessageText(context, msg)
-                                          : null,
+                                  onTap: isFilterUpdateAnnouncement
+                                      ? _updateMyGroupFilter
+                                      : isEducationAnnouncement
+                                          ? () =>
+                                              _openEducationAnnouncement(msg)
+                                          : !kIsWeb && msg['fileUrl'] == null
+                                              ? () =>
+                                                  _copyMessageText(context, msg)
+                                              : null,
                                   onDoubleTap: !isEducationAnnouncement &&
                                           kIsWeb &&
                                           msg['fileUrl'] == null
                                       ? () => _copyMessageText(context, msg)
                                       : null,
-                                  onLongPress: () => _showMessageOptions(msg),
+                                  onLongPress: isFilterUpdateAnnouncement
+                                      ? null
+                                      : () => _showMessageOptions(msg),
                                   child: Container(
                                     margin: const EdgeInsets.only(bottom: 6),
                                     padding: const EdgeInsets.symmetric(
@@ -21431,6 +27331,78 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                               ),
                                             ),
                                           )
+                                        else if (isFilterUpdateAnnouncement)
+                                          InkWell(
+                                            onTap: _updateMyGroupFilter,
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                            child: Padding(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      vertical: 4),
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.end,
+                                                children: [
+                                                  const Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      Icon(
+                                                          Icons.shield_outlined,
+                                                          color: kPrimary,
+                                                          size: 21),
+                                                      SizedBox(width: 8),
+                                                      Text(
+                                                        'סינון הקבוצה עודכן',
+                                                        style: TextStyle(
+                                                          fontSize: 15,
+                                                          fontWeight:
+                                                              FontWeight.w800,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 5),
+                                                  Text(
+                                                    filterUpdateDetails.isEmpty
+                                                        ? 'מדיניות התוכן של הקבוצה השתנתה.'
+                                                        : filterUpdateDetails,
+                                                    textAlign: TextAlign.right,
+                                                    textDirection:
+                                                        TextDirection.rtl,
+                                                    style: const TextStyle(
+                                                        fontSize: 12,
+                                                        color: kTextDark,
+                                                        height: 1.5),
+                                                  ),
+                                                  const SizedBox(height: 7),
+                                                  Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      const Icon(
+                                                          Icons.tune_rounded,
+                                                          size: 17,
+                                                          color: kPrimary),
+                                                      const SizedBox(width: 4),
+                                                      const Text(
+                                                        'עדכון הסינון האישי שלי',
+                                                        style: TextStyle(
+                                                          color: kPrimary,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                          decoration:
+                                                              TextDecoration
+                                                                  .underline,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          )
                                         else if (isEducationAnnouncement)
                                           InkWell(
                                             onTap: () =>
@@ -21542,6 +27514,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                           _WebsiteLinkPreview(
                                               sharedUrl, widget.token),
                                         ],
+                                        if (isMe &&
+                                            msg['deliverySummary'] is Map)
+                                          _GroupDeliverySummary(
+                                            Map<String, dynamic>.from(
+                                                msg['deliverySummary'] as Map),
+                                          ),
                                         const SizedBox(height: 4),
                                         Row(
                                           mainAxisSize: MainAxisSize.min,
@@ -21636,25 +27614,29 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     onPressed: _showAttachMenu,
                   ),
                   Expanded(
-                    child: TextField(
-                      controller: _msgCtrl,
-                      focusNode: _msgFocusNode,
-                      textDirection: TextDirection.rtl,
-                      decoration: InputDecoration(
-                        hintText: 'הודעה לקבוצה...',
-                        hintTextDirection: TextDirection.rtl,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 10),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
+                    child: Focus(
+                      onKeyEvent: (_, event) => _handleMessageInputNavigation(
+                          _msgCtrl, _msgHistory, event),
+                      child: TextField(
+                        controller: _msgCtrl,
+                        focusNode: _msgFocusNode,
+                        textDirection: TextDirection.rtl,
+                        decoration: InputDecoration(
+                          hintText: 'הודעה לקבוצה...',
+                          hintTextDirection: TextDirection.rtl,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(24),
+                            borderSide: BorderSide.none,
+                          ),
+                          filled: true,
+                          fillColor: kBg,
                         ),
-                        filled: true,
-                        fillColor: kBg,
+                        onChanged: (_) => widget.socket
+                            ?.emit('group:typing', {'groupId': _groupId}),
+                        onSubmitted: (_) => _send(),
                       ),
-                      onChanged: (_) => widget.socket
-                          ?.emit('group:typing', {'groupId': _groupId}),
-                      onSubmitted: (_) => _send(),
                     ),
                   ),
                   const SizedBox(width: 6),
@@ -21844,7 +27826,7 @@ class _ContentFilterSettingsScreenState
           as Map<String, dynamic>;
       if (!mounted) return;
       setState(() {
-        _inherit = _isContact ? data['inherited'] == true : false;
+        _inherit = (_isContact || _isGroup) && data['inherited'] == true;
         for (final key in _filter.keys) {
           _filter[key] = raw[key] == true;
         }
@@ -21868,7 +27850,7 @@ class _ContentFilterSettingsScreenState
               ? '/contacts/${widget.contactId}/filter-settings'
               : '/filter-settings';
       final body = _isGroup
-          ? {'filter': _filter}
+          ? (_inherit ? {'inherit': true} : {'filter': _filter})
           : _isContact
               ? (_inherit ? {'inherit': true} : {'filter': _filter})
               : _filter;
@@ -22204,6 +28186,11 @@ class _ContentFilterSettingsScreenState
 
   @override
   Widget build(BuildContext context) {
+    final filterPageTitle = _isGroup
+        ? 'הגדרות הקבוצה • $_groupName'
+        : _isContact
+            ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
+            : 'סינון תוכן כללי';
     return PopScope(
       canPop: !widget.requireSave || _saved,
       onPopInvokedWithResult: (didPop, _) {
@@ -22216,11 +28203,11 @@ class _ContentFilterSettingsScreenState
       },
       child: Scaffold(
         appBar: AppBar(
-            title: Text(_isGroup
-                ? 'הגדרות הקבוצה'
-                : _isContact
-                    ? 'סינון עבור ${widget.contactName ?? 'איש קשר'}'
-                    : 'סינון תוכן כללי')),
+            title: Text(
+          filterPageTitle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        )),
         backgroundColor: kBg,
         body: _loading
             ? const Center(child: CircularProgressIndicator())
@@ -22229,7 +28216,7 @@ class _ContentFilterSettingsScreenState
                 constraints: const BoxConstraints(maxWidth: 760),
                 child: ListView(children: [
                   if (_isGroup) _groupOverview(),
-                  if (_isContact) ...[
+                  if (_isContact || _isGroup) ...[
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
                       child: Card(
@@ -22241,10 +28228,11 @@ class _ContentFilterSettingsScreenState
                         child: ListTile(
                           leading:
                               const Icon(Icons.sync_rounded, color: kPrimary),
-                          title: const Text('השתמש בהגדרות הכלליות',
+                          title: const Text('השתמש בסינון הכללי',
                               style: TextStyle(fontWeight: FontWeight.w700)),
-                          subtitle: const Text(
-                              'שינויים עתידיים בהגדרה הכללית יחולו גם כאן'),
+                          subtitle: Text(_isGroup
+                              ? 'כל עוד לא מוגדר סינון פרטני, הקבוצה יורשת את הסינון הכללי'
+                              : 'כל עוד לא מוגדר סינון פרטני, השיחה יורשת את הסינון הכללי'),
                           trailing: _filterSwitch(
                             value: _inherit,
                             onChanged: (value) =>
@@ -22257,34 +28245,67 @@ class _ContentFilterSettingsScreenState
                   ],
                   Padding(
                     padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
-                    child: Row(children: [
-                      Container(
-                        width: 38,
-                        height: 38,
-                        decoration: BoxDecoration(
-                          color: kPrimary.withValues(alpha: 0.10),
-                          borderRadius: BorderRadius.circular(11),
+                    child: Column(children: [
+                      if (_isGroup) ...[
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 11),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE8F4FD),
+                            borderRadius: BorderRadius.circular(13),
+                            border: Border.all(color: kBorder),
+                          ),
+                          child: Row(children: [
+                            const Icon(Icons.groups_outlined,
+                                color: kPrimary, size: 21),
+                            const SizedBox(width: 9),
+                            Expanded(
+                              child: Text(
+                                'שם הקבוצה: $_groupName',
+                                textAlign: TextAlign.right,
+                                textDirection: TextDirection.rtl,
+                                style: const TextStyle(
+                                  color: kPrimary,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ]),
                         ),
-                        child:
-                            const Icon(Icons.shield_outlined, color: kPrimary),
-                      ),
-                      const SizedBox(width: 10),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('סוגי תוכן מותרים',
-                                style: TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 16)),
-                            Text('גלול למטה כדי לראות את כל האפשרויות',
-                                style:
-                                    TextStyle(color: kSubtext, fontSize: 12)),
-                          ],
+                      ],
+                      Row(children: [
+                        Container(
+                          width: 38,
+                          height: 38,
+                          decoration: BoxDecoration(
+                            color: kPrimary.withValues(alpha: 0.10),
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          child: const Icon(Icons.shield_outlined,
+                              color: kPrimary),
                         ),
-                      ),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('סוגי תוכן מותרים',
+                                  style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16)),
+                              Text('גלול למטה כדי לראות את כל האפשרויות',
+                                  style:
+                                      TextStyle(color: kSubtext, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                      ]),
                     ]),
                   ),
-                  if (_isGroup)
+                  if (_isGroup && !_inherit)
                     const Padding(
                       padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
                       child: Text(
@@ -22337,6 +28358,1369 @@ class _ContentFilterSettingsScreenState
   }
 }
 
+// ── Personal media library ───────────────────────────────────────
+class PersonalMediaScreen extends StatefulWidget {
+  final String token;
+  const PersonalMediaScreen({super.key, required this.token});
+
+  @override
+  State<PersonalMediaScreen> createState() => _PersonalMediaScreenState();
+}
+
+class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
+  final List<Map<String, dynamic>> _items = [];
+  String _type = 'all';
+  String _scope = 'all';
+  String _sort = 'date_desc';
+  String _moderation = 'all';
+  String _backup = 'all';
+  String _classification = 'all';
+  DateTime? _dateFrom;
+  DateTime? _dateTo;
+  final _searchCtrl = TextEditingController();
+  final _minSizeCtrl = TextEditingController();
+  final _maxSizeCtrl = TextEditingController();
+  Timer? _filterDebounce;
+  bool _loading = true;
+  bool _loadingMore = false;
+  String? _error;
+  int _total = 0;
+  final Set<String> _busyMediaIds = {};
+
+  Map<String, String> get _headers =>
+      {'Authorization': 'Bearer ${widget.token}'};
+
+  static const _filters = <String, String>{
+    'all': 'הכול',
+    'image': 'תמונות',
+    'video': 'סרטונים',
+    'audio': 'הקלטות',
+    'document': 'מסמכים',
+  };
+  static const _scopes = <String, String>{
+    'all': 'כל היעדים',
+    'chats': 'שיחות',
+    'groups': 'קבוצות',
+    'profile': 'פרופיל',
+    'listings': 'מודעות',
+    'forms': 'טפסים',
+    'gifs': 'GIF',
+    'unassigned': 'לא משויך',
+  };
+  static const _sorts = <String, String>{
+    'date_desc': 'החדש ביותר',
+    'date_asc': 'הישן ביותר',
+    'size_desc': 'הגדול ביותר',
+    'size_asc': 'הקטן ביותר',
+  };
+  static const _moderationFilters = <String, String>{
+    'all': 'כל המצבים',
+    'approved': 'אושר',
+    'pending': 'ממתין',
+    'rejected': 'נחסם',
+  };
+  static const _backupFilters = <String, String>{
+    'all': 'הכול',
+    'local': 'שמור מקומית',
+    'backed_up': 'מגובה',
+    'released': 'בענן בלבד',
+  };
+  static const _classificationFilters = <String, String>{
+    'all': 'כל הסיווגים',
+    'men': 'גברים',
+    'women': 'נשים',
+    'children': 'ילדים',
+    'nonHumanImages': 'ללא בני אדם',
+    'people': 'אנשים',
+    'uncertain': 'לא ודאי',
+    'video': 'וידאו',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _load(reset: true);
+  }
+
+  @override
+  void dispose() {
+    _filterDebounce?.cancel();
+    _searchCtrl.dispose();
+    _minSizeCtrl.dispose();
+    _maxSizeCtrl.dispose();
+    super.dispose();
+  }
+
+  void _debouncedLoad() {
+    _filterDebounce?.cancel();
+    _filterDebounce =
+        Timer(const Duration(milliseconds: 350), () => _load(reset: true));
+  }
+
+  Future<void> _load({required bool reset}) async {
+    if (reset) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    } else {
+      setState(() => _loadingMore = true);
+    }
+    try {
+      final offset = reset ? 0 : _items.length;
+      final query = Uri(queryParameters: {
+        'type': _type,
+        'scope': _scope,
+        'sort': _sort,
+        'limit': '40',
+        'offset': '$offset',
+        if (_searchCtrl.text.trim().isNotEmpty)
+          'search': _searchCtrl.text.trim(),
+        'moderation': _moderation,
+        'backup': _backup,
+        'classification': _classification,
+        if (_dateFrom != null)
+          'dateFrom': _dateFrom!.toIso8601String().split('T').first,
+        if (_dateTo != null)
+          'dateTo': _dateTo!.toIso8601String().split('T').first,
+        if (double.tryParse(_minSizeCtrl.text) != null)
+          'minSize': '${(double.parse(_minSizeCtrl.text) * 1048576).round()}',
+        if (double.tryParse(_maxSizeCtrl.text) != null)
+          'maxSize': '${(double.parse(_maxSizeCtrl.text) * 1048576).round()}',
+      }).query;
+      final response = await http.get(
+        Uri.parse('$kApi/media-library?$query'),
+        headers: _headers,
+      );
+      if (response.statusCode != 200) throw Exception('load failed');
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final rows = (body['items'] as List<dynamic>? ?? const [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        if (reset) _items.clear();
+        _items.addAll(rows);
+        _total = (body['total'] as num?)?.toInt() ?? _items.length;
+        _loading = false;
+        _loadingMore = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadingMore = false;
+        _error = 'לא ניתן היה לטעון את ספריית המדיה';
+      });
+    }
+  }
+
+  String _size(Object? raw) {
+    final bytes = (raw as num?)?.toInt() ?? 0;
+    if (bytes >= 1073741824)
+      return '${(bytes / 1073741824).toStringAsFixed(1)} GB';
+    if (bytes >= 1048576) return '${(bytes / 1048576).toStringAsFixed(1)} MB';
+    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '$bytes B';
+  }
+
+  String _date(Object? raw) {
+    final value = DateTime.tryParse(raw?.toString() ?? '')?.toLocal();
+    if (value == null) return '';
+    return '${value.day.toString().padLeft(2, '0')}/${value.month.toString().padLeft(2, '0')}/${value.year} '
+        '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+  }
+
+  IconData _fileIcon(String? type) => switch (type) {
+        'image' => Icons.image_outlined,
+        'video' => Icons.videocam_outlined,
+        'audio' => Icons.mic_none,
+        _ => Icons.description_outlined,
+      };
+
+  String _moderationLabel(String? status) => switch (status) {
+        'approved' => 'אושר',
+        'rejected' => 'נחסם',
+        _ => 'ממתין לסריקה',
+      };
+
+  String _classificationText(Map<String, dynamic> item) {
+    final raw = item['classification'];
+    if (raw is! Map) return 'ללא סיווג';
+    final classification = Map<String, dynamic>.from(raw);
+    if (classification['uncertain'] == true) return 'סיווג לא ודאי';
+    final detected = classification['detectedCategories'];
+    final keys = detected is List
+        ? detected.map((value) => value.toString()).toList()
+        : <String>[];
+    if (keys.isEmpty && classification['category'] != null) {
+      keys.add(classification['category'].toString());
+    }
+    return keys
+        .map((key) => _classificationFilters[key] ?? key)
+        .toSet()
+        .join(', ')
+        .trim()
+        .replaceFirst(RegExp(r'^$'), 'ללא סיווג');
+  }
+
+  String _usageText(Map<String, dynamic> item) {
+    final destinations = (item['destinations'] as List<dynamic>? ?? const [])
+        .whereType<Map>()
+        .toList();
+    if (destinations.isNotEmpty) {
+      final first = destinations.first['label']?.toString() ?? 'יעד';
+      final remaining = destinations.length - 1;
+      return remaining > 0
+          ? 'שייך אל: $first ועוד $remaining'
+          : 'שייך אל: $first';
+    }
+    final usages =
+        Map<String, dynamic>.from(item['usages'] as Map? ?? const {});
+    const labels = {
+      'messages': 'הודעות',
+      'profile': 'פרופיל',
+      'groups': 'קבוצות',
+      'listings': 'מודעות',
+      'forms': 'טפסים',
+      'sharedGifs': 'GIF משותף',
+    };
+    final active = <String>[];
+    for (final entry in labels.entries) {
+      final count = (usages[entry.key] as num?)?.toInt() ?? 0;
+      if (count > 0) active.add('${entry.value}: $count');
+    }
+    return active.isEmpty ? 'אינו בשימוש וניתן למחיקה' : active.join(' • ');
+  }
+
+  IconData _destinationIcon(String? kind) => switch (kind) {
+        'chat' => Icons.chat_bubble_outline,
+        'group_chat' || 'group_profile' => Icons.groups_outlined,
+        'profile' => Icons.account_circle_outlined,
+        'listing' => Icons.storefront_outlined,
+        'form' => Icons.assignment_outlined,
+        'gif' => Icons.gif_box_outlined,
+        _ => Icons.link_outlined,
+      };
+
+  Future<Map<String, dynamic>?> _getJson(String path) async {
+    final response = await http.get(Uri.parse('$kApi$path'), headers: _headers);
+    if (response.statusCode != 200) return null;
+    final decoded = jsonDecode(response.body);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
+  Future<void> _openDestination(
+      Map<String, dynamic> destination, Map<String, dynamic> item) async {
+    final kind = destination['kind']?.toString();
+    final targetId = destination['targetId']?.toString();
+    if (targetId == null || targetId.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('המיקום המקורי אינו זמין עוד'),
+        ));
+      }
+      return;
+    }
+    try {
+      final me = await _getJson('/profile');
+      if (!mounted) return;
+      if (kind == 'chat') {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ChatScreen(
+              token: widget.token,
+              me: me,
+              recipient: {
+                'id': targetId,
+                'name': destination['label']?.toString() ?? 'שיחה',
+              },
+              socket: null,
+            ),
+          ),
+        );
+        return;
+      }
+      if (kind == 'group_chat' || kind == 'group_profile') {
+        final group = await _getJson('/groups/$targetId');
+        if (group == null || !mounted) throw Exception('group unavailable');
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => GroupChatScreen(
+              group: group,
+              me: me,
+              token: widget.token,
+              socket: null,
+            ),
+          ),
+        );
+        return;
+      }
+      if (kind == 'profile') {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ProfileScreen(me: me, token: widget.token),
+          ),
+        );
+        return;
+      }
+      if (kind == 'listing') {
+        final listing = await _getJson('/listings/$targetId');
+        if (listing == null || !mounted) throw Exception('listing unavailable');
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ListingDetailScreen(
+              item: listing,
+              token: widget.token,
+              me: me,
+              socket: null,
+            ),
+          ),
+        );
+        return;
+      }
+      if (kind == 'form') {
+        final form = await _getJson('/education-forms/$targetId');
+        if (form == null || !mounted) throw Exception('form unavailable');
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => EducationFormDetailsScreen(
+              token: widget.token,
+              formId: targetId,
+              isAdmin: form['my_role'] == 'admin',
+            ),
+          ),
+        );
+        return;
+      }
+      if (kind == 'gif' && mounted) {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ImagePreviewScreen(
+              url: item['url']?.toString() ?? '',
+              filename: item['name']?.toString(),
+            ),
+          ),
+        );
+        return;
+      }
+      throw Exception('destination unavailable');
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'לא ניתן לפתוח את המיקום. ייתכן שהוא נמחק או שאינך מורשה לצפות בו.'),
+        ));
+      }
+    }
+  }
+
+  Future<void> _showDestinations(Map<String, dynamic> item) async {
+    final destinations = (item['destinations'] as List<dynamic>? ?? const [])
+        .whereType<Map>()
+        .map((value) => Map<String, dynamic>.from(value))
+        .toList();
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('לאן הקובץ שייך?'),
+        content: SizedBox(
+          width: 420,
+          child: destinations.isEmpty
+              ? Text(item['canDelete'] == true
+                  ? 'הקובץ אינו משויך וניתן למחיקה.'
+                  : 'הקובץ נמצא בשימוש מוגן שאינו מוצג מטעמי פרטיות.')
+              : ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: destinations.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, index) {
+                    final destination = destinations[index];
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(
+                          _destinationIcon(destination['kind']?.toString())),
+                      title: Text(destination['label']?.toString() ?? 'יעד'),
+                      subtitle: Text(_date(destination['date'])),
+                      trailing: const Icon(Icons.open_in_new, size: 18),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _openDestination(destination, item);
+                      },
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('סגור')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _delete(Map<String, dynamic> item) async {
+    if (item['canDelete'] != true) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('הקובץ מוגן ממחיקה'),
+          content: Text(
+              'הקובץ עדיין משמש ב־${_usageText(item)}. יש להסיר אותו משם תחילה.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('סגור'))
+          ],
+        ),
+      );
+      return;
+    }
+    final backedUp = item['backupStatus'] != null;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('מחיקה לצמיתות'),
+        content: Text(
+          'למחוק את „${item['name']}” ולפנות ${_size(item['size'])}?'
+          '${backedUp ? '\nגם העותק המוצפן ב־Google Drive יימחק.' : ''}\nלא ניתן לבטל פעולה זו.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('ביטול')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('מחק לצמיתות'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final id = item['id'].toString();
+    try {
+      final response = await http.delete(
+        Uri.parse('$kApi/media-library/$id'),
+        headers: {..._headers, 'Content-Type': 'application/json'},
+      );
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        setState(() {
+          _items.removeWhere((row) => row['id'].toString() == id);
+          _total = math.max(0, _total - 1);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('הקובץ נמחק ופונו ${_size(body['deletedBytes'])}')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(body['error']?.toString() ?? 'המחיקה נכשלה')),
+        );
+        if (response.statusCode == 409) _load(reset: true);
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שגיאת תקשורת. הקובץ לא נמחק')),
+        );
+      }
+    }
+  }
+
+  Future<void> _send(Map<String, dynamic> item) async {
+    final moderationStatus = item['moderationStatus']?.toString();
+    if (moderationStatus != 'approved') {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(moderationStatus == 'rejected'
+            ? 'לא ניתן לשלוח קובץ שנחסם בסריקה'
+            : 'ניתן לשלוח את הקובץ רק לאחר אישור הסריקה'),
+      ));
+      return;
+    }
+    await _forwardChatMessage(context, widget.token, null, {
+      'fileUrl': item['url']?.toString(),
+      'fileName': item['name']?.toString(),
+      'fileType': item['fileType']?.toString() ?? 'document',
+      'status': moderationStatus,
+    });
+    if (mounted) await _load(reset: true);
+  }
+
+  Future<void> _reclassify(Map<String, dynamic> item) async {
+    final id = item['id'].toString();
+    if (_busyMediaIds.contains(id)) return;
+    setState(() => _busyMediaIds.add(id));
+    try {
+      final response = await http.post(
+        Uri.parse('$kApi/media-library/$id/reclassify'),
+        headers: {..._headers, 'Content-Type': 'application/json'},
+      );
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        setState(() => item['classification'] = body['classification']);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('בדיקת הסיווג הושלמה והתוצאה עודכנה')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'בדיקת הסיווג נכשלה'),
+        ));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('שגיאת תקשורת בבדיקת הסיווג'),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _busyMediaIds.remove(id));
+    }
+  }
+
+  Future<void> _appealClassification(Map<String, dynamic> item) async {
+    if (item['appealStatus'] == 'pending') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('הערעור כבר ממתין לבדיקה אנושית')),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('בקשה לבדיקה אנושית'),
+        content: const Text(
+          'התמונה והסיווג הנוכחי יישלחו לצוות ההדרכה של בתשובה לצורך בירור נוסף. '
+          'הצוות יוכל לצפות בתמונה ולעדכן את הסיווג בהתאם לתוצאות הבדיקה.\n\n'
+          'האם לשלוח את הבקשה?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('ביטול'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('שליחה לבדיקה'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final id = item['id'].toString();
+    if (_busyMediaIds.contains(id)) return;
+    setState(() => _busyMediaIds.add(id));
+    try {
+      final response = await http.post(
+        Uri.parse('$kApi/media-library/$id/classification-appeal'),
+        headers: {..._headers, 'Content-Type': 'application/json'},
+      );
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      if (response.statusCode == 201) {
+        setState(() => item['appealStatus'] = 'pending');
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('הערעור נשלח לבדיקה. נעדכן אותך לאחר סיום הבירור.'),
+        ));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(body['error']?.toString() ?? 'שליחת הערעור נכשלה'),
+        ));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('שגיאת תקשורת. הערעור לא נשלח'),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _busyMediaIds.remove(id));
+    }
+  }
+
+  Widget _preview(Map<String, dynamic> item) {
+    final type = item['fileType']?.toString();
+    final url = item['url']?.toString() ?? '';
+    if (type == 'image') {
+      return InkWell(
+        onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ImagePreviewScreen(
+                  url: url, filename: item['name']?.toString()),
+            )),
+        child: _PersistentMediaImage(
+          url: url,
+          width: 72,
+          height: 72,
+          fit: BoxFit.cover,
+          loadingBuilder: (_) =>
+              const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          errorBuilder: (_) => Icon(
+              item['releasedAt'] != null
+                  ? Icons.cloud_download_outlined
+                  : _fileIcon(type),
+              size: 38,
+              color: kSubtext),
+        ),
+      );
+    }
+    return Container(
+      width: 72,
+      height: 72,
+      color: kBg,
+      child: Icon(
+          item['releasedAt'] != null
+              ? Icons.cloud_done_outlined
+              : _fileIcon(type),
+          size: 38,
+          color: kPrimary),
+    );
+  }
+
+  Widget _card(Map<String, dynamic> item) => Card(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        clipBehavior: Clip.antiAlias,
+        child: Row(children: [
+          _preview(item),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(item['name']?.toString() ?? 'קובץ',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 5),
+                    Text(
+                        '${_size(item['size'])} • ${_date(item['createdAt'])} • ${_moderationLabel(item['moderationStatus']?.toString())}',
+                        style: const TextStyle(fontSize: 12, color: kSubtext)),
+                    if (item['classification'] is Map) ...[
+                      const SizedBox(height: 5),
+                      _ImageClassificationBadges(
+                        message: {'classification': item['classification']},
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                    InkWell(
+                      onTap: () => _showDestinations(item),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(children: [
+                          Icon(
+                              item['canDelete'] == true
+                                  ? Icons.check_circle_outline
+                                  : Icons.link_outlined,
+                              size: 14,
+                              color: item['canDelete'] == true
+                                  ? Colors.green.shade700
+                                  : Colors.orange.shade800),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(_usageText(item),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: item['canDelete'] == true
+                                        ? Colors.green.shade700
+                                        : Colors.orange.shade800)),
+                          ),
+                        ]),
+                      ),
+                    ),
+                    if (item['backupStatus'] != null)
+                      Text(
+                          item['releasedAt'] != null
+                              ? 'זמין בגיבוי הענן'
+                              : 'גיבוי: ${item['backupStatus']}',
+                          style:
+                              const TextStyle(fontSize: 11, color: kPrimary)),
+                  ]),
+            ),
+          ),
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'send') _send(item);
+              if (value == 'reclassify') _reclassify(item);
+              if (value == 'appeal') _appealClassification(item);
+              if (value == 'download')
+                _downloadChatFile(
+                    context, item['url'].toString(), item['name']?.toString());
+              if (value == 'destinations') _showDestinations(item);
+              if (value == 'delete') _delete(item);
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'send',
+                enabled: item['moderationStatus'] == 'approved',
+                child: const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.send_outlined, color: kPrimary),
+                  title: Text('שליחה לחבר או לקבוצה'),
+                ),
+              ),
+              if (item['fileType'] == 'image')
+                const PopupMenuItem(
+                  value: 'reclassify',
+                  child: Text('בדיקת סיווג נוספת'),
+                ),
+              if (item['fileType'] == 'image')
+                PopupMenuItem(
+                  value: 'appeal',
+                  enabled: item['appealStatus'] != 'pending',
+                  child: Text(item['appealStatus'] == 'pending'
+                      ? 'הערעור ממתין לבדיקה'
+                      : 'ערעור על הסיווג'),
+                ),
+              const PopupMenuItem(value: 'download', child: Text('הורדה')),
+              PopupMenuItem(
+                value: 'destinations',
+                child: const Text('לאן שייך?'),
+              ),
+              PopupMenuItem(
+                value: 'delete',
+                child: Text(item['canDelete'] == true
+                    ? 'מחיקה לצמיתות'
+                    : 'בדיקת אפשרות מחיקה'),
+              ),
+            ],
+          ),
+        ]),
+      );
+
+  Widget _tableText(String text,
+          {Color? color, FontWeight? weight, int maxLines = 2}) =>
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+        child: Text(text,
+            maxLines: maxLines,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: color, fontWeight: weight)),
+      );
+
+  Widget _tableActions(Map<String, dynamic> item) => PopupMenuButton<String>(
+        tooltip: 'פעולות',
+        onSelected: (value) {
+          if (value == 'send') _send(item);
+          if (value == 'reclassify') _reclassify(item);
+          if (value == 'appeal') _appealClassification(item);
+          if (value == 'download') {
+            _downloadChatFile(
+                context, item['url'].toString(), item['name']?.toString());
+          }
+          if (value == 'destinations') _showDestinations(item);
+          if (value == 'delete') _delete(item);
+        },
+        itemBuilder: (_) => [
+          PopupMenuItem(
+            value: 'send',
+            enabled: item['moderationStatus'] == 'approved',
+            child: const Text('שליחה לחבר או לקבוצה'),
+          ),
+          if (item['fileType'] == 'image')
+            const PopupMenuItem(
+              value: 'reclassify',
+              child: Text('בדיקת סיווג נוספת'),
+            ),
+          if (item['fileType'] == 'image')
+            PopupMenuItem(
+              value: 'appeal',
+              enabled: item['appealStatus'] != 'pending',
+              child: Text(item['appealStatus'] == 'pending'
+                  ? 'הערעור ממתין לבדיקה'
+                  : 'ערעור על הסיווג'),
+            ),
+          const PopupMenuItem(value: 'download', child: Text('הורדה')),
+          const PopupMenuItem(value: 'destinations', child: Text('לאן שייך?')),
+          PopupMenuItem(
+            value: 'delete',
+            child: Text(item['canDelete'] == true
+                ? 'מחיקה לצמיתות'
+                : 'בדיקת אפשרות מחיקה'),
+          ),
+        ],
+      );
+
+  bool _columnFiltered(String column) => switch (column) {
+        'name' => _searchCtrl.text.trim().isNotEmpty,
+        'type' => _type != 'all',
+        'size' => _minSizeCtrl.text.isNotEmpty || _maxSizeCtrl.text.isNotEmpty,
+        'date' => _dateFrom != null || _dateTo != null,
+        'scope' => _scope != 'all',
+        'moderation' => _moderation != 'all',
+        'classification' => _classification != 'all',
+        'backup' => _backup != 'all',
+        _ => false,
+      };
+
+  void _clearColumnFilter(String column) {
+    setState(() {
+      if (column == 'name') _searchCtrl.clear();
+      if (column == 'type') _type = 'all';
+      if (column == 'size') {
+        _minSizeCtrl.clear();
+        _maxSizeCtrl.clear();
+      }
+      if (column == 'date') {
+        _dateFrom = null;
+        _dateTo = null;
+      }
+      if (column == 'scope') _scope = 'all';
+      if (column == 'moderation') _moderation = 'all';
+      if (column == 'classification') _classification = 'all';
+      if (column == 'backup') _backup = 'all';
+    });
+    _load(reset: true);
+  }
+
+  Future<void> _showExcelFilter(String column) async {
+    final first = TextEditingController(
+        text: column == 'name'
+            ? _searchCtrl.text
+            : column == 'size'
+                ? _minSizeCtrl.text
+                : '');
+    final second =
+        TextEditingController(text: column == 'size' ? _maxSizeCtrl.text : '');
+    var selected = switch (column) {
+      'type' => _type,
+      'scope' => _scope,
+      'moderation' => _moderation,
+      'classification' => _classification,
+      'backup' => _backup,
+      _ => 'all',
+    };
+    var from = _dateFrom;
+    var to = _dateTo;
+    final values = switch (column) {
+      'type' => _filters,
+      'scope' => _scopes,
+      'moderation' => _moderationFilters,
+      'classification' => _classificationFilters,
+      'backup' => _backupFilters,
+      _ => const <String, String>{},
+    };
+    final applied = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text('סינון: ${{
+            'name': 'שם הקובץ',
+            'type': 'סוג',
+            'size': 'גודל',
+            'date': 'תאריך העלאה',
+            'scope': 'שייך אל',
+            'moderation': 'מצב סריקה',
+            'classification': 'סיווג',
+            'backup': 'מצב גיבוי'
+          }[column]}'),
+          content: SizedBox(
+            width: 330,
+            child: column == 'name'
+                ? TextField(
+                    controller: first,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'מכיל את הטקסט',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                  )
+                : column == 'size'
+                    ? Column(mainAxisSize: MainAxisSize.min, children: [
+                        TextField(
+                          controller: first,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(labelText: 'מ־MB'),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: second,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(labelText: 'עד MB'),
+                        ),
+                      ])
+                    : column == 'date'
+                        ? Column(mainAxisSize: MainAxisSize.min, children: [
+                            ListTile(
+                              leading: const Icon(Icons.date_range),
+                              title: Text(from == null
+                                  ? 'מתאריך'
+                                  : _date(from).split(' ').first),
+                              onTap: () async {
+                                final picked = await showDatePicker(
+                                  context: dialogContext,
+                                  initialDate: from ?? DateTime.now(),
+                                  firstDate: DateTime(2020),
+                                  lastDate: DateTime.now(),
+                                );
+                                if (picked != null)
+                                  setDialogState(() => from = picked);
+                              },
+                            ),
+                            ListTile(
+                              leading: const Icon(Icons.event),
+                              title: Text(to == null
+                                  ? 'עד תאריך'
+                                  : _date(to).split(' ').first),
+                              onTap: () async {
+                                final picked = await showDatePicker(
+                                  context: dialogContext,
+                                  initialDate: to ?? DateTime.now(),
+                                  firstDate: DateTime(2020),
+                                  lastDate: DateTime.now(),
+                                );
+                                if (picked != null)
+                                  setDialogState(() => to = picked);
+                              },
+                            ),
+                          ])
+                        : DropdownButtonFormField<String>(
+                            value: selected,
+                            isExpanded: true,
+                            decoration: const InputDecoration(labelText: 'הצג'),
+                            items: values.entries
+                                .map((entry) => DropdownMenuItem(
+                                    value: entry.key, child: Text(entry.value)))
+                                .toList(),
+                            onChanged: (value) {
+                              if (value != null)
+                                setDialogState(() => selected = value);
+                            },
+                          ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('ביטול'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, false);
+                _clearColumnFilter(column);
+              },
+              child: const Text('נקה סינון'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('החל'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (applied == true && mounted) {
+      setState(() {
+        if (column == 'name') _searchCtrl.text = first.text.trim();
+        if (column == 'type') _type = selected;
+        if (column == 'size') {
+          _minSizeCtrl.text = first.text.trim();
+          _maxSizeCtrl.text = second.text.trim();
+        }
+        if (column == 'date') {
+          _dateFrom = from;
+          _dateTo = to;
+        }
+        if (column == 'scope') _scope = selected;
+        if (column == 'moderation') _moderation = selected;
+        if (column == 'classification') _classification = selected;
+        if (column == 'backup') _backup = selected;
+      });
+      await _load(reset: true);
+    }
+    first.dispose();
+    second.dispose();
+  }
+
+  Widget _excelHeader(String label, String? column, {String? sortColumn}) {
+    final active = column != null && _columnFiltered(column);
+    final sorted = sortColumn == 'size'
+        ? _sort.startsWith('size_')
+        : sortColumn == 'date'
+            ? _sort.startsWith('date_')
+            : false;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+      child: Row(children: [
+        Expanded(
+          child: Text(label,
+              style:
+                  const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+        ),
+        if (sortColumn != null)
+          Tooltip(
+            message: 'מיון',
+            child: InkWell(
+              onTap: () {
+                setState(() => _sort = sortColumn == 'size'
+                    ? (_sort == 'size_desc' ? 'size_asc' : 'size_desc')
+                    : (_sort == 'date_desc' ? 'date_asc' : 'date_desc'));
+                _load(reset: true);
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(3),
+                child: Icon(
+                  sorted && _sort.endsWith('asc')
+                      ? Icons.arrow_upward
+                      : Icons.arrow_downward,
+                  size: 16,
+                  color: sorted ? kPrimary : kSubtext,
+                ),
+              ),
+            ),
+          ),
+        if (column != null)
+          Tooltip(
+            message: active ? 'סינון פעיל' : 'סנן עמודה',
+            child: InkWell(
+              onTap: () => _showExcelFilter(column),
+              child: Padding(
+                padding: const EdgeInsets.all(3),
+                child: Icon(
+                    active ? Icons.filter_alt : Icons.filter_alt_outlined,
+                    size: 17,
+                    color: active ? kPrimary : kSubtext),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  Widget _mediaTable() => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: 1490,
+          child: Table(
+            columnWidths: const {
+              0: FixedColumnWidth(82),
+              1: FixedColumnWidth(220),
+              2: FixedColumnWidth(100),
+              3: FixedColumnWidth(105),
+              4: FixedColumnWidth(155),
+              5: FixedColumnWidth(240),
+              6: FixedColumnWidth(105),
+              7: FixedColumnWidth(220),
+              8: FixedColumnWidth(115),
+              9: FixedColumnWidth(65),
+            },
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+            border: const TableBorder(
+              horizontalInside: BorderSide(color: kBorder, width: .7),
+            ),
+            children: [
+              TableRow(
+                decoration: const BoxDecoration(color: Color(0xFFEAF4FB)),
+                children: [
+                  _excelHeader('תצוגה', null),
+                  _excelHeader('שם הקובץ', 'name'),
+                  _excelHeader('סוג', 'type'),
+                  _excelHeader('גודל', 'size', sortColumn: 'size'),
+                  _excelHeader('תאריך העלאה', 'date', sortColumn: 'date'),
+                  _excelHeader('שייך אל', 'scope'),
+                  _excelHeader('מצב סריקה', 'moderation'),
+                  _excelHeader('סיווג', 'classification'),
+                  _excelHeader('מצב גיבוי', 'backup'),
+                  _excelHeader('פעולות', null),
+                ],
+              ),
+              ..._items.map((item) => TableRow(
+                    decoration: BoxDecoration(
+                      color: _items.indexOf(item).isEven
+                          ? Colors.white
+                          : const Color(0xFFFAFCFD),
+                    ),
+                    children: [
+                      Padding(
+                          padding: const EdgeInsets.all(5),
+                          child: ClipRRect(
+                              borderRadius: BorderRadius.circular(7),
+                              child: _preview(item))),
+                      _tableText(item['name']?.toString() ?? 'קובץ',
+                          weight: FontWeight.w600),
+                      _tableText(_filters[item['fileType']] ??
+                          item['fileType']?.toString() ??
+                          'קובץ'),
+                      _tableText(_size(item['size'])),
+                      _tableText(_date(item['createdAt'])),
+                      InkWell(
+                        onTap: () => _showDestinations(item),
+                        child: _tableText(_usageText(item),
+                            color: item['canDelete'] == true
+                                ? Colors.green.shade700
+                                : Colors.orange.shade800),
+                      ),
+                      _tableText(_moderationLabel(
+                          item['moderationStatus']?.toString())),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 7),
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(_classificationText(item),
+                                  style: const TextStyle(fontSize: 12)),
+                              if (item['classification'] is Map)
+                                _ImageClassificationBadges(message: {
+                                  'classification': item['classification']
+                                }),
+                            ]),
+                      ),
+                      _tableText(
+                          item['releasedAt'] != null
+                              ? 'בענן בלבד'
+                              : item['backupStatus'] != null
+                                  ? 'מגובה'
+                                  : 'מקומי',
+                          color: kPrimary),
+                      _tableActions(item),
+                    ],
+                  )),
+            ],
+          ),
+        ),
+      );
+
+  Widget _filterDropdown({
+    required String label,
+    required String value,
+    required Map<String, String> values,
+    required ValueChanged<String> onChanged,
+    double width = 175,
+  }) =>
+      SizedBox(
+        width: width,
+        child: DropdownButtonFormField<String>(
+          value: value,
+          isDense: true,
+          decoration: InputDecoration(labelText: label),
+          items: values.entries
+              .map((entry) =>
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)))
+              .toList(),
+          onChanged: (next) {
+            if (next != null && next != value) onChanged(next);
+          },
+        ),
+      );
+
+  Future<void> _pickFilterDate({required bool from}) async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: (from ? _dateFrom : _dateTo) ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      if (from) {
+        _dateFrom = selected;
+      } else {
+        _dateTo = selected;
+      }
+    });
+    _load(reset: true);
+  }
+
+  void _clearColumnFilters() {
+    _filterDebounce?.cancel();
+    setState(() {
+      _type = 'all';
+      _scope = 'all';
+      _sort = 'date_desc';
+      _moderation = 'all';
+      _backup = 'all';
+      _classification = 'all';
+      _dateFrom = null;
+      _dateTo = null;
+      _searchCtrl.clear();
+      _minSizeCtrl.clear();
+      _maxSizeCtrl.clear();
+    });
+    _load(reset: true);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: kBg,
+        appBar: AppBar(title: const Text('המדיה שלי')),
+        body: Column(children: [
+          Container(
+            width: double.infinity,
+            color: kCard,
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('$_total קבצים בבעלותך',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 220,
+                      child: TextField(
+                        controller: _searchCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'שם הקובץ',
+                          prefixIcon: Icon(Icons.search, size: 20),
+                        ),
+                        onChanged: (_) => _debouncedLoad(),
+                      ),
+                    ),
+                    _filterDropdown(
+                      label: 'סוג',
+                      value: _type,
+                      values: _filters,
+                      onChanged: (value) {
+                        setState(() => _type = value);
+                        _load(reset: true);
+                      },
+                      width: 145,
+                    ),
+                    SizedBox(
+                      width: 125,
+                      child: TextField(
+                        controller: _minSizeCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration:
+                            const InputDecoration(labelText: 'גודל מ־MB'),
+                        onChanged: (_) => _debouncedLoad(),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 125,
+                      child: TextField(
+                        controller: _maxSizeCtrl,
+                        keyboardType: TextInputType.number,
+                        decoration:
+                            const InputDecoration(labelText: 'גודל עד MB'),
+                        onChanged: (_) => _debouncedLoad(),
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _pickFilterDate(from: true),
+                      icon: const Icon(Icons.date_range, size: 18),
+                      label: Text(_dateFrom == null
+                          ? 'מתאריך'
+                          : _date(_dateFrom).split(' ').first),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => _pickFilterDate(from: false),
+                      icon: const Icon(Icons.event, size: 18),
+                      label: Text(_dateTo == null
+                          ? 'עד תאריך'
+                          : _date(_dateTo).split(' ').first),
+                    ),
+                    _filterDropdown(
+                      label: 'שייך אל',
+                      value: _scope,
+                      values: _scopes,
+                      onChanged: (value) {
+                        setState(() => _scope = value);
+                        _load(reset: true);
+                      },
+                    ),
+                    _filterDropdown(
+                      label: 'מצב סריקה',
+                      value: _moderation,
+                      values: _moderationFilters,
+                      onChanged: (value) {
+                        setState(() => _moderation = value);
+                        _load(reset: true);
+                      },
+                    ),
+                    _filterDropdown(
+                      label: 'מצב גיבוי',
+                      value: _backup,
+                      values: _backupFilters,
+                      onChanged: (value) {
+                        setState(() => _backup = value);
+                        _load(reset: true);
+                      },
+                    ),
+                    _filterDropdown(
+                      label: 'סיווג',
+                      value: _classification,
+                      values: _classificationFilters,
+                      onChanged: (value) {
+                        setState(() => _classification = value);
+                        _load(reset: true);
+                      },
+                    ),
+                    _filterDropdown(
+                      label: 'מיון',
+                      value: _sort,
+                      values: _sorts,
+                      onChanged: (value) {
+                        setState(() => _sort = value);
+                        _load(reset: true);
+                      },
+                    ),
+                    TextButton.icon(
+                      onPressed: _clearColumnFilters,
+                      icon: const Icon(Icons.filter_alt_off_outlined),
+                      label: const Text('נקה מסננים'),
+                    ),
+                  ]),
+            ]),
+          ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                    ? Center(
+                        child:
+                            Column(mainAxisSize: MainAxisSize.min, children: [
+                        Text(_error!),
+                        TextButton(
+                            onPressed: () => _load(reset: true),
+                            child: const Text('נסה שוב')),
+                      ]))
+                    : _items.isEmpty
+                        ? const Center(child: Text('לא נמצאו קבצים'))
+                        : RefreshIndicator(
+                            onRefresh: () => _load(reset: true),
+                            child: ListView(children: [
+                              Card(
+                                margin: const EdgeInsets.all(12),
+                                clipBehavior: Clip.antiAlias,
+                                child: _mediaTable(),
+                              ),
+                              if (_items.length < _total)
+                                Padding(
+                                  padding: const EdgeInsets.all(16),
+                                  child: Center(
+                                      child: _loadingMore
+                                          ? const CircularProgressIndicator()
+                                          : OutlinedButton(
+                                              onPressed: () =>
+                                                  _load(reset: false),
+                                              child: const Text('טען עוד'))),
+                                ),
+                            ]),
+                          ),
+          ),
+        ]),
+      );
+}
+
 // ── Settings Screen ───────────────────────────────────────────────
 class SettingsScreen extends StatefulWidget {
   final Map<String, dynamic>? me;
@@ -22363,12 +29747,361 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _notifications = true;
   bool _readReceipts = true;
   bool _savingPreferences = false;
+  bool _backupLoading = true;
+  bool _backupBusy = false;
+  bool _driveConfigured = false;
+  bool _driveConnected = false;
+  int _storedFileCount = 0;
+  int _approvedFileCount = 0;
+  int _storedBytes = 0;
+  int _verifiedBackupFiles = 0;
+  bool _automaticBackup = false;
+  bool _serverKeyReady = false;
 
   @override
   void initState() {
     super.initState();
     _notifications = widget.me?['notifications_enabled'] as bool? ?? true;
     _readReceipts = widget.me?['read_receipts_enabled'] as bool? ?? true;
+    _loadBackupStatus();
+  }
+
+  Map<String, String> get _authHeaders =>
+      {'Authorization': 'Bearer ${widget.token}'};
+
+  Future<void> _loadBackupStatus() async {
+    try {
+      final responses = await Future.wait([
+        http
+            .get(Uri.parse('$kApi/backup/google/status'), headers: _authHeaders)
+            .timeout(const Duration(seconds: 10)),
+        http
+            .get(Uri.parse('$kApi/backup'), headers: _authHeaders)
+            .timeout(const Duration(seconds: 10)),
+      ]);
+      if (responses.any((response) => response.statusCode != 200))
+        throw Exception('status failed');
+      final drive = jsonDecode(responses[0].body) as Map<String, dynamic>;
+      final backup = jsonDecode(responses[1].body) as Map<String, dynamic>;
+      final storage = backup['storage'] as Map<String, dynamic>? ?? const {};
+      final moderation = storage['by_moderation'] as List<dynamic>? ?? const [];
+      final backupCounts =
+          backup['backup'] as Map<String, dynamic>? ?? const {};
+      final backupSettings =
+          backup['settings'] as Map<String, dynamic>? ?? const {};
+      if (!mounted) return;
+      setState(() {
+        _driveConfigured = drive['configured'] == true;
+        _driveConnected = drive['connected'] == true;
+        _storedFileCount = int.tryParse('${storage['file_count'] ?? 0}') ?? 0;
+        _approvedFileCount = moderation
+            .whereType<Map>()
+            .where((row) => row['moderation_status'] == 'approved')
+            .fold<int>(
+                0,
+                (sum, row) =>
+                    sum + (int.tryParse('${row['file_count'] ?? 0}') ?? 0));
+        _storedBytes = int.tryParse('${storage['total_bytes'] ?? 0}') ?? 0;
+        _verifiedBackupFiles =
+            int.tryParse('${backupCounts['verified_files'] ?? 0}') ?? 0;
+        _automaticBackup = backupSettings['enabled'] == true;
+        _serverKeyReady = backupSettings['server_key_ready'] == true;
+        _backupLoading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _backupLoading = false);
+    }
+  }
+
+  String _formatStorage(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024)
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  Future<void> _connectPersonalDrive() async {
+    if (_backupBusy) return;
+    setState(() => _backupBusy = true);
+    try {
+      final response = await http.get(Uri.parse('$kApi/backup/google/connect'),
+          headers: _authHeaders);
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200)
+        throw Exception(body['error'] ?? 'החיבור אינו זמין');
+      final uri = Uri.parse(body['authorizationUrl'] as String);
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened) throw Exception('לא ניתן לפתוח את Google');
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _verifyPersonalDrive() async {
+    if (_backupBusy) return;
+    setState(() => _backupBusy = true);
+    try {
+      final response = await http.post(Uri.parse('$kApi/backup/google/verify'),
+          headers: _authHeaders);
+      if (response.statusCode != 200) throw Exception('אימות החיבור נכשל');
+      await _loadBackupStatus();
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('החיבור ל-Google Drive תקין')));
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _disconnectPersonalDrive() async {
+    final approved = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: const Text('ניתוק Google Drive'),
+              content:
+                  const Text('החיבור יבוטל. קבצים קיימים לא יימחקו בשלב זה.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('ביטול')),
+                TextButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('ניתוק')),
+              ],
+            ));
+    if (approved != true || _backupBusy) return;
+    setState(() => _backupBusy = true);
+    try {
+      final response = await http.delete(Uri.parse('$kApi/backup/google'),
+          headers: _authHeaders);
+      if (response.statusCode != 200) throw Exception('הניתוק נכשל');
+      await _loadBackupStatus();
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _backupNextFile({bool replaceLatest = false}) async {
+    final controller = TextEditingController();
+    final confirmationController = TextEditingController();
+    final passwords = await showDialog<List<String>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(
+            replaceLatest ? 'יצירת הגיבוי האחרון מחדש' : 'גיבוי מוצפן חדש'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text(
+              'בחר/י סיסמת שחזור של 12 תווים לפחות. הסיסמה אינה נשמרת בשרת, ולכן יש לשמור אותה במקום בטוח.'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: controller,
+            obscureText: true,
+            autofocus: true,
+            maxLength: 128,
+            decoration: const InputDecoration(
+                labelText: 'סיסמת שחזור',
+                helperText: 'לפחות 12 תווים',
+                border: OutlineInputBorder()),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: confirmationController,
+            obscureText: true,
+            maxLength: 128,
+            decoration: const InputDecoration(
+                labelText: 'אימות סיסמת השחזור',
+                helperText: 'יש להקליד שוב בדיוק',
+                border: OutlineInputBorder()),
+          ),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('ביטול')),
+          FilledButton(
+              onPressed: () => Navigator.pop(
+                  context, [controller.text, confirmationController.text]),
+              child: Text(replaceLatest ? 'צור גיבוי חלופי' : 'הצפן וגבה')),
+        ],
+      ),
+    );
+    controller.dispose();
+    confirmationController.dispose();
+    if (passwords == null || _backupBusy) return;
+    final passphrase = passwords[0];
+    if (passphrase.length < 12) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('יש להזין לפחות 12 תווים')));
+      return;
+    }
+    if (passphrase != passwords[1]) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שתי הסיסמאות אינן זהות')));
+      return;
+    }
+    setState(() => _backupBusy = true);
+    try {
+      final response = await http.post(Uri.parse('$kApi/backup/next'),
+          headers: {..._authHeaders, 'Content-Type': 'application/json'},
+          body: jsonEncode(
+              {'passphrase': passphrase, 'replaceLatest': replaceLatest}));
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 201) {
+        throw Exception(body['error'] ?? 'הגיבוי נכשל');
+      }
+      await _loadBackupStatus();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(replaceLatest
+                ? 'הגיבוי הוחלף בהצלחה. כעת אפשר לבדוק שחזור.'
+                : 'קובץ אחד הוצפן וגובה בהצלחה. הקובץ המקומי נשאר ללא שינוי.')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _verifyBackupRestore() async {
+    if (_automaticBackup && _serverKeyReady) {
+      await _runBackupRestoreVerification();
+      return;
+    }
+    final controller = TextEditingController();
+    final passphrase = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('בדיקת שחזור'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text(
+              'הזן/י את אותה סיסמה. הקובץ יורד, יפוענח בזיכרון ויושווה למקור בלי להיכתב לדיסק.'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: controller,
+            obscureText: true,
+            autofocus: true,
+            maxLength: 128,
+            decoration: const InputDecoration(
+                labelText: 'סיסמת שחזור',
+                helperText: 'אותה סיסמה, לפחות 12 תווים',
+                border: OutlineInputBorder()),
+          ),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('ביטול')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text),
+              child: const Text('בדוק שחזור')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (passphrase == null || _backupBusy) return;
+    if (passphrase.length < 12) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('יש להזין לפחות 12 תווים')));
+      return;
+    }
+    await _runBackupRestoreVerification(passphrase: passphrase);
+  }
+
+  Future<void> _runBackupRestoreVerification({String? passphrase}) async {
+    if (_backupBusy) return;
+    setState(() => _backupBusy = true);
+    try {
+      final response = await http.post(Uri.parse('$kApi/backup/verify-restore'),
+          headers: {..._authHeaders, 'Content-Type': 'application/json'},
+          body: jsonEncode(passphrase == null
+              ? <String, dynamic>{}
+              : {'passphrase': passphrase}));
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200) {
+        throw Exception(body['error'] ?? 'בדיקת השחזור נכשלה');
+      }
+      await _loadBackupStatus();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'השחזור אומת בזיכרון: הקובץ בענן זהה למקור ולא נכתב לדיסק.')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _setAutomaticBackup(bool enabled) async {
+    if (_backupBusy) return;
+    if (enabled) {
+      final approved = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => AlertDialog(
+              title: const Text('הפעלת גיבוי אוטומטי'),
+              content: const Text(
+                  'השרת ייצור מפתח הצפנה אישי וישמור אותו מוצפן. כל קובץ יגובה, יעבור בדיקת שחזור מהענן, ואז העותק המקומי יפונה מיד אם אינו בשימוש פעיל. משמעות הדבר היא שהשרת יכול לפענח מדיה בעת שחזור מורשה.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('ביטול')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('אני מאשר/ת')),
+              ],
+            ),
+          ) ??
+          false;
+      if (!approved) return;
+    }
+    setState(() => _backupBusy = true);
+    try {
+      final response = await http.post(Uri.parse('$kApi/backup/automatic'),
+          headers: {..._authHeaders, 'Content-Type': 'application/json'},
+          body: jsonEncode({'enabled': enabled}));
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200)
+        throw Exception(body['error'] ?? 'עדכון הגיבוי האוטומטי נכשל');
+      if (!mounted) return;
+      setState(() {
+        _automaticBackup = body['enabled'] == true;
+        _serverKeyReady = body['server_key_ready'] == true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(enabled
+              ? 'הגיבוי והפינוי האוטומטיים הופעלו.'
+              : 'הגיבוי האוטומטי כובה. המפתח נשמר לצורך שחזור.')));
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
   }
 
   Future<void> _savePreferences({
@@ -22677,6 +30410,114 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ],
                   ),
+                ),
+                const SizedBox(height: 8),
+
+                const _SectionHeader(title: 'אחסון וגיבוי אישי'),
+                Container(
+                  color: kCard,
+                  child: Column(children: [
+                    ListTile(
+                      leading: const Icon(Icons.perm_media_outlined,
+                          color: kPrimary),
+                      title: const Text('המדיה שלי'),
+                      subtitle: const Text(
+                          'טבלה, סינון, שליחה, הורדה ומחיקה בטוחה של הקבצים שלך'),
+                      trailing: const Icon(Icons.chevron_left),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              PersonalMediaScreen(token: widget.token),
+                        ),
+                      ).then((_) => _loadBackupStatus()),
+                    ),
+                    const Divider(height: 1, indent: 16),
+                    if (_backupLoading)
+                      const Padding(
+                        padding: EdgeInsets.all(22),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else ...[
+                      ListTile(
+                        leading: Icon(
+                          _driveConnected
+                              ? Icons.cloud_done_outlined
+                              : Icons.add_to_drive_outlined,
+                          color: _driveConnected ? Colors.green : kPrimary,
+                        ),
+                        title: Text(_driveConnected
+                            ? 'Google Drive מחובר'
+                            : 'חיבור Google Drive'),
+                        subtitle: Text(_driveConnected
+                            ? 'הגישה מוגבלת לתיקיית האפליקציה הפרטית'
+                            : _driveConfigured
+                                ? 'גיבוי מוצפן לענן האישי שלך'
+                                : 'שירות הגיבוי עדיין אינו מוגדר'),
+                        trailing: _backupBusy
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : _driveConnected
+                                ? PopupMenuButton<String>(
+                                    onSelected: (value) {
+                                      if (value == 'verify')
+                                        _verifyPersonalDrive();
+                                      if (value == 'disconnect')
+                                        _disconnectPersonalDrive();
+                                    },
+                                    itemBuilder: (_) => const [
+                                      PopupMenuItem(
+                                          value: 'verify',
+                                          child: Text('בדיקת החיבור')),
+                                      PopupMenuItem(
+                                          value: 'disconnect',
+                                          child: Text('ניתוק')),
+                                    ],
+                                  )
+                                : const Icon(Icons.chevron_left),
+                        onTap:
+                            !_driveConfigured || _driveConnected || _backupBusy
+                                ? null
+                                : _connectPersonalDrive,
+                      ),
+                      const Divider(height: 1, indent: 16),
+                      ListTile(
+                        leading:
+                            const Icon(Icons.storage_outlined, color: kSubtext),
+                        title: const Text('מדיה השמורה כעת'),
+                        subtitle: Text('$_storedFileCount קבצים'),
+                        trailing: Text(_formatStorage(_storedBytes),
+                            textDirection: TextDirection.ltr,
+                            style: const TextStyle(color: kSubtext)),
+                      ),
+                      if (_driveConnected) ...[
+                        const Divider(height: 1, indent: 16),
+                        SwitchListTile(
+                          secondary: const Icon(Icons.sync_lock_outlined,
+                              color: kPrimary),
+                          title: const Text('גיבוי אוטומטי ברקע'),
+                          subtitle: Text(_automaticBackup
+                              ? 'פעיל • פינוי אפשרי רק לאחר 48 שעות וללא שימוש פעיל • $_verifiedBackupFiles מתוך $_approvedFileCount גובו ואומתו'
+                              : _serverKeyReady
+                                  ? 'המפתח האישי שמור מוצפן בשרת'
+                                  : 'דורש הסכמה ליצירת מפתח אישי בשרת'),
+                          value: _automaticBackup,
+                          onChanged: _backupBusy ? null : _setAutomaticBackup,
+                        ),
+                      ],
+                      if (!_driveConnected)
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(16, 0, 16, 14),
+                          child: Text(
+                            'החיבור אינו מוחק או מעביר קבצים. העלאה תופעל רק בשלב הבא ולאחר אישור מפורש.',
+                            style: TextStyle(fontSize: 12, color: kSubtext),
+                          ),
+                        ),
+                    ],
+                  ]),
                 ),
                 const SizedBox(height: 8),
 

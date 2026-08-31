@@ -1,0 +1,10 @@
+Emoji graphics: Twemoji
+Twemoji graphics are licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0).
+Source: https://github.com/jdecked/twemoji
+License: https://creativecommons.org/licenses/by/4.0/
+
+Suggested Hebrew display:
+גרפיקת האימוג'ים באפליקציה מבוססת על Twemoji ומופצת ברישיון Creative Commons Attribution 4.0 International (CC BY 4.0).
+מקור: jdecked/Twemoji.
+
+אם בוצעו שינויים בקבצים, יש להוסיף: "בוצעו התאמות גרפיות לקבצים המקוריים."

@@ -1,0 +1,1028 @@
+[
+  {
+    "emoji": "😀",
+    "category": "פנים ורגשות",
+    "label_he": "חיוך",
+    "twemoji_code": "1f600"
+  },
+  {
+    "emoji": "😃",
+    "category": "פנים ורגשות",
+    "label_he": "שמחה",
+    "twemoji_code": "1f603"
+  },
+  {
+    "emoji": "😄",
+    "category": "פנים ורגשות",
+    "label_he": "חיוך גדול",
+    "twemoji_code": "1f604"
+  },
+  {
+    "emoji": "😁",
+    "category": "פנים ורגשות",
+    "label_he": "שמחה",
+    "twemoji_code": "1f601"
+  },
+  {
+    "emoji": "😆",
+    "category": "פנים ורגשות",
+    "label_he": "צחוק",
+    "twemoji_code": "1f606"
+  },
+  {
+    "emoji": "😅",
+    "category": "פנים ורגשות",
+    "label_he": "הקלה",
+    "twemoji_code": "1f605"
+  },
+  {
+    "emoji": "😂",
+    "category": "פנים ורגשות",
+    "label_he": "צחוק",
+    "twemoji_code": "1f602"
+  },
+  {
+    "emoji": "🙂",
+    "category": "פנים ורגשות",
+    "label_he": "חיוך עדין",
+    "twemoji_code": "1f642"
+  },
+  {
+    "emoji": "😊",
+    "category": "פנים ורגשות",
+    "label_he": "שמחה",
+    "twemoji_code": "1f60a"
+  },
+  {
+    "emoji": "😇",
+    "category": "פנים ורגשות",
+    "label_he": "תמימות",
+    "twemoji_code": "1f607"
+  },
+  {
+    "emoji": "🥰",
+    "category": "פנים ורגשות",
+    "label_he": "חיבה",
+    "twemoji_code": "1f970"
+  },
+  {
+    "emoji": "😍",
+    "category": "פנים ורגשות",
+    "label_he": "התלהבות",
+    "twemoji_code": "1f60d"
+  },
+  {
+    "emoji": "🤩",
+    "category": "פנים ורגשות",
+    "label_he": "התלהבות",
+    "twemoji_code": "1f929"
+  },
+  {
+    "emoji": "😘",
+    "category": "פנים ורגשות",
+    "label_he": "נשיקה",
+    "twemoji_code": "1f618"
+  },
+  {
+    "emoji": "😋",
+    "category": "פנים ורגשות",
+    "label_he": "טעים",
+    "twemoji_code": "1f60b"
+  },
+  {
+    "emoji": "😎",
+    "category": "פנים ורגשות",
+    "label_he": "מרוצה",
+    "twemoji_code": "1f60e"
+  },
+  {
+    "emoji": "🤓",
+    "category": "פנים ורגשות",
+    "label_he": "לימוד",
+    "twemoji_code": "1f913"
+  },
+  {
+    "emoji": "🧐",
+    "category": "פנים ורגשות",
+    "label_he": "בדיקה",
+    "twemoji_code": "1f9d0"
+  },
+  {
+    "emoji": "🤔",
+    "category": "פנים ורגשות",
+    "label_he": "מחשבה",
+    "twemoji_code": "1f914"
+  },
+  {
+    "emoji": "🤗",
+    "category": "פנים ורגשות",
+    "label_he": "חיבוק",
+    "twemoji_code": "1f917"
+  },
+  {
+    "emoji": "🤭",
+    "category": "פנים ורגשות",
+    "label_he": "מבוכה",
+    "twemoji_code": "1f92d"
+  },
+  {
+    "emoji": "🤫",
+    "category": "פנים ורגשות",
+    "label_he": "שקט",
+    "twemoji_code": "1f92b"
+  },
+  {
+    "emoji": "🤐",
+    "category": "פנים ורגשות",
+    "label_he": "סוד",
+    "twemoji_code": "1f910"
+  },
+  {
+    "emoji": "😴",
+    "category": "פנים ורגשות",
+    "label_he": "שינה",
+    "twemoji_code": "1f634"
+  },
+  {
+    "emoji": "😌",
+    "category": "פנים ורגשות",
+    "label_he": "רוגע",
+    "twemoji_code": "1f60c"
+  },
+  {
+    "emoji": "😔",
+    "category": "פנים ורגשות",
+    "label_he": "עצב",
+    "twemoji_code": "1f614"
+  },
+  {
+    "emoji": "😢",
+    "category": "פנים ורגשות",
+    "label_he": "בכי",
+    "twemoji_code": "1f622"
+  },
+  {
+    "emoji": "😭",
+    "category": "פנים ורגשות",
+    "label_he": "בכי",
+    "twemoji_code": "1f62d"
+  },
+  {
+    "emoji": "😮",
+    "category": "פנים ורגשות",
+    "label_he": "הפתעה",
+    "twemoji_code": "1f62e"
+  },
+  {
+    "emoji": "😲",
+    "category": "פנים ורגשות",
+    "label_he": "הפתעה",
+    "twemoji_code": "1f632"
+  },
+  {
+    "emoji": "🥳",
+    "category": "פנים ורגשות",
+    "label_he": "חגיגה",
+    "twemoji_code": "1f973"
+  },
+  {
+    "emoji": "🥹",
+    "category": "פנים ורגשות",
+    "label_he": "התרגשות",
+    "twemoji_code": "1f979"
+  },
+  {
+    "emoji": "👍",
+    "category": "מחוות",
+    "label_he": "אישור",
+    "twemoji_code": "1f44d"
+  },
+  {
+    "emoji": "👎",
+    "category": "מחוות",
+    "label_he": "אי הסכמה",
+    "twemoji_code": "1f44e"
+  },
+  {
+    "emoji": "👌",
+    "category": "מחוות",
+    "label_he": "בסדר",
+    "twemoji_code": "1f44c"
+  },
+  {
+    "emoji": "✌️",
+    "category": "מחוות",
+    "label_he": "שלום",
+    "twemoji_code": "270c"
+  },
+  {
+    "emoji": "🤞",
+    "category": "מחוות",
+    "label_he": "תקווה",
+    "twemoji_code": "1f91e"
+  },
+  {
+    "emoji": "🤟",
+    "category": "מחוות",
+    "label_he": "מחווה",
+    "twemoji_code": "1f91f"
+  },
+  {
+    "emoji": "🤝",
+    "category": "מחוות",
+    "label_he": "לחיצת יד",
+    "twemoji_code": "1f91d"
+  },
+  {
+    "emoji": "👏",
+    "category": "מחוות",
+    "label_he": "מחיאות כפיים",
+    "twemoji_code": "1f44f"
+  },
+  {
+    "emoji": "🙌",
+    "category": "מחוות",
+    "label_he": "שמחה",
+    "twemoji_code": "1f64c"
+  },
+  {
+    "emoji": "🙏",
+    "category": "מחוות",
+    "label_he": "תודה/בקשה",
+    "twemoji_code": "1f64f"
+  },
+  {
+    "emoji": "💪",
+    "category": "מחוות",
+    "label_he": "כוח",
+    "twemoji_code": "1f4aa"
+  },
+  {
+    "emoji": "👋",
+    "category": "מחוות",
+    "label_he": "שלום",
+    "twemoji_code": "1f44b"
+  },
+  {
+    "emoji": "☝️",
+    "category": "מחוות",
+    "label_he": "הצבעה",
+    "twemoji_code": "261d"
+  },
+  {
+    "emoji": "👇",
+    "category": "מחוות",
+    "label_he": "למטה",
+    "twemoji_code": "1f447"
+  },
+  {
+    "emoji": "👉",
+    "category": "מחוות",
+    "label_he": "ימינה",
+    "twemoji_code": "1f449"
+  },
+  {
+    "emoji": "👈",
+    "category": "מחוות",
+    "label_he": "שמאלה",
+    "twemoji_code": "1f448"
+  },
+  {
+    "emoji": "❤️",
+    "category": "לבבות וסמלים",
+    "label_he": "לב",
+    "twemoji_code": "2764"
+  },
+  {
+    "emoji": "🧡",
+    "category": "לבבות וסמלים",
+    "label_he": "לב כתום",
+    "twemoji_code": "1f9e1"
+  },
+  {
+    "emoji": "💛",
+    "category": "לבבות וסמלים",
+    "label_he": "לב צהוב",
+    "twemoji_code": "1f49b"
+  },
+  {
+    "emoji": "💚",
+    "category": "לבבות וסמלים",
+    "label_he": "לב ירוק",
+    "twemoji_code": "1f49a"
+  },
+  {
+    "emoji": "💙",
+    "category": "לבבות וסמלים",
+    "label_he": "לב כחול",
+    "twemoji_code": "1f499"
+  },
+  {
+    "emoji": "💜",
+    "category": "לבבות וסמלים",
+    "label_he": "לב סגול",
+    "twemoji_code": "1f49c"
+  },
+  {
+    "emoji": "🤍",
+    "category": "לבבות וסמלים",
+    "label_he": "לב לבן",
+    "twemoji_code": "1f90d"
+  },
+  {
+    "emoji": "🤎",
+    "category": "לבבות וסמלים",
+    "label_he": "לב חום",
+    "twemoji_code": "1f90e"
+  },
+  {
+    "emoji": "💔",
+    "category": "לבבות וסמלים",
+    "label_he": "לב שבור",
+    "twemoji_code": "1f494"
+  },
+  {
+    "emoji": "❣️",
+    "category": "לבבות וסמלים",
+    "label_he": "לב",
+    "twemoji_code": "2763"
+  },
+  {
+    "emoji": "💕",
+    "category": "לבבות וסמלים",
+    "label_he": "לבבות",
+    "twemoji_code": "1f495"
+  },
+  {
+    "emoji": "💞",
+    "category": "לבבות וסמלים",
+    "label_he": "לבבות",
+    "twemoji_code": "1f49e"
+  },
+  {
+    "emoji": "💓",
+    "category": "לבבות וסמלים",
+    "label_he": "לב",
+    "twemoji_code": "1f493"
+  },
+  {
+    "emoji": "💗",
+    "category": "לבבות וסמלים",
+    "label_he": "לב",
+    "twemoji_code": "1f497"
+  },
+  {
+    "emoji": "💖",
+    "category": "לבבות וסמלים",
+    "label_he": "לב נוצץ",
+    "twemoji_code": "1f496"
+  },
+  {
+    "emoji": "✨",
+    "category": "לבבות וסמלים",
+    "label_he": "ניצוצות",
+    "twemoji_code": "2728"
+  },
+  {
+    "emoji": "⭐",
+    "category": "לבבות וסמלים",
+    "label_he": "כוכב",
+    "twemoji_code": "2b50"
+  },
+  {
+    "emoji": "🌟",
+    "category": "לבבות וסמלים",
+    "label_he": "כוכב זוהר",
+    "twemoji_code": "1f31f"
+  },
+  {
+    "emoji": "💫",
+    "category": "לבבות וסמלים",
+    "label_he": "נצנוץ",
+    "twemoji_code": "1f4ab"
+  },
+  {
+    "emoji": "✅",
+    "category": "לבבות וסמלים",
+    "label_he": "בוצע",
+    "twemoji_code": "2705"
+  },
+  {
+    "emoji": "❌",
+    "category": "לבבות וסמלים",
+    "label_he": "לא",
+    "twemoji_code": "274c"
+  },
+  {
+    "emoji": "❗",
+    "category": "לבבות וסמלים",
+    "label_he": "חשוב",
+    "twemoji_code": "2757"
+  },
+  {
+    "emoji": "❓",
+    "category": "לבבות וסמלים",
+    "label_he": "שאלה",
+    "twemoji_code": "2753"
+  },
+  {
+    "emoji": "💡",
+    "category": "לבבות וסמלים",
+    "label_he": "רעיון",
+    "twemoji_code": "1f4a1"
+  },
+  {
+    "emoji": "🔔",
+    "category": "לבבות וסמלים",
+    "label_he": "התראה",
+    "twemoji_code": "1f514"
+  },
+  {
+    "emoji": "🔒",
+    "category": "לבבות וסמלים",
+    "label_he": "נעול",
+    "twemoji_code": "1f512"
+  },
+  {
+    "emoji": "🔓",
+    "category": "לבבות וסמלים",
+    "label_he": "פתוח",
+    "twemoji_code": "1f513"
+  },
+  {
+    "emoji": "📌",
+    "category": "לבבות וסמלים",
+    "label_he": "נעץ",
+    "twemoji_code": "1f4cc"
+  },
+  {
+    "emoji": "📍",
+    "category": "לבבות וסמלים",
+    "label_he": "מיקום",
+    "twemoji_code": "1f4cd"
+  },
+  {
+    "emoji": "☀️",
+    "category": "זמן ומזג אוויר",
+    "label_he": "שמש",
+    "twemoji_code": "2600"
+  },
+  {
+    "emoji": "🌤️",
+    "category": "זמן ומזג אוויר",
+    "label_he": "מעונן חלקית",
+    "twemoji_code": "1f324"
+  },
+  {
+    "emoji": "☁️",
+    "category": "זמן ומזג אוויר",
+    "label_he": "ענן",
+    "twemoji_code": "2601"
+  },
+  {
+    "emoji": "🌧️",
+    "category": "זמן ומזג אוויר",
+    "label_he": "גשם",
+    "twemoji_code": "1f327"
+  },
+  {
+    "emoji": "⛈️",
+    "category": "זמן ומזג אוויר",
+    "label_he": "סערה",
+    "twemoji_code": "26c8"
+  },
+  {
+    "emoji": "🌈",
+    "category": "זמן ומזג אוויר",
+    "label_he": "קשת",
+    "twemoji_code": "1f308"
+  },
+  {
+    "emoji": "🌙",
+    "category": "זמן ומזג אוויר",
+    "label_he": "ירח",
+    "twemoji_code": "1f319"
+  },
+  {
+    "emoji": "🌄",
+    "category": "זמן ומזג אוויר",
+    "label_he": "זריחה",
+    "twemoji_code": "1f304"
+  },
+  {
+    "emoji": "⏰",
+    "category": "זמן ומזג אוויר",
+    "label_he": "שעון",
+    "twemoji_code": "23f0"
+  },
+  {
+    "emoji": "⌛",
+    "category": "זמן ומזג אוויר",
+    "label_he": "זמן",
+    "twemoji_code": "231b"
+  },
+  {
+    "emoji": "📅",
+    "category": "זמן ומזג אוויר",
+    "label_he": "לוח שנה",
+    "twemoji_code": "1f4c5"
+  },
+  {
+    "emoji": "🌳",
+    "category": "טבע",
+    "label_he": "עץ",
+    "twemoji_code": "1f333"
+  },
+  {
+    "emoji": "🌲",
+    "category": "טבע",
+    "label_he": "עץ",
+    "twemoji_code": "1f332"
+  },
+  {
+    "emoji": "🌴",
+    "category": "טבע",
+    "label_he": "דקל",
+    "twemoji_code": "1f334"
+  },
+  {
+    "emoji": "🌿",
+    "category": "טבע",
+    "label_he": "עלה",
+    "twemoji_code": "1f33f"
+  },
+  {
+    "emoji": "☘️",
+    "category": "טבע",
+    "label_he": "תלתן",
+    "twemoji_code": "2618"
+  },
+  {
+    "emoji": "🍀",
+    "category": "טבע",
+    "label_he": "מזל",
+    "twemoji_code": "1f340"
+  },
+  {
+    "emoji": "🌱",
+    "category": "טבע",
+    "label_he": "נבט",
+    "twemoji_code": "1f331"
+  },
+  {
+    "emoji": "🌷",
+    "category": "טבע",
+    "label_he": "פרח",
+    "twemoji_code": "1f337"
+  },
+  {
+    "emoji": "🌹",
+    "category": "טבע",
+    "label_he": "ורד",
+    "twemoji_code": "1f339"
+  },
+  {
+    "emoji": "🌻",
+    "category": "טבע",
+    "label_he": "חמניה",
+    "twemoji_code": "1f33b"
+  },
+  {
+    "emoji": "🌼",
+    "category": "טבע",
+    "label_he": "פרח",
+    "twemoji_code": "1f33c"
+  },
+  {
+    "emoji": "🍁",
+    "category": "טבע",
+    "label_he": "עלה",
+    "twemoji_code": "1f341"
+  },
+  {
+    "emoji": "🍂",
+    "category": "טבע",
+    "label_he": "עלים",
+    "twemoji_code": "1f342"
+  },
+  {
+    "emoji": "🪴",
+    "category": "טבע",
+    "label_he": "עציץ",
+    "twemoji_code": "1fab4"
+  },
+  {
+    "emoji": "🍎",
+    "category": "אוכל",
+    "label_he": "תפוח",
+    "twemoji_code": "1f34e"
+  },
+  {
+    "emoji": "🍏",
+    "category": "אוכל",
+    "label_he": "תפוח ירוק",
+    "twemoji_code": "1f34f"
+  },
+  {
+    "emoji": "🍐",
+    "category": "אוכל",
+    "label_he": "אגס",
+    "twemoji_code": "1f350"
+  },
+  {
+    "emoji": "🍊",
+    "category": "אוכל",
+    "label_he": "תפוז",
+    "twemoji_code": "1f34a"
+  },
+  {
+    "emoji": "🍋",
+    "category": "אוכל",
+    "label_he": "לימון",
+    "twemoji_code": "1f34b"
+  },
+  {
+    "emoji": "🍌",
+    "category": "אוכל",
+    "label_he": "בננה",
+    "twemoji_code": "1f34c"
+  },
+  {
+    "emoji": "🍉",
+    "category": "אוכל",
+    "label_he": "אבטיח",
+    "twemoji_code": "1f349"
+  },
+  {
+    "emoji": "🍇",
+    "category": "אוכל",
+    "label_he": "ענבים",
+    "twemoji_code": "1f347"
+  },
+  {
+    "emoji": "🍓",
+    "category": "אוכל",
+    "label_he": "תות",
+    "twemoji_code": "1f353"
+  },
+  {
+    "emoji": "🫐",
+    "category": "אוכל",
+    "label_he": "אוכמניות",
+    "twemoji_code": "1fad0"
+  },
+  {
+    "emoji": "🍒",
+    "category": "אוכל",
+    "label_he": "דובדבן",
+    "twemoji_code": "1f352"
+  },
+  {
+    "emoji": "🥭",
+    "category": "אוכל",
+    "label_he": "מנגו",
+    "twemoji_code": "1f96d"
+  },
+  {
+    "emoji": "🍍",
+    "category": "אוכל",
+    "label_he": "אננס",
+    "twemoji_code": "1f34d"
+  },
+  {
+    "emoji": "🥕",
+    "category": "אוכל",
+    "label_he": "גזר",
+    "twemoji_code": "1f955"
+  },
+  {
+    "emoji": "🌽",
+    "category": "אוכל",
+    "label_he": "תירס",
+    "twemoji_code": "1f33d"
+  },
+  {
+    "emoji": "🥒",
+    "category": "אוכל",
+    "label_he": "מלפפון",
+    "twemoji_code": "1f952"
+  },
+  {
+    "emoji": "🥬",
+    "category": "אוכל",
+    "label_he": "ירק",
+    "twemoji_code": "1f96c"
+  },
+  {
+    "emoji": "🍅",
+    "category": "אוכל",
+    "label_he": "עגבנייה",
+    "twemoji_code": "1f345"
+  },
+  {
+    "emoji": "🥑",
+    "category": "אוכל",
+    "label_he": "אבוקדו",
+    "twemoji_code": "1f951"
+  },
+  {
+    "emoji": "🍞",
+    "category": "אוכל",
+    "label_he": "לחם",
+    "twemoji_code": "1f35e"
+  },
+  {
+    "emoji": "🥖",
+    "category": "אוכל",
+    "label_he": "בגט",
+    "twemoji_code": "1f956"
+  },
+  {
+    "emoji": "🥨",
+    "category": "אוכל",
+    "label_he": "בייגלה",
+    "twemoji_code": "1f968"
+  },
+  {
+    "emoji": "🧀",
+    "category": "אוכל",
+    "label_he": "גבינה",
+    "twemoji_code": "1f9c0"
+  },
+  {
+    "emoji": "🥚",
+    "category": "אוכל",
+    "label_he": "ביצה",
+    "twemoji_code": "1f95a"
+  },
+  {
+    "emoji": "🍯",
+    "category": "אוכל",
+    "label_he": "דבש",
+    "twemoji_code": "1f36f"
+  },
+  {
+    "emoji": "☕",
+    "category": "אוכל",
+    "label_he": "משקה חם",
+    "twemoji_code": "2615"
+  },
+  {
+    "emoji": "🫖",
+    "category": "אוכל",
+    "label_he": "קומקום תה",
+    "twemoji_code": "1fad6"
+  },
+  {
+    "emoji": "🥛",
+    "category": "אוכל",
+    "label_he": "חלב",
+    "twemoji_code": "1f95b"
+  },
+  {
+    "emoji": "📚",
+    "category": "לימוד ועבודה",
+    "label_he": "ספרים",
+    "twemoji_code": "1f4da"
+  },
+  {
+    "emoji": "📖",
+    "category": "לימוד ועבודה",
+    "label_he": "ספר פתוח",
+    "twemoji_code": "1f4d6"
+  },
+  {
+    "emoji": "📕",
+    "category": "לימוד ועבודה",
+    "label_he": "ספר",
+    "twemoji_code": "1f4d5"
+  },
+  {
+    "emoji": "📗",
+    "category": "לימוד ועבודה",
+    "label_he": "ספר",
+    "twemoji_code": "1f4d7"
+  },
+  {
+    "emoji": "📘",
+    "category": "לימוד ועבודה",
+    "label_he": "ספר",
+    "twemoji_code": "1f4d8"
+  },
+  {
+    "emoji": "📙",
+    "category": "לימוד ועבודה",
+    "label_he": "ספר",
+    "twemoji_code": "1f4d9"
+  },
+  {
+    "emoji": "✏️",
+    "category": "לימוד ועבודה",
+    "label_he": "עיפרון",
+    "twemoji_code": "270f"
+  },
+  {
+    "emoji": "📝",
+    "category": "לימוד ועבודה",
+    "label_he": "כתיבה",
+    "twemoji_code": "1f4dd"
+  },
+  {
+    "emoji": "📎",
+    "category": "לימוד ועבודה",
+    "label_he": "אטב",
+    "twemoji_code": "1f4ce"
+  },
+  {
+    "emoji": "📁",
+    "category": "לימוד ועבודה",
+    "label_he": "תיקייה",
+    "twemoji_code": "1f4c1"
+  },
+  {
+    "emoji": "📂",
+    "category": "לימוד ועבודה",
+    "label_he": "תיקייה פתוחה",
+    "twemoji_code": "1f4c2"
+  },
+  {
+    "emoji": "📄",
+    "category": "לימוד ועבודה",
+    "label_he": "מסמך",
+    "twemoji_code": "1f4c4"
+  },
+  {
+    "emoji": "📱",
+    "category": "לימוד ועבודה",
+    "label_he": "טלפון",
+    "twemoji_code": "1f4f1"
+  },
+  {
+    "emoji": "💻",
+    "category": "לימוד ועבודה",
+    "label_he": "מחשב",
+    "twemoji_code": "1f4bb"
+  },
+  {
+    "emoji": "⌨️",
+    "category": "לימוד ועבודה",
+    "label_he": "מקלדת",
+    "twemoji_code": "2328"
+  },
+  {
+    "emoji": "🖨️",
+    "category": "לימוד ועבודה",
+    "label_he": "מדפסת",
+    "twemoji_code": "1f5a8"
+  },
+  {
+    "emoji": "📷",
+    "category": "לימוד ועבודה",
+    "label_he": "מצלמה",
+    "twemoji_code": "1f4f7"
+  },
+  {
+    "emoji": "🎥",
+    "category": "לימוד ועבודה",
+    "label_he": "וידאו",
+    "twemoji_code": "1f3a5"
+  },
+  {
+    "emoji": "🎧",
+    "category": "לימוד ועבודה",
+    "label_he": "אוזניות",
+    "twemoji_code": "1f3a7"
+  },
+  {
+    "emoji": "🎤",
+    "category": "לימוד ועבודה",
+    "label_he": "מיקרופון",
+    "twemoji_code": "1f3a4"
+  },
+  {
+    "emoji": "📞",
+    "category": "לימוד ועבודה",
+    "label_he": "טלפון",
+    "twemoji_code": "1f4de"
+  },
+  {
+    "emoji": "💬",
+    "category": "לימוד ועבודה",
+    "label_he": "הודעה",
+    "twemoji_code": "1f4ac"
+  },
+  {
+    "emoji": "📨",
+    "category": "לימוד ועבודה",
+    "label_he": "דואר",
+    "twemoji_code": "1f4e8"
+  },
+  {
+    "emoji": "📩",
+    "category": "לימוד ועבודה",
+    "label_he": "מעטפה",
+    "twemoji_code": "1f4e9"
+  },
+  {
+    "emoji": "🚗",
+    "category": "תחבורה ופעילות",
+    "label_he": "רכב",
+    "twemoji_code": "1f697"
+  },
+  {
+    "emoji": "🚕",
+    "category": "תחבורה ופעילות",
+    "label_he": "מונית",
+    "twemoji_code": "1f695"
+  },
+  {
+    "emoji": "🚌",
+    "category": "תחבורה ופעילות",
+    "label_he": "אוטובוס",
+    "twemoji_code": "1f68c"
+  },
+  {
+    "emoji": "🚆",
+    "category": "תחבורה ופעילות",
+    "label_he": "רכבת",
+    "twemoji_code": "1f686"
+  },
+  {
+    "emoji": "✈️",
+    "category": "תחבורה ופעילות",
+    "label_he": "מטוס",
+    "twemoji_code": "2708"
+  },
+  {
+    "emoji": "🚲",
+    "category": "תחבורה ופעילות",
+    "label_he": "אופניים",
+    "twemoji_code": "1f6b2"
+  },
+  {
+    "emoji": "🏠",
+    "category": "תחבורה ופעילות",
+    "label_he": "בית",
+    "twemoji_code": "1f3e0"
+  },
+  {
+    "emoji": "🏡",
+    "category": "תחבורה ופעילות",
+    "label_he": "בית",
+    "twemoji_code": "1f3e1"
+  },
+  {
+    "emoji": "🎁",
+    "category": "תחבורה ופעילות",
+    "label_he": "מתנה",
+    "twemoji_code": "1f381"
+  },
+  {
+    "emoji": "🎈",
+    "category": "תחבורה ופעילות",
+    "label_he": "בלון",
+    "twemoji_code": "1f388"
+  },
+  {
+    "emoji": "🎉",
+    "category": "תחבורה ופעילות",
+    "label_he": "חגיגה",
+    "twemoji_code": "1f389"
+  },
+  {
+    "emoji": "🎊",
+    "category": "תחבורה ופעילות",
+    "label_he": "קונפטי",
+    "twemoji_code": "1f38a"
+  },
+  {
+    "emoji": "🏆",
+    "category": "תחבורה ופעילות",
+    "label_he": "גביע",
+    "twemoji_code": "1f3c6"
+  },
+  {
+    "emoji": "🥇",
+    "category": "תחבורה ופעילות",
+    "label_he": "מדליה",
+    "twemoji_code": "1f947"
+  },
+  {
+    "emoji": "🎵",
+    "category": "תחבורה ופעילות",
+    "label_he": "מוזיקה",
+    "twemoji_code": "1f3b5"
+  },
+  {
+    "emoji": "🎶",
+    "category": "תחבורה ופעילות",
+    "label_he": "מוזיקה",
+    "twemoji_code": "1f3b6"
+  },
+  {
+    "emoji": "🕯️",
+    "category": "תחבורה ופעילות",
+    "label_he": "נר",
+    "twemoji_code": "1f56f"
+  }
+]

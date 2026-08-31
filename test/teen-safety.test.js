@@ -62,6 +62,7 @@ test('legacy accounts can complete an immutable validated birth date', () => {
   const flutter = read('flutter_app/lib/main.dart');
   assert.match(flutter, /class _CompleteBirthDateScreen/);
   assert.match(flutter, /profile\/birth-date/);
+  assert.match(flutter, /BIRTH_DATE_ALREADY_SET/);
 });
 
 test('teen sockets cannot join, send to, or receive pushes from group rooms', () => {

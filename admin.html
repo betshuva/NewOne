@@ -411,6 +411,9 @@ tr:hover td{background:rgba(33,38,45,.8)}
       <div class="scan-tab" id="stab-approved" onclick="switchScanTab('approved')">
         ✅ אושרו <span id="scan-badge-approved" class="scan-badge green">—</span>
       </div>
+      <div class="scan-tab" id="stab-appeals" onclick="switchScanTab('appeals')">
+        🙋 ערעורי סיווג <span id="scan-badge-appeals" class="scan-badge orange">—</span>
+      </div>
     </div>
     <div class="table-wrap" id="scan-table-wrap"><div class="loader">טוען...</div></div>
     <div class="pagination" id="scan-pagination"></div>
@@ -1807,7 +1810,24 @@ async function loadScanPanel(type, offset) {
     document.getElementById('scan-badge-' + type).textContent = data.total.toLocaleString();
     if (!data.rows.length) { wrap.innerHTML = '<div class="empty">אין רשומות</div>'; return; }
 
-    if (type === 'blocked') {
+    if (type === 'appeals') {
+      const labels = {men:'גברים',women:'נשים',children:'ילדים',nonHumanImages:'ללא בני אדם',people:'אנשים'};
+      wrap.innerHTML = `
+        <table>
+          <thead><tr><th></th><th>תאריך</th><th>משתמש</th><th>שם קובץ</th><th>סיווג נוכחי</th><th>הכרעה</th></tr></thead>
+          <tbody>${data.rows.map(r => `<tr>
+            <td style="padding:6px 10px">${thumbCell(r.file_url,r.file_name,r.file_type)}</td>
+            <td class="td-date">${fmtDate(r.created_at)}</td>
+            <td title="${escHtml(r.sender_email||'')}">${escHtml(r.sender_name||'—')}</td>
+            <td>${escHtml((r.file_name||'—').slice(0,36))}</td>
+            <td>${escHtml(labels[r.current_classification?.category]||r.current_classification?.category||'לא ידוע')}</td>
+            <td>${adminPerm==='edit' ? `<select onchange="if(this.value) resolveClassificationAppeal('${r.id}',this.value,this)" style="padding:6px">
+              <option value="">בחר סיווג...</option>
+              ${Object.entries(labels).map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}
+            </select>` : 'צפייה בלבד'}</td>
+          </tr>`).join('')}</tbody>
+        </table>`;
+    } else if (type === 'blocked') {
       wrap.innerHTML = `
         <table>
           <thead><tr>
@@ -1884,6 +1904,21 @@ async function loadScanPanel(type, offset) {
   } catch (e) {
     wrap.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`;
   }
+}
+
+async function resolveClassificationAppeal(id, category, select) {
+  if (!confirm('לעדכן את סיווג התמונה ולסיים את הערעור?')) { select.value=''; return; }
+  select.disabled = true;
+  try {
+    const res = await fetch(`${API}/api/admin/classification-appeals/${id}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({category})
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'עדכון הערעור נכשל'); select.disabled=false; return; }
+    loadScanPanel('appeals', scanOffset);
+  } catch (e) { alert(e.message); select.disabled=false; }
 }
 
 async function deletePending(id) {

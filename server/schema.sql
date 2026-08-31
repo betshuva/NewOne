@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS users (
   filter_level        TEXT NOT NULL DEFAULT 'standard', -- standard | strict
   notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  content_filter      JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
+  content_filter      JSONB NOT NULL DEFAULT '{"text":true,"video":false,"nonHumanImages":true,"men":false,"women":false,"children":false}'::jsonb,
   google_id           TEXT,
   latitude            DOUBLE PRECISION,
   longitude           DOUBLE PRECISION,
@@ -90,9 +90,10 @@ CREATE TABLE IF NOT EXISTS groups (
   description      TEXT,
   creator_id       UUID REFERENCES users(id),
   is_broadcast     BOOLEAN NOT NULL DEFAULT FALSE,   -- שליחה חד-כיוונית
+  is_self          BOOLEAN NOT NULL DEFAULT FALSE,   -- קבוצה עצמית מפורשת
   send_permission  TEXT NOT NULL DEFAULT 'all',      -- all | admin
   filter_level     TEXT NOT NULL DEFAULT 'standard', -- standard | strict
-  content_filter   JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb,
+  content_filter   JSONB,
   created_at       TIMESTAMPTZ DEFAULT now()
 );
 
@@ -127,6 +128,7 @@ CREATE TABLE IF NOT EXISTS messages (
   deleted_for_everyone BOOLEAN NOT NULL DEFAULT FALSE,
   is_edited            BOOLEAN NOT NULL DEFAULT FALSE,
   edited_at            TIMESTAMPTZ,
+  delivery_summary     JSONB,
   created_at           TIMESTAMPTZ DEFAULT now()
 );
 
@@ -155,6 +157,7 @@ CREATE TABLE IF NOT EXISTS group_members (
   status        TEXT NOT NULL DEFAULT 'member', -- member | pending
   added_by      UUID,
   pending_since TIMESTAMPTZ,
+  filter_override JSONB,
   joined_at     TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (group_id, user_id)
 );
@@ -299,8 +302,81 @@ CREATE TABLE IF NOT EXISTS stored_files (
   context_id    UUID,
   moderation_status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
   moderation_details JSONB,
+  content_sha256 TEXT,
+  visual_fingerprint JSONB,
+  release_scheduled_at TIMESTAMPTZ,
+  released_at TIMESTAMPTZ,
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS stored_files_content_sha256_idx
+  ON stored_files(content_sha256) WHERE content_sha256 IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS media_classification_appeals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  stored_file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  prior_classification JSONB,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','reviewed','resolved','dismissed')),
+  reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  reviewer_note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reviewed_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS media_classification_appeals_pending_idx
+  ON media_classification_appeals(stored_file_id,user_id) WHERE status='pending';
+
+-- Metadata for encrypted backups in storage owned by the user. Nothing here
+-- deletes local media; release is enabled only after upload verification.
+CREATE TABLE IF NOT EXISTS user_backup_settings (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  provider TEXT CHECK (provider IS NULL OR provider IN ('google_drive')),
+  storage_mode TEXT NOT NULL DEFAULT 'backup_only'
+    CHECK (storage_mode IN ('backup_only','backup_and_release')),
+  wifi_only BOOLEAN NOT NULL DEFAULT TRUE,
+  release_threshold_bytes BIGINT NOT NULL DEFAULT 1073741824
+    CHECK (release_threshold_bytes >= 0),
+  encrypted_data_key TEXT,
+  data_key_version INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS cloud_backup_accounts (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('google_drive')),
+  encrypted_refresh_token TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'connected'
+    CHECK (status IN ('connected','error','revoked')),
+  last_verified_at TIMESTAMPTZ,
+  last_error TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS media_backup_items (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  stored_file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('google_drive')),
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK (status IN ('queued','uploading','uploaded','verified','failed')),
+  remote_file_id TEXT,
+  plaintext_sha256 TEXT NOT NULL,
+  encrypted_sha256 TEXT,
+  encryption_metadata JSONB,
+  verified_at TIMESTAMPTZ,
+  restore_verified_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (stored_file_id, provider)
+);
+CREATE INDEX IF NOT EXISTS media_backup_items_user_status_idx
+  ON media_backup_items(user_id, status);
 
 -- System image-scanning conversation bot.
 INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city)

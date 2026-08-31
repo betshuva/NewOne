@@ -11,8 +11,10 @@ const crypto     = require('crypto');
 const dns        = require('dns').promises;
 const net        = require('net');
 const multer     = require('multer');
+const { scanDocument: scanDocumentContent } = require('./document-moderation');
 const path       = require('path');
 const fs         = require('fs/promises');
+const { fork }   = require('child_process');
 const sharp      = require('sharp');
 const { cert, getApps, initializeApp } = require('firebase-admin/app');
 const { getMessaging } = require('firebase-admin/messaging');
@@ -24,9 +26,87 @@ const {
   scanGoogleObjectLocalization,
   scanGoogleSafeSearch,
 } = require('./google-vision');
+const { verifyPersonClassification } = require('./person-verification');
+const { createVisualFingerprint, visuallyEquivalent } =
+  require('./visual-fingerprint');
+const {
+  configuredFolderId,
+  googleDriveConfigured,
+  listDriveFiles,
+  getDriveFile,
+} = require('./google-drive');
+const personalDrive = require('./personal-drive');
+const { decryptBuffer: decryptBackupBuffer, deriveKey: deriveBackupKey,
+  encryptBuffer: encryptBackupBuffer } =
+  require('./media-backup-crypto');
+const { createVaultKey, unwrapVaultKey, wrapVaultKey } = require('./backup-vault-key');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
+const DRIVE_MEDIA_CACHE_ROOT = path.join(__dirname, '..', 'backups', 'drive-media-cache');
+const DRIVE_MEDIA_CACHE_MAX_BYTES = Number(process.env.DRIVE_MEDIA_CACHE_MAX_BYTES) ||
+  20 * 1024 * 1024 * 1024;
+const driveMediaLoads = new Map();
+
+function driveMediaCacheTtl(accessCount) {
+  if (accessCount >= 10) return 72 * 60 * 60 * 1000;
+  if (accessCount >= 4) return 48 * 60 * 60 * 1000;
+  if (accessCount >= 2) return 24 * 60 * 60 * 1000;
+  return 6 * 60 * 60 * 1000;
+}
+
+async function readDriveMediaCacheMetadata(cachePath, fallbackStat) {
+  try {
+    const parsed = JSON.parse(await fs.readFile(`${cachePath}.meta.json`, 'utf8'));
+    if (Number.isFinite(parsed.lastAccessAt) && Number.isInteger(parsed.accessCount))
+      return parsed;
+  } catch (error) {
+    if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+  }
+  return { createdAt: fallbackStat.mtimeMs, lastAccessAt: fallbackStat.mtimeMs, accessCount: 1 };
+}
+
+async function writeDriveMediaCacheMetadata(cachePath, metadata) {
+  const metadataPath = `${cachePath}.meta.json`;
+  const temporaryPath = `${metadataPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await fs.writeFile(temporaryPath, JSON.stringify(metadata), { flag: 'wx', mode: 0o600 });
+  await fs.rename(temporaryPath, metadataPath);
+}
+
+async function removeDriveMediaCacheEntry(cachePath) {
+  await Promise.all([cachePath, `${cachePath}.meta.json`].map(filePath =>
+    fs.unlink(filePath).catch(error => { if (error.code !== 'ENOENT') throw error; })));
+}
+
+async function clearExpiredDriveMediaCache() {
+  if (clearExpiredDriveMediaCache.running) return;
+  clearExpiredDriveMediaCache.running = true;
+  try {
+    const entries = await fs.readdir(DRIVE_MEDIA_CACHE_ROOT, { withFileTypes: true });
+    const now = Date.now();
+    const retained = [];
+    for (const entry of entries.filter(item => item.isFile() && item.name.endsWith('.enc'))) {
+      const cachePath = path.join(DRIVE_MEDIA_CACHE_ROOT, entry.name);
+      const stat = await fs.stat(cachePath);
+      const metadata = await readDriveMediaCacheMetadata(cachePath, stat);
+      if (now - metadata.lastAccessAt > driveMediaCacheTtl(metadata.accessCount)) {
+        await removeDriveMediaCacheEntry(cachePath);
+      } else retained.push({ cachePath, size: stat.size, lastAccessAt: metadata.lastAccessAt });
+    }
+    let totalBytes = retained.reduce((sum, item) => sum + item.size, 0);
+    retained.sort((a, b) => a.lastAccessAt - b.lastAccessAt);
+    for (const item of retained) {
+      if (totalBytes <= DRIVE_MEDIA_CACHE_MAX_BYTES) break;
+      await removeDriveMediaCacheEntry(item.cachePath);
+      totalBytes -= item.size;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Drive media cache cleanup:', error.message);
+  } finally {
+    clearExpiredDriveMediaCache.running = false;
+  }
+}
+clearExpiredDriveMediaCache.running = false;
 const SCAN_BOT_ID = '00000000-0000-4000-8000-000000000001';
 const SCAN_BOT_EMAIL = 'scan@betshuva.system';
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002';
@@ -43,6 +123,7 @@ const linkPreviewCache = new Map();
 const linkSafetyCache = new Map();
 const LINK_BLOCKED_MESSAGE =
   'הקישור לא פורסם: בדיקת האבטחה או בדיקת התוכן לא הושלמה בהצלחה';
+
 
 function isPrivatePreviewAddress(address) {
   if (net.isIP(address) === 4) {
@@ -86,17 +167,39 @@ function sameBetshuvaHost(url) {
   return host === 'betshuva.com' || host.endsWith('.betshuva.com');
 }
 
+function isStructurallyUnsafeLinkError(error) {
+  return ['HTTPS is required', 'unsafe URL', 'unsafe host', 'unsafe address']
+    .includes(String(error?.message || ''));
+}
+
 async function googleUrlThreats(url) {
   const apiKey = String(process.env.GOOGLE_SAFE_BROWSING_API_KEY ||
     process.env.GOOGLE_VISION_API_KEY || '').trim();
   if (!apiKey) throw new Error('Safe Browsing is not configured');
-  const endpoint = new URL('https://safebrowsing.googleapis.com/v5/urls:search');
-  endpoint.searchParams.append('urls', url.toString());
+  const endpoint = new URL('https://safebrowsing.googleapis.com/v4/threatMatches:find');
   endpoint.searchParams.set('key', apiKey);
-  const response = await fetch(endpoint, { signal: AbortSignal.timeout(7000) });
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client: { clientId: 'betshuva', clientVersion: '1.0' },
+      threatInfo: {
+        threatTypes: [
+          'MALWARE',
+          'SOCIAL_ENGINEERING',
+          'UNWANTED_SOFTWARE',
+          'POTENTIALLY_HARMFUL_APPLICATION',
+        ],
+        platformTypes: ['ANY_PLATFORM'],
+        threatEntryTypes: ['URL'],
+        threatEntries: [{ url: url.toString() }],
+      },
+    }),
+    signal: AbortSignal.timeout(7000),
+  });
   if (!response.ok) throw new Error(`Safe Browsing HTTP ${response.status}`);
   const data = await response.json();
-  return Array.isArray(data.threats) ? data.threats : [];
+  return Array.isArray(data.matches) ? data.matches : [];
 }
 
 async function fetchPreviewPage(rawUrl) {
@@ -137,6 +240,10 @@ async function fetchPublicImage(rawUrl, maxBytes = 10_000_000) {
     if (!location || redirects === 2) throw new Error('too many image redirects');
     current = await validatePreviewUrl(new URL(location, current).toString());
   }
+  // A stale Open Graph image is optional metadata, not a failed safety check.
+  // Continue without a preview only when the publisher explicitly says that
+  // the image no longer exists. Network errors and unverifiable images fail.
+  if ([404, 410].includes(response?.status)) return null;
   if (!response?.ok || !String(response.headers.get('content-type') || '').toLowerCase()
       .startsWith('image/')) throw new Error('invalid preview image');
   const reader = response.body?.getReader();
@@ -153,19 +260,66 @@ async function fetchPublicImage(rawUrl, maxBytes = 10_000_000) {
   return Buffer.concat(chunks);
 }
 
+function domainFaviconUrl(hostname) {
+  const favicon = new URL('https://www.google.com/s2/favicons');
+  favicon.searchParams.set('domain', hostname);
+  favicon.searchParams.set('sz', '256');
+  return favicon;
+}
+
+async function inspectedFallbackFavicon(hostname) {
+  const faviconUrl = domainFaviconUrl(hostname);
+  try {
+    const imageBytes = await fetchPublicImage(faviconUrl, 1_000_000);
+    if (!imageBytes) return null;
+    const scan = await scanGoogleSafeSearch(imageBytes, { threshold: 'LIKELY' });
+    if (scan.blocked || ['LIKELY', 'VERY_LIKELY'].includes(scan.categories?.violence))
+      throw new Error('unsafe preview image');
+    if (!scan.available || scan.status === 'error' || scan.uncertain) return null;
+    return faviconUrl.toString();
+  } catch (error) {
+    if (error.message === 'unsafe preview image') throw error;
+    console.warn('Fallback favicon unavailable:', error.message);
+    return null;
+  }
+}
+
 async function inspectExternalLink(rawUrl) {
   const cached = linkSafetyCache.get(rawUrl);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const original = await validatePreviewUrl(rawUrl);
   if (sameBetshuvaHost(original)) return { safe: true, url: original.toString() };
-  // External links pass only when every reputation, page and preview-image
-  // check succeeds. Any unavailable or inconclusive check throws and the
-  // message is rejected before it is stored or broadcast.
-  const originalThreats = await googleUrlThreats(original);
+  // Block only on an explicit unsafe result. Temporary failures in an
+  // external reputation, page or preview-image service degrade the preview
+  // instead of rejecting the message.
+  let originalThreats = [];
+  try {
+    originalThreats = await googleUrlThreats(original);
+  } catch (error) {
+    console.warn('Safe Browsing unavailable for link:', error.message);
+  }
   if (originalThreats.length) throw new Error('known unsafe URL');
-  const page = await fetchPreviewPage(original);
+  let page;
+  try {
+    page = await fetchPreviewPage(original);
+  } catch (error) {
+    if (isStructurallyUnsafeLinkError(error)) throw error;
+    console.warn('Link preview unavailable:', error.message);
+    const fallbackImage = await inspectedFallbackFavicon(original.hostname);
+    const value = { safe: true, url: original.toString(),
+      domain: original.hostname.replace(/^www\./, ''),
+      title: original.hostname.replace(/^www\./, ''),
+      description: '', image: fallbackImage };
+    linkSafetyCache.set(rawUrl, { value, expiresAt: Date.now() + 10 * 60 * 1000 });
+    return value;
+  }
   if (page.current.toString() !== original.toString()) {
-    const redirectThreats = await googleUrlThreats(page.current);
+    let redirectThreats = [];
+    try {
+      redirectThreats = await googleUrlThreats(page.current);
+    } catch (error) {
+      console.warn('Safe Browsing unavailable for redirect:', error.message);
+    }
     if (redirectThreats.length) throw new Error('unsafe redirect');
   }
   const searchable = `${page.current.hostname} ${page.metadata.title} ${page.metadata.description}`
@@ -174,14 +328,22 @@ async function inspectExternalLink(rawUrl) {
   if (prohibited.test(searchable)) throw new Error('prohibited page content');
   let safeImage = null;
   if (page.metadata.image) {
-    const imageUrl = new URL(page.metadata.image, page.current);
-    const imageBytes = await fetchPublicImage(imageUrl);
-    const scan = await scanGoogleSafeSearch(imageBytes, { threshold: 'LIKELY' });
-    if (!scan.available || scan.status === 'error' || scan.uncertain || scan.blocked ||
-        ['LIKELY', 'VERY_LIKELY'].includes(scan.categories?.violence))
-      throw new Error('unsafe or unverified preview image');
-    safeImage = imageUrl.toString();
+    try {
+      const imageUrl = new URL(page.metadata.image, page.current);
+      const imageBytes = await fetchPublicImage(imageUrl);
+      if (imageBytes) {
+        const scan = await scanGoogleSafeSearch(imageBytes, { threshold: 'LIKELY' });
+        if (scan.blocked || ['LIKELY', 'VERY_LIKELY'].includes(scan.categories?.violence))
+          throw new Error('unsafe preview image');
+        if (scan.available && scan.status !== 'error' && !scan.uncertain)
+          safeImage = imageUrl.toString();
+      }
+    } catch (error) {
+      if (error.message === 'unsafe preview image') throw error;
+      console.warn('Link preview image unavailable:', error.message);
+    }
   }
+  if (!safeImage) safeImage = await inspectedFallbackFavicon(page.current.hostname);
   const value = { safe: true, url: page.current.toString(),
     domain: page.current.hostname.replace(/^www\./, ''),
     title: page.metadata.title || page.current.hostname.replace(/^www\./, ''),
@@ -365,6 +527,8 @@ const ALLOWED_TYPES = {
   'application/pdf': { ext: 'pdf',  maxMB: 25, dbType: 'document' },
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
                  { ext: 'docx', maxMB: 25, dbType: 'document' },
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+                 { ext: 'xlsx', maxMB: 25, dbType: 'document' },
   'audio/mpeg':  { ext: 'mp3',  maxMB: 25, dbType: 'audio' },
   'audio/aac':   { ext: 'aac',  maxMB: 25, dbType: 'audio' },
   'audio/mp4':   { ext: 'm4a',  maxMB: 25, dbType: 'audio' },
@@ -377,6 +541,15 @@ const ALLOWED_TYPES = {
 };
 const BLOCKED_TYPES = ['application/x-mpegURL'];
 const ALLOWED_EXTENSIONS = Object.freeze({
+  pdf: { mime: 'application/pdf', config: ALLOWED_TYPES['application/pdf'] },
+  docx: {
+    mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    config: ALLOWED_TYPES['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  },
+  xlsx: {
+    mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    config: ALLOWED_TYPES['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  },
   mp4: { mime: 'video/mp4', config: ALLOWED_TYPES['video/mp4'] },
   webm: { mime: 'video/webm', config: ALLOWED_TYPES['video/webm'] },
   mov: { mime: 'video/quicktime', config: ALLOWED_TYPES['video/quicktime'] },
@@ -720,7 +893,7 @@ const DEFAULT_CONTENT_FILTER = Object.freeze({
 const NEW_ACCOUNT_CONTENT_FILTER = Object.freeze({
   text: true,
   video: false,
-  nonHumanImages: false,
+  nonHumanImages: true,
   men: false,
   women: false,
   children: false,
@@ -762,6 +935,12 @@ function imageAllowedByFilter(filter, classification) {
   const detected = classification?.detectedCategories;
   if (Array.isArray(detected) && detected.length)
     return detected.every(category => filter[category] === true);
+  // The classifier can decide that an image may contain a person while still
+  // finding no evidence for men, women, or children. Do not turn that
+  // uncertainty into all three categories: doing so rejects harmless posters
+  // whenever any one of those filters is disabled. Explicit detections remain
+  // subject to the configured filter above.
+  if (classification?.uncertain === true && Array.isArray(detected)) return true;
   const category = classification?.category || 'people';
   if (category === 'people')
     return filter.men && filter.women && filter.children;
@@ -771,15 +950,51 @@ function imageAllowedByFilter(filter, classification) {
 function contentAllowedByFilter(filter, type, classification) {
   const normalized = normalizeContentFilter(filter);
   if (type === 'text') return normalized.text;
+  if (type === 'document')
+    return normalized.text && (!classification ||
+      imageAllowedByFilter(normalized, classification));
   if (type === 'video')
     return normalized.video && imageAllowedByFilter(normalized, classification);
   if (type === 'image') return imageAllowedByFilter(normalized, classification);
   return true;
 }
 
+async function buildGroupDeliveryPlan(pool, groupId, senderId, type, classification) {
+  const members = await pool.query(
+    `SELECT gm.user_id, u.name,
+            COALESCE(gm.filter_override,
+              CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END,
+              u.content_filter) AS content_filter
+     FROM group_members gm
+     JOIN groups g ON g.id=gm.group_id
+     JOIN users u ON u.id=gm.user_id
+     WHERE gm.group_id=$1 AND gm.status='member' AND gm.user_id<>$2`,
+    [groupId, senderId]);
+  const delivered = [];
+  const blocked = [];
+  for (const member of members.rows) {
+    const target = { id: member.user_id, name: member.name };
+    if (contentAllowedByFilter(member.content_filter, type, classification))
+      delivered.push(target);
+    else blocked.push(target);
+  }
+  return {
+    delivered,
+    blocked,
+    summary: {
+      deliveredCount: delivered.length,
+      blockedCount: blocked.length,
+      deliveredTo: delivered,
+      blockedFor: blocked,
+    },
+  };
+}
+
 async function getGroupContentFilter(pool, groupId) {
   const result = await pool.query(
-    'SELECT content_filter FROM groups WHERE id=$1', [groupId]);
+    `SELECT COALESCE(g.content_filter, creator.content_filter) AS content_filter
+     FROM groups g JOIN users creator ON creator.id=g.creator_id
+     WHERE g.id=$1`, [groupId]);
   return result.rows.length
     ? normalizeContentFilter(result.rows[0].content_filter) : null;
 }
@@ -787,9 +1002,22 @@ async function getGroupContentFilter(pool, groupId) {
 async function validateApprovedFile(pool, userId, fileUrl, contextType, contextId) {
   if (!fileUrl) return true;
   const result = await pool.query(
-    `SELECT 1 FROM stored_files
-     WHERE user_id=$1 AND public_url=$2 AND moderation_status='approved'
-       AND context_type=$3 AND context_id=$4`,
+    `SELECT 1 FROM stored_files sf
+     WHERE sf.public_url=$2 AND sf.moderation_status='approved' AND (
+       (sf.user_id=$1 AND sf.context_type=$3 AND sf.context_id=$4)
+       OR sf.user_id=$1
+       OR EXISTS (
+         SELECT 1 FROM messages m
+         WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE AND (
+           (m.group_id IS NULL AND (m.sender_id=$1 OR m.recipient_id=$1))
+           OR (m.group_id IS NOT NULL AND EXISTS (
+             SELECT 1 FROM group_members gm
+             WHERE gm.group_id=m.group_id AND gm.user_id=$1
+               AND gm.status='member'
+           ))
+         )
+       )
+     )`,
     [userId, fileUrl, contextType, contextId]);
   if (result.rows.length > 0) return true;
   const shared = await pool.query(
@@ -1082,7 +1310,12 @@ async function classifyImageContent(buffer) {
   // interface chrome. If at least one person type was found, scan overlapping
   // local crops for any missing types. This stays on the local CLIP service;
   // a higher rescue threshold limits false positives from individual crops.
-  if (results.some(result => result.detected) && results.some(result => !result.detected)) {
+  // Arbitrary edge crops can turn symbols and geometric shapes into false
+  // people. Keep the legacy behavior opt-in only.
+  const legacyCropRescueEnabled =
+    process.env.ENABLE_LEGACY_PERSON_CROP_RESCUE === 'true';
+  if (legacyCropRescueEnabled && results.some(result => result.detected) &&
+      results.some(result => !result.detected)) {
     try {
       const metadata = await sharp(buffer).metadata();
       const width = Number(metadata.width || 0);
@@ -1266,7 +1499,7 @@ async function scanStaticImage(buffer, options = {}) {
     ]);
 
   const scores = scoresResult.ok ? scoresResult.value : {};
-  const classification = classificationResult.ok ? classificationResult.value : null;
+  let classification = classificationResult.ok ? classificationResult.value : null;
   const labelsRaw = Object.entries(scores).map(([name, score]) => ({
     name,
     score: Math.round(Number(score) * 100),
@@ -1357,7 +1590,16 @@ async function scanStaticImage(buffer, options = {}) {
   const googleSafeSearch = canReuseGoogle
     ? { ...priorGoogleSafeSearch, reused: true, durationMs: 0 }
     : await scanGoogleSafeSearch(buffer);
-  const finalCommon = common(googleSafeSearch);
+  let personVerification = null;
+  if (classificationResult.ok && classification) {
+    const verified = await verifyPersonClassification(buffer, classification, {
+      scanObjects: scanGoogleObjectLocalization,
+      scanFaces: scanGoogleFaceDetection,
+    });
+    classification = verified.classification;
+    personVerification = verified.verification;
+  }
+  const finalCommon = { ...common(googleSafeSearch), personVerification };
 
   if (googleSafeSearch.blocked) {
     return {
@@ -1401,6 +1643,10 @@ async function scanStaticImage(buffer, options = {}) {
 
   return { ...finalCommon, blocked: false, blockedBy: null };
 }
+
+// Increment whenever moderation models, prompts, thresholds or policy meaning
+// change. Exact-file cache entries from older versions are never reused.
+const MODERATION_CACHE_VERSION = '2026-08-31-document-visuals-1';
 
 async function scanImage(buffer, options = {}) {
   if (!isPotentiallyAnimatedImage(buffer))
@@ -1472,21 +1718,10 @@ async function scanImage(buffer, options = {}) {
 }
 
 async function scanDocument(buffer, mimetype) {
-  try {
-    let text = '';
-    if (mimetype === 'application/pdf') {
-      const pdfParse = require('pdf-parse');
-      const d = await pdfParse(buffer);
-      text = d.text.toLowerCase();
-    } else {
-      const mammoth = require('mammoth');
-      const r = await mammoth.extractRawText({ buffer });
-      text = r.value.toLowerCase();
-    }
-    const found = BLOCKED_WORDS.find(w => text.includes(w.toLowerCase()));
-    if (found) return { blocked: true, reason: 'המסמך נחסם — תוכן לא הולם' };
-    return { blocked: false };
-  } catch { return { pending: true }; }
+  return scanDocumentContent(buffer, mimetype, {
+    scanImage,
+    blockedWords: BLOCKED_WORDS,
+  });
 }
 
 const mailer = nodemailer.createTransport({
@@ -1624,8 +1859,8 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
-    await pool.query(`ALTER TABLE users ALTER COLUMN content_filter SET DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"video":false,"nonHumanImages":true,"men":false,"women":false,"children":false}'::jsonb`);
+    await pool.query(`ALTER TABLE users ALTER COLUMN content_filter SET DEFAULT '{"text":true,"video":false,"nonHumanImages":true,"men":false,"women":false,"children":false}'::jsonb`);
 
     // ── Allow phone-only / email-only accounts ─────────────────────
     await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
@@ -1699,7 +1934,10 @@ async function migrateDatabase() {
         created_at      TIMESTAMPTZ DEFAULT now()
       )`);
     await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS profile_pic_url TEXT`);
-    await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"video":true,"nonHumanImages":true,"men":true,"women":true,"children":true}'::jsonb`);
+    await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS is_self BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE groups ADD COLUMN IF NOT EXISTS content_filter JSONB`);
+    await pool.query(`ALTER TABLE groups ALTER COLUMN content_filter DROP NOT NULL`);
+    await pool.query(`ALTER TABLE groups ALTER COLUMN content_filter DROP DEFAULT`);
 
     // ── Messages ───────────────────────────────────────────────────
     await pool.query(`
@@ -1722,6 +1960,7 @@ async function migrateDatabase() {
     // ── Messages: edit columns ─────────────────────────────────────
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_edited BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivery_summary JSONB`);
 
     // ── Message Status ─────────────────────────────────────────────
     await pool.query(`
@@ -1754,6 +1993,29 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pending_since TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS filter_override JSONB`);
+    await pool.query(`UPDATE groups g SET is_self=TRUE
+      WHERE g.is_self=FALSE AND TRIM(g.name) IN ('עצמי', 'הקבוצה העצמית שלי')
+        AND (SELECT COUNT(*) FROM group_members gm
+             WHERE gm.group_id=g.id AND gm.status='member')=1`);
+    // Repair groups whose owner was deleted before automatic ownership
+    // transfer was introduced. The longest-serving active member takes over.
+    await pool.query(`
+      WITH successors AS (
+        SELECT DISTINCT ON (gm.group_id) gm.group_id, gm.user_id
+        FROM group_members gm
+        JOIN groups g ON g.id=gm.group_id
+        WHERE g.creator_id IS NULL AND gm.status='member'
+        ORDER BY gm.group_id, gm.joined_at ASC NULLS LAST, gm.user_id ASC
+      )
+      UPDATE groups g SET creator_id=s.user_id
+      FROM successors s
+      WHERE g.id=s.group_id`);
+    await pool.query(`
+      UPDATE group_members gm SET role='admin'
+      FROM groups g
+      WHERE gm.group_id=g.id AND gm.user_id=g.creator_id
+        AND gm.status='member' AND gm.role<>'admin'`);
     // ── Educational approvals, signatures and surveys ──────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS education_forms (
@@ -1870,6 +2132,28 @@ async function migrateDatabase() {
       )`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_override JSONB`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
+    // A new contact starts with an independent snapshot of the owner's
+    // general filter. The user can still explicitly enable inheritance later.
+    await pool.query(`
+      UPDATE user_contacts contact
+      SET filter_override=owner.content_filter
+      FROM users owner
+      WHERE contact.owner_id=owner.id AND contact.filter_override IS NULL`);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION set_contact_default_filter()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        IF NEW.filter_override IS NULL THEN
+          NEW.filter_override := '{"text":true,"video":false,"nonHumanImages":true,"men":false,"women":false,"children":false}'::jsonb;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql`);
+    await pool.query(`DROP TRIGGER IF EXISTS user_contacts_default_filter ON user_contacts`);
+    await pool.query(`
+      CREATE TRIGGER user_contacts_default_filter
+      BEFORE INSERT ON user_contacts
+      FOR EACH ROW EXECUTE FUNCTION set_contact_default_filter()`);
     await pool.query(`
       INSERT INTO user_contacts(owner_id,contact_id)
       SELECT id,$1 FROM users
@@ -2004,6 +2288,84 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ALTER COLUMN moderation_status SET DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_details JSONB`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS media_classification_appeals (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        stored_file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        prior_classification JSONB,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','reviewed','resolved','dismissed')),
+        reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        reviewer_note TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        reviewed_at TIMESTAMPTZ
+      )`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS media_classification_appeals_pending_idx
+      ON media_classification_appeals(stored_file_id,user_id) WHERE status='pending'`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS content_sha256 TEXT`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS visual_fingerprint JSONB`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS release_scheduled_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS stored_files_content_sha256_idx
+      ON stored_files(content_sha256) WHERE content_sha256 IS NOT NULL`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_backup_settings (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        provider TEXT CHECK (provider IS NULL OR provider IN ('google_drive')),
+        storage_mode TEXT NOT NULL DEFAULT 'backup_only'
+          CHECK (storage_mode IN ('backup_only','backup_and_release')),
+        wifi_only BOOLEAN NOT NULL DEFAULT TRUE,
+        release_threshold_bytes BIGINT NOT NULL DEFAULT 1073741824
+          CHECK (release_threshold_bytes >= 0),
+        encrypted_data_key TEXT,
+        data_key_version INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await pool.query(`ALTER TABLE user_backup_settings
+      ADD COLUMN IF NOT EXISTS encrypted_data_key TEXT`);
+    await pool.query(`ALTER TABLE user_backup_settings
+      ADD COLUMN IF NOT EXISTS data_key_version INTEGER`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cloud_backup_accounts (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL CHECK (provider IN ('google_drive')),
+        encrypted_refresh_token TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'connected'
+          CHECK (status IN ('connected','error','revoked')),
+        last_verified_at TIMESTAMPTZ,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS media_backup_items (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        stored_file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL CHECK (provider IN ('google_drive')),
+        status TEXT NOT NULL DEFAULT 'queued'
+          CHECK (status IN ('queued','uploading','uploaded','verified','failed')),
+        remote_file_id TEXT,
+        plaintext_sha256 TEXT NOT NULL,
+        encrypted_sha256 TEXT,
+        encryption_metadata JSONB,
+        verified_at TIMESTAMPTZ,
+        last_error TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (stored_file_id, provider)
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS media_backup_items_user_status_idx
+      ON media_backup_items(user_id, status)`);
+    await pool.query(`ALTER TABLE media_backup_items
+      ADD COLUMN IF NOT EXISTS restore_verified_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE media_backup_items
+      ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS shared_gifs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2493,6 +2855,113 @@ app.use((req, res, next) => {
   }
   next();
 });
+const serveReleasedDriveMedia = async (req, res, next) => {
+  if (!['GET', 'HEAD'].includes(req.method)) return next();
+  try {
+    const relativePath = path.normalize(decodeURIComponent(req.path)).replace(/^[/\\]+/, '');
+    const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
+    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+      return res.status(400).end();
+    try {
+      await fs.access(absolutePath);
+      return next();
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT sf.id,sf.user_id,sf.mime_type,sf.file_size,sf.content_sha256,
+              mbi.remote_file_id,mbi.encrypted_sha256,mbi.encryption_metadata,
+              s.encrypted_data_key,c.encrypted_refresh_token
+       FROM stored_files sf
+       JOIN media_backup_items mbi ON mbi.stored_file_id=sf.id
+         AND mbi.provider='google_drive' AND mbi.status='verified'
+         AND mbi.restore_verified_at IS NOT NULL
+       JOIN user_backup_settings s ON s.user_id=sf.user_id AND s.enabled=TRUE
+       JOIN cloud_backup_accounts c ON c.user_id=sf.user_id
+         AND c.provider='google_drive' AND c.status='connected'
+       WHERE sf.storage_path=$1 LIMIT 1`, [relativePath]);
+    if (!result.rows.length) return next();
+    const row = result.rows[0];
+    const load = async () => {
+      await fs.mkdir(DRIVE_MEDIA_CACHE_ROOT, { recursive: true });
+      const cacheName = crypto.createHash('sha256').update(row.remote_file_id).digest('hex');
+      const cachePath = path.join(DRIVE_MEDIA_CACHE_ROOT, `${cacheName}.enc`);
+      let encrypted = null;
+      let cacheMetadata = null;
+      let downloadedFromDrive = false;
+      try {
+        const stat = await fs.stat(cachePath);
+        cacheMetadata = await readDriveMediaCacheMetadata(cachePath, stat);
+        if (Date.now() - cacheMetadata.lastAccessAt <=
+            driveMediaCacheTtl(cacheMetadata.accessCount))
+          encrypted = await fs.readFile(cachePath);
+        else {
+          await removeDriveMediaCacheEntry(cachePath);
+          cacheMetadata = null;
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      if (!encrypted) {
+        const refreshToken = personalDrive.decryptRefreshToken(
+          row.encrypted_refresh_token, row.user_id);
+        encrypted = await personalDrive.downloadAppDataFile(
+          refreshToken, row.remote_file_id, Number(row.file_size) + 1024);
+        downloadedFromDrive = true;
+        const temporaryPath = `${cachePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+        await fs.writeFile(temporaryPath, encrypted, { flag: 'wx', mode: 0o600 });
+        await fs.rename(temporaryPath, cachePath);
+        const now = Date.now();
+        cacheMetadata = { createdAt: now, lastAccessAt: now, accessCount: 1 };
+      } else {
+        cacheMetadata.lastAccessAt = Date.now();
+        cacheMetadata.accessCount += 1;
+      }
+      await writeDriveMediaCacheMetadata(cachePath, cacheMetadata);
+      if (downloadedFromDrive) await clearExpiredDriveMediaCache();
+      const encryptedHash = crypto.createHash('sha256').update(encrypted).digest('hex');
+      if (encryptedHash !== row.encrypted_sha256)
+        throw new Error('Cached Drive media checksum mismatch');
+      const metadata = typeof row.encryption_metadata === 'string'
+        ? JSON.parse(row.encryption_metadata) : row.encryption_metadata;
+      const key = unwrapVaultKey(row.encrypted_data_key, row.user_id);
+      const plain = decryptBackupBuffer({ version: 1, algorithm: metadata.algorithm,
+        nonce: metadata.nonce, tag: metadata.tag, ciphertext: encrypted }, key,
+      metadata.associatedData);
+      const plainHash = crypto.createHash('sha256').update(plain).digest('hex');
+      if (plainHash !== row.content_sha256) throw new Error('Drive media checksum mismatch');
+      return plain;
+    };
+    let pending = driveMediaLoads.get(row.id);
+    if (!pending) {
+      pending = load().finally(() => driveMediaLoads.delete(row.id));
+      driveMediaLoads.set(row.id, pending);
+    }
+    const plain = await pending;
+    const range = req.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
+    res.set({ 'Content-Type': row.mime_type || 'application/octet-stream',
+      'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=86400' });
+    if (range) {
+      const start = range[1] ? Number(range[1]) : 0;
+      const end = range[2] ? Math.min(Number(range[2]), plain.length - 1) : plain.length - 1;
+      if (start > end || start >= plain.length)
+        return res.status(416).set('Content-Range', `bytes */${plain.length}`).end();
+      res.status(206).set({ 'Content-Range': `bytes ${start}-${end}/${plain.length}`,
+        'Content-Length': String(end - start + 1) });
+      return req.method === 'HEAD' ? res.end() : res.end(plain.subarray(start, end + 1));
+    }
+    res.set('Content-Length', String(plain.length));
+    return req.method === 'HEAD' ? res.end() : res.end(plain);
+  } catch (error) {
+    console.error('Drive media delivery:', error.message);
+    return res.status(503).json({ error: 'המדיה מגובה בענן אך אינה זמינה כרגע' });
+  }
+};
+// Nginx removes the /betshuva-app prefix before proxying public requests.
+// Keep both mounts so direct/internal and public URLs share the same Drive fallback.
+app.use(UPLOAD_PUBLIC_BASE, serveReleasedDriveMedia);
+app.use('/uploads', serveReleasedDriveMedia);
 app.use(express.static(require('path').join(__dirname, '..')));
 app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
 
@@ -2513,6 +2982,13 @@ if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is required; refusing to start with an insecure default');
 }
 const onlineUsers = new Map(); // userId → socketId
+
+// HTTP routes also deliver realtime events, so this helper must be available
+// outside an individual socket connection.
+function relay(toUserId, event, data) {
+  const sid = onlineUsers.get(toUserId);
+  if (sid) io.to(sid).emit(event, data);
+}
 const otpStore    = new Map(); // phone → { code, expires, name }
 const registrationOtpStore = new Map(); // method:value → { code, expires }
 const socketRateBuckets = new Map();
@@ -3035,11 +3511,6 @@ io.on('connection', async (socket) => {
     for (const { group_id } of grps.rows) socket.join(`group:${group_id}`);
   } catch (_) {}
 
-  function relay(toUserId, event, data) {
-    const sid = onlineUsers.get(toUserId);
-    if (sid) io.to(sid).emit(event, data);
-  }
-
   socket.on('chat:message', async ({ toUserId, text, replyToId, fileUrl, fileName, fileType }) => {
     if (!toUserId || (!text && !fileUrl)) return;
     if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
@@ -3090,6 +3561,16 @@ io.on('connection', async (socket) => {
         if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
         return 'text';
       })();
+      const classification = fileUrl
+        ? await getStoredImageClassification(pool, fileUrl) : null;
+      const recipientPolicy = await getEffectiveRecipientFilter(
+        pool, toUserId, socket.user.id);
+      if (!contentAllowedByFilter(
+          recipientPolicy?.filter, msgType, classification)) {
+        socket.emit('message:rejected', { toUserId,
+          reason: 'סוג התוכן חסום בהגדרות הנמען' });
+        return;
+      }
       if (fileUrl && !await validateApprovedFile(
           pool, socket.user.id, fileUrl, 'chat', toUserId)) {
         socket.emit('message:rejected', { toUserId,
@@ -3205,8 +3686,11 @@ io.on('connection', async (socket) => {
     try {
       const pool = await getPool();
       const mem = await pool.query(
-        `SELECT gm.role, g.send_permission, g.content_filter FROM group_members gm
+        `SELECT gm.role, g.send_permission,
+                COALESCE(g.content_filter, creator.content_filter) AS content_filter
+         FROM group_members gm
          JOIN groups g ON g.id = gm.group_id
+         JOIN users creator ON creator.id=g.creator_id
          WHERE gm.group_id = $1 AND gm.user_id = $2 AND gm.status='member'`,
         [groupId, socket.user.id]);
       const member = mem.rows[0];
@@ -3220,7 +3704,8 @@ io.on('connection', async (socket) => {
 
       const classification = fileUrl
         ? await getStoredImageClassification(pool, fileUrl) : null;
-      if (!contentAllowedByFilter(member.content_filter, msgType, classification)) {
+      const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
+      if (!contentAllowedByFilter(effectiveGroupFilter, msgType, classification)) {
         socket.emit('message:rejected', { groupId, clientMessageId,
           reason: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה' });
         return;
@@ -3239,6 +3724,10 @@ io.on('connection', async (socket) => {
          RETURNING id, created_at`,
         [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
       const row = saved.rows[0];
+      const deliveryPlan = await buildGroupDeliveryPlan(
+        pool, groupId, socket.user.id, msgType, classification);
+      await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
+        [JSON.stringify(deliveryPlan.summary), row.id]);
       const outgoingGroupMessage = {
         id:         row.id,
         groupId,
@@ -3250,36 +3739,24 @@ io.on('connection', async (socket) => {
         replyToId:  replyToId || null,
         clientMessageId: clientMessageId || null,
         createdAt:  row.created_at,
+        deliverySummary: deliveryPlan.summary,
       };
       // Always acknowledge the sender directly. This also covers the creator
       // of a brand-new group before their socket has joined the group room.
       socket.emit('group:message', outgoingGroupMessage);
-      const deliveryMembers = await pool.query(
-        `SELECT gm.user_id, u.content_filter FROM group_members gm
-         JOIN users u ON u.id=gm.user_id
-         WHERE gm.group_id=$1 AND gm.status='member'`, [groupId]);
-      for (const recipient of deliveryMembers.rows) {
-        if (recipient.user_id !== socket.user.id && contentAllowedByFilter(
-            recipient.content_filter, msgType, classification))
-          relay(recipient.user_id, 'group:message', outgoingGroupMessage);
-      }
+      const recipientGroupMessage = { ...outgoingGroupMessage };
+      delete recipientGroupMessage.deliverySummary;
+      for (const recipient of deliveryPlan.delivered)
+        relay(recipient.id, 'group:message', recipientGroupMessage);
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_group_message',
         { groupId, messageId: row.id, fileName: fileName || null });
       // Push reaches backgrounded apps as well as fully offline devices.
       const grpName = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
       const groupName = grpName.rows[0]?.name || 'קבוצה';
-      const allMembers = await pool.query(
-        `SELECT gm.user_id, u.content_filter FROM group_members gm
-         JOIN users u ON u.id=gm.user_id
-         WHERE gm.group_id=$1 AND gm.status='member'
-           AND u.birth_date <= CURRENT_DATE - INTERVAL '18 years'`, [groupId]);
       const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-      for (const { user_id, content_filter } of allMembers.rows) {
-        if (user_id !== socket.user.id && contentAllowedByFilter(
-            content_filter, msgType, classification)) {
-          sendPush(user_id, `${groupName} • ${socket.user.name}`,
+      for (const recipient of deliveryPlan.delivered) {
+          sendPush(recipient.id, `${groupName} • ${socket.user.name}`,
             pushBody, { type: 'group', groupId });
-        }
       }
     } catch (e) { console.error('group:message:', e.message); }
   });
@@ -3943,6 +4420,32 @@ app.get('/api/users/:userId/receiving-filter', authWithDbCheck, async (req, res)
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Load both sides of the contact comparison atomically. The web dialog used
+// to issue two independent requests, so a delayed or failed response could
+// leave one column null and the dialog spinning forever.
+app.get('/api/contacts/:userId/filter-comparison', authWithDbCheck, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const own = await pool.query(
+      `SELECT c.filter_override, u.content_filter AS owner_filter
+       FROM user_contacts c JOIN users u ON u.id=c.owner_id
+       WHERE c.owner_id=$1 AND c.contact_id=$2`,
+      [req.user.id, req.params.userId]);
+    if (!own.rows.length)
+      return res.status(404).json({ error: 'איש הקשר לא נמצא' });
+    const recipient = await getEffectiveRecipientFilter(
+      pool, req.params.userId, req.user.id);
+    if (!recipient)
+      return res.status(404).json({ error: 'הנמען לא נמצא' });
+    const inherited = normalizeContentFilter(own.rows[0].owner_filter);
+    res.json({
+      recipientFilter: recipient.filter,
+      personalFilter: normalizeContentFilter(
+        own.rows[0].filter_override, inherited),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
@@ -4262,6 +4765,15 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
       return 'text';
     })();
+    const classification = fileUrl
+      ? await getStoredImageClassification(pool, fileUrl) : null;
+    const recipientPolicy = await getEffectiveRecipientFilter(
+      pool, toUserId, senderId);
+    if (!contentAllowedByFilter(recipientPolicy?.filter, type, classification))
+      return res.status(403).json({
+        error: 'סוג התוכן חסום בהגדרות הנמען',
+        code: 'RECIPIENT_CONTENT_FILTERED',
+      });
     if (fileUrl && !await validateApprovedFile(
         pool, senderId, fileUrl, 'chat', toUserId)) {
       return res.status(403).json({ error: 'הקובץ לא עבר סריקה ואישור עבור נמען זה' });
@@ -4328,9 +4840,6 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       replyBody = replyMsg.rows[0]?.body || '';
     }
 
-    const classification = fileUrl
-      ? await getStoredImageClassification(pool, fileUrl) : null;
-
     const sid = onlineUsers.get(toUserId);
     if (sid) {
       await pool.query(
@@ -4368,9 +4877,15 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
     const pool = await getPool();
     const result = await pool.query(
       `SELECT mr.id, mr.sender_id, u.name AS sender_name,
-              u.profile_pic_url, mr.created_at
+              u.profile_pic_url, mr.created_at,
+              COALESCE(sender_contact.filter_override, u.content_filter) AS expected_filter,
+              recipient.content_filter AS my_filter
        FROM message_requests mr
        JOIN users u ON u.id=mr.sender_id
+       JOIN users recipient ON recipient.id=mr.recipient_id
+       LEFT JOIN user_contacts sender_contact
+         ON sender_contact.owner_id=mr.sender_id
+        AND sender_contact.contact_id=mr.recipient_id
        WHERE mr.recipient_id=$1
        ORDER BY mr.created_at`, [req.user.id]);
     res.json(result.rows);
@@ -4393,6 +4908,12 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
     await client.query(
       `INSERT INTO user_contacts(owner_id, contact_id) VALUES($1,$2),($2,$1)
        ON CONFLICT DO NOTHING`, [req.user.id, request.sender_id]);
+    const filter = normalizeContentFilter(
+      req.body?.filter, NEW_ACCOUNT_CONTENT_FILTER);
+    await client.query(
+      `UPDATE user_contacts SET filter_override=$1
+       WHERE owner_id=$2 AND contact_id=$3`,
+      [JSON.stringify(filter), req.user.id, request.sender_id]);
     const saved = await client.query(
       `INSERT INTO messages(sender_id, recipient_id, body, type, file_url, file_name)
        SELECT sender_id,recipient_id,body,type,file_url,file_name
@@ -4666,6 +5187,857 @@ app.get('/api/profile', auth, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
     res.json(result.rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Personal media library ───────────────────────────────────────
+// Every row is scoped by stored_files.user_id. References are computed on the
+// server so a client can never decide that a shared file is safe to remove.
+app.get('/api/media-library', auth, async (req, res) => {
+  const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 40, 1), 100);
+  const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
+  const type = String(req.query.type || 'all');
+  const scope = String(req.query.scope || 'all');
+  const sort = String(req.query.sort || 'date_desc');
+  const search = String(req.query.search || '').trim().slice(0, 120);
+  const moderation = String(req.query.moderation || 'all');
+  const backup = String(req.query.backup || 'all');
+  const classification = String(req.query.classification || 'all');
+  const dateFrom = req.query.dateFrom ? new Date(String(req.query.dateFrom)) : null;
+  const dateTo = req.query.dateTo ? new Date(String(req.query.dateTo)) : null;
+  const minSize = req.query.minSize === undefined ? null : Number(req.query.minSize);
+  const maxSize = req.query.maxSize === undefined ? null : Number(req.query.maxSize);
+  const allowedTypes = new Set(['all', 'image', 'video', 'audio', 'document']);
+  const allowedScopes = new Set(['all', 'chats', 'groups', 'profile', 'listings', 'forms', 'gifs', 'unassigned']);
+  const allowedModeration = new Set(['all', 'approved', 'pending', 'rejected']);
+  const allowedBackup = new Set(['all', 'local', 'backed_up', 'released']);
+  const allowedClassifications = new Set(['all', 'men', 'women', 'children',
+    'nonHumanImages', 'people', 'uncertain', 'video']);
+  const sortSql = {
+    date_desc: 'created_at DESC', date_asc: 'created_at ASC',
+    size_desc: 'file_size DESC,created_at DESC', size_asc: 'file_size ASC,created_at DESC',
+  }[sort];
+  if (!allowedTypes.has(type)) return res.status(400).json({ error: 'סוג הקובץ אינו תקין' });
+  if (!allowedScopes.has(scope) || !sortSql)
+    return res.status(400).json({ error: 'הסינון או המיון אינם תקינים' });
+  if (!allowedModeration.has(moderation) || !allowedBackup.has(backup) ||
+      !allowedClassifications.has(classification) ||
+      (dateFrom && Number.isNaN(dateFrom.getTime())) ||
+      (dateTo && Number.isNaN(dateTo.getTime())) ||
+      (minSize !== null && (!Number.isSafeInteger(minSize) || minSize < 0)) ||
+      (maxSize !== null && (!Number.isSafeInteger(maxSize) || maxSize < 0)) ||
+      (minSize !== null && maxSize !== null && minSize > maxSize))
+    return res.status(400).json({ error: 'מסנני העמודות אינם תקינים' });
+  try {
+    const pool = await getPool();
+    const params = [req.user.id, type, scope, limit, offset, search,
+      moderation, backup, dateFrom?.toISOString() || null,
+      dateTo?.toISOString() || null, minSize, maxSize, classification];
+    const result = await pool.query(`
+      WITH owned AS (
+        SELECT sf.*,
+          (SELECT COUNT(*)::int FROM messages m
+           WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE) AS message_refs,
+          (SELECT COUNT(*)::int FROM users u WHERE u.profile_pic_url=sf.public_url) AS profile_refs,
+          (SELECT COUNT(*)::int FROM groups g WHERE g.profile_pic_url=sf.public_url) AS group_refs,
+          ((SELECT COUNT(*) FROM listings l WHERE l.image_url=sf.public_url) +
+           (SELECT COUNT(*) FROM listing_images li WHERE li.url=sf.public_url))::int AS listing_refs,
+          (SELECT COUNT(*)::int FROM education_forms ef WHERE ef.file_url=sf.public_url) AS form_refs,
+          (SELECT COUNT(*)::int FROM shared_gifs sg
+           WHERE sg.stored_file_id=sf.id AND sg.status='active') AS gif_refs,
+          COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'kind',CASE WHEN m.group_id IS NULL THEN 'chat' ELSE 'group_chat' END,
+              'label',CASE WHEN m.group_id IS NULL THEN COALESCE(other_user.name,'שיחה פרטית')
+                           ELSE COALESCE(message_group.name,'קבוצה') END,
+              'targetId',CASE WHEN m.group_id IS NULL THEN other_user.id ELSE m.group_id END,
+              'messageId',m.id,
+              'date',m.created_at))
+            FROM messages m
+            LEFT JOIN users other_user ON other_user.id=CASE
+              WHEN m.sender_id=$1 THEN m.recipient_id ELSE m.sender_id END
+            LEFT JOIN groups message_group ON message_group.id=m.group_id
+            WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE
+              AND (m.sender_id=$1 OR m.recipient_id=$1 OR EXISTS (
+                SELECT 1 FROM group_members gm WHERE gm.group_id=m.group_id
+                  AND gm.user_id=$1 AND gm.status='member'))), '[]'::jsonb)
+          || COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'kind','profile','targetId',u.id,
+              'label','תמונת הפרופיל שלי','date',u.created_at))
+            FROM users u WHERE u.id=$1 AND u.profile_pic_url=sf.public_url), '[]'::jsonb)
+          || COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'kind','group_profile','targetId',g.id,
+              'label',g.name,'date',g.created_at))
+            FROM groups g JOIN group_members gm ON gm.group_id=g.id
+            WHERE g.profile_pic_url=sf.public_url AND gm.user_id=$1
+              AND gm.status='member'), '[]'::jsonb)
+          || COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'kind','listing','targetId',l.id,
+              'label',COALESCE(l.title,'מודעה'),'date',l.created_at))
+            FROM listings l WHERE l.user_id=$1 AND (l.image_url=sf.public_url OR EXISTS (
+              SELECT 1 FROM listing_images li WHERE li.listing_id=l.id AND li.url=sf.public_url))), '[]'::jsonb)
+          || COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'kind','form','targetId',ef.id,'groupId',ef.group_id,
+              'label',ef.title,'date',ef.created_at))
+            FROM education_forms ef WHERE ef.created_by=$1 AND ef.file_url=sf.public_url), '[]'::jsonb)
+          || COALESCE((SELECT jsonb_agg(jsonb_build_object(
+              'kind','gif','targetId',sg.id,
+              'label',sg.title,'date',sg.created_at))
+            FROM shared_gifs sg WHERE sg.creator_id=$1 AND sg.stored_file_id=sf.id
+              AND sg.status='active'), '[]'::jsonb) AS destinations,
+          mbi.status AS backup_status,mbi.verified_at,mbi.restore_verified_at,
+          mbi.remote_file_id,mbi.encryption_metadata,
+          (SELECT mca.status FROM media_classification_appeals mca
+           WHERE mca.stored_file_id=sf.id AND mca.user_id=$1
+           ORDER BY mca.created_at DESC LIMIT 1) AS appeal_status
+        FROM stored_files sf
+        LEFT JOIN media_backup_items mbi
+          ON mbi.stored_file_id=sf.id AND mbi.user_id=$1 AND mbi.provider='google_drive'
+        WHERE sf.user_id=$1 AND ($2='all' OR sf.file_type=$2)
+          AND ($6='' OR sf.original_name ILIKE '%' || $6 || '%')
+          AND ($7='all' OR sf.moderation_status=$7)
+          AND ($9::timestamptz IS NULL OR sf.created_at >= $9::timestamptz)
+          AND ($10::timestamptz IS NULL OR sf.created_at < $10::timestamptz + INTERVAL '1 day')
+          AND ($11::bigint IS NULL OR sf.file_size >= $11::bigint)
+          AND ($12::bigint IS NULL OR sf.file_size <= $12::bigint)
+          AND ($13='all' OR
+            ($13='uncertain' AND COALESCE((sf.moderation_details->'classification'->>'uncertain')::boolean,FALSE)) OR
+            sf.moderation_details->'classification'->>'category'=$13 OR
+            sf.moderation_details->'classification'->'detectedCategories' ? $13)
+      )
+      SELECT *,COUNT(*) OVER()::int AS total_count,
+        (message_refs+profile_refs+group_refs+listing_refs+form_refs+gif_refs)::int AS reference_count
+      FROM owned WHERE (
+        $3='all' OR ($3='chats' AND message_refs>0) OR
+        ($3='groups' AND group_refs>0) OR ($3='profile' AND profile_refs>0) OR
+        ($3='listings' AND listing_refs>0) OR ($3='forms' AND form_refs>0) OR
+        ($3='gifs' AND gif_refs>0) OR ($3='unassigned' AND
+          message_refs+profile_refs+group_refs+listing_refs+form_refs+gif_refs=0))
+        AND ($8='all' OR ($8='local' AND released_at IS NULL) OR
+          ($8='backed_up' AND backup_status IS NOT NULL) OR
+          ($8='released' AND released_at IS NOT NULL))
+      ORDER BY ${sortSql} LIMIT $4 OFFSET $5`, params);
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      total: result.rows[0]?.total_count || 0,
+      items: result.rows.map(row => ({
+        id: row.id, name: row.original_name, url: row.public_url,
+        mimeType: row.mime_type, fileType: row.file_type,
+        size: Number(row.file_size || 0), createdAt: row.created_at,
+        moderationStatus: row.moderation_status,
+        classification: row.moderation_details?.classification || null,
+        releasedAt: row.released_at, backupStatus: row.backup_status || null,
+        restoreVerified: Boolean(row.restore_verified_at),
+        appealStatus: row.appeal_status || null,
+        referenceCount: row.reference_count,
+        destinations: row.destinations || [],
+        usages: {
+          messages: row.message_refs, profile: row.profile_refs,
+          groups: row.group_refs, listings: row.listing_refs,
+          forms: row.form_refs, sharedGifs: row.gif_refs,
+        },
+        canDelete: row.reference_count === 0,
+      })),
+    });
+  } catch (e) {
+    console.error('media library:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לטעון את ספריית המדיה' });
+  }
+});
+
+async function loadMediaBytesForReview(file) {
+  if (file.file_type !== 'image') return { file, error: 'הפעולה זמינה לתמונות בלבד' };
+  const localPath = path.resolve(UPLOAD_ROOT, file.storage_path);
+  if (localPath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) {
+    try { return { file, bytes: await fs.readFile(localPath) }; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  const internalUrl = `http://127.0.0.1:${process.env.PORT || 5003}${file.public_url}`;
+  const response = await fetch(internalUrl);
+  if (!response.ok) throw new Error(`Drive media unavailable (${response.status})`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > Number(file.file_size || 0) + 1024)
+    throw new Error('Drive media size mismatch');
+  return { file, bytes };
+}
+
+async function loadOwnedMediaForReview(pool, userId, storedFileId) {
+  const found = await pool.query(
+    `SELECT id,user_id,original_name,storage_path,public_url,mime_type,file_type,
+            file_size,moderation_status,moderation_details
+     FROM stored_files WHERE id=$1 AND user_id=$2`, [storedFileId, userId]);
+  return found.rows.length ? loadMediaBytesForReview(found.rows[0]) : null;
+}
+
+async function loadAccessibleMediaForReview(pool, userId, fileUrl) {
+  const found = await pool.query(
+    `SELECT sf.id,sf.user_id,sf.original_name,sf.storage_path,sf.public_url,
+            sf.mime_type,sf.file_type,sf.file_size,sf.moderation_status,
+            sf.moderation_details
+     FROM stored_files sf WHERE sf.public_url=$2 AND (
+       sf.user_id=$1 OR EXISTS (
+         SELECT 1 FROM messages m WHERE m.file_url=sf.public_url
+           AND m.deleted_for_everyone=FALSE AND (
+             m.sender_id=$1 OR m.recipient_id=$1 OR EXISTS (
+               SELECT 1 FROM group_members gm WHERE gm.group_id=m.group_id
+                 AND gm.user_id=$1 AND gm.status='member')))
+       OR EXISTS (SELECT 1 FROM listings l WHERE l.user_id=$1 AND
+         (l.image_url=sf.public_url OR EXISTS (SELECT 1 FROM listing_images li
+           WHERE li.listing_id=l.id AND li.url=sf.public_url)))
+       OR EXISTS (SELECT 1 FROM education_forms ef WHERE ef.file_url=sf.public_url
+         AND (ef.created_by=$1 OR EXISTS (SELECT 1 FROM group_members gm
+           WHERE gm.group_id=ef.group_id AND gm.user_id=$1 AND gm.status='member')))
+     ) LIMIT 1`, [userId, fileUrl]);
+  return found.rows.length ? loadMediaBytesForReview(found.rows[0]) : null;
+}
+
+app.post('/api/media/reclassify', auth, messageRateLimit, async (req, res) => {
+  const fileUrl = String(req.body?.fileUrl || '');
+  if (!fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`))
+    return res.status(400).json({ error: 'כתובת התמונה אינה תקינה' });
+  try {
+    const pool = await getPool();
+    const loaded = await loadAccessibleMediaForReview(pool, req.user.id, fileUrl);
+    if (!loaded) return res.status(404).json({ error: 'התמונה אינה זמינה לסריקה' });
+    if (loaded.error) return res.status(400).json({ error: loaded.error });
+    const scanResult = await scanImage(loaded.bytes);
+    if (scanResult?.pending || !scanResult?.classification)
+      return res.status(503).json({ error: 'בדיקת הסיווג אינה זמינה כרגע' });
+    const details = { ...(loaded.file.moderation_details || {}),
+      classification: scanResult.classification,
+      reclassifiedAt: new Date().toISOString() };
+    await pool.query('UPDATE stored_files SET moderation_details=$1 WHERE id=$2',
+      [JSON.stringify(details), loaded.file.id]);
+    logActivity(req.user.id, 'media_reclassified', {
+      storedFileId: loaded.file.id, fileName: loaded.file.original_name,
+      requestedFrom: 'image_screen', classification: scanResult.classification,
+    }, clientIp(req));
+    res.json({ ok: true, classification: scanResult.classification });
+  } catch (error) {
+    console.error('accessible media reclassify:', error.message);
+    res.status(503).json({ error: 'לא ניתן היה לבצע בדיקת סיווג נוספת כרגע' });
+  }
+});
+
+app.post('/api/media-library/:id/reclassify', auth, messageRateLimit, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const loaded = await loadOwnedMediaForReview(pool, req.user.id, req.params.id);
+    if (!loaded) return res.status(404).json({ error: 'התמונה לא נמצאה' });
+    if (loaded.error) return res.status(400).json({ error: loaded.error });
+    const scanResult = await scanImage(loaded.bytes);
+    if (scanResult?.pending || !scanResult?.classification)
+      return res.status(503).json({ error: 'בדיקת הסיווג אינה זמינה כרגע. אפשר לנסות שוב מאוחר יותר.' });
+    const details = { ...(loaded.file.moderation_details || {}),
+      classification: scanResult.classification,
+      reclassifiedAt: new Date().toISOString(),
+      reclassification: {
+        safeSearch: scanResult.safeSearch || null,
+        googleSafeSearch: scanResult.googleSafeSearch || null,
+        personVerification: scanResult.personVerification || null,
+      } };
+    await pool.query(`UPDATE stored_files SET moderation_details=$1 WHERE id=$2 AND user_id=$3`,
+      [JSON.stringify(details), loaded.file.id, req.user.id]);
+    logActivity(req.user.id, 'media_reclassified', {
+      storedFileId: loaded.file.id, fileName: loaded.file.original_name,
+      classification: scanResult.classification,
+    }, clientIp(req));
+    res.json({ ok: true, classification: scanResult.classification });
+  } catch (error) {
+    console.error('media reclassify:', error.message);
+    res.status(503).json({ error: 'לא ניתן היה לבצע בדיקת סיווג נוספת כרגע' });
+  }
+});
+
+app.post('/api/media-library/:id/classification-appeal', auth, messageRateLimit, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const loaded = await loadOwnedMediaForReview(pool, req.user.id, req.params.id);
+    if (!loaded) return res.status(404).json({ error: 'התמונה לא נמצאה' });
+    if (loaded.error) return res.status(400).json({ error: loaded.error });
+    const inserted = await pool.query(
+      `INSERT INTO media_classification_appeals
+       (stored_file_id,user_id,prior_classification)
+       VALUES ($1,$2,$3) ON CONFLICT (stored_file_id,user_id) WHERE status='pending'
+       DO NOTHING RETURNING id,created_at`,
+      [loaded.file.id, req.user.id,
+       JSON.stringify(loaded.file.moderation_details?.classification || null)]);
+    if (!inserted.rows.length)
+      return res.status(409).json({ error: 'כבר קיימת בקשת ערעור שממתינה לבדיקה' });
+    const body = `בקשה לבדיקה אנושית של סיווג התמונה: ${loaded.file.original_name}`;
+    const sent = await pool.query(
+      `INSERT INTO messages(sender_id,recipient_id,body,type,file_url,file_name)
+       VALUES($1,$2,$3,'image',$4,$5) RETURNING id,created_at`,
+      [req.user.id, SYSTEM_USER_ID, body, loaded.file.public_url, loaded.file.original_name]);
+    const acknowledgement = 'הערעור נשלח לצוות ההדרכה לבדיקה אנושית. נעדכן אותך לאחר סיום הבירור.';
+    const reply = await pool.query(
+      `INSERT INTO messages(sender_id,recipient_id,body,type,reply_to_id)
+       VALUES($1,$2,$3,'text',$4) RETURNING id,created_at`,
+      [SYSTEM_USER_ID, req.user.id, acknowledgement, sent.rows[0].id]);
+    relay(req.user.id, 'chat:message', {
+      id: reply.rows[0].id, fromUserId: SYSTEM_USER_ID,
+      fromName: SYSTEM_USER_NAME, text: acknowledgement,
+      replyToId: sent.rows[0].id, fileType: 'text', createdAt: reply.rows[0].created_at,
+    });
+    sendPush(req.user.id, SYSTEM_USER_NAME, acknowledgement,
+      { type: 'chat', fromUserId: SYSTEM_USER_ID });
+    logActivity(req.user.id, 'media_classification_appealed', {
+      appealId: inserted.rows[0].id, storedFileId: loaded.file.id,
+      fileName: loaded.file.original_name,
+    }, clientIp(req));
+    res.status(201).json({ ok: true, status: 'pending' });
+  } catch (error) {
+    console.error('media classification appeal:', error.message);
+    res.status(500).json({ error: 'לא ניתן היה לשלוח את הערעור' });
+  }
+});
+
+app.delete('/api/media-library/:id', auth, async (req, res) => {
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT sf.*,mbi.remote_file_id,mbi.encryption_metadata,c.encrypted_refresh_token
+       FROM stored_files sf
+       LEFT JOIN media_backup_items mbi ON mbi.stored_file_id=sf.id AND mbi.provider='google_drive'
+       LEFT JOIN cloud_backup_accounts c ON c.user_id=sf.user_id AND c.status='connected'
+       WHERE sf.id=$1 AND sf.user_id=$2 FOR UPDATE OF sf`, [req.params.id, req.user.id]);
+    if (!found.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'הקובץ לא נמצא' });
+    }
+    const file = found.rows[0];
+    const refs = await client.query(`SELECT
+      (SELECT COUNT(*) FROM messages WHERE file_url=$1 AND deleted_for_everyone=FALSE) +
+      (SELECT COUNT(*) FROM users WHERE profile_pic_url=$1) +
+      (SELECT COUNT(*) FROM groups WHERE profile_pic_url=$1) +
+      (SELECT COUNT(*) FROM listings WHERE image_url=$1) +
+      (SELECT COUNT(*) FROM listing_images WHERE url=$1) +
+      (SELECT COUNT(*) FROM education_forms WHERE file_url=$1) +
+      (SELECT COUNT(*) FROM shared_gifs WHERE stored_file_id=$2 AND status='active') AS count`,
+      [file.public_url, file.id]);
+    const referenceCount = Number(refs.rows[0].count);
+    if (referenceCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'הקובץ עדיין נמצא בשימוש. יש להסיר אותו מהמקומות המקושרים לפני מחיקה.',
+        code: 'MEDIA_IN_USE', referenceCount,
+      });
+    }
+    // A permanent delete also removes the encrypted personal-cloud copy. If
+    // cloud access is unavailable we keep both records so the user can retry.
+    if (file.remote_file_id) {
+      if (!file.encrypted_refresh_token) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'יש לחבר מחדש את Google Drive לפני מחיקה מלאה של הגיבוי.',
+          code: 'BACKUP_RECONNECT_REQUIRED',
+        });
+      }
+      const refreshToken = personalDrive.decryptRefreshToken(
+        file.encrypted_refresh_token, req.user.id);
+      const manifestId = file.encryption_metadata?.manifestRemoteId;
+      for (const remoteId of [file.remote_file_id, manifestId]) {
+        if (remoteId) await personalDrive.deleteAppDataFile(refreshToken, remoteId);
+      }
+    }
+    const absolutePath = path.resolve(UPLOAD_ROOT, file.storage_path);
+    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+      throw new Error('invalid stored media path');
+    await fs.unlink(absolutePath).catch(error => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await client.query('DELETE FROM stored_files WHERE id=$1', [file.id]);
+    await client.query('COMMIT');
+    logActivity(req.user.id, 'delete_own_media', {
+      storedFileId: file.id, fileName: file.original_name,
+      bytes: Number(file.file_size || 0), cloudDeleted: Boolean(file.remote_file_id),
+    }, clientIp(req));
+    res.json({ ok: true, deletedBytes: Number(file.file_size || 0) });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('delete own media:', e.message);
+    res.status(500).json({ error: 'מחיקת הקובץ נכשלה ולא בוצע שינוי' });
+  } finally {
+    client.release();
+  }
+});
+
+// Phase 1: provider-neutral backup settings and read-only storage accounting.
+app.get('/api/backup', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const [settings, totals, moderation, backup, release] = await Promise.all([
+      pool.query(
+        `SELECT enabled,provider,storage_mode,wifi_only,release_threshold_bytes,
+                encrypted_data_key IS NOT NULL AS server_key_ready
+         FROM user_backup_settings WHERE user_id=$1`, [req.user.id]),
+      pool.query(
+        `SELECT COUNT(*)::int AS file_count,COALESCE(SUM(file_size),0)::bigint AS total_bytes
+         FROM stored_files WHERE user_id=$1 AND released_at IS NULL`, [req.user.id]),
+      pool.query(
+        `SELECT moderation_status,COUNT(*)::int AS file_count,
+                COALESCE(SUM(file_size),0)::bigint AS total_bytes
+         FROM stored_files WHERE user_id=$1 AND released_at IS NULL
+         GROUP BY moderation_status`, [req.user.id]),
+      pool.query(
+        `SELECT COUNT(*) FILTER (WHERE mbi.status='verified')::int AS verified_files,
+                COALESCE(SUM(sf.file_size) FILTER (WHERE mbi.status='verified'),0)::bigint AS verified_bytes,
+                COUNT(*) FILTER (WHERE mbi.status IN ('queued','uploading','uploaded'))::int AS pending_files,
+                COUNT(*) FILTER (WHERE mbi.status='failed')::int AS failed_files,
+                COUNT(*) FILTER (WHERE mbi.restore_verified_at IS NOT NULL)::int AS restore_verified_files
+         FROM media_backup_items mbi JOIN stored_files sf ON sf.id=mbi.stored_file_id
+         WHERE mbi.user_id=$1`, [req.user.id]),
+      pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE candidate AND NOT active_reference)::int AS ready_files,
+           COALESCE(SUM(file_size) FILTER (WHERE candidate AND NOT active_reference),0)::bigint
+             AS ready_bytes,
+           COUNT(*) FILTER (WHERE grace_waiting)::int AS grace_waiting_files,
+           COUNT(*) FILTER (WHERE candidate AND active_reference)::int AS protected_files
+         FROM (
+           SELECT sf.file_size,
+             (mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
+               AND sf.release_scheduled_at <= now() - INTERVAL '48 hours') AS candidate,
+             (mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
+               AND (sf.release_scheduled_at IS NULL
+                 OR sf.release_scheduled_at > now() - INTERVAL '48 hours')) AS grace_waiting,
+             (EXISTS (SELECT 1 FROM messages m
+                       WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
+               OR EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)
+               OR EXISTS (SELECT 1 FROM groups g WHERE g.profile_pic_url=sf.public_url)
+               OR EXISTS (SELECT 1 FROM listings l WHERE l.image_url=sf.public_url)
+               OR EXISTS (SELECT 1 FROM education_forms ef WHERE ef.file_url=sf.public_url)
+               OR EXISTS (SELECT 1 FROM shared_gifs sg
+                           WHERE sg.stored_file_id=sf.id AND sg.status='active')) AS active_reference
+           FROM media_backup_items mbi
+           JOIN stored_files sf ON sf.id=mbi.stored_file_id
+           WHERE mbi.user_id=$1
+         ) release_candidates`, [req.user.id]),
+    ]);
+    const defaults = { enabled: false, provider: null, storage_mode: 'backup_only',
+      wifi_only: true, release_threshold_bytes: '1073741824', server_key_ready: false };
+    res.set('Cache-Control', 'no-store');
+    res.json({ settings: settings.rows[0] || defaults,
+      storage: { ...totals.rows[0], by_moderation: moderation.rows },
+      backup: backup.rows[0], release: release.rows[0],
+      automatic_deletion_enabled: settings.rows[0]?.enabled === true, phase: 1 });
+  } catch (e) {
+    console.error('backup status:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לחשב את מצב האחסון' });
+  }
+});
+
+app.patch('/api/backup/settings', auth, async (req, res) => {
+  const enabled = req.body?.enabled;
+  const wifiOnly = req.body?.wifiOnly;
+  const storageMode = req.body?.storageMode;
+  const threshold = req.body?.releaseThresholdBytes;
+  if ((enabled !== undefined && typeof enabled !== 'boolean') ||
+      (wifiOnly !== undefined && typeof wifiOnly !== 'boolean') ||
+      (storageMode !== undefined && !['backup_only', 'backup_and_release'].includes(storageMode)) ||
+      (threshold !== undefined && (!Number.isSafeInteger(threshold) || threshold < 0)))
+    return res.status(400).json({ error: 'הגדרות הגיבוי אינן תקינות' });
+  try {
+    const pool = await getPool();
+    if (storageMode === 'backup_and_release') {
+      const safe = await pool.query(
+        `SELECT 1 FROM user_backup_settings s
+         JOIN cloud_backup_accounts c ON c.user_id=s.user_id AND c.status='connected'
+         WHERE s.user_id=$1 AND s.encrypted_data_key IS NOT NULL
+           AND EXISTS (SELECT 1 FROM media_backup_items m
+                       WHERE m.user_id=s.user_id AND m.restore_verified_at IS NOT NULL)`,
+        [req.user.id]);
+      if (!safe.rows.length) return res.status(409).json({
+        error: 'לפני פינוי יש לחבר ענן ולהשלים בדיקת שחזור מוצלחת',
+        code: 'RESTORE_VERIFICATION_REQUIRED' });
+    }
+    if (enabled === true) {
+      const connected = await pool.query(
+        `SELECT 1 FROM cloud_backup_accounts WHERE user_id=$1 AND status='connected'`, [req.user.id]);
+      if (!connected.rows.length) return res.status(409).json({
+        error: 'יש לחבר תחילה חשבון ענן', code: 'PROVIDER_NOT_CONNECTED' });
+    }
+    const result = await pool.query(
+      `INSERT INTO user_backup_settings(user_id,enabled,wifi_only,storage_mode,release_threshold_bytes)
+       VALUES($1,COALESCE($2,FALSE),COALESCE($3,TRUE),COALESCE($4,'backup_only'),COALESCE($5,1073741824))
+       ON CONFLICT(user_id) DO UPDATE SET
+         enabled=COALESCE($2,user_backup_settings.enabled),
+         wifi_only=COALESCE($3,user_backup_settings.wifi_only),
+         storage_mode=COALESCE($4,user_backup_settings.storage_mode),
+         release_threshold_bytes=COALESCE($5,user_backup_settings.release_threshold_bytes),updated_at=now()
+       RETURNING enabled,provider,storage_mode,wifi_only,release_threshold_bytes`,
+      [req.user.id, enabled ?? null, wifiOnly ?? null, storageMode ?? null, threshold ?? null]);
+    if (storageMode === 'backup_only') {
+      // Opting out during the grace period must cancel every pending release.
+      await pool.query(
+        `UPDATE stored_files SET release_scheduled_at=NULL
+         WHERE user_id=$1 AND released_at IS NULL`, [req.user.id]);
+    }
+    res.json(result.rows[0]);
+  } catch (e) {
+    console.error('backup settings:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לשמור את הגדרות הגיבוי' });
+  }
+});
+
+app.post('/api/backup/automatic', auth, async (req, res) => {
+  if (typeof req.body?.enabled !== 'boolean')
+    return res.status(400).json({ error: 'נדרש מצב הפעלה תקין' });
+  const enabled = req.body.enabled;
+  try {
+    const pool = await getPool();
+    if (enabled) {
+      const account = await pool.query(
+        `SELECT 1 FROM cloud_backup_accounts
+         WHERE user_id=$1 AND provider='google_drive' AND status='connected'`, [req.user.id]);
+      if (!account.rows.length)
+        return res.status(409).json({ error: 'יש לחבר תחילה חשבון Google Drive' });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO user_backup_settings(user_id,provider)
+         VALUES($1,'google_drive') ON CONFLICT(user_id) DO NOTHING`, [req.user.id]);
+      const current = await client.query(
+        `SELECT encrypted_data_key FROM user_backup_settings
+         WHERE user_id=$1 FOR UPDATE`, [req.user.id]);
+      let wrappedKey = current.rows[0]?.encrypted_data_key || null;
+      if (enabled && !wrappedKey)
+        wrappedKey = wrapVaultKey(createVaultKey(), req.user.id);
+      const saved = await client.query(
+        `UPDATE user_backup_settings SET enabled=$2,
+           encrypted_data_key=COALESCE(encrypted_data_key,$3),
+           data_key_version=CASE WHEN COALESCE(encrypted_data_key,$3) IS NULL
+             THEN data_key_version ELSE COALESCE(data_key_version,1) END,
+           updated_at=now() WHERE user_id=$1
+         RETURNING enabled,encrypted_data_key IS NOT NULL AS server_key_ready,
+                   data_key_version`, [req.user.id, enabled, wrappedKey]);
+      await client.query('COMMIT');
+      logActivity(req.user.id, enabled ? 'enable_automatic_backup' : 'disable_automatic_backup',
+        { serverKeyReady: saved.rows[0].server_key_ready }, req.ip);
+      res.json(saved.rows[0]);
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+  } catch (e) {
+    console.error('automatic backup settings:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לעדכן את הגיבוי האוטומטי' });
+  }
+});
+
+app.get('/api/backup/google/connect', auth, (req, res) => {
+  if (!personalDrive.configured()) return res.status(503).json({
+    error: 'חיבור Google Drive אישי עדיין לא הוגדר בשרת', code: 'OAUTH_NOT_CONFIGURED' });
+  const state = jwt.sign({ purpose: 'personal_drive_oauth', userId: req.user.id,
+    autoEnable: req.query.autoEnable === 'true' }, JWT_SECRET,
+    { expiresIn: '10m' });
+  res.set('Cache-Control', 'no-store');
+  res.json({ authorizationUrl: personalDrive.authorizationUrl(state),
+    scope: personalDrive.DRIVE_APPDATA_SCOPE });
+});
+
+app.get('/api/backup/google/callback', async (req, res) => {
+  const appBase = String(process.env.APP_URL || 'https://betshuva.com/betshuva-app').replace(/\/$/, '');
+  const finish = (result) => res.redirect(303, `${appBase}/?backup=${encodeURIComponent(result)}`);
+  if (req.query.error || !req.query.code || !req.query.state) return finish('cancelled');
+  try {
+    const state = jwt.verify(String(req.query.state), JWT_SECRET);
+    if (state.purpose !== 'personal_drive_oauth' || !state.userId) return finish('invalid_state');
+    const tokens = await personalDrive.exchangeCode(String(req.query.code));
+    const encrypted = personalDrive.encryptRefreshToken(tokens.refresh_token, state.userId);
+    const pool = await getPool();
+    await pool.query(
+      `INSERT INTO cloud_backup_accounts
+         (user_id,provider,encrypted_refresh_token,scope,status,last_verified_at,last_error)
+       VALUES($1,'google_drive',$2,$3,'connected',now(),NULL)
+       ON CONFLICT(user_id) DO UPDATE SET provider='google_drive',
+         encrypted_refresh_token=EXCLUDED.encrypted_refresh_token,scope=EXCLUDED.scope,
+         status='connected',last_verified_at=now(),last_error=NULL,updated_at=now()`,
+      [state.userId, encrypted, personalDrive.DRIVE_APPDATA_SCOPE]);
+    await pool.query(
+      `INSERT INTO user_backup_settings(user_id,provider) VALUES($1,'google_drive')
+       ON CONFLICT(user_id) DO UPDATE SET provider='google_drive',updated_at=now()`, [state.userId]);
+    if (state.autoEnable === true) {
+      const current = await pool.query(
+        `SELECT encrypted_data_key FROM user_backup_settings WHERE user_id=$1`, [state.userId]);
+      const wrappedKey = current.rows[0]?.encrypted_data_key ||
+        wrapVaultKey(createVaultKey(), state.userId);
+      await pool.query(
+        `UPDATE user_backup_settings SET enabled=TRUE,
+           encrypted_data_key=COALESCE(encrypted_data_key,$2),
+           data_key_version=COALESCE(data_key_version,1),updated_at=now()
+         WHERE user_id=$1`, [state.userId, wrappedKey]);
+      logActivity(state.userId, 'enable_automatic_backup_after_google_login',
+        { serverKeyReady: true }, req.ip);
+    }
+    logActivity(state.userId, 'connect_personal_drive', { provider: 'google_drive' }, req.ip);
+    return finish('connected');
+  } catch (e) {
+    console.error('personal Drive callback:', e.message);
+    return finish('error');
+  }
+});
+
+app.get('/api/backup/google/status', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT provider,status,scope,last_verified_at,last_error,created_at,updated_at
+       FROM cloud_backup_accounts WHERE user_id=$1`, [req.user.id]);
+    res.set('Cache-Control', 'no-store');
+    const connected = result.rows[0]?.status === 'connected';
+    res.json({ configured: personalDrive.configured(), connected,
+      automaticDeletionEnabled: connected,
+      account: result.rows[0] || null, callbackUrl: personalDrive.callbackUrl() });
+  } catch (e) { res.status(500).json({ error: 'לא ניתן היה לבדוק את חיבור הענן' }); }
+});
+
+app.post('/api/backup/google/verify', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT encrypted_refresh_token FROM cloud_backup_accounts
+       WHERE user_id=$1 AND provider='google_drive'`, [req.user.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'לא מחובר חשבון Google Drive' });
+    const token = personalDrive.decryptRefreshToken(result.rows[0].encrypted_refresh_token, req.user.id);
+    await personalDrive.verifyAppDataAccess(token);
+    await pool.query(`UPDATE cloud_backup_accounts SET status='connected',last_verified_at=now(),
+      last_error=NULL,updated_at=now() WHERE user_id=$1`, [req.user.id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('personal Drive verify:', e.message);
+    try { const pool = await getPool(); await pool.query(
+      `UPDATE cloud_backup_accounts SET status='error',last_error=$2,updated_at=now()
+       WHERE user_id=$1`, [req.user.id, String(e.message).slice(0, 500)]); } catch (_) {}
+    res.status(502).json({ error: 'הגישה ל-Google Drive אינה תקינה' });
+  }
+});
+
+app.post('/api/backup/next', auth, async (req, res) => {
+  const passphrase = req.body?.passphrase;
+  const replaceLatest = req.body?.replaceLatest === true;
+  if (typeof passphrase !== 'string' || passphrase.length < 12)
+    return res.status(400).json({ error: 'סיסמת הגיבוי חייבת להכיל לפחות 12 תווים' });
+  let remoteDataId = null;
+  let remoteManifestId = null;
+  let refreshToken = null;
+  try {
+    const pool = await getPool();
+    const account = await pool.query(
+      `SELECT encrypted_refresh_token FROM cloud_backup_accounts
+       WHERE user_id=$1 AND provider='google_drive' AND status='connected'`, [req.user.id]);
+    if (!account.rows.length)
+      return res.status(409).json({ error: 'יש לחבר תחילה חשבון Google Drive' });
+    const fileResult = replaceLatest
+      ? await pool.query(
+          `SELECT sf.id,sf.storage_path,sf.file_size,sf.mime_type,sf.content_sha256,
+                  mbi.remote_file_id AS old_remote_file_id,
+                  mbi.encryption_metadata AS old_encryption_metadata
+           FROM media_backup_items mbi JOIN stored_files sf ON sf.id=mbi.stored_file_id
+           WHERE mbi.user_id=$1 AND mbi.provider='google_drive' AND mbi.status='verified'
+             AND sf.moderation_status='approved'
+           ORDER BY mbi.verified_at DESC LIMIT 1`, [req.user.id])
+      : await pool.query(
+          `SELECT sf.id,sf.storage_path,sf.file_size,sf.mime_type,sf.content_sha256
+           FROM stored_files sf
+           WHERE sf.user_id=$1 AND sf.moderation_status='approved'
+             AND sf.content_sha256 IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM media_backup_items mbi
+               WHERE mbi.stored_file_id=sf.id AND mbi.provider='google_drive'
+                 AND mbi.status='verified')
+           ORDER BY sf.created_at DESC LIMIT 1`, [req.user.id]);
+    if (!fileResult.rows.length)
+      return res.status(404).json({ error: 'לא נמצא קובץ מאושר שממתין לגיבוי' });
+    const file = fileResult.rows[0];
+    const absolutePath = path.resolve(UPLOAD_ROOT, file.storage_path);
+    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+      throw new Error('Invalid stored file path');
+    const plain = await fs.readFile(absolutePath);
+    const actualPlainHash = crypto.createHash('sha256').update(plain).digest('hex');
+    if (actualPlainHash !== file.content_sha256)
+      throw new Error('Stored file checksum mismatch');
+
+    const backupId = crypto.randomUUID();
+    const associatedData = `${req.user.id}/${file.id}/v1`;
+    const { key, salt } = await deriveBackupKey(passphrase);
+    const envelope = encryptBackupBuffer(plain, key, associatedData);
+    const encryptedHash = crypto.createHash('sha256').update(envelope.ciphertext).digest('hex');
+    refreshToken = personalDrive.decryptRefreshToken(
+      account.rows[0].encrypted_refresh_token, req.user.id);
+    const uploaded = await personalDrive.uploadAppDataFile(refreshToken,
+      `${backupId}.bsv1`, envelope.ciphertext, 'application/octet-stream',
+      { kind: 'media', version: '1', backupId });
+    remoteDataId = uploaded.id;
+    const manifest = {
+      version: 1, backupId, storedFileId: file.id, byteLength: plain.length,
+      mimeType: file.mime_type || 'application/octet-stream',
+      plaintextSha256: actualPlainHash, encryptedSha256: encryptedHash,
+      remoteFileId: remoteDataId, encryption: { algorithm: envelope.algorithm,
+        salt: salt.toString('base64'), nonce: envelope.nonce, tag: envelope.tag,
+        kdf: 'scrypt-N32768-r8-p1', associatedData },
+      createdAt: new Date().toISOString(),
+    };
+    const manifestBytes = Buffer.from(JSON.stringify(manifest), 'utf8');
+    const uploadedManifest = await personalDrive.uploadAppDataFile(refreshToken,
+      `${backupId}.manifest.json`, manifestBytes, 'application/json',
+      { kind: 'manifest', version: '1', backupId });
+    remoteManifestId = uploadedManifest.id;
+    await pool.query(
+      `INSERT INTO media_backup_items
+         (user_id,stored_file_id,provider,status,remote_file_id,plaintext_sha256,
+          encrypted_sha256,encryption_metadata,verified_at,last_error)
+       VALUES($1,$2,'google_drive','verified',$3,$4,$5,$6,now(),NULL)
+       ON CONFLICT(stored_file_id,provider) DO UPDATE SET status='verified',
+         remote_file_id=EXCLUDED.remote_file_id,plaintext_sha256=EXCLUDED.plaintext_sha256,
+         encrypted_sha256=EXCLUDED.encrypted_sha256,
+         encryption_metadata=EXCLUDED.encryption_metadata,verified_at=now(),
+         last_error=NULL,updated_at=now()`,
+      [req.user.id, file.id, remoteDataId, actualPlainHash, encryptedHash,
+       JSON.stringify({ ...manifest.encryption, manifestRemoteId: remoteManifestId,
+         backupId })]);
+    if (replaceLatest) {
+      const oldManifestId = file.old_encryption_metadata?.manifestRemoteId;
+      for (const oldId of [file.old_remote_file_id, oldManifestId]) {
+        if (oldId && oldId !== remoteDataId && oldId !== remoteManifestId)
+          try { await personalDrive.deleteAppDataFile(refreshToken, oldId); }
+          catch (cleanupError) { console.warn('old backup cleanup:', cleanupError.message); }
+      }
+    }
+    logActivity(req.user.id, 'manual_encrypted_backup',
+      { storedFileId: file.id, provider: 'google_drive', bytes: plain.length }, req.ip);
+    res.status(201).json({ ok: true, backupId, storedFileId: file.id, replaced: replaceLatest,
+      bytes: plain.length, encryptedSha256: encryptedHash, automaticDeletion: false });
+  } catch (e) {
+    console.error('manual encrypted backup:', e.message);
+    logActivity(req.user.id, 'manual_encrypted_backup_failed',
+      { reason: String(e.message).slice(0, 160) }, req.ip);
+    if (remoteDataId && refreshToken)
+      try { await personalDrive.deleteAppDataFile(refreshToken, remoteDataId); } catch (_) {}
+    if (remoteManifestId && refreshToken)
+      try { await personalDrive.deleteAppDataFile(refreshToken, remoteManifestId); } catch (_) {}
+    res.status(500).json({ error: 'הגיבוי המוצפן נכשל ולא נמחק קובץ מקומי' });
+  }
+});
+
+app.post('/api/backup/verify-restore', auth, uploadRateLimit, async (req, res) => {
+  const passphrase = req.body?.passphrase;
+  if (passphrase !== undefined &&
+      (typeof passphrase !== 'string' || passphrase.length < 12))
+    return res.status(400).json({ error: 'סיסמת השחזור חייבת להכיל לפחות 12 תווים' });
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT mbi.id,mbi.stored_file_id,mbi.remote_file_id,mbi.plaintext_sha256,
+              mbi.encrypted_sha256,mbi.encryption_metadata,sf.storage_path,sf.file_size,
+              cba.encrypted_refresh_token,ubs.encrypted_data_key
+       FROM media_backup_items mbi
+       JOIN stored_files sf ON sf.id=mbi.stored_file_id
+       JOIN cloud_backup_accounts cba ON cba.user_id=mbi.user_id
+       LEFT JOIN user_backup_settings ubs ON ubs.user_id=mbi.user_id
+       WHERE mbi.user_id=$1 AND mbi.provider='google_drive' AND mbi.status='verified'
+         AND ($2::boolean OR mbi.encryption_metadata->>'keySource'='server_vault')
+       ORDER BY
+         CASE WHEN mbi.encryption_metadata->>'keySource'='server_vault' THEN 0 ELSE 1 END,
+         mbi.verified_at DESC LIMIT 1`, [req.user.id, typeof passphrase === 'string']);
+    if (!result.rows.length)
+      return res.status(404).json({ error: 'לא נמצא גיבוי מאומת לבדיקת שחזור' });
+    const row = result.rows[0];
+    const metadata = row.encryption_metadata || {};
+    const refreshToken = personalDrive.decryptRefreshToken(
+      row.encrypted_refresh_token, req.user.id);
+    const manifestBytes = await personalDrive.downloadAppDataFile(
+      refreshToken, metadata.manifestRemoteId, 1024 * 1024);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    if (manifest.version !== 1 || manifest.remoteFileId !== row.remote_file_id ||
+        manifest.storedFileId !== row.stored_file_id ||
+        manifest.plaintextSha256 !== row.plaintext_sha256 ||
+        manifest.encryptedSha256 !== row.encrypted_sha256)
+      throw new Error('Backup manifest mismatch');
+    const encrypted = await personalDrive.downloadAppDataFile(
+      refreshToken, row.remote_file_id, Number(row.file_size) + 1024);
+    const encryptedHash = crypto.createHash('sha256').update(encrypted).digest('hex');
+    if (encryptedHash !== row.encrypted_sha256)
+      throw new Error('Encrypted backup checksum mismatch');
+    const keySource = manifest.encryption?.keySource || metadata.keySource || 'passphrase';
+    let key;
+    if (keySource === 'server_vault') {
+      if (!row.encrypted_data_key) throw new Error('Automatic backup key is unavailable');
+      key = unwrapVaultKey(row.encrypted_data_key, req.user.id);
+    } else {
+      if (typeof passphrase !== 'string')
+        return res.status(400).json({ error: 'נדרשת סיסמת השחזור ששימשה לגיבוי',
+          code: 'RESTORE_PASSPHRASE_REQUIRED' });
+      ({ key } = await deriveBackupKey(passphrase,
+        Buffer.from(manifest.encryption.salt, 'base64')));
+    }
+    let restored;
+    try {
+      restored = decryptBackupBuffer({ version: 1, algorithm: manifest.encryption.algorithm,
+        nonce: manifest.encryption.nonce, tag: manifest.encryption.tag,
+        ciphertext: encrypted }, key, manifest.encryption.associatedData);
+    } catch (_) {
+      logActivity(req.user.id, 'verify_encrypted_restore_failed',
+        { reason: 'decrypt_failed' }, req.ip);
+      return res.status(422).json({ error: 'סיסמת השחזור שגויה או שהגיבוי נפגם',
+        code: 'RESTORE_DECRYPT_FAILED' });
+    }
+    const restoredHash = crypto.createHash('sha256').update(restored).digest('hex');
+    if (restoredHash !== row.plaintext_sha256)
+      throw new Error('Restored plaintext checksum mismatch');
+    let matchesLocalCopy = null;
+    try {
+      const absolutePath = path.resolve(UPLOAD_ROOT, row.storage_path);
+      if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+        throw new Error('Invalid stored file path');
+      const local = await fs.readFile(absolutePath);
+      matchesLocalCopy = local.equals(restored);
+      if (!matchesLocalCopy) throw new Error('Restored bytes differ from local copy');
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+    await pool.query(`WITH verified AS (
+      UPDATE media_backup_items SET restore_verified_at=now(),updated_at=now()
+      WHERE id=$1 RETURNING stored_file_id
+    ) UPDATE stored_files sf
+      SET release_scheduled_at=COALESCE(sf.release_scheduled_at,now())
+      FROM verified WHERE sf.id=verified.stored_file_id`, [row.id]);
+    logActivity(req.user.id, 'verify_encrypted_restore',
+      { storedFileId: row.stored_file_id, bytes: restored.length,
+        matchesLocalCopy }, req.ip);
+    res.json({ ok: true, bytes: restored.length, plaintextSha256: restoredHash,
+      matchesLocalCopy, wroteToDisk: false, keySource });
+  } catch (e) {
+    console.error('verify encrypted restore:', e.message);
+    logActivity(req.user.id, 'verify_encrypted_restore_failed',
+      { reason: String(e.message).slice(0, 160) }, req.ip);
+    res.status(500).json({ error: 'בדיקת השחזור נכשלה; לא בוצע שינוי בקובץ המקומי' });
+  }
+});
+
+app.delete('/api/backup/google', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT encrypted_refresh_token FROM cloud_backup_accounts WHERE user_id=$1`, [req.user.id]);
+    if (result.rows.length) try {
+      const token = personalDrive.decryptRefreshToken(result.rows[0].encrypted_refresh_token, req.user.id);
+      await personalDrive.revoke(token);
+    } catch (e) { console.warn('personal Drive revoke:', e.message); }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM cloud_backup_accounts WHERE user_id=$1', [req.user.id]);
+      await client.query(`UPDATE user_backup_settings SET enabled=FALSE,provider=NULL,
+        storage_mode='backup_only',updated_at=now() WHERE user_id=$1`, [req.user.id]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+    logActivity(req.user.id, 'disconnect_personal_drive', { provider: 'google_drive' }, req.ip);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('personal Drive disconnect:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לנתק את חשבון Google Drive' });
+  }
 });
 
 // A user's own contact card is intentionally available only to adults.
@@ -5059,25 +6431,25 @@ const LISTING_CATEGORIES = [
 ];
 
 const LISTING_CATEGORY_DETAIL_KEYS = {
-  'רהיטים': ['item_type', 'material', 'dimensions', 'color', 'assembly', 'age', 'defects'],
-  'אלקטרוניקה': ['item_type', 'brand', 'model', 'purchase_year', 'warranty', 'connectivity', 'included', 'defects'],
-  'מחשבים': ['computer_type', 'brand', 'model', 'processor', 'memory', 'storage', 'graphics', 'screen', 'operating_system', 'battery', 'warranty', 'included'],
-  'טלפונים וטאבלטים': ['device_type', 'brand', 'model', 'storage', 'color', 'battery', 'sim', 'warranty', 'included', 'defects'],
-  'מוצרי חשמל': ['appliance_type', 'brand', 'model', 'dimensions', 'energy_rating', 'purchase_year', 'warranty', 'installation', 'defects'],
-  'בגדים והנעלה': ['item_type', 'audience', 'size', 'brand', 'color', 'material', 'season', 'measurements'],
-  'תינוקות וילדים': ['item_type', 'age_range', 'brand', 'dimensions', 'safety_standard', 'expiry_date', 'washable', 'included'],
-  'ספרים': ['book_type', 'title_author', 'publisher', 'language', 'edition', 'binding', 'pages', 'dedication'],
-  'יודאיקה ותשמישי קדושה': ['item_type', 'custom', 'material', 'community_style', 'scribe_or_maker', 'dimensions', 'certification', 'condition_notes'],
-  'כלי בית ומטבח': ['item_type', 'brand', 'material', 'dimensions', 'capacity', 'dishwasher_safe', 'set_contents'],
-  'צעצועים ומשחקים': ['item_type', 'age_range', 'brand', 'players', 'language', 'complete', 'batteries', 'safety_notes'],
-  'ספורט ופנאי': ['sport_type', 'item_type', 'brand', 'size', 'weight', 'skill_level', 'included', 'defects'],
-  'אופניים וקורקינטים': ['vehicle_type', 'brand', 'model', 'wheel_size', 'frame_size', 'gears', 'electric', 'battery', 'range', 'included'],
-  'כלי עבודה': ['tool_type', 'brand', 'model', 'power_source', 'voltage', 'power', 'accessories', 'warranty'],
-  'גינה וחצר': ['item_type', 'brand', 'dimensions', 'material', 'power_source', 'weather_resistant', 'assembly', 'included'],
-  'כלי נגינה': ['instrument_type', 'brand', 'model', 'size', 'year', 'country', 'accessories', 'service_history'],
-  'ציוד משרדי': ['item_type', 'brand', 'model', 'dimensions', 'compatibility', 'quantity_per_pack', 'included'],
-  'ציוד לבעלי חיים': ['animal_type', 'item_type', 'brand', 'size', 'dimensions', 'material', 'washable', 'safety_notes'],
-  'אספנות ואמנות': ['item_type', 'artist_or_maker', 'year_period', 'material', 'dimensions', 'signed', 'provenance', 'certificate'],
+  'רהיטים': ['item_type', 'room', 'style', 'material', 'dimensions', 'seats_or_capacity', 'color', 'assembly', 'age', 'defects'],
+  'אלקטרוניקה': ['item_type', 'brand', 'model', 'model_number', 'product_type', 'purchase_year', 'warranty', 'connectivity', 'power_specs', 'dimensions_weight', 'included', 'defects'],
+  'מחשבים': ['computer_type', 'brand', 'series', 'model', 'manufacturer_model', 'model_year', 'processor', 'processor_generation', 'memory', 'memory_type', 'storage', 'storage_interface', 'drive_count', 'graphics', 'graphics_memory', 'screen_size', 'screen_resolution', 'panel_type', 'refresh_rate', 'touch_screen', 'operating_system', 'battery', 'battery_cycles', 'charger_power', 'ports', 'wireless', 'keyboard', 'webcam', 'upgradeability', 'warranty', 'included', 'purchase_proof', 'defects'],
+  'טלפונים וטאבלטים': ['device_type', 'brand', 'model', 'model_number', 'model_year', 'storage', 'ram', 'network', 'screen_size', 'operating_system', 'color', 'battery', 'sim', 'esim', 'water_resistance', 'carrier_lock', 'kosher_status', 'battery_cycles', 'screen_condition', 'repair_history', 'warranty', 'purchase_proof', 'included', 'defects'],
+  'מוצרי חשמל': ['appliance_type', 'brand', 'model', 'model_number', 'capacity', 'power', 'dimensions', 'energy_rating', 'purchase_year', 'warranty', 'installation', 'noise_level', 'defects'],
+  'בגדים והנעלה': ['item_type', 'audience', 'size', 'fit', 'shoe_size', 'brand', 'color', 'material', 'season', 'closure', 'measurements'],
+  'תינוקות וילדים': ['item_type', 'age_range', 'weight_limit', 'brand', 'dimensions', 'safety_standard', 'manufacture_date', 'accident_history', 'expiry_date', 'washable', 'included'],
+  'ספרים': ['book_type', 'title_author', 'publisher', 'isbn', 'language', 'edition', 'volume_count', 'binding', 'pages', 'dedication'],
+  'יודאיקה ותשמישי קדושה': ['item_type', 'custom', 'kosher_status', 'material', 'community_style', 'scribe_or_maker', 'dimensions', 'certification', 'inspection_date', 'condition_notes'],
+  'כלי בית ומטבח': ['item_type', 'brand', 'material', 'dimensions', 'capacity', 'heat_source', 'max_temperature', 'dishwasher_safe', 'set_contents'],
+  'צעצועים ומשחקים': ['item_type', 'age_range', 'brand', 'players', 'play_duration', 'language', 'complete', 'piece_count', 'batteries', 'safety_notes'],
+  'ספורט ופנאי': ['sport_type', 'item_type', 'brand', 'size', 'weight', 'dimensions', 'material', 'skill_level', 'included', 'defects'],
+  'אופניים וקורקינטים': ['vehicle_type', 'brand', 'model', 'wheel_size', 'frame_size', 'frame_material', 'gears', 'brakes', 'suspension', 'electric', 'battery', 'range', 'motor_power', 'mileage', 'included'],
+  'כלי עבודה': ['tool_type', 'brand', 'model', 'power_source', 'voltage', 'power', 'speed', 'chuck_or_disc', 'battery_capacity', 'accessories', 'warranty'],
+  'גינה וחצר': ['item_type', 'brand', 'dimensions', 'area_coverage', 'material', 'power_source', 'weather_resistant', 'water_connection', 'assembly', 'included'],
+  'כלי נגינה': ['instrument_type', 'brand', 'model', 'serial_number', 'size', 'year', 'country', 'finish', 'electronic_connectivity', 'accessories', 'service_history'],
+  'ציוד משרדי': ['item_type', 'brand', 'model', 'dimensions', 'compatibility', 'print_technology', 'page_count', 'quantity_per_pack', 'included'],
+  'ציוד לבעלי חיים': ['animal_type', 'item_type', 'brand', 'size', 'animal_weight', 'dimensions', 'material', 'washable', 'expiry_date', 'safety_notes'],
+  'אספנות ואמנות': ['item_type', 'artist_or_maker', 'year_period', 'material', 'dimensions', 'edition_number', 'signed', 'provenance', 'restoration', 'certificate'],
   'אחר': ['item_type', 'brand', 'model', 'dimensions', 'material', 'included', 'defects'],
 };
 
@@ -5155,7 +6527,7 @@ app.post('/api/listings', auth, async (req, res) => {
     return res.status(400).json({ error: 'מספר הרישוי חייב להכיל 7 או 8 ספרות' });
   const safeVehicleDetails = category === 'רכב' && vehicle_details &&
     typeof vehicle_details === 'object' && !Array.isArray(vehicle_details)
-    ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 20).map(([key, value]) =>
+    ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 40).map(([key, value]) =>
       [String(key).slice(0, 40), value == null ? null : String(value).slice(0, 120)]))
     : null;
   const safePropertyDetails = category === 'נדל״ן' && property_details &&
@@ -5422,7 +6794,7 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       return res.status(400).json({ error: 'מספר הרישוי חייב להכיל 7 או 8 ספרות' });
     const safeVehicleDetails = fixedCategory === 'רכב' && vehicle_details &&
       typeof vehicle_details === 'object' && !Array.isArray(vehicle_details)
-      ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 20).map(([key, value]) =>
+      ? Object.fromEntries(Object.entries(vehicle_details).slice(0, 40).map(([key, value]) =>
         [String(key).slice(0, 40), value == null ? null : String(value).slice(0, 120)]))
       : null;
     const safePropertyDetails = fixedCategory === 'נדל״ן' && property_details &&
@@ -5603,6 +6975,10 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
 
   try {
     const pool = await getPool();
+    const contentSha256 = crypto.createHash('sha256')
+      .update(file.buffer).digest('hex');
+    const visualFingerprint = allowed.dbType === 'image'
+      ? await createVisualFingerprint(file.buffer).catch(() => null) : null;
     const trustedBuiltinExpression = req.body.builtinExpression === 'true' &&
       allowed.dbType === 'image' && await isTrustedBuiltinExpression(file);
     const scanBotUpload = req.body.toUserId === SCAN_BOT_ID;
@@ -5623,8 +6999,11 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
     if (req.body.groupId) {
       const groupAccess = await pool.query(
-        `SELECT gm.role, g.send_permission, g.content_filter FROM group_members gm
+        `SELECT gm.role, g.send_permission,
+                COALESCE(g.content_filter, creator.content_filter) AS content_filter
+         FROM group_members gm
          JOIN groups g ON g.id=gm.group_id
+         JOIN users creator ON creator.id=g.creator_id
          WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
         [req.body.groupId, req.user.id]);
       const member = groupAccess.rows[0];
@@ -5632,22 +7011,48 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
       if (member.send_permission === 'admin' && member.role !== 'admin')
         return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
-      groupFilter = normalizeContentFilter(member.content_filter);
+      groupFilter = await getGroupContentFilter(pool, req.body.groupId);
       if (allowed.dbType === 'video' && groupFilter.video !== true)
         return res.status(403).json({ error: 'סרטוני וידאו חסומים בהגדרות הקבוצה' });
     }
+    const cachedScanQuery = await pool.query(
+      `SELECT moderation_details FROM stored_files
+       WHERE content_sha256=$1 AND file_type=$2
+         AND moderation_status IN ('approved','rejected')
+         AND moderation_details->>'moderationVersion'=$3
+         AND COALESCE((moderation_details->>'pending')::boolean,FALSE)=FALSE
+       ORDER BY created_at DESC LIMIT 1`,
+      [contentSha256, allowed.dbType, MODERATION_CACHE_VERSION]);
+    let cachedScan = cachedScanQuery.rows[0]?.moderation_details || null;
+    let cacheMatch = cachedScan ? 'exact' : null;
+    if (!cachedScan && visualFingerprint) {
+      const visualCandidates = await pool.query(
+        `SELECT moderation_details,visual_fingerprint FROM stored_files
+         WHERE file_type='image' AND visual_fingerprint IS NOT NULL
+           AND moderation_status IN ('approved','rejected')
+           AND moderation_details->>'moderationVersion'=$1
+           AND ABS((visual_fingerprint->>'aspect')::double precision-$2)<=0.01
+         ORDER BY created_at DESC LIMIT 100`,
+        [MODERATION_CACHE_VERSION, visualFingerprint.aspect]);
+      const match = visualCandidates.rows.find(row =>
+        visuallyEquivalent(visualFingerprint, row.visual_fingerprint));
+      if (match) { cachedScan = match.moderation_details; cacheMatch = 'visual'; }
+    }
+
     // העלאה לאחסון תחילה (גם קבצים חסומים נשמרים לצורך ביקורת אדמין)
     const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
     const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
     await pool.query(
       `INSERT INTO stored_files
        (user_id, original_name, storage_path, public_url, mime_type, file_type,
-        file_size, context_type, context_id, moderation_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')`,
+        file_size, context_type, context_id, moderation_status, content_sha256,
+        visual_fingerprint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11)`,
       [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
        file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' :
          req.body.listingImage === 'true' ? 'listing' : 'general',
-       req.body.groupId || req.body.toUserId || null]);
+       req.body.groupId || req.body.toUserId || null, contentSha256,
+       visualFingerprint ? JSON.stringify(visualFingerprint) : null]);
 
     // Content moderation scan
     let scanResult;
@@ -5664,7 +7069,15 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
           uncertain: false,
         },
       };
-    else if (allowed.dbType === 'image')
+    else if (cachedScan) {
+      scanResult = { ...cachedScan, cacheHit: true, cacheMatch };
+      // A previous destination-filter rejection is not a moderation failure.
+      // Reapply the new destination policy below without carrying its wording.
+      if (scanResult.blocked !== true) {
+        delete scanResult.reason;
+        delete scanResult.blockedCategories;
+      }
+    } else if (allowed.dbType === 'image')
       scanResult = await scanImage(file.buffer);
     else if (allowed.dbType === 'video')
       scanResult = await scanVideo(file.buffer, file.originalname, file.mimetype);
@@ -5672,8 +7085,9 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       scanResult = await scanDocument(file.buffer, file.mimetype);
 
     if (scanResult) {
+      scanResult.moderationVersion = MODERATION_CACHE_VERSION;
       const ss = scanResult.safeSearch || {};
-      console.log(`[Vision] ${file.originalname} | ${scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
+      console.log(`[Vision] ${file.originalname} | ${scanResult.cacheHit ? '♻️ CACHE' : scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
     }
 
     if (scanResult?.blocked) {
@@ -5700,17 +7114,30 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
 
     if (!scanResult?.pending && groupFilter &&
-        ['image', 'video'].includes(allowed.dbType) &&
+        ['image', 'video', 'document'].includes(allowed.dbType) &&
         !contentAllowedByFilter(groupFilter, allowed.dbType,
           scanResult?.classification)) {
-      const reason = 'סוג התוכן חסום בהגדרות הסינון של הקבוצה';
+      const categoryLabels = {
+        men: 'גברים', women: 'נשים', children: 'ילדים',
+        nonHumanImages: 'תמונות נוף או חפצים', people: 'אנשים',
+      };
+      const detected = scanResult?.classification?.detectedCategories ||
+        [scanResult?.classification?.category || 'people'];
+      const normalizedGroupFilter = normalizeContentFilter(groupFilter);
+      const blockedCategories = detected.filter(category =>
+        normalizedGroupFilter[category] !== true);
+      const blockedLabel = blockedCategories
+        .map(category => categoryLabels[category] || category).join(', ');
+      const reason = blockedLabel
+        ? `התמונה סווגה כ${blockedLabel}, וקטגוריה זו חסומה בהגדרות הקבוצה`
+        : 'סוג התוכן חסום בהגדרות הסינון של הקבוצה';
       await pool.query(
         `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1
          WHERE public_url=$2`,
-        [JSON.stringify({ ...scanResult, reason }), url]);
+        [JSON.stringify({ ...scanResult, reason, blockedCategories }), url]);
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason,
-        classification: scanResult?.classification || null });
+        blockedCategories, classification: scanResult?.classification || null });
     }
 
     // Listings deliberately allow product/object photos only. A listing image
@@ -5773,8 +7200,10 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       }
     }
 
-    if (!scanBotUpload && !scanResult?.pending && allowed.dbType === 'image' && recipientPolicy &&
-        !imageAllowedByFilter(recipientPolicy.filter, scanResult?.classification)) {
+    if (!scanBotUpload && !scanResult?.pending &&
+        ['image', 'document'].includes(allowed.dbType) && recipientPolicy &&
+        !contentAllowedByFilter(recipientPolicy.filter, allowed.dbType,
+          scanResult?.classification)) {
       const categories = scanResult?.classification?.detectedCategories ||
         [scanResult?.classification?.category || 'people'];
       const labels = { nonHumanImages: 'תמונות ללא בני אדם', men: 'תמונות גברים',
@@ -5896,9 +7325,10 @@ app.get('/api/groups', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(`
-      SELECT g.id, g.name, g.description, g.profile_pic_url, g.is_broadcast, g.send_permission, g.filter_level,
+      SELECT g.id, g.name, g.description, g.profile_pic_url, g.is_broadcast, g.is_self, g.send_permission, g.filter_level,
              g.content_filter,
              gm.role, gm.status, gm.pinned_at,
+             inviter.name AS invited_by_name,
              group_admin.id AS admin_id, group_admin.name AS admin_name,
              (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count,
              last_msg.body AS last_message,
@@ -5908,6 +7338,7 @@ app.get('/api/groups', auth, async (req, res) => {
              (last_msg.sender_id = $1) AS last_message_is_mine
       FROM groups g
       JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $1
+      LEFT JOIN users inviter ON inviter.id=gm.added_by
       LEFT JOIN LATERAL (
         SELECT u.id, u.name
         FROM group_members admin_member
@@ -5939,28 +7370,46 @@ app.get('/api/groups', auth, async (req, res) => {
 app.post('/api/groups', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'קבוצות אינן זמינות עדיין בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
-  const { name, description } = req.body;
-  if (!name) return res.status(400).json({ error: 'נדרש שם קבוצה' });
+  const { name, description, send_permission, filter_level, is_broadcast, is_self,
+    content_filter } = req.body;
+  const cleanName = String(name || '').trim();
+  const cleanDescription = String(description || '').trim();
+  const sendPermission = send_permission === 'admin' ? 'admin' : 'all';
+  const filterLevel = filter_level === 'strict' ? 'strict' : 'standard';
+  const isBroadcast = is_broadcast === true;
+  const isSelf = is_self === true;
+  if (cleanName.length < 2 || cleanName.length > 80)
+    return res.status(400).json({ error: 'שם הקבוצה חייב להכיל 2 עד 80 תווים' });
+  if (cleanDescription.length > 500)
+    return res.status(400).json({ error: 'תיאור הקבוצה יכול להכיל עד 500 תווים' });
+  if (!content_filter || typeof content_filter !== 'object' ||
+      !Object.keys(DEFAULT_CONTENT_FILTER)
+        .every(key => typeof content_filter[key] === 'boolean'))
+    return res.status(400).json({ error: 'יש להגדיר ולאשר סינון לפני יצירת הקבוצה' });
+  const contentFilter = normalizeContentFilter(content_filter);
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `INSERT INTO groups (name, description, creator_id)
-       VALUES ($1, $2, $3)
-       RETURNING id, name, description`,
-      [name, description || '', req.user.id]);
+      `INSERT INTO groups
+       (name, description, creator_id, send_permission, filter_level, is_broadcast, is_self, content_filter)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, name, description, send_permission, filter_level, is_broadcast, is_self, content_filter`,
+      [cleanName, cleanDescription, req.user.id,
+       isBroadcast ? 'admin' : sendPermission, filterLevel, isBroadcast,
+       isSelf, JSON.stringify(contentFilter)]);
     const group = result.rows[0];
     await pool.query(
       `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')`,
       [group.id, req.user.id]);
-    logActivity(req.user.id, 'create_group', { groupId: group.id, name }, req.ip);
+    logActivity(req.user.id, 'create_group', { groupId: group.id, name: cleanName }, req.ip);
     res.json({
       ...group,
       role: 'admin',
       admin_id: req.user.id,
       admin_name: req.user.name,
       member_count: 1,
-      is_broadcast: false,
-      send_permission: 'all',
+      is_broadcast: group.is_broadcast,
+      send_permission: group.send_permission,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5994,13 +7443,22 @@ app.get('/api/groups/:id/filter-settings', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT g.content_filter, gm.role
+      `SELECT COALESCE(g.content_filter, creator.content_filter) AS content_filter,
+              g.content_filter IS NULL AS inherited, gm.role,
+              COALESCE(gm.filter_override,
+                CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END,
+                member.content_filter) AS personal_filter
        FROM groups g JOIN group_members gm ON gm.group_id=g.id
+       LEFT JOIN users creator ON creator.id=g.creator_id
+       JOIN users member ON member.id=gm.user_id
        WHERE g.id=$1 AND gm.user_id=$2 AND gm.status='member'`,
       [req.params.id, req.user.id]);
     if (!result.rows.length)
       return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
-    res.json({ filter: normalizeContentFilter(result.rows[0].content_filter),
+    const effectiveFilter = await getGroupContentFilter(pool, req.params.id);
+    res.json({ filter: effectiveFilter,
+      personalFilter: normalizeContentFilter(result.rows[0].personal_filter),
+      inherited: result.rows[0].inherited === true,
       canEdit: result.rows[0].role === 'admin' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -6008,16 +7466,70 @@ app.get('/api/groups/:id/filter-settings', auth, async (req, res) => {
 app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
   try {
     const pool = await getPool();
-    const filter = normalizeContentFilter(req.body.filter || req.body);
+    const inherited = req.body?.inherit === true;
+    const filter = inherited ? null : normalizeContentFilter(req.body.filter || req.body);
     const updated = await pool.query(
       `UPDATE groups g SET content_filter=$1
        WHERE g.id=$2 AND EXISTS (
          SELECT 1 FROM group_members gm WHERE gm.group_id=g.id
            AND gm.user_id=$3 AND gm.role='admin' AND gm.status='member'
        ) RETURNING content_filter`,
-      [JSON.stringify(filter), req.params.id, req.user.id]);
+      [filter == null ? null : JSON.stringify(filter), req.params.id, req.user.id]);
     if (!updated.rows.length)
       return res.status(403).json({ error: 'רק מנהל קבוצה יכול לשנות סינון' });
+    const effectiveFilter = await getGroupContentFilter(pool, req.params.id);
+    const filterLabels = {
+      text: 'טקסט',
+      nonHumanImages: 'תמונות נוף או חפצים',
+      men: 'גברים',
+      women: 'נשים',
+      children: 'ילדים',
+      video: 'וידאו',
+    };
+    const allowedLabels = Object.keys(filterLabels)
+      .filter(key => effectiveFilter[key] === true)
+      .map(key => filterLabels[key]);
+    const blockedLabels = Object.keys(filterLabels)
+      .filter(key => effectiveFilter[key] !== true)
+      .map(key => filterLabels[key]);
+    const noticeText = [
+      '🛡️ סינון הקבוצה עודכן',
+      `מותר: ${allowedLabels.length ? allowedLabels.join(', ') : 'ללא'}`,
+      `חסום: ${blockedLabels.length ? blockedLabels.join(', ') : 'ללא'}`,
+    ].join('\n');
+    const notice = await pool.query(
+      `INSERT INTO messages (sender_id, group_id, body, type)
+       VALUES ($1,$2,$3,'text') RETURNING id, created_at`,
+      [req.user.id, req.params.id, noticeText]);
+    const noticePayload = {
+      id: notice.rows[0].id,
+      groupId: req.params.id,
+      fromUserId: req.user.id,
+      fromName: 'מערכת הקבוצה',
+      text: noticeText,
+      fileType: 'text',
+      createdAt: notice.rows[0].created_at,
+    };
+    const members = await pool.query(
+      `SELECT user_id FROM group_members
+       WHERE group_id=$1 AND status='member'`, [req.params.id]);
+    for (const member of members.rows)
+      relay(member.user_id, 'group:message', noticePayload);
+    res.json({ inherited, filter, notice: noticePayload });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/groups/:id/personal-filter', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const filter = normalizeContentFilter(req.body?.filter || req.body);
+    const updated = await pool.query(
+      `UPDATE group_members SET filter_override=$1
+       WHERE group_id=$2 AND user_id=$3 AND status='member'
+       RETURNING filter_override`,
+      [JSON.stringify(filter), req.params.id, req.user.id]);
+    if (!updated.rows.length)
+      return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
     res.json({ filter });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -6047,8 +7559,10 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
   try {
     const pool = await getPool();
     const access = await pool.query(
-      `SELECT gm.role, g.send_permission, g.name AS group_name, g.content_filter
+      `SELECT gm.role, g.send_permission, g.name AS group_name,
+              COALESCE(g.content_filter, creator.content_filter) AS content_filter
        FROM group_members gm JOIN groups g ON g.id=gm.group_id
+       JOIN users creator ON creator.id=g.creator_id
        WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
       [groupId, senderId]);
     const member = access.rows[0];
@@ -6062,7 +7576,8 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
         ? 'image' : fileUrl ? 'document' : 'text');
     const classification = fileUrl
       ? await getStoredImageClassification(pool, fileUrl) : null;
-    if (!contentAllowedByFilter(member.content_filter, type, classification))
+    const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
+    if (!contentAllowedByFilter(effectiveGroupFilter, type, classification))
       return res.status(403).json({
         error: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה',
         code: 'GROUP_CONTENT_FILTERED',
@@ -6081,6 +7596,10 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       [senderId, groupId, text || null, type, fileUrl || null,
        fileName || null, replyToId || null]);
     const row = saved.rows[0];
+    const deliveryPlan = await buildGroupDeliveryPlan(
+      pool, groupId, senderId, type, classification);
+    await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
+      [JSON.stringify(deliveryPlan.summary), row.id]);
     const payload = {
       id: row.id,
       groupId,
@@ -6094,25 +7613,21 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       replyToId: replyToId || null,
       clientMessageId: clientMessageId || null,
       createdAt: row.created_at,
+      deliverySummary: deliveryPlan.summary,
     };
-    const allMembers = await pool.query(
-      `SELECT gm.user_id, u.content_filter FROM group_members gm
-       JOIN users u ON u.id=gm.user_id
-       WHERE gm.group_id=$1 AND gm.status='member'
-         AND u.birth_date <= CURRENT_DATE - INTERVAL '18 years'`, [groupId]);
     const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-    for (const { user_id, content_filter } of allMembers.rows) {
-      if (user_id !== senderId && contentAllowedByFilter(
-          content_filter, type, classification)) {
-        relay(user_id, 'group:message', payload);
-        sendPush(user_id, `${member.group_name} • ${req.user.name}`,
+    const recipientPayload = { ...payload };
+    delete recipientPayload.deliverySummary;
+    for (const recipient of deliveryPlan.delivered) {
+        relay(recipient.id, 'group:message', recipientPayload);
+        sendPush(recipient.id, `${member.group_name} • ${req.user.name}`,
           pushBody, { type: 'group', groupId });
-      }
     }
     logActivity(senderId, fileUrl ? 'send_file' : 'send_group_message', {
       groupId, messageId: row.id, fileName: fileName || null,
     }, req.ip);
-    res.json({ id: row.id, createdAt: row.created_at, status: 'sent' });
+    res.json({ id: row.id, createdAt: row.created_at, status: 'sent',
+      deliverySummary: deliveryPlan.summary });
   } catch (e) {
     console.error('POST /api/groups/:id/messages:', e.message);
     res.status(500).json({ error: e.message });
@@ -6126,7 +7641,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const check = await pool.query(
-      `SELECT u.content_filter FROM group_members gm
+      `SELECT COALESCE(gm.filter_override,
+              CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END,
+              u.content_filter) AS content_filter FROM group_members gm
+       JOIN groups g ON g.id=gm.group_id
        JOIN users u ON u.id=gm.user_id
        WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
       [req.params.id, req.user.id]);
@@ -6136,6 +7654,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
     const result = await pool.query(`
       SELECT
         m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name, m.reply_to_id, m.created_at,
+        CASE WHEN m.sender_id=$2 THEN m.delivery_summary END AS delivery_summary,
         m.education_form_id, education_response.response_status AS education_response_status,
         education_form.status AS education_form_status,
         u.name AS sender_name,
@@ -6188,6 +7707,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
       WHERE sf.context_type='group' AND sf.context_id=$1
         AND sf.user_id=$2
         AND sf.moderation_status IN ('pending','rejected')
+        AND sf.created_at >= (
+          SELECT gm.joined_at FROM group_members gm
+          WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'
+        )
         ${before ? 'AND sf.created_at < $3' : ''}
       ORDER BY sf.created_at DESC
       LIMIT 50
@@ -6737,6 +8260,46 @@ app.post('/api/groups/:id/members', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+async function transferOwnedGroups(db, ownerId, onlyGroupId = null) {
+  const ownedGroups = await db.query(
+    `SELECT id FROM groups
+     WHERE creator_id=$1 AND ($2::uuid IS NULL OR id=$2::uuid)
+     ORDER BY id
+     FOR UPDATE`,
+    [ownerId, onlyGroupId]);
+
+  for (const { id: groupId } of ownedGroups.rows) {
+    const successor = await db.query(
+      `SELECT user_id FROM group_members
+       WHERE group_id=$1 AND user_id<>$2 AND status='member'
+       ORDER BY joined_at ASC NULLS LAST, user_id ASC
+       LIMIT 1`,
+      [groupId, ownerId]);
+    const successorId = successor.rows[0]?.user_id || null;
+    if (!successorId) {
+      await db.query(
+        `UPDATE messages SET reply_to_id=NULL
+         WHERE reply_to_id IN (SELECT id FROM messages WHERE group_id=$1)`,
+        [groupId]);
+      await db.query(
+        `DELETE FROM message_status
+         WHERE message_id IN (SELECT id FROM messages WHERE group_id=$1)`,
+        [groupId]);
+      await db.query('DELETE FROM messages WHERE group_id=$1', [groupId]);
+      await db.query('DELETE FROM pending_scans WHERE group_id=$1', [groupId]);
+      await db.query('DELETE FROM group_members WHERE group_id=$1', [groupId]);
+      await db.query('DELETE FROM groups WHERE id=$1', [groupId]);
+      continue;
+    }
+    await db.query('UPDATE groups SET creator_id=$1 WHERE id=$2',
+      [successorId, groupId]);
+    await db.query(
+      `UPDATE group_members SET role='admin'
+       WHERE group_id=$1 AND user_id=$2`,
+      [groupId, successorId]);
+  }
+}
+
 // ── Groups: remove member (admin) ────────────────────────────────
 app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
   if (req.user.isTeen)
@@ -6747,8 +8310,20 @@ app.delete('/api/groups/:id/members/:userId', auth, async (req, res) => {
       `SELECT 1 FROM group_members WHERE group_id=$1 AND user_id=$2 AND role='admin'`,
       [req.params.id, req.user.id]);
     if (!isAdmin.rows.length) return res.status(403).json({ error: 'אין הרשאה' });
-    await pool.query(
-      'DELETE FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.params.userId]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await transferOwnedGroups(client, req.params.userId, req.params.id);
+      await client.query(
+        'DELETE FROM group_members WHERE group_id=$1 AND user_id=$2',
+        [req.params.id, req.params.userId]);
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -6807,6 +8382,27 @@ app.post('/api/groups/:id/invite-message', auth, async (req, res) => {
 });
 
 // ── Groups: accept pending invite (join) ──────────────────────────
+app.get('/api/groups/:id/invitation-filter', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT COALESCE(g.content_filter, creator.content_filter) AS group_filter,
+              u.content_filter AS my_filter
+       FROM group_members gm
+       JOIN groups g ON g.id=gm.group_id
+       LEFT JOIN users creator ON creator.id=g.creator_id
+       JOIN users u ON u.id=gm.user_id
+       WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='pending'`,
+      [req.params.id, req.user.id]);
+    if (!result.rows.length)
+      return res.status(404).json({ error: 'לא קיימת הזמנה פעילה לקבוצה' });
+    res.json({
+      groupFilter: normalizeContentFilter(result.rows[0].group_filter),
+      myFilter: { ...NEW_ACCOUNT_CONTENT_FILTER },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/groups/:id/join', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
@@ -6815,8 +8411,9 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
 
     // Get pending_since timestamp before updating
     const pendingRow = await pool.query(
-      `SELECT status, pending_since FROM group_members
-       WHERE group_id=$1 AND user_id=$2`, [req.params.id, req.user.id]);
+      `SELECT gm.status, gm.pending_since, u.content_filter
+       FROM group_members gm JOIN users u ON u.id=gm.user_id
+       WHERE gm.group_id=$1 AND gm.user_id=$2`, [req.params.id, req.user.id]);
 
     const wasPending = pendingRow.rows[0]?.status === 'pending';
     const pendingSince = pendingRow.rows[0]?.pending_since || null;
@@ -6827,11 +8424,13 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
       return res.status(403).json({ error: 'לא קיימת הזמנה פעילה לקבוצה' });
     }
 
+    const personalFilter = normalizeContentFilter(
+      req.body?.filter, NEW_ACCOUNT_CONTENT_FILTER);
     // Only an existing invitation can become an active membership.
     await pool.query(
-      `UPDATE group_members SET status='member'
+      `UPDATE group_members SET status='member', filter_override=$3
        WHERE group_id=$1 AND user_id=$2 AND status='pending'`,
-      [req.params.id, req.user.id]);
+      [req.params.id, req.user.id, JSON.stringify(personalFilter)]);
 
     // Fetch missed messages since pending_since
     let missedMessages = [];
@@ -6841,16 +8440,19 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
                 m.education_form_id, education_response.response_status AS education_response_status,
                 m.reply_to_id, m.created_at,
                 u.name AS sender_name,
-                r.body AS reply_body
+                r.body AS reply_body,
+                sf.moderation_details->'classification' AS image_classification
          FROM messages m
          JOIN users u ON m.sender_id = u.id
          LEFT JOIN messages r ON m.reply_to_id = r.id
+         LEFT JOIN stored_files sf ON sf.public_url=m.file_url
          LEFT JOIN education_form_responses education_response
            ON education_response.form_id=m.education_form_id AND education_response.user_id=$3
          WHERE m.group_id = $1 AND m.deleted_for_everyone = FALSE
            AND m.created_at >= $2
          ORDER BY m.created_at ASC`, [req.params.id, new Date(pendingSince), req.user.id]);
-      missedMessages = missedRes.rows;
+      missedMessages = missedRes.rows.filter(row => contentAllowedByFilter(
+        personalFilter, row.type, row.image_classification));
     }
 
     // Emit group:member_joined to the group room
@@ -7004,12 +8606,40 @@ app.post('/api/groups/:id/invite-sms', auth, inviteRateLimit, async (req, res) =
 
 // ── Groups: leave ─────────────────────────────────────────────────
 app.delete('/api/groups/:id/leave', auth, async (req, res) => {
+  let client;
   try {
     const pool = await getPool();
-    await pool.query('DELETE FROM group_members WHERE group_id=$1 AND user_id=$2', [req.params.id, req.user.id]);
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const membership = await client.query(
+      `SELECT g.name FROM group_members gm
+       JOIN groups g ON g.id=gm.group_id
+       WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'
+       FOR UPDATE`, [req.params.id, req.user.id]);
+    if (!membership.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'אינך חבר פעיל בקבוצה' });
+    }
+    await transferOwnedGroups(client, req.user.id, req.params.id);
+    await client.query(
+      'DELETE FROM group_members WHERE group_id=$1 AND user_id=$2',
+      [req.params.id, req.user.id]);
+    await client.query('COMMIT');
+    const io = req.app.get('io');
+    const sid = onlineUsers.get(req.user.id);
+    if (sid) io.to(sid).emit('group:deleted', {
+      groupId: req.params.id,
+      groupName: membership.rows[0].name,
+      left: true,
+    });
     logActivity(req.user.id, 'leave_group', { groupId: req.params.id }, req.ip);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally {
+    client?.release();
+  }
 });
 
 // ── Groups: delete group permanently (admin only) ────────────────
@@ -7031,15 +8661,24 @@ app.delete('/api/groups/:id', auth, async (req, res) => {
 
     const members = await client.query(
       'SELECT user_id FROM group_members WHERE group_id=$1', [groupId]);
+    const storedFiles = await client.query(
+      `SELECT public_url FROM stored_files
+       WHERE context_type='group' AND context_id=$1`, [groupId]);
     await client.query('BEGIN');
     await client.query(
       `DELETE FROM message_status WHERE message_id IN
        (SELECT id FROM messages WHERE group_id=$1)`, [groupId]);
     await client.query('DELETE FROM messages WHERE group_id=$1', [groupId]);
     await client.query('DELETE FROM pending_scans WHERE group_id=$1', [groupId]);
+    await client.query(
+      `DELETE FROM stored_files
+       WHERE context_type='group' AND context_id=$1`, [groupId]);
     await client.query('DELETE FROM group_members WHERE group_id=$1', [groupId]);
     await client.query('DELETE FROM groups WHERE id=$1', [groupId]);
     await client.query('COMMIT');
+
+    await Promise.all(storedFiles.rows.map(({ public_url }) =>
+      deleteStoredFile(public_url)));
 
     for (const { user_id } of members.rows) {
       const sid = onlineUsers.get(user_id);
@@ -7816,8 +9455,8 @@ app.delete('/api/account', auth, async (req, res) => {
     await client.query('DELETE FROM fcm_tokens WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM password_reset_tokens WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM email_verification_tokens WHERE user_id=$1', [uid]);
+    await transferOwnedGroups(client, uid);
     await client.query('DELETE FROM group_members WHERE user_id=$1', [uid]);
-    await client.query('UPDATE groups SET creator_id=NULL WHERE creator_id=$1', [uid]);
     await client.query('DELETE FROM external_group_invites WHERE invited_by=$1', [uid]);
     await client.query('UPDATE external_group_invites SET claimed_by=NULL WHERE claimed_by=$1', [uid]);
     await client.query('DELETE FROM app_invites WHERE invited_by=$1 OR claimed_by=$1', [uid]);
@@ -7887,8 +9526,8 @@ app.delete('/api/account/data', auth, async (req, res) => {
     await client.query('DELETE FROM listing_images WHERE listing_id IN (SELECT id FROM listings WHERE user_id=$1)', [uid]);
     await client.query('DELETE FROM listings WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM fcm_tokens WHERE user_id=$1', [uid]);
+    await transferOwnedGroups(client, uid);
     await client.query('DELETE FROM group_members WHERE user_id=$1', [uid]);
-    await client.query('UPDATE groups SET creator_id=NULL WHERE creator_id=$1', [uid]);
     await client.query('DELETE FROM external_group_invites WHERE invited_by=$1', [uid]);
     await client.query('UPDATE external_group_invites SET claimed_by=NULL WHERE claimed_by=$1', [uid]);
     await client.query('DELETE FROM app_invites WHERE invited_by=$1 OR claimed_by=$1', [uid]);
@@ -7985,8 +9624,8 @@ app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
       await run(`DELETE FROM listing_views WHERE user_id=$1`);
       await run(`DELETE FROM password_reset_tokens WHERE user_id=$1`);
       await run(`DELETE FROM email_verification_tokens WHERE user_id=$1`);
+      await transferOwnedGroups(pool, uid);
       await run(`DELETE FROM group_members WHERE user_id=$1`);
-      await run(`UPDATE groups SET creator_id=NULL WHERE creator_id=$1`);
       await run(`DELETE FROM external_group_invites WHERE invited_by=$1`);
       await run(`UPDATE external_group_invites SET claimed_by=NULL WHERE claimed_by=$1`);
       await run(`DELETE FROM app_invites WHERE invited_by=$1 OR claimed_by=$1`);
@@ -8033,12 +9672,27 @@ app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
 
 // ── Admin: Scan results (blocked + pending) ──────────────────────
 app.get('/api/admin/scans', adminAuth, async (req, res) => {
-  const type   = ['pending','approved'].includes(req.query.type) ? req.query.type : 'blocked';
+  const type   = ['pending','approved','appeals'].includes(req.query.type) ? req.query.type : 'blocked';
   const limit  = Math.min(parseInt(req.query.limit)  || 100, 500);
   const offset = parseInt(req.query.offset) || 0;
   try {
     const pool = await getPool();
-    if (type === 'pending') {
+    if (type === 'appeals') {
+      const result = await pool.query(`
+        SELECT mca.id,mca.created_at,mca.status,mca.prior_classification,
+               sf.original_name AS file_name,sf.public_url AS file_url,
+               sf.file_type,sf.moderation_details->'classification' AS current_classification,
+               u.name AS sender_name,u.email AS sender_email
+        FROM media_classification_appeals mca
+        JOIN stored_files sf ON sf.id=mca.stored_file_id
+        JOIN users u ON u.id=mca.user_id
+        WHERE mca.status='pending'
+        ORDER BY mca.created_at ASC
+        OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY`);
+      const cnt = await pool.query(`SELECT COUNT(*)::int AS n
+        FROM media_classification_appeals WHERE status='pending'`);
+      res.json({ rows: result.rows, total: cnt.rows[0].n });
+    } else if (type === 'pending') {
       const result = await pool.query(`
         SELECT ps.id, ps.file_name, ps.file_type, ps.file_url,
                ps.retry_count, ps.created_at, ps.last_retry,
@@ -8104,6 +9758,59 @@ app.get('/api/admin/scans', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.patch('/api/admin/classification-appeals/:id', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit')
+    return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const category = String(req.body?.category || '');
+  const allowed = new Set(['men','women','children','nonHumanImages','people']);
+  if (!allowed.has(category)) return res.status(400).json({ error: 'הסיווג אינו תקין' });
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT mca.id,mca.user_id,mca.stored_file_id,sf.original_name
+       FROM media_classification_appeals mca
+       JOIN stored_files sf ON sf.id=mca.stored_file_id
+       WHERE mca.id=$1 AND mca.status='pending' FOR UPDATE`, [req.params.id]);
+    if (!found.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'הערעור אינו ממתין לבדיקה' });
+    }
+    const appeal = found.rows[0];
+    const classification = { category, detectedCategories: [category],
+      uncertain: false, source: 'human_review', reviewedAt: new Date().toISOString() };
+    await client.query(
+      `UPDATE stored_files SET moderation_details=jsonb_set(
+         COALESCE(moderation_details,'{}'::jsonb),'{classification}',$1::jsonb,TRUE)
+       WHERE id=$2`, [JSON.stringify(classification), appeal.stored_file_id]);
+    await client.query(
+      `UPDATE media_classification_appeals SET status='resolved',reviewed_by=$1,
+         reviewer_note=$2,reviewed_at=now() WHERE id=$3`,
+      [req.adminId || null, `הסיווג עודכן ל-${category}`, appeal.id]);
+    const labels = { men: 'גברים', women: 'נשים', children: 'ילדים',
+      nonHumanImages: 'ללא בני אדם', people: 'אנשים' };
+    const notice = `הבדיקה האנושית הסתיימה. הסיווג של „${appeal.original_name}” עודכן ל־${labels[category]}.`;
+    const message = await client.query(
+      `INSERT INTO messages(sender_id,recipient_id,body,type)
+       VALUES($1,$2,$3,'text') RETURNING id,created_at`,
+      [SYSTEM_USER_ID, appeal.user_id, notice]);
+    await client.query('COMMIT');
+    relay(appeal.user_id, 'chat:message', {
+      id: message.rows[0].id, fromUserId: SYSTEM_USER_ID,
+      fromName: SYSTEM_USER_NAME, text: notice, fileType: 'text',
+      createdAt: message.rows[0].created_at,
+    });
+    sendPush(appeal.user_id, SYSTEM_USER_NAME, notice,
+      { type: 'chat', fromUserId: SYSTEM_USER_ID });
+    res.json({ ok: true, classification });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('resolve classification appeal:', error.message);
+    res.status(500).json({ error: 'עדכון הערעור נכשל' });
+  } finally { client.release(); }
+});
+
 app.delete('/api/admin/scans/pending/:id', adminAuth, async (req, res) => {
   if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
   try {
@@ -8142,6 +9849,54 @@ app.get('/api/admin/files', adminAuth, async (req, res) => {
     res.json({ rows: rows.rows, total: count.rows[0].n,
       totalBytes: Number(count.rows[0].bytes), permission: req.adminPerm });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Admin: read-only files from the configured Google Drive folder ──
+app.get('/api/admin/drive/status', adminAuth, (_req, res) => {
+  const folderId = configuredFolderId();
+  res.json({
+    configured: googleDriveConfigured(),
+    mode: 'read-only',
+    folderId,
+    folderUrl: `https://drive.google.com/drive/folders/${folderId}`,
+  });
+});
+
+app.get('/api/admin/drive/files', adminAuth, async (_req, res) => {
+  try {
+    const { folder, files } = await listDriveFiles();
+    res.json({
+      folderId: configuredFolderId(),
+      folderName: folder.name,
+      mode: 'read-only',
+      files,
+    });
+  } catch (e) {
+    console.error('Google Drive list:', e.message);
+    const status = e.status === 401 || e.status === 403 ? 502
+      : e.status === 404 ? 404 : 500;
+    res.status(status).json({ error: 'לא ניתן לקרוא את תיקיית Google Drive' });
+  }
+});
+
+app.get('/api/admin/drive/files/:fileId/download', adminAuth, async (req, res) => {
+  try {
+    const { metadata, stream } = await getDriveFile(req.params.fileId);
+    res.setHeader('Content-Type', metadata.mimeType || 'application/octet-stream');
+    if (metadata.size) res.setHeader('Content-Length', metadata.size);
+    res.setHeader('Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(metadata.name || 'download')}`);
+    stream.on('error', error => {
+      console.error('Google Drive download stream:', error.message);
+      if (!res.headersSent) res.status(502).json({ error: 'הורדת הקובץ נכשלה' });
+      else res.destroy(error);
+    });
+    stream.pipe(res);
+  } catch (e) {
+    console.error('Google Drive download:', e.message);
+    const status = [400, 403, 404, 415].includes(e.status) ? e.status : 502;
+    res.status(status).json({ error: e.message || 'הורדת הקובץ נכשלה' });
+  }
 });
 
 // ── Admin: create group + add members directly ───────────────────
@@ -8793,6 +10548,11 @@ async function retryPendingScans() {
             return saved.rows[0];
           });
           outcomePersisted = true;
+          const deliveryPlan = await buildGroupDeliveryPlan(
+            pool, row.group_id, row.user_id, row.file_type,
+            scanResult.classification || null);
+          await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
+            [JSON.stringify(deliveryPlan.summary), msg.id]);
           const payload = {
             id: msg.id, fromUserId: row.user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
@@ -8840,24 +10600,19 @@ async function retryPendingScans() {
             replyToId: null,
             clientMessageId: null,
             createdAt: msg.created_at,
+            classification: scanResult.classification || null,
+            deliverySummary: deliveryPlan.summary,
           };
-          const room = `group:${row.group_id}`;
-          io.to(room).emit('group:message', payload);
           const senderSid = onlineUsers.get(row.user_id);
-          const senderSocket = senderSid ? io.sockets.sockets.get(senderSid) : null;
-          if (senderSid && !senderSocket?.rooms.has(room))
-            io.to(senderSid).emit('group:message', payload);
-
-          const allMembers = await pool.query(
-            `SELECT user_id FROM group_members
-             WHERE group_id=$1 AND status='member'`, [row.group_id]);
-          for (const { user_id } of allMembers.rows) {
-            if (user_id !== row.user_id) {
-              sendPush(user_id,
+          if (senderSid) io.to(senderSid).emit('group:message', payload);
+          const recipientPayload = { ...payload };
+          delete recipientPayload.deliverySummary;
+          for (const recipient of deliveryPlan.delivered) {
+              relay(recipient.id, 'group:message', recipientPayload);
+              sendPush(recipient.id,
                 `${pendingGroup.group_name} • ${pendingGroup.sender_name}`,
                 `📎 ${row.file_name}`,
                 { type: 'group', groupId: row.group_id });
-            }
           }
           logActivity(row.user_id, 'send_group_file_delayed', {
             groupId: row.group_id, fileName: row.file_name,
@@ -9051,12 +10806,250 @@ function scheduleGovernmentLocalitiesSync() {
   }, delay);
 }
 
+const AUTOMATIC_BACKUP_CONCURRENCY = 4;
+
+async function runAutomaticBackupWorker(workerIndex) {
+  let pool;
+  let lockClient;
+  let lockHeld = false;
+  let transactionOpen = false;
+  let claimed = null;
+  let remoteDataId = null;
+  let remoteManifestId = null;
+  let refreshToken = null;
+  try {
+    pool = await getPool();
+    lockClient = await pool.connect();
+    const lockKey = 7310426 + workerIndex;
+    const lock = await lockClient.query('SELECT pg_try_advisory_lock($1) AS locked', [lockKey]);
+    lockHeld = lock.rows[0]?.locked === true;
+    if (!lockHeld) return;
+    await lockClient.query('BEGIN');
+    transactionOpen = true;
+    const candidate = await lockClient.query(
+      `SELECT sf.id,sf.user_id,sf.storage_path,sf.file_size,sf.mime_type,sf.content_sha256,
+              s.encrypted_data_key,s.data_key_version,c.encrypted_refresh_token,
+              COALESCE(mbi.attempt_count,0)::int AS attempt_count
+       FROM stored_files sf
+       JOIN user_backup_settings s ON s.user_id=sf.user_id
+       JOIN cloud_backup_accounts c ON c.user_id=sf.user_id
+       LEFT JOIN media_backup_items mbi
+         ON mbi.stored_file_id=sf.id AND mbi.provider='google_drive'
+       WHERE s.enabled=TRUE AND s.encrypted_data_key IS NOT NULL
+         AND c.provider='google_drive' AND c.status='connected'
+         AND sf.moderation_status='approved'
+         AND (mbi.id IS NULL OR
+           (mbi.status='failed' AND mbi.attempt_count<5
+             AND mbi.updated_at < now()-INTERVAL '10 minutes') OR
+           (mbi.status='uploading' AND mbi.updated_at < now()-INTERVAL '30 minutes'))
+       ORDER BY
+         (SELECT MAX(done.verified_at) FROM media_backup_items done
+          WHERE done.user_id=sf.user_id AND done.provider='google_drive'
+            AND done.status='verified') ASC NULLS FIRST,
+         sf.created_at ASC
+       LIMIT 1 FOR UPDATE OF sf SKIP LOCKED`);
+    if (!candidate.rows.length) {
+      await lockClient.query('ROLLBACK');
+      transactionOpen = false;
+      return;
+    }
+    claimed = candidate.rows[0];
+    const absolutePath = path.resolve(UPLOAD_ROOT, claimed.storage_path);
+    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+      throw new Error('Invalid stored file path');
+    const plain = await fs.readFile(absolutePath);
+    const plainHash = crypto.createHash('sha256').update(plain).digest('hex');
+    if (claimed.content_sha256 && plainHash !== claimed.content_sha256)
+      throw new Error('Stored file checksum mismatch');
+    // Legacy media predating content hashing becomes backup-eligible here. The
+    // advisory lock keeps this hash-and-claim transition single-writer.
+    if (!claimed.content_sha256) {
+      await lockClient.query(
+        `UPDATE stored_files SET content_sha256=$1 WHERE id=$2 AND content_sha256 IS NULL`,
+        [plainHash, claimed.id]);
+      claimed.content_sha256 = plainHash;
+    }
+    await lockClient.query(
+      `INSERT INTO media_backup_items
+         (user_id,stored_file_id,provider,status,plaintext_sha256,attempt_count,last_error)
+       VALUES($1,$2,'google_drive','uploading',$3,1,NULL)
+       ON CONFLICT(stored_file_id,provider) DO UPDATE SET status='uploading',
+         attempt_count=media_backup_items.attempt_count+1,last_error=NULL,updated_at=now()`,
+      [claimed.user_id, claimed.id, plainHash]);
+    await lockClient.query('COMMIT');
+    transactionOpen = false;
+    const backupId = crypto.randomUUID();
+    const associatedData = `${claimed.user_id}/${claimed.id}/server-v1`;
+    const key = unwrapVaultKey(claimed.encrypted_data_key, claimed.user_id);
+    const envelope = encryptBackupBuffer(plain, key, associatedData);
+    const encryptedHash = crypto.createHash('sha256')
+      .update(envelope.ciphertext).digest('hex');
+    refreshToken = personalDrive.decryptRefreshToken(
+      claimed.encrypted_refresh_token, claimed.user_id);
+    const uploaded = await personalDrive.uploadAppDataFile(refreshToken,
+      `${backupId}.bsv1`, envelope.ciphertext, 'application/octet-stream',
+      { kind: 'media', version: '1', backupId, keySource: 'server_vault' });
+    remoteDataId = uploaded.id;
+    const manifest = { version: 1, backupId, storedFileId: claimed.id,
+      byteLength: plain.length, mimeType: claimed.mime_type || 'application/octet-stream',
+      plaintextSha256: plainHash, encryptedSha256: encryptedHash,
+      remoteFileId: remoteDataId, encryption: { algorithm: envelope.algorithm,
+        nonce: envelope.nonce, tag: envelope.tag, associatedData,
+        keySource: 'server_vault', keyVersion: claimed.data_key_version || 1 },
+      createdAt: new Date().toISOString() };
+    const manifestUpload = await personalDrive.uploadAppDataFile(refreshToken,
+      `${backupId}.manifest.json`, Buffer.from(JSON.stringify(manifest)), 'application/json',
+      { kind: 'manifest', version: '1', backupId, keySource: 'server_vault' });
+    remoteManifestId = manifestUpload.id;
+    await pool.query(
+      `UPDATE media_backup_items SET status='verified',remote_file_id=$1,
+         plaintext_sha256=$2,encrypted_sha256=$3,encryption_metadata=$4,
+         verified_at=now(),last_error=NULL,updated_at=now()
+       WHERE stored_file_id=$5 AND provider='google_drive'`,
+      [remoteDataId, plainHash, encryptedHash,
+       JSON.stringify({ ...manifest.encryption, manifestRemoteId: remoteManifestId, backupId }),
+       claimed.id]);
+    logActivity(claimed.user_id, 'automatic_encrypted_backup',
+      { storedFileId: claimed.id, bytes: plain.length }, null);
+  } catch (e) {
+    console.error('automatic backup queue:', e.message);
+    if (transactionOpen && lockClient)
+      await lockClient.query('ROLLBACK').catch(() => {});
+    if (claimed && pool) await pool.query(
+      `UPDATE media_backup_items SET status='failed',last_error=$2,updated_at=now()
+       WHERE stored_file_id=$1 AND provider='google_drive'`,
+      [claimed.id, String(e.message).slice(0, 500)]).catch(() => {});
+    if (refreshToken) {
+      for (const remoteId of [remoteDataId, remoteManifestId])
+        if (remoteId) await personalDrive.deleteAppDataFile(refreshToken, remoteId).catch(() => {});
+    }
+  } finally {
+    if (lockHeld && lockClient)
+      await lockClient.query('SELECT pg_advisory_unlock($1)', [7310426 + workerIndex]).catch(() => {});
+    if (lockClient) lockClient.release();
+  }
+}
+
+async function runAutomaticRestoreQueue() {
+  if (runAutomaticRestoreQueue.running) return;
+  runAutomaticRestoreQueue.running = true;
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT mbi.id,mbi.user_id,mbi.stored_file_id,mbi.remote_file_id,
+              mbi.plaintext_sha256,mbi.encrypted_sha256,mbi.encryption_metadata,
+              sf.file_size,s.encrypted_data_key,c.encrypted_refresh_token
+       FROM media_backup_items mbi
+       JOIN stored_files sf ON sf.id=mbi.stored_file_id
+       JOIN user_backup_settings s ON s.user_id=mbi.user_id AND s.enabled=TRUE
+       JOIN cloud_backup_accounts c ON c.user_id=mbi.user_id AND c.status='connected'
+       WHERE mbi.status='verified' AND mbi.restore_verified_at IS NULL
+         AND mbi.encryption_metadata->>'keySource'='server_vault'
+       ORDER BY mbi.verified_at ASC LIMIT 1`);
+    if (!result.rows.length) return;
+    const row = result.rows[0];
+    const metadata = row.encryption_metadata;
+    const refreshToken = personalDrive.decryptRefreshToken(
+      row.encrypted_refresh_token, row.user_id);
+    const [encrypted, manifestBytes] = await Promise.all([
+      personalDrive.downloadAppDataFile(refreshToken, row.remote_file_id,
+        Number(row.file_size) + 1024),
+      personalDrive.downloadAppDataFile(refreshToken, metadata.manifestRemoteId, 1024 * 1024),
+    ]);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    const encryptedHash = crypto.createHash('sha256').update(encrypted).digest('hex');
+    if (encryptedHash !== row.encrypted_sha256 ||
+        manifest.encryptedSha256 !== row.encrypted_sha256 ||
+        manifest.plaintextSha256 !== row.plaintext_sha256)
+      throw new Error('Automatic restore manifest or checksum mismatch');
+    const key = unwrapVaultKey(row.encrypted_data_key, row.user_id);
+    const restored = decryptBackupBuffer({ version: 1,
+      algorithm: manifest.encryption.algorithm, nonce: manifest.encryption.nonce,
+      tag: manifest.encryption.tag, ciphertext: encrypted }, key,
+    manifest.encryption.associatedData);
+    const restoredHash = crypto.createHash('sha256').update(restored).digest('hex');
+    if (restoredHash !== row.plaintext_sha256)
+      throw new Error('Automatic restored plaintext checksum mismatch');
+    await pool.query(
+      `WITH verified AS (
+         UPDATE media_backup_items SET restore_verified_at=now(),updated_at=now()
+         WHERE id=$1 RETURNING stored_file_id
+       )
+       UPDATE stored_files sf SET release_scheduled_at=COALESCE(sf.release_scheduled_at,now())
+       FROM verified WHERE sf.id=verified.stored_file_id`, [row.id]);
+    logActivity(row.user_id, 'automatic_restore_verification',
+      { storedFileId: row.stored_file_id, bytes: restored.length }, null);
+    // A successful cloud round-trip is the release gate; no additional mode
+    // or grace timer is required.
+    await runSafeReleaseQueue();
+  } catch (e) {
+    console.error('automatic restore queue:', e.message);
+  } finally {
+    runAutomaticRestoreQueue.running = false;
+  }
+}
+runAutomaticRestoreQueue.running = false;
+
+async function runSafeReleaseQueue() {
+  if (runSafeReleaseQueue.running) return;
+  runSafeReleaseQueue.running = true;
+  try {
+    const pool = await getPool();
+    const due = await pool.query(
+      `SELECT sf.id,sf.storage_path,sf.user_id FROM stored_files sf
+       JOIN media_backup_items mbi ON mbi.stored_file_id=sf.id
+      JOIN user_backup_settings s ON s.user_id=sf.user_id
+       WHERE s.enabled=TRUE AND mbi.provider='google_drive'
+         AND mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
+         AND sf.released_at IS NULL
+         AND sf.release_scheduled_at IS NOT NULL
+         AND sf.release_scheduled_at <= now()-INTERVAL '48 hours'
+         AND NOT EXISTS (SELECT 1 FROM messages m
+                         WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
+         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)
+         AND NOT EXISTS (SELECT 1 FROM groups g WHERE g.profile_pic_url=sf.public_url)
+         AND NOT EXISTS (SELECT 1 FROM listings l WHERE l.image_url=sf.public_url)
+         AND NOT EXISTS (SELECT 1 FROM listing_images li WHERE li.url=sf.public_url)
+         AND NOT EXISTS (SELECT 1 FROM education_forms ef WHERE ef.file_url=sf.public_url)
+         AND NOT EXISTS (SELECT 1 FROM shared_gifs sg
+                         WHERE sg.stored_file_id=sf.id AND sg.status='active')
+       ORDER BY mbi.restore_verified_at LIMIT 10`);
+    for (const row of due.rows) {
+      const absolutePath = path.resolve(UPLOAD_ROOT, row.storage_path);
+      if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) continue;
+      await fs.unlink(absolutePath).catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      await pool.query(`UPDATE stored_files SET released_at=now() WHERE id=$1`, [row.id]);
+      logActivity(row.user_id, 'safe_local_media_release', { storedFileId: row.id }, null);
+    }
+  } catch (e) {
+    console.error('safe release queue:', e.message);
+  } finally {
+    runSafeReleaseQueue.running = false;
+  }
+}
+runSafeReleaseQueue.running = false;
+
+async function migrateMessageBodiesAtRest() {
+  const pool = await getPool();
+  for (const table of ['messages', 'message_requests']) {
+    const rows = await pool.query(
+      `SELECT id,body FROM ${table} WHERE body IS NOT NULL AND body NOT LIKE 'enc:v1:%'`);
+    for (const row of rows.rows)
+      await pool.query(`UPDATE ${table} SET body=$1 WHERE id=$2`, [row.body, row.id]);
+    if (rows.rows.length)
+      console.log(`[message-encryption] migrated ${rows.rows.length} rows in ${table}`);
+  }
+}
+
 const PORT = process.env.PORT || 3000;
 
 async function startServer() {
   await fs.mkdir(UPLOAD_ROOT, { recursive: true });
   await migrateDatabase();
   await initPendingTable();
+  await migrateMessageBodiesAtRest();
   const pool = await getPool();
   const localityCount = await pool.query(
     'SELECT COUNT(*)::int AS count FROM israel_localities WHERE active=TRUE');
@@ -9067,10 +11060,44 @@ async function startServer() {
   scheduleGovernmentLocalitiesSync();
   setTimeout(retryPendingScans, 1000); // process queued files after startup
   setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
+  const spawnBackupWorker = (workerIndex) => {
+    const child = fork(__filename, [], {
+      env: { ...process.env, BACKUP_WORKER_ONLY: '1', BACKUP_WORKER_INDEX: String(workerIndex) },
+      stdio: 'inherit',
+    });
+    child.once('exit', (code, signal) => {
+      console.error(`[backup-worker:${workerIndex}] exited code=${code} signal=${signal}; restarting`);
+      setTimeout(() => spawnBackupWorker(workerIndex), 3000);
+    });
+  };
+  for (let workerIndex = 0; workerIndex < AUTOMATIC_BACKUP_CONCURRENCY; workerIndex++)
+    spawnBackupWorker(workerIndex);
   httpServer.listen(PORT, '127.0.0.1', () => console.log(`Server running on port ${PORT}`));
 }
 
-startServer().catch((error) => {
+async function startBackupWorker() {
+  const workerIndex = Number.parseInt(process.env.BACKUP_WORKER_INDEX || '0', 10);
+  if (!Number.isInteger(workerIndex) || workerIndex < 0 ||
+      workerIndex >= AUTOMATIC_BACKUP_CONCURRENCY)
+    throw new Error('Invalid backup worker index');
+  await fs.mkdir(UPLOAD_ROOT, { recursive: true });
+  const backupTick = () => runAutomaticBackupWorker(workerIndex);
+  setTimeout(backupTick, 1000 + workerIndex * 500);
+  setInterval(backupTick, 10 * 1000);
+  if (workerIndex === 0) {
+    setTimeout(runAutomaticRestoreQueue, 3000);
+    setInterval(runAutomaticRestoreQueue, 10 * 1000);
+    setTimeout(runSafeReleaseQueue, 5000);
+    setInterval(runSafeReleaseQueue, 10 * 1000);
+    setTimeout(clearExpiredDriveMediaCache, 7000);
+    setInterval(clearExpiredDriveMediaCache, 60 * 60 * 1000);
+  }
+  console.log(`[backup-worker:${workerIndex}] ready`);
+}
+
+const entrypoint = process.env.BACKUP_WORKER_ONLY === '1'
+  ? startBackupWorker : startServer;
+entrypoint().catch((error) => {
   console.error('Startup failed:', error);
   process.exitCode = 1;
 });

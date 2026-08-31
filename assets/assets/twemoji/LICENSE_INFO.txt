@@ -1,0 +1,8 @@
+Twemoji repository: https://github.com/jdecked/twemoji
+Graphics license: CC BY 4.0
+Graphics license file in repository: LICENSE-GRAPHICS
+Code license: MIT
+Creative Commons deed: https://creativecommons.org/licenses/by/4.0/
+
+Recommended implementation note:
+Keep this file and ATTRIBUTION.txt in the project repository and expose attribution in Settings > About > Open source licenses / Legal.
