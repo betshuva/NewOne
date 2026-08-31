@@ -117,6 +117,16 @@ clearExpiredDriveMediaCache.running = false;
 const SCAN_BOT_ID = '00000000-0000-4000-8000-000000000001';
 const SCAN_BOT_EMAIL = 'scan@betshuva.system';
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002';
+const BUILTIN_STICKER_IDS = new Set([
+  'betshuva_guide_welcome', 'betshuva_guide_great',
+  'betshuva_guide_here', 'betshuva_guide_home',
+  'betshuva_guide_ready', 'betshuva_guide_on_the_way',
+  'betshuva_guide_hello', 'betshuva_guide_lantern',
+]);
+function normalizeBuiltinStickerId(value) {
+  const id = typeof value === 'string' ? value.trim() : '';
+  return BUILTIN_STICKER_IDS.has(id) ? id : null;
+}
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
 const SYSTEM_USER_NAME = 'אביאל – מדריך בתשובה';
 const SYSTEM_USER_PROFILE_PIC =
@@ -1001,7 +1011,7 @@ function imageAllowedByFilter(filter, classification) {
 
 function contentAllowedByFilter(filter, type, classification) {
   const normalized = normalizeContentFilter(filter);
-  if (type === 'text') return normalized.text;
+  if (type === 'text' || type === 'sticker') return normalized.text;
   if (type === 'document')
     return normalized.text &&
       (!(classification?.detectedCategories?.length > 0) ||
@@ -3579,17 +3589,24 @@ io.on('connection', async (socket) => {
     for (const { group_id } of grps.rows) socket.join(`group:${group_id}`);
   } catch (_) {}
 
-  socket.on('chat:message', async ({ toUserId, text, replyToId, fileUrl, fileName, fileType }) => {
+  socket.on('chat:message', async ({ toUserId, text, replyToId, fileUrl, fileName, fileType, stickerId }) => {
+    const requestedSticker = stickerId != null;
+    const normalizedStickerId = normalizeBuiltinStickerId(stickerId);
+    if (requestedSticker && !normalizedStickerId) {
+      socket.emit('message:rejected', { toUserId, reason: 'המדבקה אינה מוכרת' });
+      return;
+    }
+    if (normalizedStickerId) text = normalizedStickerId;
     if (!toUserId || (!text && !fileUrl)) return;
     if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
-    if (text && moderateChatText(text).blocked) {
+    if (!normalizedStickerId && text && moderateChatText(text).blocked) {
       recordBlockedChat(socket.user.id, 'private_socket', text, toUserId,
         socket.handshake.address);
       socket.emit('message:rejected', { toUserId,
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
       return;
     }
-    if (text) {
+    if (text && !normalizedStickerId) {
       try { await verifyMessageLinks(text); } catch (error) {
         console.warn('Blocked private link:', error.message);
         socket.emit('message:rejected', { toUserId, reason: LINK_BLOCKED_MESSAGE });
@@ -3624,6 +3641,7 @@ io.on('connection', async (socket) => {
         'SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [toUserId, socket.user.id]);
       if (blocked.rows.length) return;
       const msgType = (() => {
+        if (normalizedStickerId) return 'sticker';
         if (fileType && fileType !== 'text') return fileType;
         if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
         if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
@@ -3634,7 +3652,7 @@ io.on('connection', async (socket) => {
       const recipientPolicy = await getEffectiveRecipientFilter(
         pool, toUserId, socket.user.id);
       if (!contentAllowedByFilter(
-          recipientPolicy?.filter, msgType, classification)) {
+          recipientPolicy?.filter, msgType === 'sticker' ? 'text' : msgType, classification)) {
         socket.emit('message:rejected', { toUserId,
           reason: 'סוג התוכן חסום בהגדרות הנמען' });
         return;
@@ -3676,7 +3694,7 @@ io.on('connection', async (socket) => {
         socket.emit('message:request-pending', { toUserId });
         return;
       }
-      if (msgType === 'text' && !fileUrl) {
+      if ((msgType === 'text' || msgType === 'sticker') && !fileUrl) {
         const policy = await getEffectiveRecipientFilter(pool, toUserId, socket.user.id);
         if (policy && !policy.filter.text) {
           socket.emit('message:rejected', { toUserId, reason: 'הודעות טקסט חסומות בהגדרות הנמען' });
@@ -3705,7 +3723,7 @@ io.on('connection', async (socket) => {
       relay(toUserId, 'chat:message', {
         id: row.id, fromUserId: socket.user.id, fromName: socket.user.name,
         text, replyToId: replyToId || null, createdAt: row.created_at,
-        fileUrl, fileName, fileType,
+        fileUrl, fileName, fileType: msgType, stickerId: normalizedStickerId,
         classification: await getStoredImageClassification(pool, fileUrl),
       });
       // שליפת שם הנמען לרישום קריא בפעילות
@@ -3728,7 +3746,14 @@ io.on('connection', async (socket) => {
   });
 
   // ── Group messaging ──────────────────────────────────────────────
-  socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType, clientMessageId }) => {
+  socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType, clientMessageId, stickerId }) => {
+    const requestedSticker = stickerId != null;
+    const normalizedStickerId = normalizeBuiltinStickerId(stickerId);
+    if (requestedSticker && !normalizedStickerId) {
+      socket.emit('message:rejected', { groupId, clientMessageId, reason: 'המדבקה אינה מוכרת' });
+      return;
+    }
+    if (normalizedStickerId) text = normalizedStickerId;
     if ((!text && !fileUrl) || !groupId) return;
     if (socket.user.isTeen) {
       socket.emit('message:rejected', { groupId, clientMessageId,
@@ -3736,14 +3761,14 @@ io.on('connection', async (socket) => {
       return;
     }
     if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
-    if (text && moderateChatText(text).blocked) {
+    if (!normalizedStickerId && text && moderateChatText(text).blocked) {
       recordBlockedChat(socket.user.id, 'group_socket', text, groupId,
         socket.handshake.address);
       socket.emit('message:rejected', { groupId, clientMessageId,
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
       return;
     }
-    if (text) {
+    if (text && !normalizedStickerId) {
       try { await verifyMessageLinks(text); } catch (error) {
         console.warn('Blocked group link:', error.message);
         socket.emit('message:rejected', { groupId, clientMessageId,
@@ -3765,7 +3790,7 @@ io.on('connection', async (socket) => {
       if (!member) return;
       if (member.send_permission === 'admin' && member.role !== 'admin') return;
 
-      const msgType = fileType && fileType !== 'text'
+      const msgType = normalizedStickerId ? 'sticker' : fileType && fileType !== 'text'
         ? fileType
         : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) ? 'image'
           : fileUrl ? 'document' : 'text');
@@ -3773,7 +3798,8 @@ io.on('connection', async (socket) => {
       const classification = fileUrl
         ? await getStoredImageClassification(pool, fileUrl) : null;
       const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
-      if (!contentAllowedByFilter(effectiveGroupFilter, msgType, classification)) {
+      if (!contentAllowedByFilter(effectiveGroupFilter,
+          msgType === 'sticker' ? 'text' : msgType, classification)) {
         socket.emit('message:rejected', { groupId, clientMessageId,
           reason: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה' });
         return;
@@ -3802,7 +3828,7 @@ io.on('connection', async (socket) => {
         fromUserId: socket.user.id,
         fromName:   socket.user.name,
         text,
-        fileUrl, fileName, fileType: msgType,
+        fileUrl, fileName, fileType: msgType, stickerId: normalizedStickerId,
         classification,
         replyToId:  replyToId || null,
         clientMessageId: clientMessageId || null,
@@ -4776,18 +4802,24 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
 // יישמרו גם כש-socket לא מחובר (למשל כשפותחים צ'אט ממסך מודעה).
 app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   const senderId = req.user.id;
-  const { toUserId, text, replyToId, fileUrl, fileName, fileType, listingId } = req.body || {};
+  let { text } = req.body || {};
+  const { toUserId, replyToId, fileUrl, fileName, fileType, listingId, stickerId } = req.body || {};
+  const requestedSticker = stickerId != null;
+  const normalizedStickerId = normalizeBuiltinStickerId(stickerId);
+  if (requestedSticker && !normalizedStickerId)
+    return res.status(400).json({ error: 'המדבקה אינה מוכרת', code: 'INVALID_STICKER' });
+  if (normalizedStickerId) text = normalizedStickerId;
   if (!toUserId || (!text && !fileUrl)) {
     return res.status(400).json({ error: 'חסר נמען או תוכן' });
   }
-  if (text && moderateChatText(text).blocked) {
+  if (!normalizedStickerId && text && moderateChatText(text).blocked) {
     recordBlockedChat(senderId, 'private_http', text, toUserId, clientIp(req));
     return res.status(422).json({
       error: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
       code: 'CHAT_CONTENT_BLOCKED',
     });
   }
-  if (text) {
+  if (text && !normalizedStickerId) {
     try { await verifyMessageLinks(text); } catch (error) {
       console.warn('Blocked private HTTP link:', error.message);
       return res.status(422).json({ error: LINK_BLOCKED_MESSAGE, code: 'UNSAFE_LINK' });
@@ -4828,6 +4860,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
     if (blocked.rows.length) return res.status(403).json({ error: 'נחסמת על ידי הנמען' });
 
     const type = (() => {
+      if (normalizedStickerId) return 'sticker';
       if (fileType && fileType !== 'text') return fileType;
       if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
       if (fileUrl && fileName && /\.(pdf|docx?)$/i.test(fileName)) return 'document';
@@ -4837,7 +4870,8 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       ? await getStoredImageClassification(pool, fileUrl) : null;
     const recipientPolicy = await getEffectiveRecipientFilter(
       pool, toUserId, senderId);
-    if (!contentAllowedByFilter(recipientPolicy?.filter, type, classification))
+    if (!contentAllowedByFilter(recipientPolicy?.filter,
+        type === 'sticker' ? 'text' : type, classification))
       return res.status(403).json({
         error: 'סוג התוכן חסום בהגדרות הנמען',
         code: 'RECIPIENT_CONTENT_FILTERED',
@@ -4880,7 +4914,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       return res.json({ requestPending: true, id: requestRow.id });
     }
 
-    if (type === 'text' && !fileUrl) {
+    if ((type === 'text' || type === 'sticker') && !fileUrl) {
       const policy = await getEffectiveRecipientFilter(pool, toUserId, senderId);
       if (policy && !policy.filter.text)
         return res.status(403).json({ error: 'הודעות טקסט חסומות בהגדרות הנמען' });
@@ -4918,7 +4952,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       io.to(sid).emit('chat:message', {
         id: row.id, fromUserId: senderId, fromName: req.user.name,
         text, replyToId: replyToId || null, replyBody, createdAt: row.created_at,
-        fileUrl, fileName, fileType: type, classification,
+        fileUrl, fileName, fileType: type, stickerId: normalizedStickerId, classification,
       });
     }
 

@@ -1206,8 +1206,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.1';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.3.1.apk';
+const kVersion = '1.3.2';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.3.2.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -18481,8 +18481,10 @@ class _ChatScreenState extends State<ChatScreen> {
           fileName: map['file_name'] as String?,
         ) ??
         'text';
+    final sticker =
+        msgType == 'sticker' ? _avielStickerById(map['body']) : null;
     final isFile = (map['file_url'] != null) ||
-        (msgType != 'text' && msgType != 'group_invite');
+        (msgType != 'text' && msgType != 'group_invite' && sticker == null);
     return {
       'id': map['id'],
       'text': map['body'] ?? map['file_name'] ?? '',
@@ -18512,7 +18514,8 @@ class _ChatScreenState extends State<ChatScreen> {
           'text': map['reply_body'] ?? '',
         },
       'isFile': isFile,
-      'fileType': isFile ? msgType : null,
+      'fileType': sticker != null ? 'sticker' : (isFile ? msgType : null),
+      if (sticker != null) 'stickerId': sticker.id,
       'fileUrl': map['file_url'],
       'fileName': map['file_name'],
       'educationFormId': map['education_form_id'],
@@ -18551,8 +18554,11 @@ class _ChatScreenState extends State<ChatScreen> {
         fileUrl: fileUrl,
         fileName: fileName,
       );
-      final isFile =
-          fileUrl != null || (fileType != null && fileType != 'text');
+      final sticker = fileType == 'sticker'
+          ? _avielStickerById(data['stickerId'] ?? data['text'])
+          : null;
+      final isFile = fileUrl != null ||
+          (fileType != null && fileType != 'text' && sticker == null);
       final incoming = <String, dynamic>{
         'id': data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
         'text': data['text'] as String? ?? fileName ?? '',
@@ -18566,6 +18572,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'status': isIncoming ? 'received' : 'sent',
         'isFile': isFile,
         'fileType': fileType,
+        if (sticker != null) 'stickerId': sticker.id,
         'educationFormId': data['formId'],
         'educationResponseStatus': data['educationResponseStatus'],
         'fileUrl': fileUrl,
@@ -18783,10 +18790,11 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<void> _send() async {
-    final text = _msgCtrl.text.trim();
+  Future<void> _send({String? stickerId}) async {
+    final sticker = _avielStickerById(stickerId);
+    final text = sticker?.id ?? _msgCtrl.text.trim();
     if (text.isEmpty) return;
-    _msgHistory.record(text);
+    if (sticker == null) _msgHistory.record(text);
 
     // Edit mode
     if (_editingMsg != null) {
@@ -18834,6 +18842,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'time': _nowTime(),
         'createdAt': DateTime.now().toIso8601String(),
         'status': 'sent',
+        if (sticker != null) 'stickerId': sticker.id,
+        if (sticker != null) 'fileType': 'sticker',
         if (replySnapshot != null)
           'replyTo': Map<String, dynamic>.from(replySnapshot),
       });
@@ -18855,6 +18865,7 @@ class _ChatScreenState extends State<ChatScreen> {
           body: jsonEncode({
             'toUserId': widget.recipient['id'],
             'text': text,
+            if (sticker != null) 'stickerId': sticker.id,
             if (widget.listingId != null) 'listingId': widget.listingId,
             if (replySnapshot != null) 'replyToId': replySnapshot['id'],
           }),
@@ -19759,6 +19770,10 @@ class _ChatScreenState extends State<ChatScreen> {
       await _send();
       return;
     }
+    if (choice.startsWith(_avielStickerPrefix)) {
+      await _send(stickerId: choice.substring(_avielStickerPrefix.length));
+      return;
+    }
     final selection = _msgCtrl.selection;
     final start = selection.isValid ? selection.start : _msgCtrl.text.length;
     final end = selection.isValid ? selection.end : _msgCtrl.text.length;
@@ -20633,9 +20648,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 ? const Center(
                     child: CircularProgressIndicator(color: kPrimary))
                 : _messages.isEmpty
-                    ? const Center(
-                        child: Text('אין הודעות עדיין — שלח הודעה ראשונה!',
-                            style: TextStyle(color: kSubtext)))
+                    ? const _AvielEmptyChat(
+                        asset: 'assets/stickers/aviel-guide/guide_welcome.png',
+                        text: 'אין הודעות עדיין — שלח הודעה ראשונה!')
                     : ListView.builder(
                         controller: _scrollCtrl,
                         reverse: true,
@@ -22633,6 +22648,39 @@ class _MessageBubble extends StatelessWidget {
                 .replaceAll('betshuva://listing/$listingId', '')
                 .trim()
             : rawText;
+    final avielSticker = _avielStickerById(
+        message['stickerId'] ?? (fileType == 'sticker' ? rawText : null));
+    if (avielSticker != null) {
+      return Align(
+        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        child: GestureDetector(
+          onLongPress: onMessageOptions == null
+              ? null
+              : () => onMessageOptions!(message),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(
+              crossAxisAlignment:
+                  isMe ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+              children: [
+                Semantics(
+                  image: true,
+                  label: 'מדבקת אביאל: ${avielSticker.label}',
+                  child: Image.asset(avielSticker.asset,
+                      width: 190, height: 190, fit: BoxFit.contain),
+                ),
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(message['time'] as String? ?? '',
+                      style: const TextStyle(fontSize: 10, color: kSubtext)),
+                  const SizedBox(width: 3),
+                  _statusIcon(),
+                ]),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
 
     const textColor = kTextDark;
     const timeColor = kSubtext;
@@ -22978,8 +23026,77 @@ const _sharedGifUploadAction = '__shared_gif_upload__';
 const _personalStickerAction = '__personal_sticker__';
 const _sharedGifPrefix = '__shared_gif__:';
 const _stickerPrefix = '__sticker__:';
+const _avielStickerPrefix = '__aviel_sticker__:';
 const _originalExpressionPrefix = '__betshuva_expression__:';
 const _remoteExpressionPrefix = '__betshuva_remote_expression__:';
+const _avielGuideStickers = <({String id, String asset, String label})>[
+  (
+    id: 'betshuva_guide_welcome',
+    asset: 'assets/stickers/aviel-guide/guide_welcome.png',
+    label: 'ברוכים הבאים'
+  ),
+  (
+    id: 'betshuva_guide_great',
+    asset: 'assets/stickers/aviel-guide/guide_great.png',
+    label: 'כל הכבוד'
+  ),
+  (
+    id: 'betshuva_guide_here',
+    asset: 'assets/stickers/aviel-guide/guide_here.png',
+    label: 'אני כאן'
+  ),
+  (
+    id: 'betshuva_guide_home',
+    asset: 'assets/stickers/aviel-guide/guide_home.png',
+    label: 'בבית'
+  ),
+  (
+    id: 'betshuva_guide_ready',
+    asset: 'assets/stickers/aviel-guide/guide_ready.png',
+    label: 'יוצאים לדרך'
+  ),
+  (
+    id: 'betshuva_guide_on_the_way',
+    asset: 'assets/stickers/aviel-guide/guide_on_the_way.png',
+    label: 'בדרך'
+  ),
+  (
+    id: 'betshuva_guide_hello',
+    asset: 'assets/stickers/aviel-guide/guide_hello.png',
+    label: 'שלום'
+  ),
+  (
+    id: 'betshuva_guide_lantern',
+    asset: 'assets/stickers/aviel-guide/guide_lantern.png',
+    label: 'אור בדרך'
+  ),
+];
+
+({String id, String asset, String label})? _avielStickerById(dynamic value) {
+  final id = value?.toString();
+  for (final sticker in _avielGuideStickers) {
+    if (sticker.id == id) return sticker;
+  }
+  return null;
+}
+
+class _AvielEmptyChat extends StatelessWidget {
+  final String asset;
+  final String text;
+  const _AvielEmptyChat({required this.asset, required this.text});
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Image.asset(asset, width: 132, height: 132, fit: BoxFit.contain),
+          const SizedBox(height: 8),
+          Text(text,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: kSubtext)),
+        ]),
+      );
+}
+
 const _originalSmileAssets = <String>[
   'assets/expressions/items/expression-01.png',
   'assets/expressions/items/expression-06.png',
@@ -23614,7 +23731,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   Widget _buildRemoteExpressionPicker(List<Map<String, dynamic>> categories) {
     return SafeArea(
       child: DefaultTabController(
-        length: categories.length + 1,
+        length: categories.length + 2,
         child: SizedBox(
           height: MediaQuery.of(context).size.height * 0.68,
           child: Column(children: [
@@ -23636,6 +23753,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
               tabs: [
                 const Tab(
                     icon: Icon(Icons.emoji_emotions_outlined), text: 'אימוג׳י'),
+                const Tab(icon: Icon(Icons.light_mode_outlined), text: 'אביאל'),
                 ...categories.map((category) => Tab(
                       icon: Icon(_expressionCategoryIcon(
                           category['id']?.toString() ?? '')),
@@ -23647,6 +23765,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
               child: TabBarView(
                 children: [
                   _buildTwemojiPicker(),
+                  _buildAvielStickerPicker(),
                   ...categories.map((category) => _RemoteExpressionGrid(
                         items: (category['items'] as List? ?? const [])
                             .whereType<Map>()
@@ -23669,6 +23788,51 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
       ),
     );
   }
+
+  Widget _buildAvielStickerPicker() => GridView.builder(
+        padding: const EdgeInsets.all(12),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 4,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: .82,
+        ),
+        itemCount: _avielGuideStickers.length,
+        itemBuilder: (_, index) {
+          final sticker = _avielGuideStickers[index];
+          return Semantics(
+            button: true,
+            label: 'מדבקת אביאל: ${sticker.label}',
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () =>
+                  Navigator.pop(context, '$_avielStickerPrefix${sticker.id}'),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF3F8FC),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: kBorder),
+                ),
+                child: Column(children: [
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: Image.asset(sticker.asset, fit: BoxFit.contain),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 0, 4, 6),
+                    child: Text(sticker.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11)),
+                  ),
+                ]),
+              ),
+            ),
+          );
+        },
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -23759,6 +23923,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                 child: TabBarView(children: [
               _buildTwemojiPicker(),
               Column(children: [
+                SizedBox(height: 250, child: _buildAvielStickerPicker()),
                 Padding(
                   padding: const EdgeInsets.all(12),
                   child: SizedBox(
@@ -24701,6 +24866,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Map<String, dynamic> _mapMsg(dynamic m) {
     final map = m as Map<String, dynamic>;
     final isMe = map['sender_id'] == widget.me?['id'];
+    final sticker =
+        map['type'] == 'sticker' ? _avielStickerById(map['body']) : null;
     final isFile = map['file_url'] != null || map['file_name'] != null;
     return {
       'id': map['id'],
@@ -24717,6 +24884,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'fileType': _normalizeIncomingFileType(map['type'] as String?,
           fileUrl: map['file_url'] as String?,
           fileName: map['file_name'] as String?),
+      if (sticker != null) 'stickerId': sticker.id,
       'educationFormId': map['education_form_id'],
       'educationResponseStatus': map['education_response_status'],
       if (map['reply_to_id'] != null)
@@ -25386,6 +25554,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Map<String, dynamic> _normalize(dynamic m) {
     final map = m as Map<String, dynamic>;
     final isMe = map['sender_id'] == widget.me?['id'];
+    final sticker =
+        map['type'] == 'sticker' ? _avielStickerById(map['body']) : null;
     final isFile = map['file_url'] != null || map['file_name'] != null;
     return {
       'id': map['id'],
@@ -25409,6 +25579,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'fileType': _normalizeIncomingFileType(map['type'] as String?,
           fileUrl: map['file_url'] as String?,
           fileName: map['file_name'] as String?),
+      if (sticker != null) 'stickerId': sticker.id,
       'educationFormId': map['education_form_id'],
       'educationResponseStatus': map['education_response_status'],
       'educationFormStatus': map['education_form_status'],
@@ -25441,6 +25612,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final fileName = data['fileName'] as String?;
       final fileType = _normalizeIncomingFileType(data['fileType'] as String?,
           fileUrl: fileUrl, fileName: fileName);
+      final sticker = fileType == 'sticker'
+          ? _avielStickerById(data['stickerId'] ?? data['text'])
+          : null;
       final incoming = <String, dynamic>{
         'id': data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
         'senderId': data['fromUserId'],
@@ -25458,6 +25632,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'fileUrl': fileUrl,
         'fileName': fileName,
         'fileType': fileType,
+        if (sticker != null) 'stickerId': sticker.id,
         'educationFormId': data['formId'],
         'educationResponseStatus': data['educationResponseStatus'],
         if (data['classification'] != null)
@@ -25687,10 +25862,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     });
   }
 
-  Future<void> _send() async {
-    final text = _msgCtrl.text.trim();
+  Future<void> _send({String? stickerId}) async {
+    final sticker = _avielStickerById(stickerId);
+    final text = sticker?.id ?? _msgCtrl.text.trim();
     if (text.isEmpty) return;
-    _msgHistory.record(text);
+    if (sticker == null) _msgHistory.record(text);
 
     // Edit mode
     if (_editingMsg != null) {
@@ -25737,12 +25913,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'time': _nowTime(),
         'createdAt': DateTime.now().toIso8601String(),
         'isMe': true,
+        if (sticker != null) 'stickerId': sticker.id,
+        if (sticker != null) 'fileType': 'sticker',
       });
       _msgCtrl.clear();
     });
     widget.socket?.emit('group:message', {
       'groupId': _groupId,
       'text': text,
+      if (sticker != null) 'stickerId': sticker.id,
       'clientMessageId': clientMessageId,
     });
     _scrollToBottom();
@@ -25982,6 +26161,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (choice.startsWith(_stickerPrefix)) {
       _msgCtrl.text = choice.substring(_stickerPrefix.length);
       await _send();
+      return;
+    }
+    if (choice.startsWith(_avielStickerPrefix)) {
+      await _send(stickerId: choice.substring(_avielStickerPrefix.length));
       return;
     }
     final selection = _msgCtrl.selection;
@@ -27782,9 +27965,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 : _messages.isEmpty &&
                         !(_myStatus == 'member' &&
                             _acceptedFilterNotice != null)
-                    ? const Center(
-                        child: Text('אין הודעות עדיין',
-                            style: TextStyle(color: kSubtext)))
+                    ? const _AvielEmptyChat(
+                        asset: 'assets/stickers/aviel-guide/guide_lantern.png',
+                        text: 'אין הודעות עדיין — האירו את הדרך')
                     : ListView.builder(
                         controller: _scrollCtrl,
                         physics: const AlwaysScrollableScrollPhysics(),
@@ -27810,6 +27993,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             fileUrl: msg['fileUrl'] as String?,
                             fileName: msg['fileName'] as String?,
                           );
+                          final avielSticker = _avielStickerById(
+                              msg['stickerId'] ??
+                                  (uploadFileType == 'sticker'
+                                      ? groupText
+                                      : null));
                           final isPdfFile = msg['fileUrl'] != null &&
                               uploadFileType == 'document' &&
                               (((msg['fileName'] as String?) ?? '')
@@ -27993,7 +28181,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                       crossAxisAlignment:
                                           CrossAxisAlignment.end,
                                       children: [
-                                        if (msg['fileUrl'] != null &&
+                                        if (avielSticker != null)
+                                          Semantics(
+                                            image: true,
+                                            label:
+                                                'מדבקת אביאל: ${avielSticker.label}',
+                                            child: Image.asset(
+                                                avielSticker.asset,
+                                                width: 180,
+                                                height: 180,
+                                                fit: BoxFit.contain),
+                                          )
+                                        else if (msg['fileUrl'] != null &&
                                             _normalizeIncomingFileType(
                                                     msg['fileType'] as String?,
                                                     fileUrl: msg['fileUrl']
