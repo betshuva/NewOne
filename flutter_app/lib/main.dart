@@ -1206,8 +1206,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.0';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.3.0.apk';
+const kVersion = '1.3.1';
+const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.3.1.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
