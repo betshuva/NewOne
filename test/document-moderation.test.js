@@ -4,9 +4,18 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const ExcelJS = require('exceljs');
 const sharp = require('sharp');
-const { documentLimits, extractXlsx, mergedClassification, scanDocument,
-  scanVisuals } =
+const { documentLimits, extractXlsx, isPasswordProtectedDocumentError,
+  mergedClassification, scanDocument, scanVisuals } =
   require('../server/document-moderation');
+
+test('password-protected documents fail closed instead of retrying forever', () => {
+  assert.equal(isPasswordProtectedDocumentError(
+    new Error('No password given')), true);
+  assert.equal(isPasswordProtectedDocumentError(
+    new Error('File is encrypted')), true);
+  assert.equal(isPasswordProtectedDocumentError(
+    new Error('Temporary renderer unavailable')), false);
+});
 
 test('document limits reject invalid environment values', () => {
   const limits = documentLimits({
@@ -88,4 +97,31 @@ test('XLSX scans hidden sheets, formulas, notes, links and embedded images', asy
   assert.equal(result.blocked, false);
   assert.equal(imagesScanned, 1);
   assert.equal(result.documentVisualScan.total, 1);
+  assert.deepEqual(result.classification.documentVisualScan,
+    { scanned: 1, total: 1 });
+});
+
+test('document messages expose a visible classification summary', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'),
+    'utf8');
+  assert.match(source, /class _DocumentClassificationSummary/);
+  assert.match(source, /סיווג: \$classificationText\$scanText/);
+  assert.match(source,
+    /if \(isFile && fileType == 'document'\)[\s\S]{0,180}_DocumentClassificationSummary/);
+});
+
+test('pending documents cannot be previewed or downloaded before approval', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const client = fs.readFileSync(
+    path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
+  const server = fs.readFileSync(
+    path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
+  assert.match(client,
+    /class _DocumentModerationCard[\s\S]*?לא ניתן לפתוח או להוריד אותו לפני אישור/);
+  assert.match(client,
+    /uploadFileType == 'document'[\s\S]{0,180}uploadStatus == 'pending_scan'/);
+  assert.match(server,
+    /moderation_status === 'pending'[\s\S]{0,220}status\(423\)/);
 });

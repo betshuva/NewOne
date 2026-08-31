@@ -26,6 +26,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import 'package:pdfrx/pdfrx.dart';
 import 'package:video_player/video_player.dart';
 import 'file_download.dart';
 import 'hebrew_date.dart';
@@ -355,7 +356,7 @@ Future<void> _confirmAndOpenExternalLink(
             contentPadding: const EdgeInsets.fromLTRB(22, 12, 22, 8),
             title: Row(children: [
               ClipOval(
-                child: Image.asset('assets/guide/aviel-guide.png',
+                child: Image.asset('assets/guide/aviel-guide.jpg',
                     width: 64, height: 64, fit: BoxFit.cover),
               ),
               const SizedBox(width: 12),
@@ -585,6 +586,410 @@ Future<void> _downloadChatFile(
   }
 }
 
+void _openPdfInsideApp(BuildContext context, String fileUrl, String? fileName) {
+  Navigator.of(context).push(MaterialPageRoute(
+    builder: (_) => _InAppPdfScreen(
+      url: _absoluteMediaUrl(fileUrl),
+      fileName: fileName?.trim().isNotEmpty == true ? fileName! : 'מסמך PDF',
+    ),
+  ));
+}
+
+class _InAppPdfScreen extends StatefulWidget {
+  final String url;
+  final String fileName;
+
+  const _InAppPdfScreen({required this.url, required this.fileName});
+
+  @override
+  State<_InAppPdfScreen> createState() => _InAppPdfScreenState();
+}
+
+class _InAppPdfScreenState extends State<_InAppPdfScreen> {
+  final PdfViewerController _controller = PdfViewerController();
+  int? _page;
+  int? _pages;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+            if (_page != null)
+              Text('עמוד $_page${_pages == null ? '' : ' מתוך $_pages'}',
+                  style: const TextStyle(fontSize: 11, color: Colors.white70)),
+          ],
+        ),
+        actions: [
+          IconButton(
+            tooltip: 'הקטנה',
+            onPressed: () =>
+                _controller.isReady ? _controller.zoomDown() : null,
+            icon: const Icon(Icons.zoom_out),
+          ),
+          IconButton(
+            tooltip: 'הגדלה',
+            onPressed: () => _controller.isReady ? _controller.zoomUp() : null,
+            icon: const Icon(Icons.zoom_in),
+          ),
+          IconButton(
+            tooltip: 'הורדה',
+            onPressed: () =>
+                _downloadChatFile(context, widget.url, widget.fileName),
+            icon: const Icon(Icons.download_outlined),
+          ),
+        ],
+      ),
+      body: PdfViewer.uri(
+        Uri.parse(widget.url),
+        controller: _controller,
+        params: PdfViewerParams(
+          backgroundColor: kBg,
+          margin: 10,
+          limitRenderingCache: true,
+          maxImageBytesCachedOnMemory: 32 * 1024 * 1024,
+          onViewerReady: (document, controller) {
+            if (mounted)
+              setState(() {
+                _pages = document.pages.length;
+                _page = controller.pageNumber ?? 1;
+              });
+          },
+          onPageChanged: (pageNumber) {
+            if (mounted) setState(() => _page = pageNumber);
+          },
+          errorBannerBuilder: (context, error, stackTrace, documentRef) =>
+              Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.picture_as_pdf_outlined,
+                    size: 52, color: Colors.red),
+                const SizedBox(height: 12),
+                const Text('לא ניתן להציג את ה־PDF בתוך האפליקציה'),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      _downloadChatFile(context, widget.url, widget.fileName),
+                  icon: const Icon(Icons.download_outlined),
+                  label: const Text('הורדת הקובץ'),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PdfFirstPagePreview extends StatelessWidget {
+  final String url;
+
+  const _PdfFirstPagePreview({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 220,
+      height: 150,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: kBorder),
+      ),
+      child: PdfDocumentViewBuilder.uri(
+        Uri.parse(_absoluteMediaUrl(url)),
+        loadingBuilder: (_) =>
+            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+        errorBuilder: (_, __, ___) => const Center(
+          child:
+              Icon(Icons.picture_as_pdf_outlined, size: 46, color: Colors.red),
+        ),
+        builder: (_, document) => document == null
+            ? const SizedBox.shrink()
+            : PdfPageView(
+                document: document,
+                pageNumber: 1,
+                alignment: Alignment.center,
+              ),
+      ),
+    );
+  }
+}
+
+bool _isOfficePreviewFile(String? fileName) {
+  final lower = fileName?.toLowerCase() ?? '';
+  return lower.endsWith('.docx') || lower.endsWith('.xlsx');
+}
+
+void _openOfficeInsideApp(
+    BuildContext context, String fileUrl, String? fileName, String token) {
+  Navigator.of(context).push(MaterialPageRoute(
+    builder: (_) => _OfficeDocumentScreen(
+      fileUrl: fileUrl,
+      fileName: fileName?.trim().isNotEmpty == true ? fileName! : 'מסמך',
+      token: token,
+    ),
+  ));
+}
+
+Future<Map<String, dynamic>> _loadOfficePreview(
+    String fileUrl, String token) async {
+  final response = await http.post(
+    Uri.parse('$kApi/document-preview'),
+    headers: {
+      'Authorization': 'Bearer $token',
+      'Content-Type': 'application/json',
+    },
+    body: jsonEncode({'fileUrl': fileUrl}),
+  );
+  final decoded = jsonDecode(response.body);
+  if (response.statusCode != 200 || decoded is! Map<String, dynamic>) {
+    final error = decoded is Map ? decoded['error']?.toString() : null;
+    throw Exception(error ?? 'לא ניתן להציג את המסמך');
+  }
+  return decoded;
+}
+
+class _OfficeDocumentPreview extends StatefulWidget {
+  final String fileUrl;
+  final String fileName;
+  final String token;
+  const _OfficeDocumentPreview(
+      {required this.fileUrl, required this.fileName, required this.token});
+
+  @override
+  State<_OfficeDocumentPreview> createState() => _OfficeDocumentPreviewState();
+}
+
+class _OfficeDocumentPreviewState extends State<_OfficeDocumentPreview> {
+  late final Future<Map<String, dynamic>> _preview =
+      _loadOfficePreview(widget.fileUrl, widget.token);
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<Map<String, dynamic>>(
+        future: _preview,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const SizedBox(
+                width: 220,
+                height: 110,
+                child:
+                    Center(child: CircularProgressIndicator(strokeWidth: 2)));
+          }
+          final data = snapshot.data;
+          if (data == null) {
+            return const SizedBox(
+                width: 220,
+                height: 80,
+                child: Center(child: Text('אין תצוגה מקדימה')));
+          }
+          final isWord = data['kind'] == 'word';
+          final text = isWord
+              ? data['text']?.toString() ?? ''
+              : (((data['sheets'] as List?)?.firstOrNull as Map?)?['rows']
+                          as List? ??
+                      const [])
+                  .take(4)
+                  .map((row) => (row as List).take(4).join(' | '))
+                  .join('\n');
+          return Container(
+            width: 220,
+            height: 110,
+            padding: const EdgeInsets.all(9),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: kBorder),
+            ),
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(children: [
+                    Icon(
+                        isWord
+                            ? Icons.description_outlined
+                            : Icons.table_chart_outlined,
+                        color: isWord
+                            ? Colors.blue.shade700
+                            : Colors.green.shade700,
+                        size: 18),
+                    const SizedBox(width: 5),
+                    Text(isWord ? 'תצוגת Word' : 'תצוגת Excel',
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.bold)),
+                  ]),
+                  const SizedBox(height: 5),
+                  Expanded(
+                      child: Text(text.isEmpty ? 'מסמך ריק' : text,
+                          maxLines: 4,
+                          overflow: TextOverflow.ellipsis,
+                          textDirection: TextDirection.rtl,
+                          style: const TextStyle(fontSize: 10, height: 1.35))),
+                ]),
+          );
+        },
+      );
+}
+
+class _OfficeDocumentScreen extends StatefulWidget {
+  final String fileUrl;
+  final String fileName;
+  final String token;
+  const _OfficeDocumentScreen(
+      {required this.fileUrl, required this.fileName, required this.token});
+
+  @override
+  State<_OfficeDocumentScreen> createState() => _OfficeDocumentScreenState();
+}
+
+class _OfficeDocumentScreenState extends State<_OfficeDocumentScreen> {
+  late final Future<Map<String, dynamic>> _preview =
+      _loadOfficePreview(widget.fileUrl, widget.token);
+  int _sheetIndex = 0;
+
+  Widget _excelView(Map<String, dynamic> data) {
+    final sheets = (data['sheets'] as List? ?? const []).cast<Map>();
+    if (sheets.isEmpty)
+      return const Center(child: Text('הקובץ אינו מכיל גיליונות'));
+    final sheet = sheets[_sheetIndex.clamp(0, sheets.length - 1)];
+    final rows = (sheet['rows'] as List? ?? const []).cast<List>();
+    return Column(children: [
+      if (sheets.length > 1)
+        Padding(
+          padding: const EdgeInsets.all(10),
+          child: DropdownButtonFormField<int>(
+            value: _sheetIndex,
+            decoration:
+                const InputDecoration(labelText: 'גיליון', isDense: true),
+            items: [
+              for (var i = 0; i < sheets.length; i++)
+                DropdownMenuItem(
+                    value: i,
+                    child: Text(
+                        sheets[i]['name']?.toString() ?? 'גיליון ${i + 1}'))
+            ],
+            onChanged: (value) => setState(() => _sheetIndex = value ?? 0),
+          ),
+        ),
+      Expanded(
+          child: rows.isEmpty
+              ? const Center(child: Text('הגיליון ריק'))
+              : Scrollbar(
+                  child: SingleChildScrollView(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: DataTable(
+                      headingRowColor:
+                          WidgetStatePropertyAll(Color(0xFFEAF4EB)),
+                      columns: [
+                        for (var i = 0; i < rows.first.length; i++)
+                          DataColumn(label: Text(_excelColumnName(i)))
+                      ],
+                      rows: [
+                        for (var rowIndex = 0;
+                            rowIndex < rows.length;
+                            rowIndex++)
+                          DataRow(cells: [
+                            for (final value in rows[rowIndex])
+                              DataCell(ConstrainedBox(
+                                constraints:
+                                    const BoxConstraints(maxWidth: 240),
+                                child: SelectableText(value?.toString() ?? ''),
+                              ))
+                          ])
+                      ],
+                    ),
+                  ),
+                ))),
+    ]);
+  }
+
+  String _excelColumnName(int index) {
+    var value = index + 1;
+    var label = '';
+    while (value > 0) {
+      value--;
+      label = String.fromCharCode(65 + value % 26) + label;
+      value ~/= 26;
+    }
+    return label;
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(
+            title: Text(widget.fileName,
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+            actions: [
+              IconButton(
+                  tooltip: 'הורדה',
+                  icon: const Icon(Icons.download_outlined),
+                  onPressed: () => _downloadChatFile(
+                      context, widget.fileUrl, widget.fileName)),
+            ]),
+        body: FutureBuilder<Map<String, dynamic>>(
+          future: _preview,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError || snapshot.data == null) {
+              return Center(
+                  child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.file_present_outlined,
+                            size: 52, color: kSubtext),
+                        const SizedBox(height: 12),
+                        Text(
+                            snapshot.error
+                                .toString()
+                                .replaceFirst('Exception: ', ''),
+                            textAlign: TextAlign.center),
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                            icon: const Icon(Icons.download_outlined),
+                            label: const Text('הורדת הקובץ'),
+                            onPressed: () => _downloadChatFile(
+                                context, widget.fileUrl, widget.fileName)),
+                      ])));
+            }
+            final data = snapshot.data!;
+            final content = data['kind'] == 'word'
+                ? SingleChildScrollView(
+                    padding: const EdgeInsets.all(20),
+                    child: Center(
+                        child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 850),
+                      child: SelectableText(
+                          data['text']?.toString().isNotEmpty == true
+                              ? data['text'].toString()
+                              : 'המסמך ריק',
+                          textDirection: TextDirection.rtl,
+                          style: const TextStyle(fontSize: 16, height: 1.65)),
+                    )))
+                : _excelView(data);
+            return Column(children: [
+              if (data['truncated'] == true)
+                Container(
+                    width: double.infinity,
+                    color: const Color(0xFFFFF3CD),
+                    padding: const EdgeInsets.all(8),
+                    child: const Text('מוצגת תצוגה חלקית של מסמך גדול',
+                        textAlign: TextAlign.center)),
+              Expanded(child: content),
+            ]);
+          },
+        ),
+      );
+}
+
 Future<void> _showReportDialog({
   required BuildContext context,
   required String token,
@@ -807,6 +1212,7 @@ const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
 const _maxBatchImages = 20;
+const _maxBatchDocuments = 20;
 const _maxConcurrentImageUploads = 2;
 var _uploadMessageSequence = 0;
 
@@ -1722,7 +2128,7 @@ class _RegistrationFilterSelector extends StatelessWidget {
 
   static const _items = <String, (String, IconData)>{
     'text': ('טקסט', Icons.chat_bubble_outline),
-    'nonHumanImages': ('טבע וחיות', Icons.landscape_outlined),
+    'nonHumanImages': ('נוף או חפצים', Icons.landscape_outlined),
     'men': ('גברים', Icons.man),
     'women': ('נשים', Icons.woman),
     'children': ('ילדים', Icons.child_care),
@@ -1892,9 +2298,10 @@ class _RegistrationProgress extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: 20),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             _step(1, 'פרטים וסינון'),
-            Expanded(
+            Flexible(
               child: Container(
                 height: 2,
                 margin: const EdgeInsets.symmetric(horizontal: 8),
@@ -3983,6 +4390,7 @@ class GoogleDriveBackupOfferScreen extends StatefulWidget {
 class _GoogleDriveBackupOfferScreenState
     extends State<GoogleDriveBackupOfferScreen> {
   bool _loading = false;
+  bool _statusLoading = true;
   bool _connected = false;
   String? _error;
 
@@ -3994,12 +4402,33 @@ class _GoogleDriveBackupOfferScreenState
 
   Future<void> _loadStatus() async {
     try {
-      final response = await http.get(Uri.parse('$kApi/backup/google/status'),
-          headers: {'Authorization': 'Bearer ${widget.token}'});
-      if (!mounted || response.statusCode != 200) return;
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
-      setState(() => _connected = body['connected'] == true);
-    } catch (_) {}
+      final headers = {'Authorization': 'Bearer ${widget.token}'};
+      final responses = await Future.wait([
+        http.get(Uri.parse('$kApi/backup/google/status'), headers: headers),
+        http.get(Uri.parse('$kApi/backup'), headers: headers),
+      ]);
+      if (!mounted) return;
+      if (responses.any((response) => response.statusCode != 200)) {
+        throw Exception('status failed');
+      }
+      final drive = jsonDecode(responses[0].body) as Map<String, dynamic>;
+      final backup = jsonDecode(responses[1].body) as Map<String, dynamic>;
+      final settings = backup['settings'] as Map<String, dynamic>? ?? const {};
+      final connected = drive['connected'] == true;
+      final enabled = settings['enabled'] == true;
+      if (connected && enabled) {
+        await _continue();
+        return;
+      }
+      if (mounted) {
+        setState(() {
+          _connected = connected;
+          _statusLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _statusLoading = false);
+    }
   }
 
   Future<void> _continue() async {
@@ -4055,52 +4484,56 @@ class _GoogleDriveBackupOfferScreenState
         backgroundColor: kBg,
         body: SafeArea(
           child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 460),
-              child: Padding(
-                padding: const EdgeInsets.all(28),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const Icon(Icons.cloud_sync_outlined,
-                      size: 72, color: kPrimary),
-                  const SizedBox(height: 18),
-                  const Text('גיבוי מוצפן ב־Google Drive',
-                      textAlign: TextAlign.center,
-                      style:
-                          TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 12),
-                  Text(
-                    _connected
-                        ? 'Google Drive כבר מחובר. אפשר להפעיל עכשיו גיבוי אוטומטי מוצפן.'
-                        : 'באישורך נחבר תיקייה פרטית ומוסתרת של בתשובה ב־Google Drive ונפעיל גיבוי אוטומטי מוצפן.',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 8),
-                  const Text('ניתן לנתק או לכבות בכל עת בהגדרות.',
-                      style: TextStyle(color: kSubtext)),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    Text(_error!, style: const TextStyle(color: Colors.red)),
-                  ],
-                  const SizedBox(height: 22),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _loading ? null : _enableBackup,
-                      icon: _loading
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.cloud_done_outlined),
-                      label: const Text('אישור והפעלת גיבוי'),
+            child: _statusLoading
+                ? const CircularProgressIndicator()
+                : ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 460),
+                    child: Padding(
+                      padding: const EdgeInsets.all(28),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.cloud_sync_outlined,
+                            size: 72, color: kPrimary),
+                        const SizedBox(height: 18),
+                        const Text('גיבוי מוצפן ב־Google Drive',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                fontSize: 24, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 12),
+                        Text(
+                          _connected
+                              ? 'Google Drive כבר מחובר. אפשר להפעיל עכשיו גיבוי אוטומטי מוצפן.'
+                              : 'באישורך נחבר תיקייה פרטית ומוסתרת של בתשובה ב־Google Drive ונפעיל גיבוי אוטומטי מוצפן.',
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text('ניתן לנתק או לכבות בכל עת בהגדרות.',
+                            style: TextStyle(color: kSubtext)),
+                        if (_error != null) ...[
+                          const SizedBox(height: 12),
+                          Text(_error!,
+                              style: const TextStyle(color: Colors.red)),
+                        ],
+                        const SizedBox(height: 22),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _loading ? null : _enableBackup,
+                            icon: _loading
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2))
+                                : const Icon(Icons.cloud_done_outlined),
+                            label: const Text('אישור והפעלת גיבוי'),
+                          ),
+                        ),
+                        TextButton(
+                            onPressed: _loading ? null : _continue,
+                            child: const Text('לא עכשיו')),
+                      ]),
                     ),
                   ),
-                  TextButton(
-                      onPressed: _loading ? null : _continue,
-                      child: const Text('לא עכשיו')),
-                ]),
-              ),
-            ),
           ),
         ),
       );
@@ -6143,7 +6576,7 @@ class _MainShellContentState extends State<_MainShellContent> {
     _socket?.disconnect();
     await _clearLocalAccountState();
     if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
+    Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
       MaterialPageRoute(
           builder: (_) => AuthScreen(initialRegistration: showRegistration)),
       (_) => false,
@@ -6163,7 +6596,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         duration: const Duration(seconds: 3),
       ),
     );
-    Navigator.of(context).pushAndRemoveUntil(
+    Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
       MaterialPageRoute(
           builder: (_) => AuthScreen(initialRegistration: showRegistration)),
       (route) => false,
@@ -15797,7 +16230,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                   'text': ('הודעות טקסט', Icons.text_fields),
                   'video': ('וידאו', Icons.videocam_outlined),
                   'nonHumanImages': (
-                    'תמונות נוף וחפצים',
+                    'תמונות נוף או חפצים',
                     Icons.landscape_outlined
                   ),
                   'men': ('תמונות גברים', Icons.man),
@@ -18331,7 +18764,15 @@ class _ChatScreenState extends State<ChatScreen> {
         _recordSeconds = 0;
       });
       _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _recordSeconds++);
+        if (!mounted) return;
+        setState(() => _recordSeconds++);
+        if (_recordSeconds >= 120) {
+          _recordTimer?.cancel();
+          _toggleVoiceRecording();
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('ההקלטה נעצרה לאחר מגבלת שתי דקות'),
+          ));
+        }
       });
     } catch (error) {
       if (mounted) {
@@ -19092,108 +19533,126 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showAttachMenu() {
-    showModalBottomSheet(
+    showDialog(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('שיתוף קובץ',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                _AttachOption(
-                  icon: Icons.image_outlined,
-                  label: 'גלריה (עד 10)',
-                  color: kPrimary,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickFile(ImageSource.gallery);
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.camera_alt_outlined,
-                  label: 'צלם תמונה',
-                  color: kPrimaryMid,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _capturePhoto();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.picture_as_pdf_outlined,
-                  label: 'מסמך',
-                  color: Colors.orange,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickDocument();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.videocam_outlined,
-                  label: 'וידאו',
-                  color: Colors.deepPurple,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickVideo();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.video_camera_back_outlined,
-                  label: 'צלם וידאו',
-                  color: Colors.redAccent,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _recordVideo();
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _AttachOption(
-              icon: Icons.contact_phone_outlined,
-              label: 'שתף איש קשר',
-              color: Colors.teal,
-              onTap: () {
-                Navigator.pop(context);
-                _sharePhoneContact();
-              },
-            ),
-            const SizedBox(height: 10),
-            _AttachOption(
-              icon: Icons.badge_outlined,
-              label: 'שתף את הפרטים שלי',
-              color: kPrimary,
-              onTap: () {
-                Navigator.pop(context);
-                _shareMyContact();
-              },
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.blue.shade200),
+      barrierColor: Colors.black54,
+      builder: (_) => Align(
+        alignment: Alignment.bottomRight,
+        child: Dialog(
+          insetPadding: const EdgeInsets.only(right: 16, bottom: 64),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 14, 12, 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('שיתוף קובץ',
+                      style:
+                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Column(
+                    children: [
+                      _AttachOption(
+                        icon: Icons.image_outlined,
+                        label: 'גלריה (עד 10)',
+                        color: kPrimary,
+                        onTap: () {
+                          Navigator.pop(context);
+                          _pickFile(ImageSource.gallery);
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.camera_alt_outlined,
+                        label: 'צלם תמונה',
+                        color: kPrimaryMid,
+                        onTap: () {
+                          Navigator.pop(context);
+                          _capturePhoto();
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.picture_as_pdf_outlined,
+                        label: 'מסמכים (עד 20)',
+                        color: Colors.orange,
+                        onTap: () {
+                          Navigator.pop(context);
+                          _pickDocument();
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.videocam_outlined,
+                        label: 'וידאו',
+                        color: Colors.deepPurple,
+                        onTap: () {
+                          Navigator.pop(context);
+                          _pickVideo();
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.video_camera_back_outlined,
+                        label: 'צלם וידאו',
+                        color: Colors.redAccent,
+                        onTap: () {
+                          Navigator.pop(context);
+                          _recordVideo();
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.mic_none_rounded,
+                        label: 'הקלטת שמע',
+                        color: Colors.deepOrange,
+                        onTap: () {
+                          Navigator.pop(context);
+                          _toggleVoiceRecording();
+                        },
+                      ),
+                    ],
+                  ),
+                  _AttachOption(
+                    icon: Icons.contact_phone_outlined,
+                    label: 'שתף איש קשר',
+                    color: Colors.teal,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _sharePhoneContact();
+                    },
+                  ),
+                  _AttachOption(
+                    icon: Icons.badge_outlined,
+                    label: 'שתף את הפרטים שלי',
+                    color: kPrimary,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _shareMyContact();
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.blue.shade200),
+                    ),
+                    child: Row(children: [
+                      Icon(Icons.security_outlined,
+                          color: Colors.blue.shade700, size: 18),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text('סרטונים עד 50MB עוברים סריקה לפני השליחה',
+                            style: TextStyle(fontSize: 12, color: Colors.blue)),
+                      ),
+                    ]),
+                  ),
+                ],
               ),
-              child: Row(children: [
-                Icon(Icons.security_outlined,
-                    color: Colors.blue.shade700, size: 18),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text('סרטונים עד 50MB עוברים סריקה לפני השליחה',
-                      style: TextStyle(fontSize: 12, color: Colors.blue)),
-                ),
-              ]),
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -19411,10 +19870,29 @@ class _ChatScreenState extends State<ChatScreen> {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['pdf', 'docx'],
+      allowMultiple: true,
+      withData: kIsWeb,
     );
-    if (result == null) return;
-    final f = result.files.single;
-    await _uploadAndSend(f, f.name, 'document');
+    if (result == null || result.files.isEmpty) return;
+    final files = result.files.take(_maxBatchDocuments).toList();
+    if (result.files.length > _maxBatchDocuments && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('ניתן להעלות עד 20 מסמכים בכל פעם',
+            textDirection: TextDirection.rtl),
+      ));
+    }
+    var nextIndex = 0;
+    Future<void> worker() async {
+      while (nextIndex < files.length) {
+        final file = files[nextIndex++];
+        await _uploadAndSend(file, file.name, 'document');
+      }
+    }
+
+    await Future.wait(List.generate(
+      math.min(_maxConcurrentImageUploads, files.length),
+      (_) => worker(),
+    ));
   }
 
   Future<void> _pickVideo() async {
@@ -19443,8 +19921,9 @@ class _ChatScreenState extends State<ChatScreen> {
       {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
-    final showProgress = fileType != 'image' || isClipboardPaste;
-    final showInlineProgress = fileType == 'image' && !isClipboardPaste;
+    final showInlineProgress =
+        (fileType == 'image' || fileType == 'document') && !isClipboardPaste;
+    final showProgress = !showInlineProgress;
     final uploadMessageId = _newUploadMessageId('uploading_');
     final uploadStartedAt = DateTime.now();
     if (showInlineProgress) {
@@ -19785,7 +20264,7 @@ class _ChatScreenState extends State<ChatScreen> {
   static const _contactFilterLabels = <String, String>{
     'text': 'הודעות טקסט',
     'video': 'סרטוני וידאו',
-    'nonHumanImages': 'תמונות נוף וחפצים',
+    'nonHumanImages': 'תמונות נוף או חפצים',
     'men': 'תמונות גברים',
     'women': 'תמונות נשים',
     'children': 'תמונות ילדים',
@@ -20167,28 +20646,16 @@ class _ChatScreenState extends State<ChatScreen> {
                           final messageIndex = _messages.length - 1 - i;
                           final msg = _messages[messageIndex];
                           final isMe = msg['from'] == widget.me?['id'];
-                          // In group chats every image is a full message. Do
-                          // not combine consecutive uploads into gallery tiles;
-                          // this keeps every received image visible in the
-                          // conversation while the full-screen viewer can still
-                          // browse all conversation images.
-                          final imageRunStart = messageIndex;
-                          final imageRunEnd = messageIndex;
-                          const imageSequence = <Map<String, dynamic>>[];
                           final firstUnreadIndex = _messages.indexWhere(
                               (message) => message['isUnread'] == true);
-                          final dateIndex = imageSequence.isNotEmpty
-                              ? imageRunStart
-                              : messageIndex;
-                          final showDate = dateIndex == 0 ||
-                              !_sameMessageDay(_messages[dateIndex],
-                                  _messages[dateIndex - 1]);
+                          final showDate = messageIndex == 0 ||
+                              !_sameMessageDay(
+                                  msg, _messages[messageIndex - 1]);
                           return Column(
                             children: [
                               if (showDate)
                                 _DateDivider(label: _messageDateLabel(msg)),
-                              if (firstUnreadIndex >= imageRunStart &&
-                                  firstUnreadIndex <= imageRunEnd)
+                              if (firstUnreadIndex == messageIndex)
                                 const _UnreadMessagesDivider(),
                               if (msg['isGroupInvite'] == true && !isMe)
                                 _GroupInviteCard(
@@ -20196,21 +20663,6 @@ class _ChatScreenState extends State<ChatScreen> {
                                   token: widget.token,
                                   onJoined: () => setState(() {}),
                                 )
-                              else if (imageSequence.isNotEmpty)
-                                _ConsecutiveImageGrid(
-                                    messages: imageSequence,
-                                    conversationMessages: _messages,
-                                    isMe: isMe,
-                                    onForwardAll: () => _forwardChatMessages(
-                                        context,
-                                        widget.token,
-                                        widget.socket,
-                                        imageSequence),
-                                    onMessageOptions: (message) =>
-                                        _showMessageOptions(
-                                            message,
-                                            message['from'] ==
-                                                widget.me?['id']))
                               else
                                 GestureDetector(
                                   onTap: !kIsWeb && msg['isFile'] != true
@@ -20227,6 +20679,21 @@ class _ChatScreenState extends State<ChatScreen> {
                                     isMe: isMe,
                                     token: widget.token,
                                     me: widget.me,
+                                    senderAvatarUrl: isMe
+                                        ? (widget.me == null
+                                            ? null
+                                            : widget.me!['profile_pic_url']
+                                                ?.toString())
+                                        : (widget.recipient['profile_pic_url']
+                                            ?.toString()),
+                                    senderName: isMe
+                                        ? (widget.me == null
+                                            ? ''
+                                            : widget.me!['name']?.toString() ??
+                                                '')
+                                        : (widget.recipient['name']
+                                                ?.toString() ??
+                                            ''),
                                     onMessageOptions: (message) =>
                                         _showMessageOptions(
                                             message,
@@ -20268,7 +20735,22 @@ class _ChatScreenState extends State<ChatScreen> {
             color: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Row(
+              textDirection: TextDirection.rtl,
               children: [
+                IconButton(
+                  tooltip: _isRecording ? 'סיים ושלח' : 'הקלט הודעה קולית',
+                  onPressed: _toggleVoiceRecording,
+                  icon: Icon(_isRecording ? Icons.stop_circle : Icons.mic,
+                      color: _isRecording ? Colors.red : kPrimary),
+                ),
+                if (_isRecording)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: Text(
+                      'מקליט ${(_recordSeconds ~/ 60).toString().padLeft(2, '0')}:${(_recordSeconds % 60).toString().padLeft(2, '0')}',
+                      style: const TextStyle(color: Colors.red, fontSize: 12),
+                    ),
+                  ),
                 Expanded(
                   child: Container(
                     decoration: BoxDecoration(
@@ -20331,20 +20813,6 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                if (_isRecording)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 6),
-                    child: Text(
-                      'מקליט ${(_recordSeconds ~/ 60).toString().padLeft(2, '0')}:${(_recordSeconds % 60).toString().padLeft(2, '0')}',
-                      style: const TextStyle(color: Colors.red, fontSize: 12),
-                    ),
-                  ),
-                IconButton(
-                  tooltip: _isRecording ? 'סיים ושלח' : 'הקלט הודעה קולית',
-                  onPressed: _toggleVoiceRecording,
-                  icon: Icon(_isRecording ? Icons.stop_circle : Icons.mic,
-                      color: _isRecording ? Colors.red : kPrimary),
-                ),
                 GestureDetector(
                   onTap: _send,
                   child: Container(
@@ -20678,7 +21146,15 @@ Future<void> _openListingLink(BuildContext context, String listingId,
 class VoiceMessagePlayer extends StatefulWidget {
   final String url;
   final bool isMe;
-  const VoiceMessagePlayer({super.key, required this.url, required this.isMe});
+  final String? senderAvatarUrl;
+  final String senderName;
+  const VoiceMessagePlayer({
+    super.key,
+    required this.url,
+    required this.isMe,
+    this.senderAvatarUrl,
+    required this.senderName,
+  });
 
   @override
   State<VoiceMessagePlayer> createState() => _VoiceMessagePlayerState();
@@ -20752,10 +21228,10 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
     return SizedBox(
       width: 245,
       child: Row(children: [
-        CircleAvatar(
-          radius: 23,
-          backgroundColor: const Color(0xFFC8F7C5),
-          child: Icon(Icons.person, color: kPrimary, size: 28),
+        UserAvatar(
+          radius: 21,
+          picUrl: widget.senderAvatarUrl,
+          name: widget.senderName,
         ),
         IconButton(
           onPressed: _toggle,
@@ -21107,6 +21583,60 @@ class _GroupDeliverySummary extends StatelessWidget {
   }
 }
 
+class _DocumentModerationCard extends StatelessWidget {
+  final String fileName;
+  final bool blocked;
+  final String? reason;
+
+  const _DocumentModerationCard({
+    required this.fileName,
+    required this.blocked,
+    this.reason,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 285,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: blocked ? const Color(0xFFFFF2F2) : const Color(0xFFFFF8E8),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: blocked ? const Color(0xFFF0B8B8) : const Color(0xFFF2D28B),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(
+                blocked ? Icons.gpp_bad_outlined : Icons.hourglass_top,
+                color: blocked ? Colors.red : Colors.orange,
+              ),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Text(fileName,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textDirection: TextDirection.rtl,
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ]),
+            const SizedBox(height: 6),
+            Text(
+              blocked
+                  ? (reason ?? 'המסמך נחסם ולא נשלח')
+                  : 'המסמך ממתין לסריקה. לא ניתן לפתוח או להוריד אותו לפני אישור.',
+              textDirection: TextDirection.rtl,
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 11, color: kSubtext),
+            ),
+          ],
+        ),
+      );
+}
+
 class _UploadProcessingCard extends StatefulWidget {
   final String fileName;
   final DateTime startedAt;
@@ -21327,9 +21857,9 @@ class _ImageClassificationBadges extends StatelessWidget {
     'men': 'זוהה גבר',
     'women': 'זוהתה אישה',
     'children': 'זוהו ילד או ילדה',
-    'nonHumanImages': 'לא זוהו בני אדם',
+    'nonHumanImages': 'זוהו נוף או חפצים',
     'people': 'זוהו אנשים',
-    'landscape': 'זוהה נוף או תוכן ללא אדם',
+    'landscape': 'זוהו נוף או חפצים',
     'uncertain': 'הסיווג אינו ודאי',
   };
 
@@ -21385,6 +21915,67 @@ class _ImageClassificationBadges extends StatelessWidget {
                 ),
               ))
           .toList(),
+    );
+  }
+}
+
+class _DocumentClassificationSummary extends StatelessWidget {
+  final Map<String, dynamic> message;
+
+  const _DocumentClassificationSummary({required this.message});
+
+  static const _labels = <String, String>{
+    'men': 'גברים',
+    'women': 'נשים',
+    'children': 'ילדים',
+    'nonHumanImages': 'נוף או חפצים',
+    'people': 'אנשים',
+    'landscape': 'נוף או חפצים',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final raw = message['classification'];
+    if (raw is! Map) return const SizedBox.shrink();
+    final detected = raw['detectedCategories'];
+    final categories = detected is List
+        ? detected
+            .map((value) => value.toString())
+            .where((value) => _labels.containsKey(value))
+            .toSet()
+            .toList()
+        : <String>[];
+    final visualScan = raw['documentVisualScan'];
+    final scan = visualScan is Map ? visualScan : const <String, dynamic>{};
+    final scanned = int.tryParse(scan['scanned']?.toString() ?? '') ?? 0;
+    final total = int.tryParse(scan['total']?.toString() ?? '') ?? scanned;
+    final classificationText = raw['uncertain'] == true
+        ? 'סיווג לא ודאי'
+        : categories.isEmpty
+            ? 'לא נמצאו תמונות לסיווג'
+            : categories.map((category) => _labels[category]!).join(', ');
+    final scanText = total > 0 ? ' · נסרקו $scanned מתוך $total' : '';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: kPrimary.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.verified_user_outlined, size: 15, color: kPrimary),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              'סיווג: $classificationText$scanText',
+              style: const TextStyle(fontSize: 11, color: kPrimary),
+              textDirection: TextDirection.rtl,
+              textAlign: TextAlign.right,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -21892,6 +22483,8 @@ class _MessageBubble extends StatelessWidget {
   final bool isMe;
   final String token;
   final Map<String, dynamic>? me;
+  final String? senderAvatarUrl;
+  final String senderName;
   final void Function(Map<String, dynamic>)? onMessageOptions;
 
   const _MessageBubble({
@@ -21900,6 +22493,8 @@ class _MessageBubble extends StatelessWidget {
     required this.isMe,
     required this.token,
     required this.me,
+    this.senderAvatarUrl,
+    required this.senderName,
     this.onMessageOptions,
   });
 
@@ -21948,6 +22543,20 @@ class _MessageBubble extends StatelessWidget {
       fileName: fileName,
     );
     final uploadStatus = message['status']?.toString();
+    if (fileType == 'document' &&
+        (uploadStatus == 'pending_scan' || uploadStatus == 'rejected_scan')) {
+      return Align(
+        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: _DocumentModerationCard(
+            fileName: fileName ?? 'מסמך',
+            blocked: uploadStatus == 'rejected_scan',
+            reason: message['scanReason']?.toString(),
+          ),
+        ),
+      );
+    }
     if (fileType == 'image' && uploadStatus == 'uploading') {
       return Align(
         alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
@@ -21995,6 +22604,15 @@ class _MessageBubble extends StatelessWidget {
     final isImageFile = isFile && fileUrl != null && fileType == 'image';
     final isAudioFile = isFile && fileUrl != null && fileType == 'audio';
     final isVideoFile = isFile && fileUrl != null && fileType == 'video';
+    final isPdfFile = isFile &&
+        fileUrl != null &&
+        fileType == 'document' &&
+        ((fileName ?? '').toLowerCase().endsWith('.pdf') ||
+            Uri.tryParse(fileUrl)?.path.toLowerCase().endsWith('.pdf') == true);
+    final isOfficeFile = isFile &&
+        fileUrl != null &&
+        fileType == 'document' &&
+        _isOfficePreviewFile(fileName ?? Uri.tryParse(fileUrl)?.path);
     final conversationImages = _conversationImageMessages(conversationMessages);
     final selectedImageIndex =
         _conversationImageIndex(conversationImages, message);
@@ -22077,7 +22695,12 @@ class _MessageBubble extends StatelessWidget {
               ),
 
             if (isAudioFile)
-              VoiceMessagePlayer(url: fileUrl!, isMe: isMe)
+              VoiceMessagePlayer(
+                url: fileUrl!,
+                isMe: isMe,
+                senderAvatarUrl: senderAvatarUrl,
+                senderName: senderName,
+              )
             else if (isVideoFile)
               Stack(children: [
                 if (kIsWeb)
@@ -22133,10 +22756,11 @@ class _MessageBubble extends StatelessWidget {
                           child: _PersistentMediaImage(
                             url: fileUrl!,
                             width: 220,
-                            fit: BoxFit.cover,
+                            height: 180,
+                            fit: BoxFit.contain,
                             loadingBuilder: (_) => Container(
                               width: 220,
-                              height: 160,
+                              height: 180,
                               color: kBorder,
                               child: const Center(
                                   child: CircularProgressIndicator(
@@ -22144,7 +22768,7 @@ class _MessageBubble extends StatelessWidget {
                             ),
                             errorBuilder: (_) => Container(
                               width: 220,
-                              height: 120,
+                              height: 180,
                               color: kBorder,
                               child: const Icon(Icons.broken_image,
                                   color: kSubtext, size: 40),
@@ -22182,37 +22806,80 @@ class _MessageBubble extends StatelessWidget {
               InkWell(
                 onTap: fileUrl == null
                     ? null
-                    : () => _downloadChatFile(context, fileUrl, fileName),
+                    : isPdfFile
+                        ? () => _openPdfInsideApp(context, fileUrl, fileName)
+                        : isOfficeFile
+                            ? () => _openOfficeInsideApp(
+                                context, fileUrl, fileName, token)
+                            : () =>
+                                _downloadChatFile(context, fileUrl, fileName),
                 borderRadius: BorderRadius.circular(8),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                          isVideoFile
-                              ? Icons.videocam_outlined
-                              : Icons.insert_drive_file,
-                          size: 20,
-                          color: kPrimary),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          fileName ??
-                              message['text'] as String? ??
-                              (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
-                          style: TextStyle(fontSize: 14, color: textColor),
-                          textDirection: TextDirection.rtl,
-                        ),
+                      if (isPdfFile) ...[
+                        _PdfFirstPagePreview(url: fileUrl),
+                        const SizedBox(height: 7),
+                      ] else if (isOfficeFile) ...[
+                        _OfficeDocumentPreview(
+                            fileUrl: fileUrl,
+                            fileName: fileName ?? 'מסמך',
+                            token: token),
+                        const SizedBox(height: 7),
+                      ],
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                              isPdfFile
+                                  ? Icons.picture_as_pdf_outlined
+                                  : isOfficeFile
+                                      ? (fileName
+                                                  ?.toLowerCase()
+                                                  .endsWith('.xlsx') ==
+                                              true
+                                          ? Icons.table_chart_outlined
+                                          : Icons.description_outlined)
+                                      : isVideoFile
+                                          ? Icons.videocam_outlined
+                                          : Icons.insert_drive_file,
+                              size: 20,
+                              color: isPdfFile ? Colors.red : kPrimary),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              fileName ??
+                                  message['text'] as String? ??
+                                  (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
+                              style: TextStyle(fontSize: 14, color: textColor),
+                              textDirection: TextDirection.rtl,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          if (isPdfFile || isOfficeFile)
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              tooltip: 'הורדה',
+                              onPressed: () =>
+                                  _downloadChatFile(context, fileUrl, fileName),
+                              icon: const Icon(Icons.download_outlined,
+                                  size: 20, color: kPrimary),
+                            )
+                          else ...[
+                            const Icon(Icons.download,
+                                size: 20, color: kPrimary),
+                            const SizedBox(width: 3),
+                            const Text('הורדה',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: kPrimary,
+                                    fontWeight: FontWeight.w600)),
+                          ],
+                        ],
                       ),
-                      const SizedBox(width: 10),
-                      const Icon(Icons.download, size: 20, color: kPrimary),
-                      const SizedBox(width: 3),
-                      const Text('הורדה',
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: kPrimary,
-                              fontWeight: FontWeight.w600)),
                     ],
                   ),
                 ),
@@ -22229,6 +22896,11 @@ class _MessageBubble extends StatelessWidget {
                 textDirection: TextDirection.rtl,
                 textAlign: TextAlign.right,
               ),
+
+            if (isFile && fileType == 'document') ...[
+              const SizedBox(height: 6),
+              _DocumentClassificationSummary(message: message),
+            ],
 
             if (sharedUrl != null) ...[
               const SizedBox(height: 8),
@@ -23369,22 +24041,41 @@ class _AttachOption extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
-          Container(
-            width: 58,
-            height: 58,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(14),
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+            child: Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: color, size: 20),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    label,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
             ),
-            child: Icon(icon, color: color, size: 28),
           ),
-          const SizedBox(height: 6),
-          Text(label, style: const TextStyle(fontSize: 12)),
-        ],
+        ),
       ),
     );
   }
@@ -24010,14 +24701,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Map<String, dynamic> _mapMsg(dynamic m) {
     final map = m as Map<String, dynamic>;
     final isMe = map['sender_id'] == widget.me?['id'];
+    final isFile = map['file_url'] != null || map['file_name'] != null;
     return {
       'id': map['id'],
+      'senderId': map['sender_id'],
       'text': map['body'] ?? '',
       'senderName': map['sender_name'] ?? '',
       'time': _formatTime(map['created_at']),
       'createdAt': map['created_at']?.toString(),
       'isMe': isMe,
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
+      'isFile': isFile,
       'fileUrl': map['file_url'],
       'fileName': map['file_name'],
       'fileType': _normalizeIncomingFileType(map['type'] as String?,
@@ -24692,14 +25386,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Map<String, dynamic> _normalize(dynamic m) {
     final map = m as Map<String, dynamic>;
     final isMe = map['sender_id'] == widget.me?['id'];
+    final isFile = map['file_url'] != null || map['file_name'] != null;
     return {
       'id': map['id'],
+      'senderId': map['sender_id'],
       'text': map['body'] ?? '',
       'senderName': map['sender_name'] ?? '',
       'time': _formatTime(map['created_at']),
       'createdAt': map['created_at']?.toString(),
       'isMe': isMe,
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
+      'isFile': isFile,
       'status': map['message_status'] ?? 'sent',
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['image_classification'] != null)
@@ -24746,6 +25443,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           fileUrl: fileUrl, fileName: fileName);
       final incoming = <String, dynamic>{
         'id': data['id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        'senderId': data['fromUserId'],
         'text': data['text'] as String? ?? fileName ?? '',
         'senderName': data['fromName'] as String? ?? '',
         'time': data['createdAt'] != null
@@ -24756,6 +25454,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'isMe': data['fromUserId'] == widget.me?['id'],
         'isUnread': false,
         'isTyping': false,
+        'isFile': fileUrl != null || fileName != null,
         'fileUrl': fileUrl,
         'fileName': fileName,
         'fileType': fileType,
@@ -24953,7 +25652,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _recordSeconds = 0;
       });
       _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _recordSeconds++);
+        if (!mounted) return;
+        setState(() => _recordSeconds++);
+        if (_recordSeconds >= 120) {
+          _recordTimer?.cancel();
+          _toggleVoiceRecording();
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('ההקלטה נעצרה לאחר מגבלת שתי דקות'),
+          ));
+        }
       });
     } catch (error) {
       if (mounted) {
@@ -25300,8 +26007,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             const Text('שיתוף קובץ בקבוצה',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            Column(
               children: [
                 _AttachOption(
                   icon: Icons.image_outlined,
@@ -25323,16 +26029,42 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
                 _AttachOption(
                   icon: Icons.picture_as_pdf_outlined,
-                  label: 'מסמך',
+                  label: 'מסמכים (עד 20)',
                   color: Colors.orange,
                   onTap: () {
                     Navigator.pop(context);
                     _pickDocument();
                   },
                 ),
+                _AttachOption(
+                  icon: Icons.videocam_outlined,
+                  label: 'וידאו',
+                  color: Colors.deepPurple,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _pickVideo();
+                  },
+                ),
+                _AttachOption(
+                  icon: Icons.video_camera_back_outlined,
+                  label: 'צלם וידאו',
+                  color: Colors.redAccent,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _recordVideo();
+                  },
+                ),
+                _AttachOption(
+                  icon: Icons.mic_none_rounded,
+                  label: 'הקלטת שמע',
+                  color: Colors.deepOrange,
+                  onTap: () {
+                    Navigator.pop(context);
+                    _toggleVoiceRecording();
+                  },
+                ),
               ],
             ),
-            const SizedBox(height: 14),
             _AttachOption(
               icon: Icons.contact_phone_outlined,
               label: 'שתף איש קשר',
@@ -25346,7 +26078,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 await _send();
               },
             ),
-            const SizedBox(height: 10),
             _AttachOption(
               icon: Icons.badge_outlined,
               label: 'שתף את הפרטים שלי',
@@ -25367,16 +26098,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: Colors.red.shade50,
+                color: Colors.blue.shade50,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.red.shade200),
+                border: Border.all(color: Colors.blue.shade200),
               ),
               child: Row(children: [
-                Icon(Icons.block, color: Colors.red.shade600, size: 18),
+                Icon(Icons.security_outlined,
+                    color: Colors.blue.shade700, size: 18),
                 const SizedBox(width: 8),
                 const Expanded(
-                  child: Text('שליחת סרטוני וידאו אינה נתמכת',
-                      style: TextStyle(fontSize: 12, color: Colors.red)),
+                  child: Text('סרטונים עד 50MB עוברים סריקה לפני השליחה',
+                      style: TextStyle(fontSize: 12, color: Colors.blue)),
                 ),
               ]),
             ),
@@ -25464,19 +26196,63 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _pickDocument() async {
-    final result = await FilePicker.platform
-        .pickFiles(type: FileType.custom, allowedExtensions: ['pdf', 'docx']);
-    if (result == null) return;
-    final f = result.files.single;
-    await _uploadGroupFile(f, f.name, 'document');
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'docx'],
+      allowMultiple: true,
+      withData: kIsWeb,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final files = result.files.take(_maxBatchDocuments).toList();
+    if (result.files.length > _maxBatchDocuments && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('ניתן להעלות עד 20 מסמכים בכל פעם',
+            textDirection: TextDirection.rtl),
+      ));
+    }
+    var nextIndex = 0;
+    Future<void> worker() async {
+      while (nextIndex < files.length) {
+        final file = files[nextIndex++];
+        await _uploadGroupFile(file, file.name, 'document');
+      }
+    }
+
+    await Future.wait(List.generate(
+      math.min(_maxConcurrentImageUploads, files.length),
+      (_) => worker(),
+    ));
+  }
+
+  Future<void> _pickVideo() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['mp4', 'webm', 'mov'],
+      withData: kIsWeb,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final file = result.files.single;
+    await _uploadGroupFile(file.xFile, file.name, 'video');
+  }
+
+  Future<void> _recordVideo() async {
+    final video = kIsWeb
+        ? await captureWebVideo(context)
+        : await ImagePicker().pickVideo(
+            source: ImageSource.camera,
+            maxDuration: const Duration(seconds: 30),
+          );
+    if (video == null) return;
+    await _uploadGroupFile(video, video.name, 'video');
   }
 
   Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
-    final showProgress = fileType != 'image' || isClipboardPaste;
-    final showInlineProgress = fileType == 'image' && !isClipboardPaste;
+    final showInlineProgress =
+        (fileType == 'image' || fileType == 'document') && !isClipboardPaste;
+    final showProgress = !showInlineProgress;
     final uploadMessageId = _newUploadMessageId('uploading_group_');
     final uploadStartedAt = DateTime.now();
     if (showInlineProgress) {
@@ -25699,8 +26475,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               'fileType': fileType,
               'fileUrl': fileUrl,
               'fileName': fileName,
-              if (data['classification'] != null)
-                'classification': data['classification'],
+              if ((sendData['classification'] ?? data['classification']) !=
+                  null)
+                'classification':
+                    sendData['classification'] ?? data['classification'],
               if (sendData['deliverySummary'] != null)
                 'deliverySummary': sendData['deliverySummary'],
             });
@@ -26446,7 +27224,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   static const _groupFilterLabels = <String, String>{
     'text': 'הודעות טקסט',
     'video': 'סרטוני וידאו',
-    'nonHumanImages': 'תמונות נוף וחפצים',
+    'nonHumanImages': 'תמונות נוף או חפצים',
     'men': 'תמונות גברים',
     'women': 'תמונות נשים',
     'children': 'תמונות ילדים',
@@ -26711,6 +27489,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         ),
       ),
     );
+  }
+
+  Map<String, dynamic>? _voiceMessageSender(
+      Map<String, dynamic> message, bool isMe) {
+    if (isMe) return widget.me;
+    final senderId = message['senderId']?.toString();
+    final senderName = message['senderName']?.toString().trim() ?? '';
+    for (final member in _members) {
+      if (senderId != null && member['id']?.toString() == senderId) {
+        return member;
+      }
+    }
+    for (final member in _members) {
+      if (senderName.isNotEmpty &&
+          member['name']?.toString().trim() == senderName) {
+        return member;
+      }
+    }
+    return null;
   }
 
   @override
@@ -27013,10 +27810,30 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             fileUrl: msg['fileUrl'] as String?,
                             fileName: msg['fileName'] as String?,
                           );
+                          final isPdfFile = msg['fileUrl'] != null &&
+                              uploadFileType == 'document' &&
+                              (((msg['fileName'] as String?) ?? '')
+                                      .toLowerCase()
+                                      .endsWith('.pdf') ||
+                                  Uri.tryParse(msg['fileUrl'] as String)
+                                          ?.path
+                                          .toLowerCase()
+                                          .endsWith('.pdf') ==
+                                      true);
+                          final isOfficeFile = msg['fileUrl'] != null &&
+                              uploadFileType == 'document' &&
+                              _isOfficePreviewFile(
+                                  msg['fileName']?.toString() ??
+                                      Uri.tryParse(msg['fileUrl'].toString())
+                                          ?.path);
                           final isImageUploadState =
                               uploadFileType == 'image' &&
                                   (uploadStatus == 'uploading' ||
                                       uploadStatus == 'failed' ||
+                                      uploadStatus == 'rejected_scan');
+                          final isDocumentModerationState =
+                              uploadFileType == 'document' &&
+                                  (uploadStatus == 'pending_scan' ||
                                       uploadStatus == 'rejected_scan');
                           final sharedContact = msg['fileUrl'] == null
                               ? _sharedContactFromText(groupText)
@@ -27055,40 +27872,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                               educationStatus == 'completed'
                                           ? Colors.green.shade700
                                           : Colors.orange.shade800;
-                          var imageRunStart = messageIndex;
-                          var imageRunEnd = messageIndex;
-                          if (_isGridImageMessage(msg)) {
-                            while (imageRunStart > 0 &&
-                                _isGridImageMessage(
-                                    _messages[imageRunStart - 1]) &&
-                                _sameImageSequenceSender(
-                                    msg, _messages[imageRunStart - 1])) {
-                              imageRunStart--;
-                            }
-                            while (imageRunEnd + 1 < _messages.length &&
-                                _isGridImageMessage(
-                                    _messages[imageRunEnd + 1]) &&
-                                _sameImageSequenceSender(
-                                    msg, _messages[imageRunEnd + 1])) {
-                              imageRunEnd++;
-                            }
-                            if (imageRunStart != imageRunEnd &&
-                                messageIndex != imageRunEnd) {
-                              return const SizedBox.shrink();
-                            }
-                          }
-                          final imageSequence = imageRunEnd > imageRunStart
-                              ? _messages.sublist(
-                                  imageRunStart, imageRunEnd + 1)
-                              : const <Map<String, dynamic>>[];
                           final firstUnreadIndex = _messages.indexWhere(
                               (message) => message['isUnread'] == true);
-                          final dateIndex = imageSequence.isNotEmpty
-                              ? imageRunStart
-                              : messageIndex;
-                          final showDate = dateIndex == 0 ||
-                              !_sameMessageDay(_messages[dateIndex],
-                                  _messages[dateIndex - 1]);
+                          final showDate = messageIndex == 0 ||
+                              !_sameMessageDay(
+                                  msg, _messages[messageIndex - 1]);
                           return Column(
                             crossAxisAlignment: isMe
                                 ? CrossAxisAlignment.end
@@ -27096,8 +27884,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             children: [
                               if (showDate)
                                 _DateDivider(label: _messageDateLabel(msg)),
-                              if (firstUnreadIndex >= imageRunStart &&
-                                  firstUnreadIndex <= imageRunEnd)
+                              if (firstUnreadIndex == messageIndex)
                                 const _UnreadMessagesDivider(),
                               if (!isMe && !isFilterUpdateAnnouncement)
                                 Padding(
@@ -27148,17 +27935,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                               'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
                                         ),
                                 )
-                              else if (imageSequence.isNotEmpty)
-                                _ConsecutiveImageGrid(
-                                    messages: imageSequence,
-                                    conversationMessages: _messages,
-                                    isMe: isMe,
-                                    onForwardAll: () => _forwardChatMessages(
-                                        context,
-                                        widget.token,
-                                        widget.socket,
-                                        imageSequence),
-                                    onMessageOptions: _showMessageOptions)
+                              else if (isDocumentModerationState)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: _DocumentModerationCard(
+                                    fileName:
+                                        msg['fileName']?.toString() ?? 'מסמך',
+                                    blocked: uploadStatus == 'rejected_scan',
+                                    reason: msg['scanReason']?.toString(),
+                                  ),
+                                )
                               else
                                 GestureDetector(
                                   onTap: isFilterUpdateAnnouncement
@@ -27183,9 +27969,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 12, vertical: 8),
                                     constraints: BoxConstraints(
-                                        maxWidth:
-                                            MediaQuery.of(context).size.width *
-                                                0.75),
+                                      maxWidth: msg['fileUrl'] != null
+                                          ? math.min(
+                                              330,
+                                              MediaQuery.of(context)
+                                                      .size
+                                                      .width *
+                                                  0.86)
+                                          : MediaQuery.of(context).size.width *
+                                              0.75,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: isMe ? kGroupOutgoing : kIncoming,
                                       borderRadius: BorderRadius.circular(12),
@@ -27210,7 +28003,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                 'audio')
                                           VoiceMessagePlayer(
                                               url: msg['fileUrl'] as String,
-                                              isMe: isMe)
+                                              isMe: isMe,
+                                              senderAvatarUrl:
+                                                  _voiceMessageSender(
+                                                              msg, isMe)?[
+                                                          'profile_pic_url']
+                                                      ?.toString(),
+                                              senderName: _voiceMessageSender(
+                                                          msg, isMe)?['name']
+                                                      ?.toString() ??
+                                                  msg['senderName']
+                                                      ?.toString() ??
+                                                  '')
                                         else if (msg['fileUrl'] != null &&
                                             _normalizeIncomingFileType(
                                                     msg['fileType'] as String?,
@@ -27252,10 +28056,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                     url: msg['fileUrl']
                                                         as String,
                                                     width: 200,
-                                                    fit: BoxFit.cover,
+                                                    height: 160,
+                                                    fit: BoxFit.contain,
                                                     loadingBuilder: (_) => Container(
                                                         width: 200,
-                                                        height: 140,
+                                                        height: 160,
                                                         color: kBorder,
                                                         child: const Center(
                                                             child:
@@ -27267,7 +28072,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                     errorBuilder: (_) =>
                                                         Container(
                                                             width: 200,
-                                                            height: 100,
+                                                            height: 160,
                                                             color: kBorder,
                                                             child: const Icon(
                                                                 Icons
@@ -27282,51 +28087,115 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                   child: _ImageStatusBadge(
                                                       message: msg, isMe: isMe),
                                                 ),
+                                                Positioned(
+                                                  right: 7,
+                                                  top: 7,
+                                                  child:
+                                                      _ImageClassificationBadges(
+                                                          message: msg),
+                                                ),
                                               ],
                                             ),
                                           )
                                         else if (msg['fileUrl'] != null)
                                           InkWell(
-                                            onTap: () => _downloadChatFile(
-                                                context,
-                                                msg['fileUrl'] as String,
-                                                msg['fileName'] as String?),
+                                            onTap: () => isPdfFile
+                                                ? _openPdfInsideApp(
+                                                    context,
+                                                    msg['fileUrl'] as String,
+                                                    msg['fileName'] as String?)
+                                                : isOfficeFile
+                                                    ? _openOfficeInsideApp(
+                                                        context,
+                                                        msg['fileUrl']
+                                                            as String,
+                                                        msg['fileName']
+                                                            as String?,
+                                                        widget.token)
+                                                    : _downloadChatFile(
+                                                        context,
+                                                        msg['fileUrl']
+                                                            as String,
+                                                        msg['fileName']
+                                                            as String?),
                                             borderRadius:
                                                 BorderRadius.circular(8),
                                             child: Padding(
                                               padding:
                                                   const EdgeInsets.symmetric(
                                                       vertical: 4),
-                                              child: Row(
+                                              child: Column(
                                                 mainAxisSize: MainAxisSize.min,
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.end,
                                                 children: [
-                                                  const Icon(
-                                                      Icons.insert_drive_file,
-                                                      size: 16,
-                                                      color: kSubtext),
-                                                  const SizedBox(width: 4),
-                                                  Flexible(
-                                                      child: Text(
-                                                          msg['fileName']
-                                                                  as String? ??
-                                                              msg['text']
-                                                                  as String? ??
-                                                              '',
-                                                          style:
-                                                              const TextStyle(
-                                                                  fontSize:
-                                                                      13))),
-                                                  const SizedBox(width: 10),
-                                                  const Icon(Icons.download,
-                                                      size: 19,
-                                                      color: kPrimary),
-                                                  const SizedBox(width: 3),
-                                                  const Text('הורדה',
-                                                      style: TextStyle(
-                                                          fontSize: 12,
-                                                          color: kPrimary,
-                                                          fontWeight:
-                                                              FontWeight.w600)),
+                                                  if (isPdfFile) ...[
+                                                    _PdfFirstPagePreview(
+                                                        url: msg['fileUrl']
+                                                            as String),
+                                                    const SizedBox(height: 6),
+                                                  ] else if (isOfficeFile) ...[
+                                                    _OfficeDocumentPreview(
+                                                        fileUrl: msg['fileUrl']
+                                                            as String,
+                                                        fileName: msg[
+                                                                    'fileName']
+                                                                ?.toString() ??
+                                                            'מסמך',
+                                                        token: widget.token),
+                                                    const SizedBox(height: 6),
+                                                  ],
+                                                  Row(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      Icon(
+                                                          isPdfFile
+                                                              ? Icons
+                                                                  .picture_as_pdf_outlined
+                                                              : isOfficeFile
+                                                                  ? (msg['fileName']
+                                                                              ?.toString()
+                                                                              .toLowerCase()
+                                                                              .endsWith(
+                                                                                  '.xlsx') ==
+                                                                          true
+                                                                      ? Icons
+                                                                          .table_chart_outlined
+                                                                      : Icons
+                                                                          .description_outlined)
+                                                                  : Icons
+                                                                      .insert_drive_file,
+                                                          size: 16,
+                                                          color: isPdfFile
+                                                              ? Colors.red
+                                                              : kSubtext),
+                                                      const SizedBox(width: 4),
+                                                      Flexible(
+                                                          child: Text(
+                                                              msg['fileName']
+                                                                      as String? ??
+                                                                  msg['text']
+                                                                      as String? ??
+                                                                  '',
+                                                              style:
+                                                                  const TextStyle(
+                                                                      fontSize:
+                                                                          13))),
+                                                      const SizedBox(width: 10),
+                                                      const Icon(Icons.download,
+                                                          size: 19,
+                                                          color: kPrimary),
+                                                      const SizedBox(width: 3),
+                                                      const Text('הורדה',
+                                                          style: TextStyle(
+                                                              fontSize: 12,
+                                                              color: kPrimary,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w600)),
+                                                    ],
+                                                  ),
                                                 ],
                                               ),
                                             ),
@@ -28430,7 +29299,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     'men': 'גברים',
     'women': 'נשים',
     'children': 'ילדים',
-    'nonHumanImages': 'ללא בני אדם',
+    'nonHumanImages': 'נוף או חפצים',
     'people': 'אנשים',
     'uncertain': 'לא ודאי',
     'video': 'וידאו',
@@ -28951,6 +29820,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   Widget _preview(Map<String, dynamic> item) {
     final type = item['fileType']?.toString();
     final url = item['url']?.toString() ?? '';
+    final name = item['name']?.toString() ?? '';
     if (type == 'image') {
       return InkWell(
         onTap: () => Navigator.push(
@@ -28972,6 +29842,25 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                   : _fileIcon(type),
               size: 38,
               color: kSubtext),
+        ),
+      );
+    }
+    if (_isOfficePreviewFile(name)) {
+      return InkWell(
+        onTap: () => _openOfficeInsideApp(context, url, name, widget.token),
+        child: Container(
+          width: 72,
+          height: 72,
+          color: kBg,
+          child: Icon(
+            name.toLowerCase().endsWith('.xlsx')
+                ? Icons.table_chart_outlined
+                : Icons.description_outlined,
+            size: 38,
+            color: name.toLowerCase().endsWith('.xlsx')
+                ? Colors.green.shade700
+                : Colors.blue.shade700,
+          ),
         ),
       );
     }
@@ -29055,6 +29944,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'send') _send(item);
+              if (value == 'view')
+                _openOfficeInsideApp(context, item['url'].toString(),
+                    item['name']?.toString(), widget.token);
               if (value == 'reclassify') _reclassify(item);
               if (value == 'appeal') _appealClassification(item);
               if (value == 'download')
@@ -29064,6 +29956,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
               if (value == 'delete') _delete(item);
             },
             itemBuilder: (_) => [
+              if (_isOfficePreviewFile(item['name']?.toString()))
+                const PopupMenuItem(value: 'view', child: Text('צפייה במסמך')),
               PopupMenuItem(
                 value: 'send',
                 enabled: item['moderationStatus'] == 'approved',
@@ -29116,6 +30010,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         tooltip: 'פעולות',
         onSelected: (value) {
           if (value == 'send') _send(item);
+          if (value == 'view')
+            _openOfficeInsideApp(context, item['url'].toString(),
+                item['name']?.toString(), widget.token);
           if (value == 'reclassify') _reclassify(item);
           if (value == 'appeal') _appealClassification(item);
           if (value == 'download') {
@@ -29126,6 +30023,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           if (value == 'delete') _delete(item);
         },
         itemBuilder: (_) => [
+          if (_isOfficePreviewFile(item['name']?.toString()))
+            const PopupMenuItem(value: 'view', child: Text('צפייה במסמך')),
           PopupMenuItem(
             value: 'send',
             enabled: item['moderationStatus'] == 'approved',
@@ -29784,7 +30683,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final drive = jsonDecode(responses[0].body) as Map<String, dynamic>;
       final backup = jsonDecode(responses[1].body) as Map<String, dynamic>;
       final storage = backup['storage'] as Map<String, dynamic>? ?? const {};
-      final moderation = storage['by_moderation'] as List<dynamic>? ?? const [];
       final backupCounts =
           backup['backup'] as Map<String, dynamic>? ?? const {};
       final backupSettings =
@@ -29794,13 +30692,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _driveConfigured = drive['configured'] == true;
         _driveConnected = drive['connected'] == true;
         _storedFileCount = int.tryParse('${storage['file_count'] ?? 0}') ?? 0;
-        _approvedFileCount = moderation
-            .whereType<Map>()
-            .where((row) => row['moderation_status'] == 'approved')
-            .fold<int>(
-                0,
-                (sum, row) =>
-                    sum + (int.tryParse('${row['file_count'] ?? 0}') ?? 0));
+        _approvedFileCount =
+            int.tryParse('${storage['approved_total_files'] ?? 0}') ?? 0;
         _storedBytes = int.tryParse('${storage['total_bytes'] ?? 0}') ?? 0;
         _verifiedBackupFiles =
             int.tryParse('${backupCounts['verified_files'] ?? 0}') ?? 0;
@@ -30246,8 +31139,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ? 'מחיקת הפרופיל והחשבון לצמיתות'
             : 'איפוס נתונים'),
         content: Text(choice == 'account'
-            ? 'כל הנתונים והחשבון יימחקו, תתבצע יציאה ותועבר/י למסך הרשמה חדשה.'
-            : 'ההודעות, הקבצים, המיקום ופרטי הפרופיל יאופסו. האימייל, הטלפון וחשבון ההתחברות יישארו פעילים, ולאחר הפעולה תישאר/י מחובר/ת.'),
+            ? 'כל הנתונים והחשבון יימחקו, כולל הגיבויים המוצפנים ב־Google Drive. תתבצע יציאה ותועבר/י למסך הרשמה חדשה.'
+            : 'ההודעות, הקבצים, המיקום, פרטי הפרופיל והגיבויים המוצפנים ב־Google Drive יימחקו. האימייל, הטלפון וחשבון ההתחברות יישארו פעילים, ולאחר הפעולה תישאר/י מחובר/ת.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -30297,6 +31190,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : 'התוכן ופרטי הפרופיל נמחקו בהצלחה')));
           }
         }
+      } else if (deletingAccount &&
+          (response.statusCode == 401 || response.statusCode == 404)) {
+        // The delete may have committed while its HTTP response was interrupted.
+        // A missing account is success from this screen's point of view.
+        await widget.onAccountDeleted();
       } else {
         var message =
             deletingAccount ? 'מחיקת החשבון נכשלה' : 'מחיקת הנתונים נכשלה';
@@ -30307,10 +31205,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             .showSnackBar(SnackBar(content: Text(message)));
       }
     } catch (_) {
+      if (choice == 'account' && await _accountWasDeleted()) {
+        await widget.onAccountDeleted();
+        return;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('לא ניתן להתחבר לשרת. נסו שוב.')));
       }
+    }
+  }
+
+  Future<bool> _accountWasDeleted() async {
+    try {
+      final response = await http.get(Uri.parse('$kApi/users'), headers: {
+        'Authorization': 'Bearer ${widget.token}',
+      });
+      return response.statusCode == 401 || response.statusCode == 404;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -30421,8 +31334,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       leading: const Icon(Icons.perm_media_outlined,
                           color: kPrimary),
                       title: const Text('המדיה שלי'),
-                      subtitle: const Text(
-                          'טבלה, סינון, שליחה, הורדה ומחיקה בטוחה של הקבצים שלך'),
+                      subtitle: Text(
+                        '$_storedFileCount קבצים • ${_formatStorage(_storedBytes)}\n'
+                        'טבלה, סינון, שליחה, הורדה ומחיקה בטוחה',
+                      ),
+                      isThreeLine: true,
                       trailing: const Icon(Icons.chevron_left),
                       onTap: () => Navigator.push(
                         context,
@@ -30483,16 +31399,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ? null
                                 : _connectPersonalDrive,
                       ),
-                      const Divider(height: 1, indent: 16),
-                      ListTile(
-                        leading:
-                            const Icon(Icons.storage_outlined, color: kSubtext),
-                        title: const Text('מדיה השמורה כעת'),
-                        subtitle: Text('$_storedFileCount קבצים'),
-                        trailing: Text(_formatStorage(_storedBytes),
-                            textDirection: TextDirection.ltr,
-                            style: const TextStyle(color: kSubtext)),
-                      ),
                       if (_driveConnected) ...[
                         const Divider(height: 1, indent: 16),
                         SwitchListTile(
@@ -30500,7 +31406,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               color: kPrimary),
                           title: const Text('גיבוי אוטומטי ברקע'),
                           subtitle: Text(_automaticBackup
-                              ? 'פעיל • פינוי אפשרי רק לאחר 48 שעות וללא שימוש פעיל • $_verifiedBackupFiles מתוך $_approvedFileCount גובו ואומתו'
+                              ? 'פעיל • קובץ מפונה מיד לאחר גיבוי ואימות, אם אינו בשימוש • $_verifiedBackupFiles מתוך $_approvedFileCount גובו ואומתו'
                               : _serverKeyReady
                                   ? 'המפתח האישי שמור מוצפן בשרת'
                                   : 'דורש הסכמה ליצירת מפתח אישי בשרת'),

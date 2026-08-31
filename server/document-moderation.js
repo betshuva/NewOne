@@ -3,6 +3,10 @@
 const mammoth = require('mammoth');
 const ExcelJS = require('exceljs');
 
+function isPasswordProtectedDocumentError(error) {
+  return /password|encrypted/i.test(error?.message || String(error));
+}
+
 const DEFAULT_MAX_PDF_PAGES = 40;
 const DEFAULT_MAX_DOCX_IMAGES = 40;
 const DEFAULT_MAX_EXTRACTED_BYTES = 50 * 1024 * 1024;
@@ -241,7 +245,19 @@ async function scanDocument(buffer, mimetype, { scanImage, blockedWords = [],
       reason: 'המסמך נחסם — תוכן טקסטואלי לא הולם',
       documentVisualScan: { scanned: 0, total: visuals.length },
     };
-    return scanVisuals(visuals, scanImage, kind);
+    const result = await scanVisuals(visuals, scanImage, kind);
+    const classification = result.classification || {
+      category: null,
+      detectedCategories: [],
+      uncertain: false,
+    };
+    return {
+      ...result,
+      classification: {
+        ...classification,
+        documentVisualScan: result.documentVisualScan,
+      },
+    };
   } catch (error) {
     if (error?.code === 'DOCUMENT_VISUAL_LIMIT') return {
       blocked: true,
@@ -249,14 +265,25 @@ async function scanDocument(buffer, mimetype, { scanImage, blockedWords = [],
       reason: 'המסמך גדול או מורכב מדי לסריקה בטוחה',
       error: error.message,
     };
+    const decodeError = error?.message || String(error);
+    // Password-protected documents cannot become scannable on a later retry.
+    // Fail closed immediately instead of leaving a permanent pending card in
+    // the conversation and repeatedly spending worker time on the same file.
+    if (isPasswordProtectedDocumentError(error)) return {
+      blocked: true,
+      blockedBy: 'documentPassword',
+      reason: 'המסמך מוגן בסיסמה ולכן לא ניתן לסרוק ולאשר אותו',
+      error: decodeError,
+    };
     return {
       pending: true,
       blockedBy: 'documentDecode',
       reason: 'לא ניתן לפענח ולסרוק את כל תוכן המסמך כרגע',
-      error: error?.message || String(error),
+      error: decodeError,
     };
   }
 }
 
 module.exports = { documentLimits, excelCellText, extractXlsx,
-  mergedClassification, scanDocument, scanVisuals };
+  isPasswordProtectedDocumentError, mergedClassification, scanDocument,
+  scanVisuals };

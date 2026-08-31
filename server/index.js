@@ -12,6 +12,7 @@ const dns        = require('dns').promises;
 const net        = require('net');
 const multer     = require('multer');
 const { scanDocument: scanDocumentContent } = require('./document-moderation');
+const { createDocumentPreview } = require('./document-preview');
 const path       = require('path');
 const fs         = require('fs/promises');
 const { fork }   = require('child_process');
@@ -40,6 +41,12 @@ const { decryptBuffer: decryptBackupBuffer, deriveKey: deriveBackupKey,
   encryptBuffer: encryptBackupBuffer } =
   require('./media-backup-crypto');
 const { createVaultKey, unwrapVaultKey, wrapVaultKey } = require('./backup-vault-key');
+const {
+  MAX_AUDIO_SECONDS,
+  probeAudio,
+  transcribeAudio,
+  transcriptDigest,
+} = require('./audio-moderation');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
@@ -113,7 +120,7 @@ const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002';
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
 const SYSTEM_USER_NAME = 'אביאל – מדריך בתשובה';
 const SYSTEM_USER_PROFILE_PIC =
-  '/betshuva-app/assets/assets/guide/aviel-guide.png';
+  '/betshuva-app/assets/assets/guide/aviel-guide.jpg';
 const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
 const WELCOME_MESSAGE =
   'ברוך הבא לבתשובה 🌿\n\nשמחים שהצטרפת אלינו. כאן תקבל עדכונים חשובים, הודעות מערכת וטיפים שיעזרו לך להשתמש באפליקציה בבטחה ובנוחות.\n\nכך מוסיפים חברים:\n1. לחץ על סמל הוספת החבר (אדם עם סימן +) בחלק העליון של מסך השיחות.\n2. חפש לפי שם, מספר טלפון או כתובת אימייל.\n3. לחץ על „שמור” ליד האדם הרצוי.\n4. החבר יופיע ברשימת השיחות ותוכל לפתוח איתו שיחה.\n\nאם איש הקשר עדיין לא רשום, לחץ על „הזמן” כדי לשלוח לו קישור הצטרפות.\n\nמאחלים לך שיחות טובות ומועילות!';
@@ -874,6 +881,51 @@ function moderateChatText(value) {
   return { blocked: false };
 }
 
+async function scanAudio(buffer, fileName) {
+  try {
+    const result = await transcribeAudio(buffer, fileName);
+    const durationSeconds = Number(result.durationSeconds);
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0)
+      throw new Error('invalid audio duration');
+    if (durationSeconds > MAX_AUDIO_SECONDS) {
+      return {
+        blocked: true,
+        pending: false,
+        blockedBy: 'audio_duration',
+        reason: 'אורך ההקלטה המרבי הוא 2 דקות',
+        audio: { durationSeconds },
+      };
+    }
+    const transcript = String(result.transcript || '').trim();
+    const moderation = moderateChatText(transcript);
+    return {
+      blocked: moderation.blocked === true,
+      pending: false,
+      blockedBy: moderation.blocked ? 'audio_transcript' : null,
+      reason: moderation.blocked
+        ? 'ההקלטה נחסמה משום שהתמלול כולל תוכן פוגעני או אסור'
+        : null,
+      audio: {
+        source: 'local-whisper-small',
+        durationSeconds,
+        language: result.language || null,
+        languageProbability: Number(result.languageProbability) || null,
+        speechDetected: transcript.length > 0,
+        transcriptLength: transcript.length,
+        transcriptHash: transcriptDigest(transcript),
+      },
+    };
+  } catch (error) {
+    console.error('[audio-moderation] transcription failed:', error.message);
+    return {
+      blocked: false,
+      pending: true,
+      reason: 'סריקת ההקלטה ממתינה לעיבוד מקומי',
+      audio: { source: 'local-whisper-small', error: 'transcription_unavailable' },
+    };
+  }
+}
+
 function recordBlockedChat(userId, context, text, targetId, ip = null) {
   const digest = crypto.createHash('sha256').update(String(text || '')).digest('hex');
   logActivity(userId, 'blocked_chat_text', {
@@ -951,8 +1003,9 @@ function contentAllowedByFilter(filter, type, classification) {
   const normalized = normalizeContentFilter(filter);
   if (type === 'text') return normalized.text;
   if (type === 'document')
-    return normalized.text && (!classification ||
-      imageAllowedByFilter(normalized, classification));
+    return normalized.text &&
+      (!(classification?.detectedCategories?.length > 0) ||
+        imageAllowedByFilter(normalized, classification));
   if (type === 'video')
     return normalized.video && imageAllowedByFilter(normalized, classification);
   if (type === 'image') return imageAllowedByFilter(normalized, classification);
@@ -1047,7 +1100,7 @@ const scanLabelNames = {
   'person or people are visible': 'אדם',
   'animal or plant is visible': 'בעל חיים או צמח',
   'inanimate object landscape document or screenshot': 'דומם',
-  'not a person': 'ללא אדם',
+  'not a person': 'נוף או חפצים',
   'person or people': 'אדם או אנשים', animal: 'בעל חיים', plant: 'צמח',
   'inanimate object or landscape': 'חפץ, נוף או מסמך',
   men: 'גבר', women: 'אישה', children: 'ילד/ה',
@@ -2495,7 +2548,7 @@ function describeUploadDecision(row) {
   const details = row.moderation_details || {};
   const classification = details.classification || {};
   const labels = { men: 'גברים', women: 'נשים', children: 'ילדים',
-    people: 'אנשים', nonHumanImages: 'תוכן ללא בני אדם', landscape: 'נוף',
+    people: 'אנשים', nonHumanImages: 'נוף או חפצים', landscape: 'נוף או חפצים',
     video: 'וידאו' };
   const categories = (classification.detectedCategories || [])
     .filter(value => value !== 'video')
@@ -2615,7 +2668,7 @@ const GROUP_FILTER_ACTIONS = [
   { key: 'children', pattern: /ילד(?:ים|ות)?/, label: 'ילדים' },
   { key: 'video', pattern: /וידאו|סרטונ/, label: 'וידאו' },
   { key: 'text', pattern: /טקסט|הודעות טקסט/, label: 'טקסט' },
-  { key: 'nonHumanImages', pattern: /ללא (?:בני )?אדם|נוף|חפצים/, label: 'תמונות ללא בני אדם' },
+  { key: 'nonHumanImages', pattern: /ללא (?:בני )?אדם|נוף|חפצים/, label: 'תמונות נוף או חפצים' },
 ];
 
 async function handleSystemAction(pool, userId, question) {
@@ -2673,7 +2726,7 @@ async function handleSystemAction(pool, userId, question) {
   if (!asksGroupChange && !asksFilterChange) return null;
   const category = GROUP_FILTER_ACTIONS.find(item => item.pattern.test(text));
   if (!category)
-    return 'איזו קטגוריה לשנות? אפשר לבחור נשים, גברים, ילדים, וידאו, טקסט או תמונות ללא בני אדם.';
+    return 'איזו קטגוריה לשנות? אפשר לבחור נשים, גברים, ילדים, וידאו, טקסט או תמונות נוף או חפצים.';
   const enabled = /(?:^|\s)(אפשר|התר)/.test(text) && !/אל תאפשר/.test(text);
   const normalized = text.replace(/\s+/g, '').toLowerCase();
   if (!asksGroupChange) {
@@ -2862,13 +2915,28 @@ const serveReleasedDriveMedia = async (req, res, next) => {
     const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
     if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
       return res.status(400).end();
+    const pool = await getPool();
+    const moderation = await pool.query(
+      `SELECT moderation_status,file_type FROM stored_files
+       WHERE storage_path=$1 LIMIT 1`,
+      [relativePath]);
+    const fileState = moderation.rows[0];
+    if (fileState?.moderation_status === 'pending' ||
+        (fileState?.moderation_status === 'rejected' &&
+          fileState?.file_type === 'document')) {
+      res.set('Cache-Control', 'private, no-store');
+      return res.status(423).json({
+        error: fileState.moderation_status === 'pending'
+          ? 'הקובץ עדיין בבדיקה ואינו זמין לפתיחה או להורדה'
+          : 'המסמך נחסם ואינו זמין לפתיחה או להורדה',
+      });
+    }
     try {
       await fs.access(absolutePath);
       return next();
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const pool = await getPool();
     const result = await pool.query(
       `SELECT sf.id,sf.user_id,sf.mime_type,sf.file_size,sf.content_sha256,
               mbi.remote_file_id,mbi.encrypted_sha256,mbi.encryption_metadata,
@@ -5343,8 +5411,7 @@ app.get('/api/media-library', auth, async (req, res) => {
   }
 });
 
-async function loadMediaBytesForReview(file) {
-  if (file.file_type !== 'image') return { file, error: 'הפעולה זמינה לתמונות בלבד' };
+async function loadStoredFileBytes(file) {
   const localPath = path.resolve(UPLOAD_ROOT, file.storage_path);
   if (localPath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) {
     try { return { file, bytes: await fs.readFile(localPath) }; }
@@ -5357,6 +5424,11 @@ async function loadMediaBytesForReview(file) {
   if (!bytes.length || bytes.length > Number(file.file_size || 0) + 1024)
     throw new Error('Drive media size mismatch');
   return { file, bytes };
+}
+
+async function loadMediaBytesForReview(file) {
+  if (file.file_type !== 'image') return { file, error: 'הפעולה זמינה לתמונות בלבד' };
+  return loadStoredFileBytes(file);
 }
 
 async function loadOwnedMediaForReview(pool, userId, storedFileId) {
@@ -5388,6 +5460,41 @@ async function loadAccessibleMediaForReview(pool, userId, fileUrl) {
      ) LIMIT 1`, [userId, fileUrl]);
   return found.rows.length ? loadMediaBytesForReview(found.rows[0]) : null;
 }
+
+app.post('/api/document-preview', auth, messageRateLimit, async (req, res) => {
+  const fileUrl = String(req.body?.fileUrl || '');
+  if (!fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`))
+    return res.status(400).json({ error: 'כתובת המסמך אינה תקינה' });
+  try {
+    const pool = await getPool();
+    const found = await pool.query(
+      `SELECT sf.id,sf.user_id,sf.original_name,sf.storage_path,sf.public_url,
+              sf.mime_type,sf.file_type,sf.file_size,sf.moderation_status
+       FROM stored_files sf WHERE sf.public_url=$2 AND sf.moderation_status='approved' AND (
+         sf.user_id=$1 OR EXISTS (
+           SELECT 1 FROM messages m WHERE m.file_url=sf.public_url
+             AND m.deleted_for_everyone=FALSE AND (
+               m.sender_id=$1 OR m.recipient_id=$1 OR EXISTS (
+                 SELECT 1 FROM group_members gm WHERE gm.group_id=m.group_id
+                   AND gm.user_id=$1 AND gm.status='member')))
+         OR EXISTS (SELECT 1 FROM education_forms ef WHERE ef.file_url=sf.public_url
+           AND (ef.created_by=$1 OR EXISTS (SELECT 1 FROM group_members gm
+             WHERE gm.group_id=ef.group_id AND gm.user_id=$1 AND gm.status='member')))
+       ) LIMIT 1`, [req.user.id, fileUrl]);
+    if (!found.rows.length)
+      return res.status(404).json({ error: 'המסמך אינו זמין לצפייה' });
+    const loaded = await loadStoredFileBytes(found.rows[0]);
+    const preview = await createDocumentPreview(loaded.bytes,
+      loaded.file.original_name, loaded.file.mime_type);
+    res.set('Cache-Control', 'private, no-store');
+    res.json({ ...preview, fileName: loaded.file.original_name });
+  } catch (error) {
+    if (error?.code === 'UNSUPPORTED_PREVIEW')
+      return res.status(400).json({ error: 'תצוגה פנימית זמינה לקובצי Word ו־Excel בלבד' });
+    console.error('document preview:', error.message);
+    res.status(422).json({ error: 'לא ניתן להציג את המסמך. ייתכן שהוא פגום או מוגן בסיסמה' });
+  }
+});
 
 app.post('/api/media/reclassify', auth, messageRateLimit, async (req, res) => {
   const fileUrl = String(req.body?.fileUrl || '');
@@ -5572,8 +5679,11 @@ app.get('/api/backup', auth, async (req, res) => {
                 encrypted_data_key IS NOT NULL AS server_key_ready
          FROM user_backup_settings WHERE user_id=$1`, [req.user.id]),
       pool.query(
-        `SELECT COUNT(*)::int AS file_count,COALESCE(SUM(file_size),0)::bigint AS total_bytes
-         FROM stored_files WHERE user_id=$1 AND released_at IS NULL`, [req.user.id]),
+        `SELECT COUNT(*) FILTER (WHERE released_at IS NULL)::int AS file_count,
+                COALESCE(SUM(file_size) FILTER (WHERE released_at IS NULL),0)::bigint AS total_bytes,
+                COUNT(*) FILTER (WHERE moderation_status='approved')::int
+                  AS approved_total_files
+         FROM stored_files WHERE user_id=$1`, [req.user.id]),
       pool.query(
         `SELECT moderation_status,COUNT(*)::int AS file_count,
                 COALESCE(SUM(file_size),0)::bigint AS total_bytes
@@ -5596,11 +5706,8 @@ app.get('/api/backup', auth, async (req, res) => {
            COUNT(*) FILTER (WHERE candidate AND active_reference)::int AS protected_files
          FROM (
            SELECT sf.file_size,
-             (mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
-               AND sf.release_scheduled_at <= now() - INTERVAL '48 hours') AS candidate,
-             (mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
-               AND (sf.release_scheduled_at IS NULL
-                 OR sf.release_scheduled_at > now() - INTERVAL '48 hours')) AS grace_waiting,
+             (mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL) AS candidate,
+             FALSE AS grace_waiting,
              (EXISTS (SELECT 1 FROM messages m
                        WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
                OR EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)
@@ -6972,6 +7079,22 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
   const maxBytes = allowed.maxMB * 1024 * 1024;
   if (file.size > maxBytes)
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
+  if (allowed.dbType === 'audio') {
+    try {
+      const audio = await probeAudio(file.buffer, file.originalname);
+      if (audio.durationSeconds > MAX_AUDIO_SECONDS)
+        return res.status(400).json({
+          error: 'אורך ההקלטה המרבי הוא 2 דקות',
+          code: 'AUDIO_DURATION_EXCEEDED',
+        });
+    } catch (error) {
+      console.warn('[audio-moderation] audio probe failed:', error.message);
+      return res.status(400).json({
+        error: 'לא ניתן לקרוא את קובץ הקול או לזהות את משכו',
+        code: 'INVALID_AUDIO',
+      });
+    }
+  }
 
   try {
     const pool = await getPool();
@@ -7083,6 +7206,13 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       scanResult = await scanVideo(file.buffer, file.originalname, file.mimetype);
     else if (allowed.dbType === 'document')
       scanResult = await scanDocument(file.buffer, file.mimetype);
+    else if (allowed.dbType === 'audio')
+      scanResult = {
+        blocked: false,
+        pending: true,
+        reason: 'ההקלטה ממתינה לתמלול ולסריקה מקומית',
+        audio: { source: 'local-whisper-small' },
+      };
 
     if (scanResult) {
       scanResult.moderationVersion = MODERATION_CACHE_VERSION;
@@ -7206,7 +7336,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
           scanResult?.classification)) {
       const categories = scanResult?.classification?.detectedCategories ||
         [scanResult?.classification?.category || 'people'];
-      const labels = { nonHumanImages: 'תמונות ללא בני אדם', men: 'תמונות גברים',
+      const labels = { nonHumanImages: 'תמונות נוף או חפצים', men: 'תמונות גברים',
         women: 'תמונות נשים', children: 'תמונות ילדים', people: 'תמונות עם מספר אנשים' };
       const blockedCategories = categories.filter(category =>
         recipientPolicy.filter[category] !== true);
@@ -7627,7 +7757,7 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       groupId, messageId: row.id, fileName: fileName || null,
     }, req.ip);
     res.json({ id: row.id, createdAt: row.created_at, status: 'sent',
-      deliverySummary: deliveryPlan.summary });
+      classification, deliverySummary: deliveryPlan.summary });
   } catch (e) {
     console.error('POST /api/groups/:id/messages:', e.message);
     res.status(500).json({ error: e.message });
@@ -9419,6 +9549,80 @@ async function deleteStoredFile(url) {
   }
 }
 
+async function deleteUserPersonalDriveBackups(pool, userId) {
+  // Stop the queue before enumerating remote objects so no new backup can be
+  // created between cloud cleanup and deletion of the encryption key.
+  const settings = await pool.query(
+    'SELECT enabled FROM user_backup_settings WHERE user_id=$1', [userId]);
+  const wasEnabled = settings.rows[0]?.enabled === true;
+  await pool.query(
+    'UPDATE user_backup_settings SET enabled=FALSE,updated_at=now() WHERE user_id=$1',
+    [userId]);
+  // An already claimed worker may still be uploading. Give it a short window
+  // to persist its remote IDs; otherwise stop safely instead of orphaning the
+  // file it is about to create.
+  let uploading = 0;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const active = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM media_backup_items
+       WHERE user_id=$1 AND provider='google_drive' AND status='uploading'`,
+      [userId]);
+    uploading = active.rows[0]?.count || 0;
+    if (!uploading) break;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (uploading) {
+    if (wasEnabled) {
+      await pool.query(
+        'UPDATE user_backup_settings SET enabled=TRUE,updated_at=now() WHERE user_id=$1',
+        [userId]);
+    }
+    const error = new Error('A cloud backup is still being uploaded');
+    error.code = 'BACKUP_BUSY';
+    throw error;
+  }
+  const backups = await pool.query(
+    `SELECT remote_file_id,encryption_metadata
+     FROM media_backup_items
+     WHERE user_id=$1 AND provider='google_drive' AND remote_file_id IS NOT NULL`,
+    [userId]);
+  const remoteIds = new Set();
+  for (const row of backups.rows) {
+    if (row.remote_file_id) remoteIds.add(row.remote_file_id);
+    const manifestId = row.encryption_metadata?.manifestRemoteId;
+    if (manifestId) remoteIds.add(manifestId);
+  }
+  if (!remoteIds.size) return { deleted: 0 };
+  const account = await pool.query(
+    `SELECT encrypted_refresh_token FROM cloud_backup_accounts
+     WHERE user_id=$1 AND provider='google_drive'`, [userId]);
+  if (!account.rows[0]?.encrypted_refresh_token) {
+    if (wasEnabled) {
+      await pool.query(
+        'UPDATE user_backup_settings SET enabled=TRUE,updated_at=now() WHERE user_id=$1',
+        [userId]);
+    }
+    const error = new Error('Google Drive must be reconnected before account deletion');
+    error.code = 'BACKUP_RECONNECT_REQUIRED';
+    throw error;
+  }
+  const refreshToken = personalDrive.decryptRefreshToken(
+    account.rows[0].encrypted_refresh_token, userId);
+  for (const remoteId of remoteIds) {
+    await personalDrive.deleteAppDataFile(refreshToken, remoteId);
+  }
+  return { deleted: remoteIds.size };
+}
+
+async function prepareAccountBackupDeletion(pool, userId) {
+  try {
+    return await deleteUserPersonalDriveBackups(pool, userId);
+  } catch (error) {
+    console.error('account cloud backup delete:', error.message);
+    throw error;
+  }
+}
+
 // A signed-in user can permanently delete their own account. The confirmation
 // phrase protects against accidental requests and CSRF-like client mistakes.
 app.delete('/api/account', auth, async (req, res) => {
@@ -9426,6 +9630,20 @@ app.delete('/api/account', auth, async (req, res) => {
     return res.status(400).json({ error: 'נדרש אישור מחיקה מפורש' });
   const uid = req.user.id;
   const pool = await getPool();
+  let cloudBackupResult;
+  try {
+    cloudBackupResult = await prepareAccountBackupDeletion(pool, uid);
+  } catch (error) {
+    return res.status(['BACKUP_RECONNECT_REQUIRED', 'BACKUP_BUSY'].includes(error.code)
+      ? 409 : 502).json({
+      error: error.code === 'BACKUP_BUSY'
+        ? 'גיבוי עדיין נמצא בתהליך העלאה. יש לנסות שוב בעוד מספר שניות.'
+        : error.code === 'BACKUP_RECONNECT_REQUIRED'
+        ? 'יש לחבר מחדש את Google Drive לפני מחיקת החשבון והגיבוי.'
+        : 'מחיקת הגיבוי מ־Google Drive נכשלה. החשבון והמפתח לא נמחקו.',
+      code: error.code || 'BACKUP_CLOUD_DELETE_FAILED',
+    });
+  }
   const client = await pool.connect();
   let fileUrls = [];
   try {
@@ -9482,13 +9700,26 @@ app.delete('/api/account', auth, async (req, res) => {
     client.release();
   }
 
-  const fileResults = await Promise.all(
-    [...new Set(fileUrls)].map(url => deleteStoredFile(url)));
-  const filesPending = fileResults.filter(deleted => !deleted).length;
+  // The account is already committed as deleted. Acknowledge that irreversible
+  // result before disconnecting realtime or doing slower physical-file cleanup,
+  // otherwise the client can remain on a stale profile screen even though the
+  // user no longer exists.
+  res.json({ ok: true, filesPending: 0,
+    cloudBackupFilesDeleted: cloudBackupResult.deleted });
   const sid = onlineUsers.get(uid);
-  if (sid) io.sockets.sockets.get(sid)?.disconnect(true);
+  if (sid) {
+    const socket = io.sockets.sockets.get(sid);
+    socket?.emit('force_logout', { reason: 'החשבון נמחק' });
+    setTimeout(() => socket?.disconnect(true), 250);
+  }
   onlineUsers.delete(uid);
-  res.json({ ok: true, filesPending });
+  Promise.all([...new Set(fileUrls)].map(url => deleteStoredFile(url)))
+    .then(results => {
+      const filesPending = results.filter(deleted => !deleted).length;
+      if (filesPending > 0)
+        console.warn(`[ACCOUNT DELETE] ${filesPending} files pending cleanup for ${uid}`);
+    })
+    .catch(error => console.error('[ACCOUNT DELETE] file cleanup:', error.message));
 });
 
 // Delete the user's content and personal profile while keeping the login
@@ -9499,6 +9730,20 @@ app.delete('/api/account/data', auth, async (req, res) => {
     return res.status(400).json({ error: 'נדרש אישור מחיקת נתונים מפורש' });
   const uid = req.user.id;
   const pool = await getPool();
+  let cloudBackupResult;
+  try {
+    cloudBackupResult = await prepareAccountBackupDeletion(pool, uid);
+  } catch (error) {
+    return res.status(['BACKUP_RECONNECT_REQUIRED', 'BACKUP_BUSY'].includes(error.code)
+      ? 409 : 502).json({
+      error: error.code === 'BACKUP_BUSY'
+        ? 'גיבוי עדיין נמצא בתהליך העלאה. יש לנסות שוב בעוד מספר שניות.'
+        : error.code === 'BACKUP_RECONNECT_REQUIRED'
+        ? 'יש לחבר מחדש את Google Drive לפני מחיקת התוכן והגיבוי.'
+        : 'מחיקת הגיבוי מ־Google Drive נכשלה. התוכן והמפתח לא נמחקו.',
+      code: error.code || 'BACKUP_CLOUD_DELETE_FAILED',
+    });
+  }
   const client = await pool.connect();
   let fileUrls = [];
   try {
@@ -9539,6 +9784,11 @@ app.delete('/api/account/data', auth, async (req, res) => {
     await client.query('DELETE FROM audit_log WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM user_reports WHERE reporter_id=$1', [uid]);
     await client.query('UPDATE user_reports SET reviewed_by=NULL WHERE reviewed_by=$1', [uid]);
+    // The remote encrypted objects were deleted first. Remove the connection
+    // and wrapped key only now, inside the local data-deletion transaction.
+    await client.query('DELETE FROM media_backup_items WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM cloud_backup_accounts WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM user_backup_settings WHERE user_id=$1', [uid]);
     // File rows are removed by deleteStoredFile only after physical deletion.
     await client.query(`UPDATE users SET
       name='משתמש', email=NULL, phone=NULL, password_hash=NULL, google_id=NULL,
@@ -9560,7 +9810,8 @@ app.delete('/api/account/data', auth, async (req, res) => {
   const fileResults = await Promise.all(
     [...new Set(fileUrls)].map(url => deleteStoredFile(url)));
   const filesPending = fileResults.filter(deleted => !deleted).length;
-  res.json({ ok: true, filesPending });
+  res.json({ ok: true, filesPending,
+    cloudBackupFilesDeleted: cloudBackupResult.deleted });
 });
 
 app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
@@ -9789,7 +10040,7 @@ app.patch('/api/admin/classification-appeals/:id', adminAuth, async (req, res) =
          reviewer_note=$2,reviewed_at=now() WHERE id=$3`,
       [req.adminId || null, `הסיווג עודכן ל-${category}`, appeal.id]);
     const labels = { men: 'גברים', women: 'נשים', children: 'ילדים',
-      nonHumanImages: 'ללא בני אדם', people: 'אנשים' };
+      nonHumanImages: 'נוף או חפצים', people: 'אנשים' };
     const notice = `הבדיקה האנושית הסתיימה. הסיווג של „${appeal.original_name}” עודכן ל־${labels[category]}.`;
     const message = await client.query(
       `INSERT INTO messages(sender_id,recipient_id,body,type)
@@ -10391,6 +10642,8 @@ async function retryPendingScans() {
         }
         else if (row.file_type === 'video')
           scanResult = await scanVideo(buffer, row.file_name, row.mime_type);
+        else if (row.file_type === 'audio')
+          scanResult = await scanAudio(buffer, row.file_name);
         else
           scanResult = await scanDocument(buffer, row.mime_type);
 
@@ -10548,11 +10801,6 @@ async function retryPendingScans() {
             return saved.rows[0];
           });
           outcomePersisted = true;
-          const deliveryPlan = await buildGroupDeliveryPlan(
-            pool, row.group_id, row.user_id, row.file_type,
-            scanResult.classification || null);
-          await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
-            [JSON.stringify(deliveryPlan.summary), msg.id]);
           const payload = {
             id: msg.id, fromUserId: row.user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
@@ -10576,6 +10824,9 @@ async function retryPendingScans() {
         }
 
         if (row.group_id && pendingGroup) {
+          const deliveryPlan = await buildGroupDeliveryPlan(
+            pool, row.group_id, row.user_id, row.file_type,
+            scanResult.classification || null);
           const msg = await completePending(row.id, async client => {
             await client.query(
               `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
@@ -10585,6 +10836,9 @@ async function retryPendingScans() {
                VALUES ($1, $2, $3, $4, $5, $4)
                RETURNING id, created_at`,
               [row.user_id, row.group_id, row.file_type, row.file_name, row.file_url]);
+            await client.query(
+              'UPDATE messages SET delivery_summary=$1 WHERE id=$2',
+              [JSON.stringify(deliveryPlan.summary), saved.rows[0].id]);
             return saved.rows[0];
           });
           outcomePersisted = true;
@@ -10809,6 +11063,8 @@ function scheduleGovernmentLocalitiesSync() {
 const AUTOMATIC_BACKUP_CONCURRENCY = 4;
 
 async function runAutomaticBackupWorker(workerIndex) {
+  if (runAutomaticBackupWorker.running) return;
+  runAutomaticBackupWorker.running = true;
   let pool;
   let lockClient;
   let lockHeld = false;
@@ -10878,6 +11134,15 @@ async function runAutomaticBackupWorker(workerIndex) {
       [claimed.user_id, claimed.id, plainHash]);
     await lockClient.query('COMMIT');
     transactionOpen = false;
+    // The database claim is durable now. Do not retain a database connection
+    // during encryption and Google Drive network I/O.
+    if (lockHeld) {
+      await lockClient.query('SELECT pg_advisory_unlock($1)',
+        [7310426 + workerIndex]);
+      lockHeld = false;
+    }
+    lockClient.release();
+    lockClient = null;
     const backupId = crypto.randomUUID();
     const associatedData = `${claimed.user_id}/${claimed.id}/server-v1`;
     const key = unwrapVaultKey(claimed.encrypted_data_key, claimed.user_id);
@@ -10927,8 +11192,10 @@ async function runAutomaticBackupWorker(workerIndex) {
     if (lockHeld && lockClient)
       await lockClient.query('SELECT pg_advisory_unlock($1)', [7310426 + workerIndex]).catch(() => {});
     if (lockClient) lockClient.release();
+    runAutomaticBackupWorker.running = false;
   }
 }
+runAutomaticBackupWorker.running = false;
 
 async function runAutomaticRestoreQueue() {
   if (runAutomaticRestoreQueue.running) return;
@@ -11003,7 +11270,6 @@ async function runSafeReleaseQueue() {
          AND mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
          AND sf.released_at IS NULL
          AND sf.release_scheduled_at IS NOT NULL
-         AND sf.release_scheduled_at <= now()-INTERVAL '48 hours'
          AND NOT EXISTS (SELECT 1 FROM messages m
                          WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
          AND NOT EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)

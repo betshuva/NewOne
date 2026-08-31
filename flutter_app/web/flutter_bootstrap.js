@@ -6,8 +6,12 @@
 // own worker separately from index.html.
 for (const build of _flutter.buildConfig.builds) {
   if (build.mainJsPath === 'main.dart.js') {
-    build.mainJsPath = `main.dart.js?v=${Date.now()}`;
+    build.mainJsPath = 'main.dart.js?v=__BETSHUVA_BUILD_ID__';
   }
 }
 
-_flutter.loader.load();
+// Keep CanvasKit's GPU/WASM surface pool small. The app uses one primary view;
+// retaining the larger default pool wastes memory on constrained browsers.
+_flutter.loader.load({
+  config: { canvasKitMaximumSurfaces: 2 },
+});

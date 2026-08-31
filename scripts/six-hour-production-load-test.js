@@ -14,6 +14,7 @@ const base = process.env.LOAD_API_BASE || 'http://127.0.0.1:5003';
 const durationMs = Number(process.env.LOAD_DURATION_MS || 6 * 60 * 60 * 1000);
 const userCount = Number(process.env.LOAD_USERS || 60);
 const targetRps = Number(process.env.LOAD_RPS || 6);
+const cleanupAfter = process.env.LOAD_CLEANUP !== 'false';
 const prefix = process.env.LOAD_PREFIX || `LOADTEST-6H-${Date.now()}`;
 const password = `Load-${Date.now()}-Betshuva`;
 const outputDir = path.resolve(__dirname, '..', 'tmp', prefix);
@@ -111,6 +112,8 @@ async function setupGroups(pool) {
     const admin = users[g];
     const created = await request('/api/groups', { user: admin, method: 'POST', body: {
       name: `${prefix} קבוצה ${g + 1}`, description: 'קבוצת בדיקת עומס ל-6 שעות — נא לא למחוק',
+      content_filter: { text: true, nonHumanImages: true, men: true,
+        women: true, children: true, video: true },
     }});
     if (!created.data?.id) throw new Error(`Group creation failed: ${created.status}`);
     const group = { id: created.data.id, admin, members: [admin] };
@@ -119,7 +122,11 @@ async function setupGroups(pool) {
       await request(`/api/groups/${group.id}/members`, {
         user: admin, method: 'POST', body: { userId: member.id },
       });
-      const joined = await request(`/api/groups/${group.id}/join`, { user: member, method: 'POST' });
+      const joined = await request(`/api/groups/${group.id}/join`, {
+        user: member, method: 'POST', body: { filter: { text: true,
+          nonHumanImages: true, men: true, women: true, children: true,
+          video: true } },
+      });
       if (joined.status === 200) group.members.push(member);
     }
     groups.push(group);
@@ -131,22 +138,41 @@ async function setupGroups(pool) {
 }
 
 async function connectSockets() {
-  await Promise.all(users.map(user => new Promise((resolve, reject) => {
-    const socket = io(base, { auth: { token: user.token }, transports: ['websocket'],
-      reconnection: true, timeout: 15000 });
-    user.socket = socket;
-    sockets.push(socket);
-    socket.on('chat:message', () => totals.socketMessages++);
-    socket.on('group:message', () => totals.socketMessages++);
-    socket.on('call:incoming', payload => {
-      totals.calls++;
-      setTimeout(() => socket.emit('call:reject', { callId: payload.callId }), 250);
-    });
-    socket.once('connect', resolve);
-    socket.once('connect_error', reject);
-  })));
+  const realtimeUsers = users.slice(0, Math.min(users.length, 5));
+  await Promise.all(realtimeUsers.map(user =>
+      new Promise((resolve, reject) => {
+        const socket = io(base, { auth: { token: user.token },
+          transports: ['websocket'], reconnection: true, timeout: 15000,
+          autoConnect: false });
+        user.socket = socket;
+        sockets.push(socket);
+        socket.on('chat:message', () => totals.socketMessages++);
+        socket.on('group:message', () => totals.socketMessages++);
+        socket.on('call:incoming', payload => {
+          totals.calls++;
+          setTimeout(() => socket.emit('call:reject',
+            { callId: payload.callId }), 250);
+        });
+        const deadline = setTimeout(() => {
+          emit('socket-skipped', { user: user.index, reason: 'connect timeout' });
+          socket.disconnect();
+          resolve();
+        }, 10000);
+        socket.once('connect', () => { clearTimeout(deadline); resolve(); });
+        socket.once('connect_error', error => {
+          clearTimeout(deadline);
+          emit('socket-skipped', { user: user.index, reason: error.message });
+          socket.disconnect();
+          resolve();
+        });
+        socket.connect();
+      })));
+  if (users.length > realtimeUsers.length)
+    emit('socket-sampling', { connectedUsers: realtimeUsers.length,
+      httpOnlyUsers: users.length - realtimeUsers.length });
   for (const group of groups) {
-    for (const member of group.members) member.socket.emit('group:join', { groupId: group.id });
+    for (const member of group.members)
+      if (member.socket?.connected) member.socket.emit('group:join', { groupId: group.id });
   }
   emit('sockets-connected', { count: sockets.filter(s => s.connected).length });
 }
@@ -182,7 +208,7 @@ async function seedImages() {
 async function oneOperation(sequence) {
   const user = users[sequence % users.length];
   const peer = users[(user.index ^ 1) % users.length];
-  const choice = sequence % 20;
+  const choice = sequence % 28;
   if (choice < 7) return request('/api/messages', { user, method: 'POST', body: {
     toUserId: peer.id, text: `${prefix} הודעת עומס ${sequence}`,
   }});
@@ -193,11 +219,65 @@ async function oneOperation(sequence) {
       text: `${prefix} הודעה קבוצתית ${sequence}`,
     }});
   }
-  if (choice < 14) return request('/api/users', { user });
-  if (choice < 16) return request('/api/groups', { user });
-  if (choice < 18) return request('/api/messages/unread', { user });
-  if (choice === 18) return request(`/api/users/search?q=${encodeURIComponent(prefix.slice(0, 16))}`, { user });
-  return request('/api/profile', { user });
+  if (choice === 11) return request('/api/users', { user });
+  if (choice === 12) return request('/api/groups', { user });
+  if (choice === 13) return request('/api/messages/unread', { user });
+  if (choice === 14) return request(`/api/users/search?q=${encodeURIComponent(prefix.slice(0, 16))}`, { user });
+  if (choice === 15) return request('/api/profile', { user });
+  if (choice === 16) return request('/api/backup', { user });
+  if (choice === 17) return request('/api/backup/google/status', { user });
+  if (choice === 18) return request('/api/media-library?limit=20', { user });
+  if (choice === 19) return request('/api/filter-settings', { user });
+  if (choice === 20) return request('/api/blocked', { user });
+  if (choice === 21) return request('/api/listings', { user });
+  if (choice === 22) return request('/api/expressions/catalog', { user });
+  if (choice === 23) return request('/api/messages/recent-sent', { user });
+  if (choice === 24) return request('/api/message-requests', { user });
+  if (choice === 25) return request('/api/groups/unread', { user });
+  if (choice === 26) return request('/api/users/directory', { user });
+  return request('/api/calls/ice-servers', { user });
+}
+
+async function cleanup(pool) {
+  const ids = users.map(user => user.id);
+  if (!ids.length) return;
+  const files = await pool.query(
+    'SELECT storage_path FROM stored_files WHERE user_id=ANY($1::uuid[])', [ids]);
+  await pool.query('BEGIN');
+  try {
+    const groupIds = groups.map(group => group.id);
+    await pool.query(`DELETE FROM message_status WHERE user_id=ANY($1::uuid[])
+      OR message_id IN (SELECT id FROM messages WHERE sender_id=ANY($1::uuid[])
+      OR recipient_id=ANY($1::uuid[]) OR group_id=ANY($2::uuid[]))`,
+      [ids, groupIds]);
+    await pool.query(`DELETE FROM messages WHERE sender_id=ANY($1::uuid[])
+      OR recipient_id=ANY($1::uuid[]) OR group_id=ANY($2::uuid[])`,
+      [ids, groupIds]);
+    await pool.query('DELETE FROM pending_scans WHERE group_id=ANY($1::uuid[])',
+      [groupIds]);
+    await pool.query('DELETE FROM stored_files WHERE context_type=\'group\' AND context_id=ANY($1::uuid[])',
+      [groupIds]);
+    await pool.query('DELETE FROM group_members WHERE group_id=ANY($1::uuid[])',
+      [groupIds]);
+    await pool.query('DELETE FROM groups WHERE id=ANY($1::uuid[])', [groupIds]);
+    await pool.query('DELETE FROM pending_scans WHERE user_id=ANY($1::uuid[]) OR to_user_id=ANY($1::uuid[])', [ids]);
+    await pool.query('DELETE FROM activity_log WHERE user_id=ANY($1::uuid[])', [ids]);
+    await pool.query('DELETE FROM audit_log WHERE user_id=ANY($1::uuid[])', [ids]);
+    await pool.query('DELETE FROM stored_files WHERE user_id=ANY($1::uuid[])', [ids]);
+    await pool.query('DELETE FROM users WHERE id=ANY($1::uuid[])', [ids]);
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
+  const uploadRoot = path.resolve(__dirname, '..', 'uploads');
+  for (const file of files.rows) {
+    const absolute = path.resolve(uploadRoot, file.storage_path);
+    if (absolute.startsWith(`${uploadRoot}${path.sep}`))
+      fs.rmSync(absolute, { force: true });
+  }
+  emit('cleanup-complete', { users: ids.length, groups: groups.length,
+    files: files.rows.length });
 }
 
 function reportWindow(startedAt) {
@@ -231,7 +311,8 @@ async function sustainedRun() {
     if (Date.now() >= nextCall) {
       const caller = users[sequence % users.length];
       const callee = users[(sequence + 1) % users.length];
-      caller.socket.emit('call:start', { toUserId: callee.id });
+      if (caller.socket?.connected)
+        caller.socket.emit('call:start', { toUserId: callee.id });
       nextCall = Date.now() + 60000;
     }
     if (Date.now() >= nextUpload) {
@@ -259,16 +340,20 @@ async function main() {
     await connectSockets();
     await seedImages();
     await sustainedRun();
-    emit('complete', { prefix, totals, retained: true });
+    emit('complete', { prefix, totals, retained: !cleanupAfter });
     fs.writeFileSync(path.join(outputDir, 'summary.json'), JSON.stringify({ prefix, totals,
-      users: users.length, groups: groups.length, retained: true, completedAt: new Date().toISOString() }, null, 2));
+      users: users.length, groups: groups.length, retained: !cleanupAfter, completedAt: new Date().toISOString() }, null, 2));
   } catch (error) {
     emit('fatal', { message: error.message, stack: error.stack, retained: true });
     process.exitCode = 1;
   } finally {
     sockets.forEach(socket => socket.disconnect());
+    if (cleanupAfter) await sleep(2000).then(() => cleanup(pool)).catch(error => {
+      emit('cleanup-failed', { message: error.message });
+      process.exitCode = 1;
+    });
     log.end();
-    await pool.end();
+    setTimeout(() => process.exit(process.exitCode || 0), 50);
   }
 }
 

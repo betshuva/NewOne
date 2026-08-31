@@ -29,12 +29,11 @@ test('group messages use chronological scrolling without a reversed web edge', (
     /reverse: true/);
 });
 
-test('message image batches are layout-only and cannot capture wheel scrolling', () => {
-  const gridStart = source.indexOf('class _ConsecutiveImageGrid');
-  const gridEnd = source.indexOf('class _SharedContactCard', gridStart);
-  const gridSource = source.slice(gridStart, gridEnd);
-  assert.match(gridSource, /child: Wrap\(/);
-  assert.doesNotMatch(gridSource, /child: GridView/);
+test('chat images render separately while full-screen browsing stays available', () => {
+  assert.equal((source.match(/_ConsecutiveImageGrid\(/g) || []).length, 1);
+  assert.doesNotMatch(source, /imageRunStart|imageRunEnd|imageSequence/);
+  assert.match(source,
+    /ImagePreviewScreen\([\s\S]{0,600}urls: _conversationImageMessages/);
 });
 
 test('blocked upload images can be opened in the full-screen zoom viewer', () => {
@@ -44,6 +43,32 @@ test('blocked upload images can be opened in the full-screen zoom viewer', () =>
   assert.match(cardSource,
     /blocked && imageUrl != null[\s\S]*?ImagePreviewScreen\([\s\S]*?url: imageUrl!/);
   assert.match(cardSource, /Icons\.zoom_in/);
+});
+
+test('chat image tiles keep a stable height while media loads', () => {
+  const directStart = source.indexOf('class _MessageBubble');
+  const directEnd = source.indexOf('class _ImageStatusBadge', directStart);
+  const directSource = source.slice(directStart, directEnd);
+  const directImageStart = directSource.indexOf('_PersistentMediaImage(');
+  const directImage = directSource.slice(directImageStart, directImageStart + 900);
+  assert.equal((directImage.match(/height: 180/g) || []).length, 3);
+  assert.match(directImage, /width: 220,[\s\S]*?fit: BoxFit\.contain/);
+
+  const groupStart = source.indexOf('class _GroupChatScreenState');
+  const groupSource = source.slice(groupStart);
+  const groupImageStart = groupSource.indexOf('_PersistentMediaImage(');
+  const groupImage = groupSource.slice(groupImageStart, groupImageStart + 1800);
+  assert.equal((groupImage.match(/height: 160/g) || []).length, 3);
+  assert.match(groupImage, /width: 200,[\s\S]*?fit: BoxFit\.contain/);
+});
+
+test('PDF messages show a first-page preview and open inside the app', () => {
+  assert.match(source, /class _InAppPdfScreen/);
+  assert.match(source, /PdfViewer\.uri\(/);
+  assert.match(source, /class _PdfFirstPagePreview/);
+  assert.match(source, /PdfPageView\([\s\S]{0,180}pageNumber: 1/);
+  assert.match(source, /isPdfFile[\s\S]{0,220}_openPdfInsideApp/);
+  assert.match(source, /maxImageBytesCachedOnMemory: 32 \* 1024 \* 1024/);
 });
 
 test('contact filter status uses the full dynamic comparison table', () => {
@@ -174,4 +199,15 @@ test('visually equivalent uploads can reuse a current scan safely', () => {
   assert.match(serverSource, /visuallyEquivalent\(visualFingerprint/);
   assert.match(serverSource, /cacheMatch = 'visual'/);
   assert.match(serverSource, /visual_fingerprint JSONB/);
+});
+
+test('group history and realtime messages preserve file identity for PDF preview', () => {
+  const groupStart = source.indexOf('class _GroupChatScreenState');
+  const groupSource = source.slice(groupStart);
+  assert.match(groupSource,
+    /final isFile = map\['file_url'\] != null \|\| map\['file_name'\] != null;[\s\S]*?'isFile': isFile/);
+  assert.match(groupSource,
+    /'isFile': fileUrl != null \|\| fileName != null/);
+  assert.match(source, /class _PdfFirstPagePreview/);
+  assert.match(source, /PdfViewer\.uri/);
 });

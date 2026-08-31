@@ -8,6 +8,7 @@ flutter_linux.tar.xz
 uploads/
 tmp/
 backups/
+.venv-whisper/
 flutter_app/assets/expressions/items/
 flutter_app/assets/expressions/items-v2/
 flutter_app/assets/expressions/betshuva-expressions-sheet.png

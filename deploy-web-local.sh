@@ -17,6 +17,12 @@ cd "$flutter_dir"
 "$flutter_bin" pub get
 "$flutter_bin" build web --release --base-href "/betshuva-app/"
 
+# One stable cache key per deployment lets browsers reuse parsed/compiled
+# JavaScript across reloads while still invalidating every new release.
+build_id="$(date -u +%Y%m%d%H%M%S)"
+sed -i "s/__BETSHUVA_BUILD_ID__/$build_id/g" \
+  "$build_dir/index.html" "$build_dir/flutter_bootstrap.js"
+
 cd "$project_dir"
 rm -rf assets canvaskit icons
 cp -a "$build_dir/assets" "$build_dir/canvaskit" "$build_dir/icons" .
@@ -31,5 +37,6 @@ cp -a \
   "$flutter_dir/web/manifest.json" \
   .
 rm -f flutter_service_worker.js
+printf '%s' "$build_id" > .last_build_id
 
 echo "Web deployment completed: https://betshuva.com/betshuva-app/"

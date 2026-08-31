@@ -59,6 +59,19 @@ test('Google-login backup offer carries consent through OAuth and enables backup
   assert.match(flow, /wrapVaultKey\(createVaultKey\(\), state\.userId\)/);
 });
 
+test('Google Drive offer skips repeat consent when backup is already enabled', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
+  const screen = source.slice(
+    source.indexOf('class GoogleDriveBackupOfferScreen'),
+    source.indexOf('class GooglePhoneSetupScreen'));
+  assert.match(screen, /Uri\.parse\('\$kApi\/backup'\)/);
+  assert.match(screen, /settings\['enabled'\] == true/);
+  assert.match(screen, /if \(connected && enabled\)/);
+  assert.match(screen, /await _continue\(\)/);
+  assert.match(screen, /_statusLoading/);
+});
+
 test('manual backup accepts only approved owned files and never deletes the local copy', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
   const route = source.slice(source.indexOf("app.post('/api/backup/next'"),
@@ -95,13 +108,13 @@ test('release readiness reports automatic deletion with backup', () => {
   assert.doesNotMatch(route, /fs\.(unlink|rm)\(/);
 });
 
-test('safe release waits 48 hours and protects actively referenced media', () => {
+test('safe release is immediate after verification and protects active references', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
   const queue = source.slice(source.indexOf('async function runSafeReleaseQueue'),
     source.indexOf('const PORT'));
   assert.match(queue, /s\.enabled=TRUE/);
   assert.match(queue, /restore_verified_at IS NOT NULL/);
-  assert.match(queue, /INTERVAL '48 hours'/);
+  assert.doesNotMatch(queue, /INTERVAL '48 hours'/);
   assert.match(queue, /deleted_for_everyone=FALSE/);
   assert.match(queue, /profile_pic_url=sf\.public_url/);
   assert.match(queue, /listing_images li WHERE li\.url=sf\.public_url/);

@@ -1060,7 +1060,7 @@ function renderStrictModesty(strictModesty) {
   </div>`;
   if (!strictModesty.checked) return `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
     <strong>שלב 4 — בדיקת לבוש מחמיר</strong>
-    <div style="margin-top:5px;color:var(--text2);font-size:12px">לא נדרשה — לא זוהו בני אדם בוודאות</div>
+    <div style="margin-top:5px;color:var(--text2);font-size:12px">לא נדרשה — התוכן סווג כנוף או חפצים</div>
   </div>`;
   const categoryNames = {men:'גברים',women:'נשים',children:'ילדים'};
   const rows = (strictModesty.checks || []).map(check => {
@@ -1401,7 +1401,7 @@ function renderImageTestResult(data) {
     `<span class="vc-ss-item ${BAD_SS.includes(String(value))?'bad':'ok'}">${escHtml(key)}: ${escHtml(String(value))}</span>`).join('');
   const labels = (data.labels || []).map(label =>
     `<span class="vc-label ${label.blocked?'danger':''}">${escHtml(label.name)} ${Number(label.score || 0)}%</span>`).join('');
-  const categoryNames = {nonHumanImages:'ללא בני אדם',men:'גבר',women:'אישה',children:'ילד/ה',people:'מספר אנשים'};
+  const categoryNames = {nonHumanImages:'נוף או חפצים',men:'גבר',women:'אישה',children:'ילד/ה',people:'מספר אנשים'};
   const classification = data.classification || {};
   const strictModesty = renderStrictModesty(data.strictModesty || null);
   const localSafety = renderLocalSafety(data.localSafety || null);
@@ -1811,7 +1811,7 @@ async function loadScanPanel(type, offset) {
     if (!data.rows.length) { wrap.innerHTML = '<div class="empty">אין רשומות</div>'; return; }
 
     if (type === 'appeals') {
-      const labels = {men:'גברים',women:'נשים',children:'ילדים',nonHumanImages:'ללא בני אדם',people:'אנשים'};
+      const labels = {men:'גברים',women:'נשים',children:'ילדים',nonHumanImages:'נוף או חפצים',people:'אנשים'};
       wrap.innerHTML = `
         <table>
           <thead><tr><th></th><th>תאריך</th><th>משתמש</th><th>שם קובץ</th><th>סיווג נוכחי</th><th>הכרעה</th></tr></thead>
