@@ -995,14 +995,26 @@ async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
 
 function imageAllowedByFilter(filter, classification) {
   const detected = classification?.detectedCategories;
-  if (Array.isArray(detected) && detected.length)
-    return detected.every(category => filter[category] === true);
-  // The classifier can decide that an image may contain a person while still
-  // finding no evidence for men, women, or children. Do not turn that
-  // uncertainty into all three categories: doing so rejects harmless posters
-  // whenever any one of those filters is disabled. Explicit detections remain
-  // subject to the configured filter above.
-  if (classification?.uncertain === true && Array.isArray(detected)) return true;
+  if (Array.isArray(detected) && detected.length) {
+    const specificPeopleCategories = ['men', 'women', 'children'];
+    const hasSpecificPeopleCategory = detected.some(category =>
+      specificPeopleCategories.includes(category));
+    return detected.every(category => {
+      // `people` is an umbrella label emitted alongside a more precise label.
+      // Do not let the redundant umbrella override the recipient's explicit
+      // permission for men, women, or children. When it is the only person
+      // classification, retain the conservative all-person-categories rule.
+      if (category === 'people')
+        return hasSpecificPeopleCategory ||
+          specificPeopleCategories.every(value => filter[value] === true);
+      return filter[category] === true;
+    });
+  }
+  // An unresolved image can belong to any selectable image category. Deliver
+  // it only when the recipient explicitly allows every possibility.
+  if (classification?.uncertain === true)
+    return ['men', 'women', 'children', 'nonHumanImages']
+      .every(category => filter[category] === true);
   const category = classification?.category || 'people';
   if (category === 'people')
     return filter.men && filter.women && filter.children;
@@ -2194,7 +2206,18 @@ async function migrateDatabase() {
         CHECK (owner_id <> contact_id)
       )`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_override JSONB`);
+    await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_choice_confirmed BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS contact_filter_chat_entries (
+        id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        owner_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        contact_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        filter     JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (owner_id, contact_id),
+        CHECK (owner_id <> contact_id)
+      )`);
     // A new contact starts with an independent snapshot of the owner's
     // general filter. The user can still explicitly enable inheritance later.
     await pool.query(`
@@ -2202,6 +2225,18 @@ async function migrateDatabase() {
       SET filter_override=owner.content_filter
       FROM users owner
       WHERE contact.owner_id=owner.id AND contact.filter_override IS NULL`);
+    // Existing conversations predate the explicit-choice flag and must not
+    // start showing a first-message prompt retroactively.
+    await pool.query(`
+      UPDATE user_contacts contact
+      SET filter_choice_confirmed=TRUE
+      WHERE filter_choice_confirmed=FALSE AND EXISTS (
+        SELECT 1 FROM messages message
+        WHERE message.group_id IS NULL
+          AND message.deleted_for_everyone=FALSE
+          AND ((message.sender_id=contact.owner_id AND message.recipient_id=contact.contact_id)
+            OR (message.sender_id=contact.contact_id AND message.recipient_id=contact.owner_id))
+      )`);
     await pool.query(`
       CREATE OR REPLACE FUNCTION set_contact_default_filter()
       RETURNS TRIGGER AS $$
@@ -3603,7 +3638,8 @@ io.on('connection', async (socket) => {
       recordBlockedChat(socket.user.id, 'private_socket', text, toUserId,
         socket.handshake.address);
       socket.emit('message:rejected', { toUserId,
-        reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
+        reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
+        code: 'CHAT_CONTENT_BLOCKED' });
       return;
     }
     if (text && !normalizedStickerId) {
@@ -3765,7 +3801,8 @@ io.on('connection', async (socket) => {
       recordBlockedChat(socket.user.id, 'group_socket', text, groupId,
         socket.handshake.address);
       socket.emit('message:rejected', { groupId, clientMessageId,
-        reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור' });
+        reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
+        code: 'CHAT_CONTENT_BLOCKED' });
       return;
     }
     if (text && !normalizedStickerId) {
@@ -4489,14 +4526,25 @@ app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT c.filter_override, u.content_filter AS owner_filter
+      `SELECT c.filter_override, c.filter_choice_confirmed,
+              u.content_filter AS owner_filter,
+              EXISTS(
+                SELECT 1 FROM messages m
+                WHERE m.sender_id=$1 AND m.recipient_id=$2
+                  AND m.group_id IS NULL AND m.deleted_for_everyone=FALSE
+              ) AS has_sent_message
        FROM user_contacts c JOIN users u ON u.id=c.owner_id
        WHERE c.owner_id=$1 AND c.contact_id=$2`,
       [req.user.id, req.params.userId]);
     if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
     const inherited = normalizeContentFilter(result.rows[0].owner_filter);
     const override = result.rows[0].filter_override;
-    res.json({ inherited: !override, filter: normalizeContentFilter(override, inherited) });
+    res.json({
+      inherited: !override,
+      filter: normalizeContentFilter(override, inherited),
+      requiresChoice: result.rows[0].filter_choice_confirmed !== true &&
+        result.rows[0].has_sent_message !== true,
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -4527,13 +4575,27 @@ app.get('/api/contacts/:userId/filter-comparison', authWithDbCheck, async (req, 
       [req.user.id, req.params.userId]);
     if (!own.rows.length)
       return res.status(404).json({ error: 'איש הקשר לא נמצא' });
-    const recipient = await getEffectiveRecipientFilter(
-      pool, req.params.userId, req.user.id);
-    if (!recipient)
+    const relationship = await pool.query(
+      `SELECT
+         EXISTS(
+           SELECT 1 FROM user_contacts reciprocal
+           WHERE reciprocal.owner_id=$2 AND reciprocal.contact_id=$1
+         ) AND NOT EXISTS(
+           SELECT 1 FROM message_requests pending
+           WHERE pending.sender_id=$1 AND pending.recipient_id=$2
+         ) AS counterpart_filter_available`,
+      [req.user.id, req.params.userId]);
+    const counterpartFilterAvailable =
+      relationship.rows[0]?.counterpart_filter_available === true;
+    const recipient = counterpartFilterAvailable
+      ? await getEffectiveRecipientFilter(pool, req.params.userId, req.user.id)
+      : null;
+    if (counterpartFilterAvailable && !recipient)
       return res.status(404).json({ error: 'הנמען לא נמצא' });
     const inherited = normalizeContentFilter(own.rows[0].owner_filter);
     res.json({
-      recipientFilter: recipient.filter,
+      counterpartFilterAvailable,
+      recipientFilter: recipient?.filter || null,
       personalFilter: normalizeContentFilter(
         own.rows[0].filter_override, inherited),
     });
@@ -4541,22 +4603,66 @@ app.get('/api/contacts/:userId/filter-comparison', authWithDbCheck, async (req, 
 });
 
 app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, res) => {
+  let client;
   try {
     const pool = await getPool();
+    client = await pool.connect();
+    await client.query('BEGIN');
+    let filter;
+    let inherited = false;
     if (req.body?.inherit === true) {
-      const result = await pool.query(
-        'UPDATE user_contacts SET filter_override=NULL WHERE owner_id=$1 AND contact_id=$2 RETURNING owner_id',
+      const result = await client.query(
+        `UPDATE user_contacts
+         SET filter_override=NULL, filter_choice_confirmed=TRUE
+         WHERE owner_id=$1 AND contact_id=$2 RETURNING owner_id`,
         [req.user.id, req.params.userId]);
-      if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
-      return res.json({ inherited: true });
+      if (!result.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'איש הקשר לא נמצא' });
+      }
+      const owner = await client.query(
+        'SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
+      filter = normalizeContentFilter(owner.rows[0]?.content_filter);
+      inherited = true;
+    } else {
+      filter = normalizeContentFilter(req.body?.filter || req.body);
+      const result = await client.query(
+        `UPDATE user_contacts
+         SET filter_override=$1, filter_choice_confirmed=TRUE
+         WHERE owner_id=$2 AND contact_id=$3 RETURNING owner_id`,
+        [JSON.stringify(filter), req.user.id, req.params.userId]);
+      if (!result.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'איש הקשר לא נמצא' });
+      }
     }
-    const filter = normalizeContentFilter(req.body?.filter || req.body);
-    const result = await pool.query(
-      'UPDATE user_contacts SET filter_override=$1 WHERE owner_id=$2 AND contact_id=$3 RETURNING owner_id',
-      [JSON.stringify(filter), req.user.id, req.params.userId]);
-    if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
-    res.json({ inherited: false, filter });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const entry = await client.query(
+      `INSERT INTO contact_filter_chat_entries(owner_id,contact_id,filter)
+       VALUES($1,$2,$3)
+       ON CONFLICT(owner_id,contact_id) DO UPDATE SET filter=EXCLUDED.filter
+       RETURNING id,owner_id,contact_id,filter,created_at`,
+      [req.user.id, req.params.userId, JSON.stringify(filter)]);
+    await client.query('COMMIT');
+    const saved = entry.rows[0];
+    res.json({
+      inherited,
+      filter,
+      privateEntry: {
+        id: `private_filter_${saved.id}`,
+        sender_id: saved.owner_id,
+        recipient_id: saved.contact_id,
+        type: 'private_filter',
+        private_filter: saved.filter,
+        created_at: saved.created_at,
+        message_status: 'private',
+      },
+    });
+  } catch (e) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally {
+    client?.release();
+  }
 });
 
 // ── Contacts: match phone numbers with registered users ───────────
@@ -4788,7 +4894,29 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       ORDER BY mr.created_at DESC
       LIMIT 50
     `, scanParams);
-    const combined = [...result.rows, ...scans.rows, ...contactRequests.rows]
+    // These entries are selected only for their owner and never travel through
+    // the messages table or socket, so the contact cannot receive or read them.
+    const privateFilters = await pool.query(`
+      SELECT
+        'private_filter_' || entry.id::text AS id,
+        entry.owner_id AS sender_id,
+        entry.contact_id AS recipient_id,
+        'private_filter' AS type,
+        entry.filter AS private_filter,
+        entry.created_at,
+        'private' AS message_status
+      FROM contact_filter_chat_entries entry
+      WHERE entry.owner_id=$1 AND entry.contact_id=$2
+        ${before ? 'AND entry.created_at < $3' : ''}
+      ORDER BY entry.created_at DESC
+      LIMIT 50
+    `, scanParams);
+    const combined = [
+      ...result.rows,
+      ...scans.rows,
+      ...contactRequests.rows,
+      ...privateFilters.rows,
+    ]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .slice(-50);
     res.json(combined);
@@ -5013,7 +5141,7 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
     const filter = normalizeContentFilter(
       req.body?.filter, NEW_ACCOUNT_CONTENT_FILTER);
     await client.query(
-      `UPDATE user_contacts SET filter_override=$1
+      `UPDATE user_contacts SET filter_override=$1, filter_choice_confirmed=TRUE
        WHERE owner_id=$2 AND contact_id=$3`,
       [JSON.stringify(filter), req.user.id, request.sender_id]);
     const saved = await client.query(
@@ -7292,7 +7420,9 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         normalizedGroupFilter[category] !== true);
       const blockedLabel = blockedCategories
         .map(category => categoryLabels[category] || category).join(', ');
-      const reason = blockedLabel
+      const reason = scanResult?.classification?.uncertain === true
+        ? 'הסיווג אינו ודאי ולכן התמונה נחסמה בהתאם להגדרות הסינון'
+        : blockedLabel
         ? `התמונה סווגה כ${blockedLabel}, וקטגוריה זו חסומה בהגדרות הקבוצה`
         : 'סוג התוכן חסום בהגדרות הסינון של הקבוצה';
       await pool.query(
@@ -7374,7 +7504,9 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         women: 'תמונות נשים', children: 'תמונות ילדים', people: 'תמונות עם מספר אנשים' };
       const blockedCategories = categories.filter(category =>
         recipientPolicy.filter[category] !== true);
-      const reason = `${blockedCategories.map(category => labels[category] || category).join(', ') || 'סוג התמונה'} חסומות בהגדרות הנמען`;
+      const reason = scanResult?.classification?.uncertain === true
+        ? 'הסיווג אינו ודאי ולכן התמונה נחסמה בהתאם להגדרות הסינון של הנמען'
+        : `${blockedCategories.map(category => labels[category] || category).join(', ') || 'סוג התמונה'} חסומות בהגדרות הנמען`;
       logActivity(req.user.id, 'blocked_by_recipient_filter', {
         toUserId: req.body.toUserId, fileName: file.originalname, fileUrl: url,
         categories, classification: scanResult?.classification || null,
@@ -10396,7 +10528,7 @@ app.post('/api/admin/moderation', adminAuth, async (req, res) => {
 });
 
 // ── Storage diagnostic ───────────────────────────────────────────
-app.get('/api/test-storage', async (req, res) => {
+app.get('/api/test-storage', adminAuth, async (req, res) => {
   try {
     const testKey = `test/ping-${Date.now()}.txt`;
     const url = await uploadToBlob(Buffer.from('ping'), testKey, 'text/plain');
@@ -10942,6 +11074,31 @@ async function retryPendingScans() {
   }
 }
 
+async function recoverOrphanedPendingScans(pool) {
+  const recovered = await pool.query(`
+    INSERT INTO pending_scans
+      (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
+    SELECT sf.user_id,
+           CASE WHEN sf.context_type='chat' THEN sf.context_id END,
+           CASE WHEN sf.context_type='group' THEN sf.context_id END,
+           sf.public_url, sf.original_name, sf.file_type, sf.mime_type
+    FROM stored_files sf
+    WHERE sf.moderation_status='pending'
+      AND sf.context_type IN ('chat','group')
+      AND sf.created_at < now() - interval '30 seconds'
+      AND NOT EXISTS (
+        SELECT 1 FROM pending_scans ps WHERE ps.file_url=sf.public_url
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM messages m WHERE m.file_url=sf.public_url
+      )
+    RETURNING id
+  `);
+  if (recovered.rowCount)
+    console.log(`[moderation-recovery] queued ${recovered.rowCount} interrupted upload(s)`);
+  return recovered.rowCount;
+}
+
 const GOVERNMENT_LOCALITIES_RESOURCE =
   'f01dec33-b09b-482d-8413-e9b4fcbc4d7f';
 const GOVERNMENT_LOCALITIES_API =
@@ -11349,8 +11506,9 @@ async function startServer() {
   await fs.mkdir(UPLOAD_ROOT, { recursive: true });
   await migrateDatabase();
   await initPendingTable();
-  await migrateMessageBodiesAtRest();
   const pool = await getPool();
+  await recoverOrphanedPendingScans(pool);
+  await migrateMessageBodiesAtRest();
   const localityCount = await pool.query(
     'SELECT COUNT(*)::int AS count FROM israel_localities WHERE active=TRUE');
   if (!localityCount.rows[0].count) await syncGovernmentLocalities();

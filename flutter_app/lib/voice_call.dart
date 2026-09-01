@@ -36,7 +36,6 @@ class VoiceCallCoordinator {
   RTCVideoRenderer? _remoteAudioRenderer;
   MediaStream? _remoteAudioStream;
   String? _callId;
-  String? _otherUserId;
   String _otherName = 'משתמש';
   bool _outgoing = false;
   bool _ready = false;
@@ -87,7 +86,6 @@ class VoiceCallCoordinator {
       return;
     }
     _outgoing = true;
-    _otherUserId = userId;
     _otherName = name;
     _ui.value = const _CallUiState(status: 'מתחיל שיחה…');
     try {
@@ -338,7 +336,6 @@ class VoiceCallCoordinator {
       return;
     }
     _callId = callId;
-    _otherUserId = userId;
     _otherName = name;
     _outgoing = false;
     _ui.value = const _CallUiState(status: 'מתחבר…');
@@ -374,8 +371,9 @@ class VoiceCallCoordinator {
   }
 
   Future<void> _onAccepted(dynamic raw) async {
-    if (!_outgoing || raw is! Map || raw['callId']?.toString() != _callId)
+    if (!_outgoing || raw is! Map || raw['callId']?.toString() != _callId) {
       return;
+    }
     _ui.value = _ui.value.copyWith(status: 'מתחבר…');
     await _stopTone();
     await _restoreNativeAudioRoute();
@@ -392,8 +390,9 @@ class VoiceCallCoordinator {
   }
 
   Future<void> _onSignal(dynamic raw) async {
-    if (raw is! Map || raw['callId']?.toString() != _callId || _peer == null)
+    if (raw is! Map || raw['callId']?.toString() != _callId || _peer == null) {
       return;
+    }
     final signalRaw = raw['signal'];
     if (signalRaw is! Map) return;
     final signal = Map<String, dynamic>.from(signalRaw);
@@ -591,8 +590,9 @@ class VoiceCallCoordinator {
 
   Future<void> _finish({bool localOnly = false, String? reason}) async {
     final callId = _callId;
-    if (!localOnly && callId != null)
+    if (!localOnly && callId != null) {
       socket.emit('call:end', {'callId': callId});
+    }
     await _stopTone();
     _durationTimer?.cancel();
     _durationTimer = null;
@@ -609,7 +609,6 @@ class VoiceCallCoordinator {
     _localStream = null;
     _peer = null;
     _callId = null;
-    _otherUserId = null;
     _outgoing = false;
     _seconds = 0;
     _muted = false;
@@ -619,11 +618,13 @@ class VoiceCallCoordinator {
     _localCandidateCount = 0;
     _remoteCandidateCount = 0;
     final dialogContext = _activeDialogContext;
-    if (dialogContext != null && dialogContext.mounted)
+    if (dialogContext != null && dialogContext.mounted) {
       Navigator.pop(dialogContext);
+    }
     final context = contextProvider();
-    if (reason != null && context != null && context.mounted)
+    if (reason != null && context != null && context.mounted) {
       _snack(context, reason);
+    }
   }
 
   String _formatDuration(int value) =>

@@ -1,4 +1,5 @@
-// ignore_for_file: avoid_web_libraries_in_flutter
+// Legacy MediaRecorder bridge required by the current Flutter web integration.
+// ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:async';
 import 'dart:html' as html;
 import 'dart:typed_data';
@@ -15,11 +16,13 @@ Future<Uint8List> _blobBytes(html.Blob blob) async {
 }
 
 Future<XFile?> captureWebPhoto(BuildContext context) => showDialog<XFile>(
-    context: context, barrierDismissible: false,
+    context: context,
+    barrierDismissible: false,
     builder: (_) => const _WebCameraDialog(videoMode: false));
 
 Future<XFile?> captureWebVideo(BuildContext context) => showDialog<XFile>(
-    context: context, barrierDismissible: false,
+    context: context,
+    barrierDismissible: false,
     builder: (_) => const _WebCameraDialog(videoMode: true));
 
 class _WebCameraDialog extends StatefulWidget {
@@ -36,10 +39,17 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   html.MediaStream? _stream;
   html.MediaRecorder? _recorder;
   final List<html.Blob> _chunks = [];
-  bool _ready = false, _recording = false;
+  bool _ready = false, _recording = false, _startingRecording = false;
+  bool _capturingPhoto = false;
   int _seconds = 0;
   String? _error;
   Timer? _timer;
+  final Stopwatch _recordingClock = Stopwatch();
+
+  String _recordingTime() {
+    final seconds = _recordingClock.elapsed.inSeconds.clamp(0, 30);
+    return '00:${seconds.toString().padLeft(2, '0')}';
+  }
 
   @override
   void initState() {
@@ -58,66 +68,176 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   }
 
   Future<void> _openCamera() async {
+    if (mounted) {
+      setState(() {
+        _ready = false;
+        _error = null;
+      });
+    }
     try {
+      for (final track in _stream?.getTracks() ?? <html.MediaStreamTrack>[]) {
+        track.stop();
+      }
       final stream = await html.window.navigator.mediaDevices?.getUserMedia({
-        'video': {'facingMode': 'environment'}, 'audio': widget.videoMode,
+        'video': {'facingMode': 'environment'},
+        'audio': widget.videoMode,
       });
       if (stream == null) throw Exception('camera unavailable');
       _stream = stream;
       _preview.srcObject = stream;
-      await _preview.onLoadedMetadata.first;
-      if (mounted) setState(() => _ready = true);
-    } catch (_) {
-      if (mounted) setState(() => _error =
-          'לא ניתן לפתוח את המצלמה. יש לאשר הרשאת מצלמה ומיקרופון בדפדפן.');
+      if (_preview.readyState < 1) {
+        await _preview.onLoadedMetadata.first
+            .timeout(const Duration(seconds: 8));
+      }
+      await _preview.play();
+      if (_preview.videoWidth <= 0 || _preview.videoHeight <= 0) {
+        await _preview.onCanPlay.first.timeout(const Duration(seconds: 8));
+      }
+      if (_preview.paused) await _preview.play();
+      if (mounted) {
+        setState(() => _ready = true);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _ready = false;
+          _error =
+              'לא ניתן להפעיל את המצלמה. יש לאשר הרשאת מצלמה ומיקרופון בדפדפן ולנסות שוב.';
+        });
+      }
     }
   }
 
   Future<void> _takePhoto() async {
-    if (_preview.videoWidth <= 0 || _preview.videoHeight <= 0) return;
-    final canvas = html.CanvasElement(
-        width: _preview.videoWidth, height: _preview.videoHeight);
-    canvas.context2D.drawImage(_preview, 0, 0);
-    final bytes = await _blobBytes(await canvas.toBlob('image/jpeg', 0.9));
-    if (mounted) Navigator.pop(context, XFile.fromData(bytes,
-        name: 'camera-${DateTime.now().millisecondsSinceEpoch}.jpg',
-        mimeType: 'image/jpeg'));
+    if (_capturingPhoto ||
+        _preview.videoWidth <= 0 ||
+        _preview.videoHeight <= 0) {
+      return;
+    }
+    setState(() => _capturingPhoto = true);
+    try {
+      final canvas = html.CanvasElement(
+          width: _preview.videoWidth, height: _preview.videoHeight);
+      canvas.context2D.drawImage(_preview, 0, 0);
+      final bytes = await _blobBytes(await canvas.toBlob('image/jpeg', 0.9));
+      if (!mounted) return;
+      if (bytes.isEmpty) throw Exception('empty camera image');
+      Navigator.pop(
+        context,
+        XFile.fromData(bytes,
+            name: 'camera-${DateTime.now().millisecondsSinceEpoch}.jpg',
+            mimeType: 'image/jpeg'),
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _capturingPhoto = false;
+          _error = 'לא ניתן לעבד את התמונה. יש לנסות לצלם שוב.';
+        });
+      }
+    }
   }
 
-  String _mime() {
-    for (final value in const ['video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus', 'video/webm']) {
+  String? _supportedMime() {
+    for (final value in const [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ]) {
       if (html.MediaRecorder.isTypeSupported(value)) return value;
     }
-    return 'video/webm';
+    return null;
   }
 
   Future<void> _startRecording() async {
-    if (_stream == null) return;
-    _chunks.clear();
-    final recorder = html.MediaRecorder(_stream!, {'mimeType': _mime()});
-    _recorder = recorder;
-    recorder.addEventListener('dataavailable', (event) {
-      final data = (event as dynamic).data as html.Blob?;
-      if (data != null && data.size > 0) _chunks.add(data);
+    if (_stream == null || !_ready || _startingRecording) return;
+    setState(() {
+      _startingRecording = true;
+      _error = null;
     });
-    recorder.addEventListener('stop', (event) async {
-      final bytes = await _blobBytes(html.Blob(_chunks, _mime()));
-      if (mounted) Navigator.pop(context, XFile.fromData(bytes,
-          name: 'camera-${DateTime.now().millisecondsSinceEpoch}.webm',
-          mimeType: 'video/webm'));
-    });
-    recorder.start(1000);
-    setState(() { _recording = true; _seconds = 0; });
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      setState(() => _seconds++);
-      if (_seconds >= 30) _stopRecording();
-    });
+    try {
+      if (_preview.paused) await _preview.play();
+      _chunks.clear();
+      final mime = _supportedMime();
+      final recorder = mime == null
+          ? html.MediaRecorder(_stream!)
+          : html.MediaRecorder(_stream!, {'mimeType': mime});
+      _recorder = recorder;
+      recorder.addEventListener('dataavailable', (event) {
+        final data = (event as dynamic).data as html.Blob?;
+        if (data != null && data.size > 0) _chunks.add(data);
+      });
+      recorder.addEventListener('error', (_) {
+        _timer?.cancel();
+        _recordingClock.stop();
+        if (mounted) {
+          setState(() {
+            _recording = false;
+            _startingRecording = false;
+            _error = 'הדפדפן הפסיק את ההקלטה. נסה שוב או בחר סרטון מהמכשיר.';
+          });
+        }
+      });
+      recorder.addEventListener('stop', (_) async {
+        _timer?.cancel();
+        _recordingClock.stop();
+        if (_chunks.isEmpty) {
+          if (mounted) {
+            setState(() {
+              _recording = false;
+              _error = 'לא התקבל וידאו מהמצלמה. נסה שוב או בחר סרטון מהמכשיר.';
+            });
+          }
+          return;
+        }
+        final outputMime = mime ?? 'video/webm';
+        final bytes = await _blobBytes(html.Blob(_chunks, outputMime));
+        if (!mounted) return;
+        if (bytes.isEmpty) {
+          setState(() => _error = 'ההקלטה יצאה ריקה. יש לנסות שוב.');
+          return;
+        }
+        Navigator.pop(
+            context,
+            XFile.fromData(bytes,
+                name: 'camera-${DateTime.now().millisecondsSinceEpoch}.webm',
+                mimeType: outputMime.split(';').first));
+      });
+      recorder.start(1000);
+      _recordingClock
+        ..reset()
+        ..start();
+      setState(() {
+        _recording = true;
+        _startingRecording = false;
+        _seconds = 0;
+      });
+      _timer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+        if (!mounted) return;
+        final elapsedSeconds = _recordingClock.elapsed.inSeconds.clamp(0, 30);
+        if (elapsedSeconds != _seconds) {
+          setState(() => _seconds = elapsedSeconds);
+        }
+        if (_recordingClock.elapsed >= const Duration(seconds: 30)) {
+          _stopRecording();
+        }
+      });
+    } catch (_) {
+      _timer?.cancel();
+      _recordingClock.stop();
+      if (mounted) {
+        setState(() {
+          _recording = false;
+          _startingRecording = false;
+          _error = 'לא ניתן להתחיל הקלטה בדפדפן. נסה שוב או בחר סרטון מהמכשיר.';
+        });
+      }
+    }
   }
 
   void _stopRecording() {
     _timer?.cancel();
+    _recordingClock.stop();
     if (_recorder?.state == 'recording') _recorder?.stop();
     if (mounted) setState(() => _recording = false);
   }
@@ -130,6 +250,7 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   @override
   void dispose() {
     _timer?.cancel();
+    _recordingClock.stop();
     for (final track in _stream?.getTracks() ?? <html.MediaStreamTrack>[]) {
       track.stop();
     }
@@ -139,34 +260,70 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.videoMode ? 'צילום וידאו' : 'צילום תמונה'),
-    content: SizedBox(width: 560, child: Column(mainAxisSize: MainAxisSize.min,
-      children: [
-        if (_error != null)
-          Padding(padding: const EdgeInsets.all(20),
-            child: Text(_error!, textAlign: TextAlign.center))
-        else
-          AspectRatio(aspectRatio: 16 / 9, child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: HtmlElementView(viewType: _viewType))),
-        if (_recording) ...[
-          const SizedBox(height: 10),
-          Text('● מקליט  0:${_seconds.toString().padLeft(2, '0')} / 0:30',
-            style: const TextStyle(color: Colors.red,
-              fontWeight: FontWeight.bold)),
-        ],
-      ])),
-    actions: [
-      TextButton(onPressed: _close, child: const Text('ביטול')),
-      if (_error == null && !widget.videoMode)
-        FilledButton.icon(onPressed: _ready ? _takePhoto : null,
-          icon: const Icon(Icons.camera_alt), label: const Text('צלם תמונה')),
-      if (_error == null && widget.videoMode)
-        FilledButton.icon(
-          style: FilledButton.styleFrom(
-            backgroundColor: _recording ? Colors.red : null),
-          onPressed: !_ready ? null : _recording ? _stopRecording : _startRecording,
-          icon: Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
-          label: Text(_recording ? 'עצור ושמור' : 'התחל צילום')),
-    ]);
+          title: Text(widget.videoMode ? 'צילום וידאו' : 'צילום תמונה'),
+          content: SizedBox(
+              width: 560,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (_error != null)
+                  Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(children: [
+                        Text(_error!, textAlign: TextAlign.center),
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                            onPressed: _openCamera,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('נסה שוב')),
+                      ]))
+                else if (_capturingPhoto)
+                  const SizedBox(
+                    height: 315,
+                    child: Center(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 14),
+                        Text('מעבד את התמונה...'),
+                      ]),
+                    ),
+                  )
+                else
+                  AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: HtmlElementView(viewType: _viewType))),
+                if (_recording) ...[
+                  const SizedBox(height: 10),
+                  Directionality(
+                    textDirection: TextDirection.ltr,
+                    child: Text('● מקליט  ${_recordingTime()} / 00:30',
+                        style: const TextStyle(
+                            color: Colors.red, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ])),
+          actions: [
+            TextButton(onPressed: _close, child: const Text('ביטול')),
+            if (_error == null && !widget.videoMode)
+              FilledButton.icon(
+                  onPressed: _ready && !_capturingPhoto ? _takePhoto : null,
+                  icon: const Icon(Icons.camera_alt),
+                  label: Text(_capturingPhoto ? 'מעבד...' : 'צלם תמונה')),
+            if (_error == null && widget.videoMode)
+              FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                      backgroundColor: _recording ? Colors.red : null),
+                  onPressed: !_ready || _startingRecording
+                      ? null
+                      : _recording
+                          ? _stopRecording
+                          : _startRecording,
+                  icon:
+                      Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
+                  label: Text(_startingRecording
+                      ? 'מתחיל...'
+                      : _recording
+                          ? 'עצור ושמור'
+                          : 'התחל צילום')),
+          ]);
 }

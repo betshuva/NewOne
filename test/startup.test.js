@@ -25,6 +25,14 @@ test('server startup waits for all database initialization', () => {
   assert.ok(migrate >= 0 && pending > migrate && listen > pending);
 });
 
+test('server startup recovers uploads interrupted before scan queueing', () => {
+  assert.match(source, /async function recoverOrphanedPendingScans\(pool\)/);
+  assert.match(source, /sf\.moderation_status='pending'/);
+  assert.match(source, /sf\.context_type IN \('chat','group'\)/);
+  assert.match(source, /NOT EXISTS \(\s*SELECT 1 FROM pending_scans ps WHERE ps\.file_url=sf\.public_url/);
+  assert.match(source, /await recoverOrphanedPendingScans\(pool\)/);
+});
+
 test('JWT authentication has no built-in default secret', () => {
   assert.doesNotMatch(source, /JWT_SECRET\s*\|\|\s*['"][^'"]+['"]/);
   assert.match(source, /if \(!JWT_SECRET\)/);

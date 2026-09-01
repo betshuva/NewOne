@@ -1,4 +1,5 @@
-// ignore: deprecated_member_use
+// Legacy IndexedDB bridge required by the current Flutter web plugin interface.
+// ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:html' as html;
 import 'dart:typed_data';
 

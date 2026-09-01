@@ -141,6 +141,54 @@ test('an uncertain local result without demographics still reaches OpenAI', asyn
   assert.equal(result.verification.decision, 'non_human_confirmed');
 });
 
+test('an illustrated person can be rescued when Google person checks are unavailable', async () => {
+  const uncertain = {
+    category: null,
+    detectedCategories: [],
+    uncertain: true,
+    uncertainStage: 'people',
+  };
+  const unavailable = async () => ({ available: false, status: 'not_configured' });
+  const result = await verifyPersonClassification(Buffer.from('illustration'),
+    uncertain, {
+      scanObjects: unavailable,
+      scanFaces: unavailable,
+      classifyOpenAI: async () => ({
+        available: true,
+        decision: 'person',
+        personCategories: ['men'],
+        confidence: 0.94,
+      }),
+    });
+  assert.equal(result.classification.category, 'men');
+  assert.deepEqual(result.classification.detectedCategories, ['men']);
+  assert.equal(result.classification.uncertain, false);
+  assert.equal(result.verification.decision, 'person_confirmed_by_openai');
+});
+
+test('an unresolved second opinion remains uncertain when Google is unavailable', async () => {
+  const uncertain = {
+    category: null,
+    detectedCategories: [],
+    uncertain: true,
+    uncertainStage: 'people',
+  };
+  const unavailable = async () => ({ available: false, status: 'not_configured' });
+  const result = await verifyPersonClassification(Buffer.from('ambiguous'),
+    uncertain, {
+      scanObjects: unavailable,
+      scanFaces: unavailable,
+      classifyOpenAI: async () => ({
+        available: true,
+        decision: 'uncertain',
+        confidence: 0.62,
+      }),
+    });
+  assert.equal(result.classification.uncertain, true);
+  assert.deepEqual(result.classification.detectedCategories, []);
+  assert.equal(result.verification.decision, 'uncertain');
+});
+
 test('OpenAI JSON parser rejects unsupported decisions', () => {
   assert.deepEqual(parseOpenAIDecision(
     '{"decision":"non_human","person_category":"uncertain","confidence":0.98,"reason":"icon"}'),

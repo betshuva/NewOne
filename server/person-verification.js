@@ -69,7 +69,7 @@ async function classifyOpenAIPersonPresence(buffer, options = {}) {
         input: [{
           role: 'user',
           content: [
-            { type: 'input_text', text: 'Classify whether any real humans are visibly present, including people inside a screenshot or embedded photo. Symbols, icons and drawings without a real human are non_human. When people are present, list every visible demographic category supported by the image: men (adult men), women (adult women), and children (children or teenagers). Multiple categories may apply. Never infer child merely because a face or body is cropped. Return only JSON: {"decision":"person|non_human|uncertain","person_categories":["men|women|children"],"person_category":"men|women|children|uncertain","confidence":0.0,"reason":"short"}.' },
+            { type: 'input_text', text: 'Classify whether any human figure is visibly depicted. Count real people, people inside screenshots or embedded photos, and recognizable people in illustrations, drawings or cartoons. Symbols, icons, signs, objects and scenery without a recognizable human figure are non_human. When human figures are present, list every visible demographic category supported by the image: men (adult men), women (adult women), and children (children or teenagers). Multiple categories may apply. Never infer child merely because a face or body is cropped. Return only JSON: {"decision":"person|non_human|uncertain","person_categories":["men|women|children"],"person_category":"men|women|children|uncertain","confidence":0.0,"reason":"short"}.' },
             { type: 'input_image', image_url: `data:image/jpeg;base64,${buffer.toString('base64')}`, detail: 'low' },
           ],
         }],
@@ -142,9 +142,9 @@ async function verifyPersonClassification(buffer, classification, options) {
       }
     }
   }
-  if (!googleAvailable || googleFoundPerson) {
+  if (googleFoundPerson) {
     return { classification, verification: {
-      required: true, decision: googleFoundPerson ? 'person_confirmed' : 'uncertain',
+      required: true, decision: 'person_confirmed',
       confidence: objects.maxPersonScore || faces.faces?.[0]?.detectionConfidence || 0,
       providers,
     } };
@@ -153,9 +153,14 @@ async function verifyPersonClassification(buffer, classification, options) {
   const openai = await (options.classifyOpenAI || classifyOpenAIPersonPresence)(buffer);
   providers.openai = openai;
   if (openai.available && openai.decision === 'person') {
-    const category = openai.personCategory;
-    const verifiedClassification = ['men', 'women', 'children'].includes(category)
-      ? { ...classification, category, detectedCategories: [category],
+    const categories = Array.isArray(openai.personCategories)
+      ? openai.personCategories
+      : ['men', 'women', 'children'].includes(openai.personCategory)
+        ? [openai.personCategory] : [];
+    const verifiedClassification = categories.length
+      ? { ...classification,
+        category: categories.length === 1 ? categories[0] : 'people',
+        detectedCategories: categories,
         uncertain: false, uncertainStage: null }
       : { ...classification, category: 'people', detectedCategories: [],
         uncertain: true, uncertainStage: 'demographics' };
@@ -165,6 +170,13 @@ async function verifyPersonClassification(buffer, classification, options) {
   if (openai.available && openai.decision === 'uncertain') {
     return { classification, verification: { required: true,
       decision: 'uncertain', confidence: openai.confidence, providers } };
+  }
+
+  if (!googleAvailable && (!openai.available || openai.decision !== 'non_human')) {
+    return { classification, verification: {
+      required: true, decision: 'uncertain', confidence: openai.confidence || 0,
+      providers,
+    } };
   }
 
   const verification = {

@@ -10,6 +10,22 @@ cd "$repo_root/flutter_app"
 "$flutter_bin" pub get
 "$flutter_bin" build web --release --no-wasm-dry-run --base-href "$web_base"
 
+# Replace the source placeholder with a content-derived id on every build.
+# This gives browsers a new bootstrap and application URL immediately after a
+# deployment, even when an older Flutter bundle is still present in cache.
+build_id="$(sha256sum "$build_dir/main.dart.js" | cut -c1-16)"
+sed -i "s/__BETSHUVA_BUILD_ID__/$build_id/g" \
+  "$build_dir/index.html" "$build_dir/flutter_bootstrap.js"
+
+grep -Fq "?v=$build_id" "$build_dir/index.html" || {
+  echo "ERROR: index.html is missing the generated build id" >&2
+  exit 1
+}
+grep -Fq "?v=$build_id" "$build_dir/flutter_bootstrap.js" || {
+  echo "ERROR: flutter bootstrap is missing the generated build id" >&2
+  exit 1
+}
+
 grep -Fq "<base href=\"$web_base\">" "$build_dir/index.html" || {
   echo "ERROR: Flutter web build has an incorrect base href" >&2
   exit 1

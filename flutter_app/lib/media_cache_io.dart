@@ -27,7 +27,7 @@ Future<Uint8List?> readMediaCache(String key) async {
     );
     if (!await file.exists()) return null;
     await file.setLastModified(DateTime.now());
-    return file.readAsBytes();
+    return await file.readAsBytes();
   } catch (_) {
     return null;
   }

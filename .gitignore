@@ -8,6 +8,10 @@ flutter_linux.tar.xz
 uploads/
 tmp/
 backups/
+server.log
+listing-catalog.json.*.bak
+betshuva-1.2.97.apk
+betshuva-1.3.0.apk
 .venv-whisper/
 flutter_app/assets/expressions/items/
 flutter_app/assets/expressions/items-v2/

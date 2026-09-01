@@ -14,14 +14,17 @@ if [[ ! -x "$flutter_bin" ]]; then
 fi
 
 cd "$flutter_dir"
-"$flutter_bin" pub get
-"$flutter_bin" build web --release --base-href "/betshuva-app/"
+"$flutter_bin" build web --release --no-pub --no-wasm-dry-run --base-href "/betshuva-app/"
 
 # One stable cache key per deployment lets browsers reuse parsed/compiled
 # JavaScript across reloads while still invalidating every new release.
 build_id="$(date -u +%Y%m%d%H%M%S)"
-sed -i "s/__BETSHUVA_BUILD_ID__/$build_id/g" \
-  "$build_dir/index.html" "$build_dir/flutter_bootstrap.js"
+sed -i -E \
+  "s/(flutter_bootstrap\.js\?v=)(__BETSHUVA_BUILD_ID__|[0-9]+)/\1$build_id/g" \
+  "$build_dir/index.html"
+sed -i -E \
+  "s/(main\.dart\.js\?v=)(__BETSHUVA_BUILD_ID__|[0-9]+)/\1$build_id/g" \
+  "$build_dir/flutter_bootstrap.js"
 
 cd "$project_dir"
 rm -rf assets canvaskit icons

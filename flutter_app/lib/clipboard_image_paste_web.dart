@@ -1,4 +1,5 @@
-// ignore_for_file: avoid_web_libraries_in_flutter
+// Legacy DOM bridge required by the current Flutter web plugin interface.
+// ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:html' as html;
 import 'dart:typed_data';
 
@@ -39,9 +40,8 @@ class ClipboardImagePasteListener {
         final reader = html.FileReader()..readAsArrayBuffer(file);
         await reader.onLoad.first;
         final result = reader.result;
-        final bytes = result is ByteBuffer
-            ? Uint8List.view(result)
-            : result as Uint8List;
+        final bytes =
+            result is ByteBuffer ? Uint8List.view(result) : result as Uint8List;
         final extension = mimeType == 'image/gif'
             ? 'gif'
             : mimeType == 'image/webp'
@@ -49,7 +49,8 @@ class ClipboardImagePasteListener {
                 : mimeType == 'image/jpeg'
                     ? 'jpg'
                     : 'png';
-        await onImage(bytes,
+        await onImage(
+            bytes,
             'clipboard-${DateTime.now().millisecondsSinceEpoch}.$extension',
             mimeType);
       } finally {

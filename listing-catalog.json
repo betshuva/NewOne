@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "version": "20260901141219",
+  "updated_at": "2026-09-01T14:12:19.789Z",
+  "category_order": [
+    "הכל",
+    "רכב",
+    "נדל״ן",
+    "רהיטים",
+    "אלקטרוניקה",
+    "מחשבים",
+    "טלפונים וטאבלטים",
+    "מוצרי חשמל",
+    "בגדים והנעלה",
+    "תינוקות וילדים",
+    "ספרים",
+    "יודאיקה ותשמישי קדושה",
+    "כלי בית ומטבח",
+    "צעצועים ומשחקים",
+    "ספורט ופנאי",
+    "אופניים וקורקינטים",
+    "כלי עבודה",
+    "גינה וחצר",
+    "כלי נגינה",
+    "ציוד משרדי",
+    "ציוד לבעלי חיים",
+    "אספנות ואמנות",
+    "אחר"
+  ],
+  "category_fields": {},
+  "option_rules": [
+    {
+      "category": "מוצרי חשמל",
+      "field": "model",
+      "parents": {
+        "appliance_type": "שואב אבק",
+        "brand": "Roborock"
+      },
+      "mode": "add",
+      "values": [
+        "Saros 20 Complete"
+      ]
+    },
+    {
+      "category": "מוצרי חשמל",
+      "field": "model",
+      "parents": {
+        "appliance_type": "שואב אבק",
+        "brand": "Roborock"
+      },
+      "mode": "add",
+      "values": [
+        "Qrevo Curv"
+      ]
+    },
+    {
+      "category": "מוצרי חשמל",
+      "field": "model",
+      "parents": {
+        "appliance_type": "מיקסר",
+        "brand": "Sauter"
+      },
+      "mode": "add",
+      "values": [
+        "LW6810",
+        "LW6812",
+        "Sam688",
+        "KMS200",
+        "KMS220",
+        "KMS513",
+        "KMS612",
+        "KMS715",
+        "HM656",
+        "HMK300",
+        "ArtMix"
+      ]
+    }
+  ]
+}

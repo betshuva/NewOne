@@ -79,7 +79,8 @@ test('contact filter status uses the full dynamic comparison table', () => {
   assert.match(dialogSource, /SingleChildScrollView/);
   assert.match(dialogSource, /_InvitationFilterComparisonTable\(/);
   assert.match(dialogSource, /counterpartKind: 'החבר'/);
-  assert.match(dialogSource, /counterpartFilterLabel: 'סינון החבר'/);
+  assert.match(dialogSource, /מה מותר לשלוח ל„\$recipientName”/);
+  assert.match(dialogSource, /איזה תוכן אני מוכן לקבל מ„\$recipientName”/);
   assert.match(dialogSource, /onPersonalFilterChanged:/);
   assert.match(dialogSource, /filter-settings'[\s\S]*?Text\('שמור'\)/);
   assert.match(dialogSource, /await _loadContactFilterComparison\(\)/);
@@ -113,7 +114,8 @@ test('friend approval mirrors group approval with an inline editable filter tabl
   assert.match(approvalSource, /בקשת חברות מאת/);
   assert.match(approvalSource, /_InvitationFilterComparisonTable\(/);
   assert.match(approvalSource, /counterpartKind: 'החבר'/);
-  assert.match(approvalSource, /personalFilterLabel: 'הסינון שלי עבור \$senderName'/);
+  assert.match(approvalSource, /מה מותר לשלוח ל„\$senderName”/);
+  assert.match(approvalSource, /איזה תוכן אני מוכן לקבל מ„\$senderName”/);
   assert.match(approvalSource, /onPersonalFilterChanged:/);
   assert.match(approvalSource, /אשר והוסף כחבר/);
   assert.match(approvalSource, /Text\('דחה'\)/);
@@ -122,6 +124,178 @@ test('friend approval mirrors group approval with an inline editable filter tabl
   const socketStart = source.indexOf("_socket!.on('message:request'");
   const socketEnd = source.indexOf("_socket!.on('chat:message'", socketStart);
   assert.match(source.slice(socketStart, socketEnd), /_loadMessageRequests\(\)/);
+});
+
+test('the first outgoing message to a saved contact requires a receiving-filter choice', () => {
+  const guardStart = source.indexOf(
+    'Future<bool> _ensureFirstMessageFilterChoice()',
+  );
+  const guardEnd = source.indexOf('void _showMessageOptions', guardStart);
+  const guardSource = source.slice(guardStart, guardEnd);
+  assert.match(guardSource, /_requiresFirstMessageFilterChoice != true/);
+  assert.match(source, /body\['requiresChoice'\] == true/);
+  assert.match(guardSource, /_InvitationFilterComparisonTable\(/);
+  assert.match(guardSource, /showCounterpartFilter: false/);
+  assert.match(guardSource, /איזה תוכן אני מוכן לקבל מ/);
+  assert.match(guardSource, /contacts\/\$\{widget\.recipient\['id'\]\}\/filter-settings/);
+  assert.match(guardSource, /Text\('שמור והמשך'\)/);
+  assert.match(guardSource, /payload\['privateEntry'\]/);
+  assert.match(guardSource, /_messages\.add\(normalized\)/);
+  assert.match(source, /class _PrivateContactFilterEntry/);
+  assert.match(source, /רק אני רואה את ההגדרה הזו/);
+  assert.match(source, /אני מוכן לקבל מ„\$recipientName”/);
+  assert.match(source, /recipientAvatarUrl:/);
+  assert.match(source, /UserAvatar\(/);
+  assert.match(source, /guide_here\.png/);
+  assert.match(source, /Text\('עדכון הסינון'\)/);
+  assert.match(source, /onUpdate: _showContactFilterStatus/);
+  assert.match(source, /await _loadMessages\(silent: true\)/);
+  assert.match(source, /body\['counterpartFilterAvailable'\] == true/);
+  assert.match(source, /showCounterpartFilter: _counterpartFilterAvailable/);
+  assert.match(source, /לאחר שהחבר יאשר את הקשר/);
+  assert.match(source, /picUrl: widget\.recipient\['profile_pic_url'\]/);
+  assert.match(
+    source,
+    /showCounterpartFilter && groupFilter\?\[key\] == true/,
+  );
+  assert.match(
+    source,
+    /!showCounterpartFilter \|\|\s+groupFilter == null/,
+  );
+
+  const sendStart = source.indexOf('Future<void> _send({String? stickerId})');
+  const sendEnd = source.indexOf('void _showMessageOptions', sendStart);
+  const sendSource = source.slice(sendStart, sendEnd);
+  assert.match(
+    sendSource,
+    /if \(!await _ensureFirstMessageFilterChoice\(\)\) return;/,
+  );
+  assert.ok(
+    sendSource.indexOf('await _ensureFirstMessageFilterChoice()') <
+      sendSource.indexOf("_messages.add({"),
+    'the private filter must be saved before the message is added or sent',
+  );
+  const messageRequestStart = sendSource.indexOf("Uri.parse('$kApi/messages')");
+  const messageRequestEnd = sendSource.indexOf(');', messageRequestStart);
+  assert.doesNotMatch(
+    sendSource.slice(messageRequestStart, messageRequestEnd),
+    /filter|choice/,
+    'the private filter choice must not be included in the message request',
+  );
+
+  const uploadStart = source.indexOf('Future<void> _uploadAndSend(');
+  const uploadEnd = source.indexOf(
+    'Future<bool> _applyPrivateUploadResult',
+    uploadStart,
+  );
+  assert.match(
+    source.slice(uploadStart, uploadEnd),
+    /if \(!await _ensureFirstMessageFilterChoice\(\)\) return;/,
+  );
+});
+
+test('blocking closes embedded chat without popping the application route', () => {
+  const blockStart = source.indexOf('Future<void> _blockUser()');
+  const blockEnd = source.indexOf('Future<void> _sharePhoneContact', blockStart);
+  const blockSource = source.slice(blockStart, blockEnd);
+  assert.match(blockSource, /response\.statusCode != 200/);
+  assert.match(blockSource, /widget\.onBlocked\?\.call\(\)/);
+  assert.match(
+    blockSource,
+    /if \(widget\.embedded\) \{\s+widget\.onClose\?\.call\(\)/,
+  );
+  assert.match(
+    blockSource,
+    /else if \(Navigator\.of\(context\)\.canPop\(\)\)/,
+  );
+  assert.match(blockSource, /חסימת המשתמש נכשלה/);
+  assert.match(source, /_users\.removeWhere/);
+  assert.match(source, /onBlocked:/);
+});
+
+test('picked and recorded videos use the same inline upload animation as images', () => {
+  const privateUploadStart = source.indexOf('Future<void> _uploadAndSend(');
+  const privateUploadEnd = source.indexOf(
+    'Future<bool> _applyPrivateUploadResult',
+    privateUploadStart,
+  );
+  const privateUploadSource = source.slice(privateUploadStart, privateUploadEnd);
+  assert.match(privateUploadSource, /fileType == 'video'/);
+  assert.match(privateUploadSource, /'status': 'uploading'/);
+  assert.match(privateUploadSource, /_messages\.add\(/);
+
+  const groupUploadStart = source.indexOf('Future<void> _uploadGroupFile(');
+  const groupUploadEnd = source.indexOf(
+    'Future<void> _applyGroupUploadResult',
+    groupUploadStart,
+  );
+  const groupUploadSource = source.slice(groupUploadStart, groupUploadEnd);
+  assert.match(groupUploadSource, /fileType == 'video'/);
+  assert.match(groupUploadSource, /'status': 'uploading'/);
+
+  assert.match(
+    source,
+    /\(isVisualUpload \|\| fileType == 'audio'\) &&[\s\S]*?uploadStatus == 'uploading'/,
+  );
+  assert.match(source, /מעלה וסורק את \$typeLabel/);
+  assert.match(source, /העלאת הווידאו נכשלה/);
+});
+
+test('voice recordings use web opus, reject empty data, and preload duration', () => {
+  const privateVoiceStart = source.indexOf(
+    'Future<void> _toggleVoiceRecording()',
+  );
+  const privateVoiceEnd = source.indexOf('Future<void> _send(', privateVoiceStart);
+  const privateVoiceSource = source.slice(privateVoiceStart, privateVoiceEnd);
+  assert.match(privateVoiceSource, /AudioEncoder\.opus/);
+  assert.match(privateVoiceSource, /voice_message\.webm/);
+  assert.match(privateVoiceSource, /recordedSeconds < 1/);
+  assert.match(privateVoiceSource, /bytes\.length < 256/);
+  assert.match(privateVoiceSource, /await _audioRecorder\.isRecording\(\)/);
+
+  const groupVoiceStart = source.indexOf(
+    'Future<void> _toggleVoiceRecording()',
+    privateVoiceEnd,
+  );
+  const groupVoiceEnd = source.indexOf(
+    'void _scrollToBottom',
+    groupVoiceStart,
+  );
+  const groupVoiceSource = source.slice(groupVoiceStart, groupVoiceEnd);
+  assert.match(groupVoiceSource, /AudioEncoder\.opus/);
+  assert.match(groupVoiceSource, /bytes\.length < 256/);
+
+  const playerStart = source.indexOf('class _VoiceMessagePlayerState');
+  const playerEnd = source.indexOf('class _ChatVideoPlayer', playerStart);
+  const playerSource = source.slice(playerStart, playerEnd);
+  assert.match(playerSource, /_prepareSource\(\);/);
+  assert.match(playerSource, /await _player\.getDuration\(\)/);
+  assert.match(playerSource, /טוען הקלטה\.\.\./);
+  assert.match(playerSource, /הטעינה נכשלה — לחצו לניסיון חוזר/);
+  assert.match(playerSource, /await _player\.resume\(\)/);
+});
+
+test('contacts can be shared from app friends without exposing phone or email', () => {
+  const pickerStart = source.indexOf('Future<Map<String, String>?> _pickAppFriend');
+  const pickerEnd = source.indexOf(
+    'Future<Map<String, String>?> _confirmMyContactShare',
+    pickerStart,
+  );
+  const pickerSource = source.slice(pickerStart, pickerEnd);
+  assert.match(pickerSource, /Uri\.parse\('\$kApi\/users'\)/);
+  assert.match(pickerSource, /Text\('מהחברים שלי'\)/);
+  assert.match(pickerSource, /appUserId/);
+  assert.match(pickerSource, /profilePicUrl/);
+  assert.match(pickerSource, /יישלח שם, תמונה וקישור לצ׳אט בלבד/);
+
+  const cardStart = source.indexOf('class _SharedContactCard');
+  const cardEnd = source.indexOf('class _BetshuvaInvitePreview', cardStart);
+  const cardSource = source.slice(cardStart, cardEnd);
+  assert.match(cardSource, /UserAvatar\(picUrl: profilePicUrl/);
+  assert.match(cardSource, /appUserId\.isNotEmpty \? 'פתח צ׳אט'/);
+  assert.match(cardSource, /ChatScreen\(/);
+  assert.match(source, /_pickSharedContact\(context, widget\.token\)/);
+  assert.match(source, /_pickGroupSharedContact\(\s+context, widget\.token/);
 });
 
 test('new accounts, friendships and groups default to text and scenery only', () => {

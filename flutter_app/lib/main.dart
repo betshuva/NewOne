@@ -11,7 +11,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:smart_auth/smart_auth.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -147,8 +147,9 @@ Future<Map<String, String>?> _manualSharedContact(BuildContext context) async {
         ElevatedButton(
           onPressed: () {
             if (name.text.trim().isEmpty ||
-                (phone.text.trim().isEmpty && email.text.trim().isEmpty))
+                (phone.text.trim().isEmpty && email.text.trim().isEmpty)) {
               return;
+            }
             Navigator.pop(dialogContext, {
               'name': name.text.trim(),
               'phone': phone.text.trim(),
@@ -194,6 +195,121 @@ Future<Map<String, String>?> _pickPhoneContact(BuildContext context) async {
   };
 }
 
+Future<Map<String, String>?> _pickAppFriend(
+    BuildContext context, String token) async {
+  try {
+    final response = await http.get(
+      Uri.parse('$kApi/users'),
+      headers: {'Authorization': 'Bearer $token'},
+    ).timeout(const Duration(seconds: 10));
+    if (!context.mounted) return null;
+    if (response.statusCode != 200) throw Exception();
+    final friends = (jsonDecode(response.body) as List)
+        .cast<Map<String, dynamic>>()
+        .where((friend) => friend['id']?.toString() != kScanBotId)
+        .toList();
+    var query = '';
+    return await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final visible = friends
+              .where((friend) => (friend['name']?.toString() ?? '')
+                  .toLowerCase()
+                  .contains(query.toLowerCase()))
+              .toList();
+          return AlertDialog(
+            title: const Text('בחירת חבר לשיתוף'),
+            content: SizedBox(
+              width: 430,
+              height: 430,
+              child: Column(children: [
+                TextField(
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    hintText: 'חיפוש חבר...',
+                    prefixIcon: Icon(Icons.search),
+                  ),
+                  onChanged: (value) =>
+                      setDialogState(() => query = value.trim()),
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: visible.isEmpty
+                      ? const Center(child: Text('לא נמצאו חברים'))
+                      : ListView.builder(
+                          itemCount: visible.length,
+                          itemBuilder: (_, index) {
+                            final friend = visible[index];
+                            final name = friend['name']?.toString() ?? 'חבר';
+                            return ListTile(
+                              leading: UserAvatar(
+                                picUrl: friend['profile_pic_url']?.toString(),
+                                name: name,
+                                radius: 21,
+                              ),
+                              title: Text(name),
+                              subtitle: const Text(
+                                  'יישלח שם, תמונה וקישור לצ׳אט בלבד'),
+                              onTap: () => Navigator.pop(dialogContext, {
+                                'name': name,
+                                'appUserId': friend['id'].toString(),
+                                if (friend['profile_pic_url'] != null)
+                                  'profilePicUrl':
+                                      friend['profile_pic_url'].toString(),
+                              }),
+                            );
+                          },
+                        ),
+                ),
+              ]),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('ביטול'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('לא ניתן לטעון כעת את רשימת החברים')),
+      );
+    }
+    return null;
+  }
+}
+
+Future<Map<String, String>?> _pickSharedContact(
+    BuildContext context, String token) async {
+  final source = await showModalBottomSheet<String>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        ListTile(
+          leading: const Icon(Icons.people_outline, color: kPrimary),
+          title: const Text('מהחברים שלי'),
+          subtitle: const Text('שיתוף שם, תמונה וקישור לצ׳אט'),
+          onTap: () => Navigator.pop(sheetContext, 'app'),
+        ),
+        ListTile(
+          leading: const Icon(Icons.contact_phone_outlined),
+          title: Text(kIsWeb ? 'איש קשר חדש' : 'איש קשר מהטלפון'),
+          onTap: () => Navigator.pop(sheetContext, 'phone'),
+        ),
+      ]),
+    ),
+  );
+  if (source == null || !context.mounted) return null;
+  return source == 'app'
+      ? _pickAppFriend(context, token)
+      : _pickPhoneContact(context);
+}
+
 Future<Map<String, String>?> _confirmMyContactShare(
     BuildContext context, String token,
     {bool isGroup = false}) async {
@@ -220,43 +336,83 @@ Future<Map<String, String>?> _confirmMyContactShare(
       'phone': data['phone']?.toString() ?? '',
       'email': data['email']?.toString() ?? '',
     };
-    final confirmed = await showDialog<bool>(
+    var shareName = contact['name']!.isNotEmpty;
+    var sharePhone = contact['phone']!.isNotEmpty;
+    var shareEmail = contact['email']!.isNotEmpty;
+    final selectedContact = await showDialog<Map<String, String>>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('שיתוף הפרטים שלי'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (isGroup)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: Text(
-                  'שימו לב: כל חברי הקבוצה יוכלו לראות ולשמור את הפרטים.',
-                  style: TextStyle(color: Colors.orange),
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final hasSelection = shareName || sharePhone || shareEmail;
+          return AlertDialog(
+            title: const Text('שיתוף הפרטים שלי'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (isGroup)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      'שימו לב: כל חברי הקבוצה יוכלו לראות ולשמור את הפרטים.',
+                      style: TextStyle(color: Colors.orange),
+                    ),
+                  ),
+                const Text('בחרו אילו פרטים לשתף:'),
+                CheckboxListTile(
+                  value: shareName,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('שם: ${contact['name']}'),
+                  onChanged: contact['name']!.isEmpty
+                      ? null
+                      : (value) =>
+                          setDialogState(() => shareName = value ?? false),
                 ),
+                if (contact['phone']!.isNotEmpty)
+                  CheckboxListTile(
+                    value: sharePhone,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('טלפון: ${contact['phone']}'),
+                    onChanged: (value) =>
+                        setDialogState(() => sharePhone = value ?? false),
+                  ),
+                if (contact['email']!.isNotEmpty)
+                  CheckboxListTile(
+                    value: shareEmail,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('אימייל: ${contact['email']}'),
+                    onChanged: (value) =>
+                        setDialogState(() => shareEmail = value ?? false),
+                  ),
+                if (!hasSelection)
+                  const Text(
+                    'יש לבחור לפחות פרט אחד',
+                    style: TextStyle(color: Colors.red),
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('ביטול'),
               ),
-            Text('שם: ${contact['name']}'),
-            if (contact['phone']!.isNotEmpty)
-              Text('טלפון: ${contact['phone']}'),
-            if (contact['email']!.isNotEmpty)
-              Text('אימייל: ${contact['email']}'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('ביטול'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            icon: const Icon(Icons.send_outlined),
-            label: const Text('שתף'),
-          ),
-        ],
+              ElevatedButton.icon(
+                onPressed: !hasSelection
+                    ? null
+                    : () => Navigator.pop(dialogContext, <String, String>{
+                          if (shareName) 'name': contact['name']!,
+                          if (sharePhone) 'phone': contact['phone']!,
+                          if (shareEmail) 'email': contact['email']!,
+                        }),
+                icon: const Icon(Icons.send_outlined),
+                label: const Text('שתף'),
+              ),
+            ],
+          );
+        },
       ),
     );
-    return confirmed == true ? contact : null;
+    return selectedContact;
   } catch (_) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -267,12 +423,16 @@ Future<Map<String, String>?> _confirmMyContactShare(
   }
 }
 
-Future<Map<String, String>?> _pickGroupSharedContact(
-    BuildContext context, List<Map<String, dynamic>> members) async {
+Future<Map<String, String>?> _pickGroupSharedContact(BuildContext context,
+    String token, List<Map<String, dynamic>> members) async {
   final source = await showModalBottomSheet<String>(
     context: context,
     builder: (sheetContext) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+      ListTile(
+          leading: const Icon(Icons.people_outline),
+          title: const Text('מהחברים שלי'),
+          onTap: () => Navigator.pop(sheetContext, 'app')),
       ListTile(
           leading: const Icon(Icons.contact_phone_outlined),
           title: const Text('איש קשר מהטלפון'),
@@ -284,6 +444,7 @@ Future<Map<String, String>?> _pickGroupSharedContact(
     ])),
   );
   if (source == null || !context.mounted) return null;
+  if (source == 'app') return _pickAppFriend(context, token);
   if (source == 'phone') return _pickPhoneContact(context);
   final member = await showModalBottomSheet<Map<String, dynamic>>(
     context: context,
@@ -652,11 +813,12 @@ class _InAppPdfScreenState extends State<_InAppPdfScreen> {
           limitRenderingCache: true,
           maxImageBytesCachedOnMemory: 32 * 1024 * 1024,
           onViewerReady: (document, controller) {
-            if (mounted)
+            if (mounted) {
               setState(() {
                 _pages = document.pages.length;
                 _page = controller.pageNumber ?? 1;
               });
+            }
           },
           onPageChanged: (pageNumber) {
             if (mounted) setState(() => _page = pageNumber);
@@ -855,8 +1017,9 @@ class _OfficeDocumentScreenState extends State<_OfficeDocumentScreen> {
 
   Widget _excelView(Map<String, dynamic> data) {
     final sheets = (data['sheets'] as List? ?? const []).cast<Map>();
-    if (sheets.isEmpty)
+    if (sheets.isEmpty) {
       return const Center(child: Text('הקובץ אינו מכיל גיליונות'));
+    }
     final sheet = sheets[_sheetIndex.clamp(0, sheets.length - 1)];
     final rows = (sheet['rows'] as List? ?? const []).cast<List>();
     return Column(children: [
@@ -864,7 +1027,7 @@ class _OfficeDocumentScreenState extends State<_OfficeDocumentScreen> {
         Padding(
           padding: const EdgeInsets.all(10),
           child: DropdownButtonFormField<int>(
-            value: _sheetIndex,
+            initialValue: _sheetIndex,
             decoration:
                 const InputDecoration(labelText: 'גיליון', isDense: true),
             items: [
@@ -1017,7 +1180,7 @@ Future<void> _showReportDialog({
           width: 440,
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             DropdownButtonFormField<String>(
-              value: selectedReason,
+              initialValue: selectedReason,
               decoration: const InputDecoration(
                 labelText: 'סיבת הדיווח',
                 border: OutlineInputBorder(),
@@ -1121,12 +1284,17 @@ bool _hasVideoExtension(String? value) {
 
 String? _normalizeIncomingFileType(String? fileType,
     {String? fileUrl, String? fileName}) {
-  // Extension check takes priority — DB may store 'text' even for image messages
-  if (_hasImageExtension(fileUrl) || _hasImageExtension(fileName))
-    return 'image';
-  if (_hasVideoExtension(fileUrl) || _hasVideoExtension(fileName))
-    return 'video';
   final t = (fileType ?? '').trim().toLowerCase();
+  // Web voice recordings use the WebM container too. An explicit audio type
+  // must win over the ambiguous .webm extension, which can also contain video.
+  if (t == 'audio' || t.startsWith('audio/')) return 'audio';
+  // Extension check takes priority — DB may store 'text' even for image messages
+  if (_hasImageExtension(fileUrl) || _hasImageExtension(fileName)) {
+    return 'image';
+  }
+  if (_hasVideoExtension(fileUrl) || _hasVideoExtension(fileName)) {
+    return 'video';
+  }
   if (t.isEmpty) return null;
   if (t == 'image' || t.startsWith('image/')) return 'image';
   return t;
@@ -1217,7 +1385,20 @@ const _maxConcurrentImageUploads = 2;
 var _uploadMessageSequence = 0;
 
 String _newUploadMessageId(String prefix) =>
-    '${prefix}${DateTime.now().microsecondsSinceEpoch}_${_uploadMessageSequence++}';
+    '$prefix${DateTime.now().microsecondsSinceEpoch}_${_uploadMessageSequence++}';
+
+bool _isLocalOnlyChatMessage(Map<String, dynamic> message) {
+  final id = message['id']?.toString() ?? '';
+  final status = message['status']?.toString();
+  return id.startsWith('temp_') ||
+      id.startsWith('failed_') ||
+      id.startsWith('uploading_') ||
+      status == 'failed' ||
+      status == 'uploading';
+}
+
+const _blockedContentText =
+    'הודעה זו נחסמה בגלל תוכן לא ראוי\nהיא תימחק אוטומטית בעוד 2 דקות';
 
 bool _looksLikeSticker(String text) {
   final value = text.trim();
@@ -1327,6 +1508,8 @@ Future<List<_FileUploadResult>> _runImageUploadQueue(
   return results.cast<_FileUploadResult>();
 }
 
+// Retained for the native multi-image flow.
+// ignore: unused_element
 Future<void> _showImageBatchProgress(
     BuildContext context, ValueNotifier<int> completed, int total) {
   return showDialog<void>(
@@ -1561,7 +1744,7 @@ Future<void> _clearGroupMessagesCache(Object? userId, Object? groupId) async {
 }
 
 Future<void> _forwardChatMessage(BuildContext context, String token,
-        IO.Socket? socket, Map<String, dynamic> message) =>
+        io.Socket? socket, Map<String, dynamic> message) =>
     _forwardChatMessages(context, token, socket, [message]);
 
 Future<void> _requestImageReclassification(
@@ -1602,7 +1785,7 @@ Future<void> _requestImageReclassification(
 }
 
 Future<void> _forwardChatMessages(BuildContext context, String token,
-    IO.Socket? socket, List<Map<String, dynamic>> messages) async {
+    io.Socket? socket, List<Map<String, dynamic>> messages) async {
   if (messages.isEmpty) return;
   if (messages.any((message) {
     final status = message['status'] as String?;
@@ -2031,6 +2214,7 @@ class _SplashScreenState extends State<SplashScreen>
       }
     }
     final activeToken = prefs.getString('token');
+    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -2074,7 +2258,7 @@ class _SplashScreenState extends State<SplashScreen>
                 'Betshuva',
                 style: TextStyle(
                   fontSize: 16,
-                  color: Colors.white.withOpacity(0.7),
+                  color: Colors.white.withValues(alpha: 0.7),
                   letterSpacing: 3,
                 ),
               ),
@@ -2083,7 +2267,7 @@ class _SplashScreenState extends State<SplashScreen>
                 'מסר יהודי נקי',
                 style: TextStyle(
                   fontSize: 15,
-                  color: Colors.white.withOpacity(0.8),
+                  color: Colors.white.withValues(alpha: 0.8),
                 ),
               ),
               const SizedBox(height: 60),
@@ -2092,7 +2276,7 @@ class _SplashScreenState extends State<SplashScreen>
                 height: 24,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  color: Colors.white.withOpacity(0.6),
+                  color: Colors.white.withValues(alpha: 0.6),
                 ),
               ),
             ],
@@ -2447,6 +2631,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       } else {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', token);
+        if (!mounted) return;
         Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -2651,7 +2836,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                       ),
                       const SizedBox(height: 14),
                       DropdownButtonFormField<String>(
-                        value: _gender,
+                        initialValue: _gender,
                         decoration: const InputDecoration(
                           labelText: 'מגדר (חובה בהרשמה חדשה)',
                           prefixIcon: Icon(Icons.wc_outlined),
@@ -3041,6 +3226,7 @@ class _AuthScreenState extends State<AuthScreen> {
       } else {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('token', token);
+        if (!mounted) return;
         Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -3266,11 +3452,12 @@ class _AuthScreenState extends State<AuthScreen> {
         });
       }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _error = 'שגיאת חיבור. נסה שוב.';
           _loading = false;
         });
+      }
     }
   }
 
@@ -3307,8 +3494,9 @@ class _AuthScreenState extends State<AuthScreen> {
           )
           .timeout(const Duration(seconds: 30));
       final data = _registrationResponseData(response);
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw Exception(data['error'] ?? 'אימות Google נכשל');
+      }
       if (!mounted) return;
       setState(() {
         _googleRegistrationIdToken = auth.idToken;
@@ -3319,11 +3507,12 @@ class _AuthScreenState extends State<AuthScreen> {
       });
       await _showSuccessfulVerification();
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _error = e.toString().replaceFirst('Exception: ', '');
           _loading = false;
         });
+      }
     }
   }
 
@@ -3366,10 +3555,11 @@ class _AuthScreenState extends State<AuthScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        if (response.statusCode == 200)
+        if (response.statusCode == 200) {
           _registrationCodeSent = true;
-        else
+        } else {
           _error = data['error'] as String? ?? 'שליחת הקוד נכשלה';
+        }
       });
       if (response.statusCode == 200 &&
           _registrationMethod == 'phone' &&
@@ -3381,11 +3571,12 @@ class _AuthScreenState extends State<AuthScreen> {
         }
       }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _loading = false;
           _error = 'שגיאת חיבור. נסה שוב.';
         });
+      }
     }
   }
 
@@ -3427,11 +3618,12 @@ class _AuthScreenState extends State<AuthScreen> {
       });
       await _showSuccessfulVerification();
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _loading = false;
           _error = 'שגיאת חיבור. נסה שוב.';
         });
+      }
     }
   }
 
@@ -3745,7 +3937,7 @@ class _AuthScreenState extends State<AuthScreen> {
               onChanged: (value) => setState(() => _birthDate = value)),
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
-            value: _gender,
+            initialValue: _gender,
             decoration: const InputDecoration(
                 labelText: 'מגדר', prefixIcon: Icon(Icons.wc_outlined)),
             items: const [
@@ -4131,7 +4323,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                       const SizedBox(height: 14),
                       DropdownButtonFormField<String>(
-                        value: _gender,
+                        initialValue: _gender,
                         decoration: const InputDecoration(
                           labelText: 'מגדר',
                           prefixIcon: Icon(Icons.wc_outlined),
@@ -4463,8 +4655,9 @@ class _GoogleDriveBackupOfferScreenState
           Uri.parse('$kApi/backup/google/connect?autoEnable=true'),
           headers: {'Authorization': 'Bearer ${widget.token}'});
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw Exception(body['error'] ?? 'חיבור Google Drive אינו זמין');
+      }
       final opened = await launchUrl(
           Uri.parse(body['authorizationUrl'] as String),
           mode: LaunchMode.externalApplication);
@@ -4626,11 +4819,12 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
           });
         }
       } catch (_) {
-        if (mounted)
+        if (mounted) {
           setState(() {
             _error = 'שגיאת חיבור';
             _loading = false;
           });
+        }
       }
       return;
     }
@@ -4861,7 +5055,7 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
                         onPressed: () async {
                           final prefs = await SharedPreferences.getInstance();
                           await prefs.setString('token', widget.token);
-                          if (!mounted) return;
+                          if (!context.mounted) return;
                           Navigator.of(context).pushAndRemoveUntil(
                             MaterialPageRoute(
                                 builder: (_) => MainShell(token: widget.token)),
@@ -5569,9 +5763,9 @@ class _VerifyScreenState extends State<VerifyScreen> {
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: kAccent.withOpacity(0.1),
+                      color: kAccent.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: kAccent.withOpacity(0.3)),
+                      border: Border.all(color: kAccent.withValues(alpha: 0.3)),
                     ),
                     child: Row(children: [
                       const Icon(Icons.info_outline, color: kPrimary, size: 20),
@@ -5998,7 +6192,7 @@ class _MainShellContentState extends State<_MainShellContent> {
   Map<String, dynamic>? _desktopRecipient;
   Map<String, dynamic>? _desktopGroup;
   bool _openGroupMembersOnSelect = false;
-  IO.Socket? _socket;
+  io.Socket? _socket;
   VoiceCallCoordinator? _voiceCalls;
   Map<String, dynamic>? _me;
   List<Map<String, dynamic>> _users = [];
@@ -6193,8 +6387,9 @@ class _MainShellContentState extends State<_MainShellContent> {
                     groupFilter: counterpartFilter,
                     personalFilter: selectedFilter,
                     counterpartKind: 'החבר',
-                    counterpartFilterLabel: 'הסינון של $senderName',
-                    personalFilterLabel: 'הסינון שלי עבור $senderName',
+                    counterpartFilterLabel: 'מה מותר לשלוח ל„$senderName”',
+                    personalFilterLabel:
+                        'איזה תוכן אני מוכן לקבל מ„$senderName”',
                     counterpartIcon: Icons.person_outline,
                     onPersonalFilterChanged: (updated) =>
                         setDialogState(() => selectedFilter = updated),
@@ -6476,9 +6671,9 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   void _connectSocket() {
-    _socket = IO.io(
+    _socket = io.io(
       kSocketOrigin,
-      IO.OptionBuilder().setPath(kSocketPath).setTransports(
+      io.OptionBuilder().setPath(kSocketPath).setTransports(
           ['websocket']).setAuth({'token': widget.token}).build(),
     );
     _voiceCalls = VoiceCallCoordinator(
@@ -6768,6 +6963,16 @@ class _MainShellContentState extends State<_MainShellContent> {
                                       'משתמש',
                                 ),
                                 embedded: true,
+                                onBlocked: () {
+                                  final blockedId =
+                                      _desktopRecipient!['id']?.toString();
+                                  setState(() {
+                                    _users.removeWhere((user) =>
+                                        user['id']?.toString() == blockedId);
+                                    _unreadCounts.remove(blockedId);
+                                  });
+                                  _loadUsers();
+                                },
                                 onClose: () =>
                                     setState(() => _desktopRecipient = null),
                               ))
@@ -6823,7 +7028,26 @@ class _MainShellContentState extends State<_MainShellContent> {
     );
 
     return Scaffold(
-      body: body,
+      body: NotificationListener<_OpenSharedContactChatNotification>(
+        onNotification: (notification) {
+          if (!isDesktop) return false;
+          notification.handledInDesktopPane = true;
+          final recipient = notification.recipient;
+          final recipientId = recipient['id']?.toString();
+          setState(() {
+            _idx = 0;
+            _desktopGroup = null;
+            _openGroupMembersOnSelect = false;
+            _desktopRecipient = _users.firstWhere(
+              (user) => user['id']?.toString() == recipientId,
+              orElse: () => recipient,
+            );
+            if (recipientId != null) _unreadCounts.remove(recipientId);
+          });
+          return true;
+        },
+        child: body,
+      ),
       bottomNavigationBar: _idx == 3
           ? null
           : isDesktop
@@ -7261,6 +7485,114 @@ const Map<String, List<(String, String, String)>> _kCategoryDetailFields = {
     ('defects', 'פגמים או חוסרים', '')
   ],
 };
+
+const _listingCatalogCacheKey = 'listing_catalog_overlay_v1';
+Map<String, dynamic> _listingCatalogOverlay = const {};
+String _listingCatalogVersion = '';
+
+bool _applyListingCatalog(Map<String, dynamic> catalog) {
+  if (catalog['schema_version'] != 1 || catalog['version'] is! String) {
+    return false;
+  }
+  final version = catalog['version'] as String;
+  final changed = version != _listingCatalogVersion;
+  _listingCatalogOverlay = catalog;
+  _listingCatalogVersion = version;
+  return changed;
+}
+
+Future<bool> _refreshListingCatalog() async {
+  final prefs = await SharedPreferences.getInstance();
+  if (_listingCatalogOverlay.isEmpty) {
+    final cached = prefs.getString(_listingCatalogCacheKey);
+    if (cached != null) {
+      try {
+        final parsed = jsonDecode(cached);
+        if (parsed is Map<String, dynamic>) _applyListingCatalog(parsed);
+      } catch (_) {}
+    }
+  }
+  try {
+    final uri = Uri.parse(
+        '$kServer/listing-catalog.json?t=${DateTime.now().millisecondsSinceEpoch}');
+    final response = await http.get(uri, headers: const {
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+    }).timeout(const Duration(seconds: 12));
+    if (response.statusCode != 200) return false;
+    final parsed = jsonDecode(utf8.decode(response.bodyBytes));
+    if (parsed is! Map<String, dynamic>) return false;
+    final changed = _applyListingCatalog(parsed);
+    await prefs.setString(_listingCatalogCacheKey, jsonEncode(parsed));
+    return changed;
+  } catch (_) {
+    return false;
+  }
+}
+
+List<String> get _listingCategories {
+  final remote = _listingCatalogOverlay['category_order'];
+  if (remote is List) {
+    final values = remote.whereType<String>().toList();
+    if (values.isNotEmpty) return values;
+  }
+  return _kCategories;
+}
+
+List<(String, String, String)> _detailFieldsForCategory(String category) {
+  final remote = _listingCatalogOverlay['category_fields'];
+  final fields = remote is Map ? remote[category] : null;
+  if (fields is List) {
+    final parsed = <(String, String, String)>[];
+    for (final field in fields) {
+      if (field is! Map) continue;
+      final key = field['key']?.toString().trim() ?? '';
+      final label = field['label']?.toString().trim() ?? '';
+      if (key.isEmpty || label.isEmpty) continue;
+      parsed.add((key, label, field['hint']?.toString() ?? ''));
+    }
+    if (parsed.isNotEmpty) return parsed;
+  }
+  return _kCategoryDetailFields[category] ?? const [];
+}
+
+List<String> _applyListingCatalogOptionRules(String category, String field,
+    Map<String, String> currentValues, List<String> builtIn) {
+  final rules = _listingCatalogOverlay['option_rules'];
+  if (rules is! List) return builtIn;
+  var result = List<String>.from(builtIn);
+  for (final rule in rules) {
+    if (rule is! Map ||
+        rule['category'] != category ||
+        rule['field'] != field) {
+      continue;
+    }
+    final parents = rule['parents'];
+    if (parents is Map &&
+        parents.entries.any((entry) =>
+            (currentValues[entry.key.toString()]?.trim() ?? '') !=
+            entry.value.toString().trim())) {
+      continue;
+    }
+    final values = rule['values'] is List
+        ? (rule['values'] as List).whereType<String>().toList()
+        : <String>[];
+    switch (rule['mode']) {
+      case 'set':
+        result = values;
+        break;
+      case 'remove':
+        result.removeWhere(values.contains);
+        break;
+      case 'add':
+        for (final value in values) {
+          if (!result.contains(value)) result.add(value);
+        }
+        break;
+    }
+  }
+  return result;
+}
 
 Map<String, TextEditingController> _newCategoryDetailControllers() => {
       for (final fields in _kCategoryDetailFields.values)
@@ -7847,7 +8179,7 @@ const Map<String, List<String>> _kVehicleFieldOptions = {
   String category,
   Map<String, String> values,
 ) {
-  final fields = _kCategoryDetailFields[category] ?? const [];
+  final fields = _detailFieldsForCategory(category);
   String value(String key) => values[key]?.trim() ?? '';
   List<String> titleKeys;
   switch (category) {
@@ -8681,6 +9013,737 @@ const Map<String, Map<String, List<String>>> _kPopularCategoryValues = {
   },
 };
 
+const Map<String, List<String>> _kApplianceBrandsByType = {
+  'מקרר': [
+    'Samsung',
+    'LG',
+    'Bosch',
+    'Sharp',
+    'Hisense',
+    'Beko',
+    'Liebherr',
+    'Haier',
+    'Whirlpool',
+    'Electra',
+    'Midea'
+  ],
+  'מכונת כביסה': [
+    'Bosch',
+    'Samsung',
+    'LG',
+    'Siemens',
+    'Electrolux',
+    'AEG',
+    'Beko',
+    'Miele',
+    'Whirlpool',
+    'Haier',
+    'Candy',
+    'Constructa'
+  ],
+  'מייבש כביסה': [
+    'Bosch',
+    'Samsung',
+    'LG',
+    'Siemens',
+    'Electrolux',
+    'AEG',
+    'Beko',
+    'Miele',
+    'Whirlpool',
+    'Haier',
+    'Candy'
+  ],
+  'תנור': [
+    'Bosch',
+    'Siemens',
+    'Electrolux',
+    'AEG',
+    'Sauter',
+    'Samsung',
+    'Beko',
+    'Midea',
+    'DeLonghi',
+    'Gorenje'
+  ],
+  'כיריים': [
+    'Bosch',
+    'Siemens',
+    'Electrolux',
+    'AEG',
+    'Sauter',
+    'Samsung',
+    'Beko',
+    'Midea',
+    'DeLonghi',
+    'Gorenje'
+  ],
+  'מדיח כלים': [
+    'Bosch',
+    'Siemens',
+    'Electrolux',
+    'AEG',
+    'Samsung',
+    'Beko',
+    'Miele',
+    'Whirlpool',
+    'Midea',
+    'Constructa'
+  ],
+  'מזגן': [
+    'Tadiran',
+    'Electra',
+    'Tornado',
+    'Samsung',
+    'LG',
+    'Amcor',
+    'Mitsubishi Electric',
+    'Daikin',
+    'Carrier',
+    'Haier'
+  ],
+  'מקפיא': [
+    'Liebherr',
+    'Bosch',
+    'Beko',
+    'Sharp',
+    'Electra',
+    'Midea',
+    'Hisense',
+    'Whirlpool'
+  ],
+  'מיקרוגל': [
+    'Samsung',
+    'Sharp',
+    'LG',
+    'Bosch',
+    'Sauter',
+    'Midea',
+    'Electrolux',
+    'DeLonghi',
+    'Morphy Richards'
+  ],
+  'שואב אבק': [
+    'Dyson',
+    'Shark',
+    'Roborock',
+    'Dreame',
+    'Xiaomi',
+    'iRobot',
+    'Samsung',
+    'Bosch',
+    'Tineco',
+    'Ecovacs',
+    'Bissell',
+    'Miele'
+  ],
+  'קומקום': [
+    'Morphy Richards',
+    'Russell Hobbs',
+    'Smeg',
+    'Philips',
+    'Bosch',
+    'DeLonghi',
+    'Tefal',
+    'Kenwood',
+    'Gold Line'
+  ],
+  'מיקסר': [
+    'KitchenAid',
+    'Kenwood',
+    'Bosch',
+    'Morphy Richards',
+    'Sauter',
+    'Davo',
+    'Smeg',
+    'Electrolux',
+    'Gold Line'
+  ],
+};
+
+const Map<String, Map<String, List<String>>> _kApplianceModelsByTypeAndBrand = {
+  'מקרר': {
+    'Samsung': [
+      'Bespoke',
+      'RB33',
+      'RB34',
+      'RB37',
+      'RB38',
+      'RT38',
+      'RT47',
+      'RF50',
+      'RF65',
+      'RF85',
+      'RS50',
+      'RS68'
+    ],
+    'LG': [
+      'InstaView',
+      'Door-in-Door',
+      'GBB61',
+      'GBB72',
+      'GR-B278',
+      'GR-B608',
+      'GR-B718',
+      'GR-J31',
+      'GR-X257',
+      'GR-X265'
+    ],
+    'Bosch': [
+      'Serie 2 KGN',
+      'Serie 4 KGN',
+      'Serie 6 KGN',
+      'KAD90',
+      'KAD93',
+      'KAG93',
+      'KFN96',
+      'KGN36',
+      'KGN49',
+      'KGN56'
+    ],
+    'Sharp': [
+      'SJ-2369',
+      'SJ-3269',
+      'SJ-3840',
+      'SJ-4660',
+      'SJ-4860',
+      'SJ-FS85',
+      'SJ-GP75',
+      'SJ-FFER89'
+    ],
+    'Hisense': ['RT267', 'RT417', 'RB390', 'RB470', 'RQ515', 'RQ758', 'RS694'],
+    'Beko': ['RDNE455', 'RCNE520', 'B3RCNE', 'GN140', 'GN163', 'GNE605'],
+    'Liebherr': ['CN', 'CNef', 'CNP', 'CBN', 'CBNef', 'SBS', 'IRBd', 'ICNd'],
+    'Haier': ['HTR3619', 'HTR5719', 'HB18', 'HFR5719', 'Cube 83', 'Cube 90'],
+    'Whirlpool': ['W7X', 'W9', 'WQ9', 'WT70', 'WB70'],
+    'Electra': ['EL300', 'EL500', 'EL600', 'EL685', 'EL800'],
+    'Midea': ['MDRB', 'MDRT', 'MDRF', 'MDRS', 'MDRM'],
+  },
+  'מכונת כביסה': {
+    'Bosch': [
+      'Serie 2 WGE',
+      'Serie 4 WAN',
+      'Serie 4 WAN2405',
+      'Serie 4 WAN2827',
+      'Serie 4 WAN28289',
+      'Serie 6 WGG',
+      'Serie 6 WGG24404',
+      'Serie 8 WGB',
+      'Serie 8 WAV',
+      'Serie 8 WAX'
+    ],
+    'Samsung': [
+      'Bespoke AI',
+      'WW70T',
+      'WW80T',
+      'WW90T',
+      'WW90TA',
+      'WW10T',
+      'WW11B',
+      'WW11BB5044',
+      'WW12T',
+      'AddWash',
+      'QuickDrive'
+    ],
+    'LG': ['F2J5', 'F4J6', 'F4V3', 'F4V5', 'F4V7', 'F4V9', 'Vivace', 'WFS9014'],
+    'Siemens': ['iQ300 WM', 'iQ500 WG', 'iQ500 WM', 'iQ700 WG', 'iQ700 WM'],
+    'Electrolux': [
+      'PerfectCare 600',
+      'PerfectCare 700',
+      'PerfectCare 800',
+      'EW6F',
+      'EW7F',
+      'EW8F',
+      'UltraCare'
+    ],
+    'AEG': [
+      '6000 ProSense',
+      '7000 ProSteam',
+      '8000 PowerCare',
+      'L6F',
+      'L7F',
+      'L8F'
+    ],
+    'Beko': ['WTV', 'WUE', 'B3WFT', 'B5WFT', 'AquaTech', 'SteamCure'],
+    'Miele': ['W1 Classic', 'W1 PowerWash', 'WWD120', 'WEG365', 'WWG660'],
+    'Whirlpool': ['FreshCare+', 'FSCR', 'FFB', 'W7X', 'W8'],
+    'Haier': [
+      'I-Pro Series 3',
+      'I-Pro Series 5',
+      'I-Pro Series 7',
+      'HW80',
+      'HW90'
+    ],
+    'Candy': ['Smart CS', 'RapidO', 'GrandO Vita', 'RO4', 'CSS'],
+    'Constructa': ['CWF10', 'CWF12', 'CWF14', 'CWF16'],
+  },
+  'מייבש כביסה': {
+    'Bosch': [
+      'Serie 4 WTN',
+      'WTH85225',
+      'Serie 4 WTH',
+      'Serie 6 WQG',
+      'Serie 6 WTG',
+      'Serie 8 WQB',
+      'Serie 8 WTX'
+    ],
+    'Samsung': ['DV70T', 'DV80T', 'DV90T', 'DV90BB', 'Bespoke AI DV90'],
+    'LG': ['RC80', 'RC90', 'RH80', 'RH90', 'Dual Inverter Heat Pump'],
+    'Siemens': ['iQ300 WT', 'iQ500 WQ', 'iQ500 WT', 'iQ700 WQ'],
+    'Electrolux': [
+      'PerfectCare 600',
+      'PerfectCare 700',
+      'PerfectCare 800',
+      'EW6C4753',
+      'EW7H',
+      'EW8H'
+    ],
+    'AEG': [
+      '6000 ProSense',
+      '7000 SensiDry',
+      '8000 AbsoluteCare',
+      'T6',
+      'T7',
+      'T8'
+    ],
+    'Beko': ['DCU', 'DSX', 'B3T', 'B5T', 'EcoGentle'],
+    'Miele': ['T1 Classic', 'T1 EcoSpeed', 'TCA', 'TWC', 'TWF'],
+    'Whirlpool': ['FreshCare+', 'FFT', 'W6', 'W7'],
+    'Haier': [
+      'I-Pro Series 3',
+      'I-Pro Series 5',
+      'I-Pro Series 7',
+      'HD80',
+      'HD90'
+    ],
+    'Candy': ['Smart Pro', 'RapidO', 'CSO', 'ROE'],
+  },
+  'תנור': {
+    'Bosch': [
+      'Serie 2 HBF',
+      'Serie 4 HBA',
+      'HBA534',
+      'HBG578',
+      'Serie 6 HBG',
+      'HBG734',
+      'HBG774',
+      'Serie 8 HBG',
+      'HRA'
+    ],
+    'Siemens': ['iQ300 HB', 'iQ500 HB', 'iQ700 HB', 'HB534', 'HB578', 'HB734'],
+    'Electrolux': [
+      'EOF',
+      'EOD',
+      'EOH6426',
+      'EOH7427',
+      'KOD SteamBake',
+      'KOE',
+      'LKK620200'
+    ],
+    'AEG': ['BEB', 'BEE', 'BPE Pyroluxe', 'BPK', 'BSK SteamPro', 'BSE'],
+    'Sauter': [
+      'CUISINE 5000',
+      'CUISINE 7000',
+      'CUISINE PRO',
+      'D880',
+      'SBC9025',
+      'SOC9055',
+      'SOP'
+    ],
+    'Samsung': ['NV68', 'NV70', 'NV75', 'NV7B', 'Dual Cook', 'Dual Cook Flex'],
+    'Beko': ['BBIM', 'BIE', 'BIS', 'BVM', 'Beyond', 'Split&Cook'],
+    'Midea': ['MO', 'MBO', 'MOC', 'MEO'],
+    'DeLonghi': ['NDB', 'NDS', 'PRO', 'FMA'],
+    'Gorenje': ['BO', 'BOP', 'BPS', 'Essential Line', 'Advanced Line'],
+  },
+  'כיריים': {
+    'Bosch': [
+      'Serie 2 PUG',
+      'Serie 4 PUE',
+      'Serie 4 PWP',
+      'Serie 6 PVS',
+      'Serie 6 PXE',
+      'Serie 8 PXY',
+      'PIE',
+      'PCQ Gas'
+    ],
+    'Siemens': ['iQ100 EU', 'iQ300 EU', 'iQ500 ED', 'iQ500 EX', 'iQ700 EX'],
+    'Electrolux': ['LIT', 'LIV', 'EIV', 'KGG Gas', 'SenseBoil', 'SenseFry'],
+    'AEG': ['HK', 'IKB', 'IAE SenseFry', 'IKE', 'ComboHob'],
+    'Sauter': ['SHI', 'SHT', 'SHE', 'INDUCTION PRO', 'Gas on Glass'],
+    'Samsung': ['NZ64', 'NZ84', 'NZ6000', 'NZ7000', 'Virtual Flame'],
+    'Beko': ['HII', 'HIL', 'HIC', 'HIA', 'IndyFlex'],
+    'Midea': ['MC-ID358', 'MIH', 'MCI', 'MCH'],
+    'DeLonghi': ['NDI', 'NDG', 'PGF', 'SLF'],
+    'Gorenje': ['IT', 'GI', 'ECT', 'GKT', 'AreaFlex'],
+  },
+  'מדיח כלים': {
+    'Bosch': [
+      'Serie 2 SMS',
+      'Serie 2 SPS',
+      'Serie 4 SMS',
+      'SMS4ECI26',
+      'SMS4ECW28',
+      'Serie 4 SMV',
+      'SMV4ECX26',
+      'Serie 6 SMS',
+      'Serie 6 SMV',
+      'Serie 8 SMS'
+    ],
+    'Siemens': ['iQ100 SN', 'iQ300 SN', 'iQ500 SN', 'iQ700 SN', 'SR Slimline'],
+    'Electrolux': [
+      'ESA',
+      'EEA',
+      'EES SatelliteClean',
+      'EEM',
+      'ESF',
+      'ComfortLift'
+    ],
+    'AEG': ['FFB', 'FSE', 'FSB', 'FEE', 'ComfortLift', 'SatelliteClean'],
+    'Samsung': ['DW50', 'DW60M', 'DW60A', 'DW60CG', 'WaterWall'],
+    'Beko': ['BDF', 'DIN', 'BDIN', 'DFN', 'CornerIntense', 'Fast+'],
+    'Miele': ['G 5000', 'G 7000', 'G 7310', 'G 7510', 'AutoDos'],
+    'Whirlpool': ['WFC', 'WFE', 'WIO', 'WIC', 'PowerClean'],
+    'Midea': ['WQP', 'MDW', 'MID', 'Mini Plus'],
+    'Constructa': ['CG4', 'CG5', 'CG6', 'CP4 Slimline'],
+  },
+  'מזגן': {
+    'Tadiran': [
+      'ALPHA PRO INV',
+      'ALPHA PRO SOLO',
+      'SUPREME INVERTER',
+      'SUPREME NG',
+      'GALAXY',
+      'JOY',
+      'APOLLO',
+      'WAVE INVERTER',
+      'WIND INVERTER',
+      'SENSE',
+      'MOVE AIR'
+    ],
+    'Electra': [
+      'Electra A Inverter',
+      'Electra AI Inverter',
+      'Magic Touch Inverter',
+      'AAA Inverter',
+      'Exclusive',
+      'Platinum Inverter',
+      'Electra Max',
+      'EMD A SQ Inverter',
+      'Mini Central EMD'
+    ],
+    'Tornado': [
+      'TOP SQ',
+      'MASTER INV',
+      'SMART INV',
+      'SAGA INV',
+      'LEGEND INV',
+      'SUPER LEGEND',
+      'SLIM SQ',
+      'MULTI INV'
+    ],
+    'Samsung': [
+      'WindFree',
+      'WindFree Elite',
+      'WindFree Pure',
+      'Cebu',
+      'AR9500'
+    ],
+    'LG': ['DualCool', 'Artcool', 'Inverter V', 'Standard Plus', 'Multi V'],
+    'Amcor': [
+      'INV-A1',
+      'AMCOR 10',
+      'AMCOR 14',
+      'AMCOR 21',
+      'SLIM INV',
+      'AMCOR Portable'
+    ],
+    'Mitsubishi Electric': [
+      'AP Series',
+      'AY Series',
+      'LN Series',
+      'PEAD',
+      'Mr. Slim'
+    ],
+    'Daikin': ['Sensira', 'Comfora', 'Perfera', 'Emura', 'Sky Air'],
+    'Carrier': ['XPower', 'Inverter Plus', 'Platinum', '42QHA', 'Mini Central'],
+    'Haier': ['Pearl', 'Flexis', 'Tundra', 'Expert', 'Revive'],
+  },
+  'מקפיא': {
+    'Liebherr': ['GN', 'GNP', 'GP', 'GNPef', 'FNd', 'FNc', 'SGN', 'SUF'],
+    'Bosch': ['Serie 2 GTV', 'Serie 4 GSN', 'Serie 6 GSN', 'GSV', 'GCM Chest'],
+    'Beko': ['RFNE', 'B3RFNE', 'FS', 'HSA Chest', 'CF'],
+    'Sharp': ['FJ', 'SJ-SC', 'SJ-SE', 'FRV'],
+    'Electra': ['EF100', 'EF200', 'EF300', 'ELF', 'ECF Chest'],
+    'Midea': ['MDRU', 'MDRC', 'HS', 'MDRD', 'Chest Freezer'],
+    'Hisense': ['FV', 'FT', 'FC', 'RS Freezer'],
+    'Whirlpool': ['UW8', 'WVA', 'WHE Chest', 'AFG'],
+  },
+  'מיקרוגל': {
+    'Samsung': [
+      'MS23',
+      'MS28',
+      'ME83',
+      'MG23',
+      'MG30',
+      'MC28',
+      'MC32',
+      'HotBlast'
+    ],
+    'Sharp': ['R-209', 'R-277', 'R-342', 'R-642', 'R-742', 'R-822', 'R-92'],
+    'LG': ['MS2042', 'MS2336', 'MH6535', 'MH8265', 'NeoChef', 'Smart Inverter'],
+    'Bosch': [
+      'Serie 2 FFL',
+      'Serie 4 BFL',
+      'Serie 4 BEL',
+      'Serie 6 BFL',
+      'Serie 8 BFR'
+    ],
+    'Sauter': ['MW', 'MWG', 'MICROCHEF', 'SOM', 'Built-in MW'],
+    'Midea': ['EM', 'MMW', 'AG', 'AM', 'MM720', 'AC925'],
+    'Electrolux': ['EMZ', 'EMS', 'LMS', 'KMFD', 'CombiQuick'],
+    'DeLonghi': ['MW', 'DLMC', 'EasyChef', 'Grill Combi'],
+    'Morphy Richards': [
+      '511502',
+      '511503',
+      '511644',
+      '23L Digital',
+      '30L Combi'
+    ],
+  },
+  'שואב אבק': {
+    'Dyson': [
+      'V6',
+      'V7',
+      'V8',
+      'V10',
+      'V11',
+      'V12 Detect Slim',
+      'V15 Detect',
+      'V15s Detect Submarine',
+      'Gen5detect',
+      'V16 Piston Animal',
+      'Big Ball Animal'
+    ],
+    'Shark': [
+      'Detect Pro',
+      'Stratos IZ400',
+      'Stratos IZ423',
+      'PowerDetect IP3253',
+      'HydroVac',
+      'Anti Hair Wrap',
+      'FlexStyle DuoClean'
+    ],
+    'Roborock': [
+      'S5 Max',
+      'S6 MaxV',
+      'S7',
+      'S7 MaxV Ultra',
+      'S8',
+      'S8 Pro Ultra',
+      'S8 MaxV Ultra',
+      'Q5 Pro',
+      'Q7 Max',
+      'Q8 Max',
+      'Q Revo',
+      'Qrevo MaxV',
+      'Qrevo Edge',
+      'Saros 10',
+      'Saros 10R',
+      'F25 ACE'
+    ],
+    'Dreame': [
+      'D9',
+      'D10 Plus',
+      'D10 Plus Gen 2',
+      'L10s Ultra',
+      'L20 Ultra',
+      'L40 Ultra',
+      'X30 Ultra',
+      'X40 Ultra',
+      'X50 Ultra',
+      'X60 Ultra',
+      'H12',
+      'H14',
+      'H15 Pro',
+      'R10',
+      'R20'
+    ],
+    'Xiaomi': [
+      'Mi Robot Vacuum Mop',
+      'Mi Robot Vacuum Mop 2',
+      'G9',
+      'G10',
+      'G11',
+      'S10',
+      'S10+',
+      'S20+',
+      'X10',
+      'X20+',
+      'X20 Max'
+    ],
+    'iRobot': [
+      'Roomba 600',
+      'Roomba 800',
+      'Roomba e5',
+      'Roomba i3',
+      'Roomba i5',
+      'Roomba i7+',
+      'Roomba j7',
+      'Roomba Combo j7+',
+      'Roomba Combo j9+',
+      'Roomba s9+',
+      'Braava jet m6'
+    ],
+    'Samsung': [
+      'Jet 60',
+      'Jet 70',
+      'Jet 75',
+      'Jet 90',
+      'Bespoke Jet',
+      'Bespoke Jet AI',
+      'Jet Bot',
+      'Jet Bot AI+'
+    ],
+    'Bosch': [
+      'Athlet',
+      'Flexxo',
+      'Unlimited 6',
+      'Unlimited 7',
+      'Unlimited 8',
+      'ProAnimal',
+      'Serie 4',
+      'Serie 6',
+      'Serie 8'
+    ],
+    'Tineco': [
+      'Floor One S3',
+      'Floor One S5',
+      'Floor One S6',
+      'Floor One S7',
+      'Floor One S9',
+      'Pure One S11',
+      'Pure One Station'
+    ],
+    'Ecovacs': [
+      'Deebot N8',
+      'Deebot N10',
+      'Deebot T10',
+      'Deebot T20 Omni',
+      'Deebot T30 Omni',
+      'Deebot X1 Omni',
+      'Deebot X2 Omni',
+      'Deebot X8 Pro Omni'
+    ],
+    'Bissell': [
+      'CrossWave',
+      'CrossWave HydroSteam',
+      'SpotClean Pro',
+      'SpotClean Pet Pro',
+      'MultiClean',
+      'Icon Pet'
+    ],
+    'Miele': [
+      'Complete C2',
+      'Complete C3',
+      'Blizzard CX1',
+      'Triflex HX1',
+      'Triflex HX2',
+      'Boost CX1'
+    ],
+  },
+  'קומקום': {
+    'Morphy Richards': [
+      'Evoke',
+      'Accents',
+      'Equip',
+      'Illumination',
+      'Hive',
+      'Verve',
+      'Aspect'
+    ],
+    'Russell Hobbs': [
+      'Adventure',
+      'Retro',
+      'Inspire',
+      'Geo Steel',
+      'Textures',
+      'Honeycomb',
+      'Elegance'
+    ],
+    'Smeg': ['KLF01', 'KLF03', 'KLF04', 'KLF05 Mini', 'KLF11', 'KLF13'],
+    'Philips': ['HD9300', 'HD9318', 'HD9339', 'HD9350', 'HD9365', 'HD9395'],
+    'Bosch': [
+      'MyMoment TWK1M',
+      'Styline TWK861',
+      'DesignLine TWK3P',
+      'TWK2M',
+      'TWK4P',
+      'TWK6A'
+    ],
+    'DeLonghi': [
+      'Icona Capitals',
+      'Icona Vintage',
+      'Hot Moments',
+      'Ballerina',
+      'Distinta',
+      'Active Line'
+    ],
+    'Tefal': ['Safe to Touch', 'Smart’n Light', 'Includeo', 'Majestuo', 'Loft'],
+    'Kenwood': ['ZJP00', 'ZJP05', 'ZJP11', 'Mesmerine', 'Elegancy'],
+    'Gold Line': ['ATL-729', 'ATL-730', 'ATL-737', 'ATL-741', 'ATL-745'],
+  },
+  'מיקסר': {
+    'KitchenAid': [
+      'Classic 4.3L',
+      'Artisan 4.8L',
+      'Artisan Mini 3.3L',
+      'Artisan Bowl-Lift 5.6L',
+      'Heavy Duty 6.9L',
+      'Professional 600'
+    ],
+    'Kenwood': [
+      'Chef',
+      'Chef XL',
+      'Titanium Chef Baker',
+      'Titanium Chef Patissier XL',
+      'Cooking Chef XL',
+      'kMix',
+      'Prospero+',
+      'MultiOne'
+    ],
+    'Bosch': [
+      'MUM4',
+      'MUM5',
+      'Series 2 MUMS2',
+      'Series 4 MUM5',
+      'Series 6 MUMS6',
+      'OptiMUM',
+      'Universal Plus'
+    ],
+    'Morphy Richards': [
+      'MixStar',
+      'Total Control',
+      '400020',
+      '400023',
+      '400404',
+      'Accents Stand Mixer'
+    ],
+    'Sauter': ['KM 811', 'KM 812', 'KM 1000', 'KM 1050', 'KM PRO', 'KMS9912'],
+    'Davo': [
+      'Davo Pro 5250',
+      'Davo Pro 5750',
+      'Davo Pro 7',
+      'Davo Mix',
+      'Davo Chef',
+      'Davo Power'
+    ],
+    'Smeg': ['SMF01', 'SMF02', 'SMF03', 'SMF13'],
+    'Electrolux': ['Create 5 E5KM1', 'Create 7 E7KM1', 'Assistent EKM'],
+    'Gold Line': ['ATL-275', 'ATL-279', 'ATL-983', 'ATL-989'],
+  },
+};
+
 const Map<String, Map<String, (String, Map<String, List<String>>)>>
     _kDependentPopularValues = {
   'טלפונים וטאבלטים': {
@@ -9369,44 +10432,6 @@ const Map<String, Map<String, (String, Map<String, List<String>>)>>
         ],
         'Raider': ['Raider GE68 HX', 'Raider GE78 HX'],
         'Titan': ['Titan GT77 HX', 'Titan 18 HX'],
-      }
-    ),
-  },
-  'מוצרי חשמל': {
-    'model': (
-      'appliance_type',
-      {
-        'מקרר': [
-          'מקפיא עליון',
-          'מקפיא תחתון',
-          'דלת ליד דלת',
-          '4 דלתות',
-          'מקרר משרדי'
-        ],
-        'מכונת כביסה': [
-          'פתח קדמי 7 ק״ג',
-          'פתח קדמי 8 ק״ג',
-          'פתח קדמי 9 ק״ג',
-          'פתח קדמי 10–12 ק״ג',
-          'פתח עליון'
-        ],
-        'מייבש כביסה': [
-          'קונדנסור',
-          'משאבת חום',
-          'צינור פליטה',
-          '7 ק״ג',
-          '8 ק״ג',
-          '9 ק״ג'
-        ],
-        'תנור': ['בנוי', 'משולב כיריים', 'דו־תאי', 'פירוליטי', 'טוסטר אובן'],
-        'מזגן': [
-          'עילי 1 כ״ס',
-          'עילי 1.5 כ״ס',
-          'עילי 2 כ״ס',
-          'מיני מרכזי',
-          'נייד'
-        ],
-        'שואב אבק': ['אלחוטי', 'רובוטי', 'נגרר', 'שוטף רצפות', 'שואב חלונות'],
       }
     ),
   },
@@ -10254,7 +11279,7 @@ List<String> _phoneModelsForType(String type, List<String> models) {
   return models;
 }
 
-List<String> _popularValuesFor(String category, String key,
+List<String> _builtInPopularValuesFor(String category, String key,
     [Map<String, String> currentValues = const {}]) {
   if (category == 'רכב') {
     if (key == 'manufacturer') return _kVehicleManufacturers;
@@ -10266,6 +11291,18 @@ List<String> _popularValuesFor(String category, String key,
     }
     final options = _kVehicleFieldOptions[key];
     if (options != null) return options;
+  }
+  if (category == 'מוצרי חשמל') {
+    final applianceType = currentValues['appliance_type']?.trim() ?? '';
+    if (key == 'brand') {
+      return _kApplianceBrandsByType[applianceType] ??
+          _kPopularCategoryValues[category]?[key] ??
+          const [];
+    }
+    if (key == 'model') {
+      final brand = currentValues['brand']?.trim() ?? '';
+      return _kApplianceModelsByTypeAndBrand[applianceType]?[brand] ?? const [];
+    }
   }
   if (category == 'טלפונים וטאבלטים' && key == 'brand') {
     final type = currentValues['device_type']?.trim() ?? '';
@@ -10289,11 +11326,70 @@ List<String> _popularValuesFor(String category, String key,
       const [];
 }
 
+List<String> _popularValuesFor(String category, String key,
+        [Map<String, String> currentValues = const {}]) =>
+    _applyListingCatalogOptionRules(
+      category,
+      key,
+      currentValues,
+      _builtInPopularValuesFor(category, key, currentValues),
+    );
+
+String _popularFieldStateKey(
+    String category, String key, Map<String, String> currentValues) {
+  final remoteRules = _listingCatalogOverlay['option_rules'];
+  if (remoteRules is List) {
+    final parentParts = <String>[];
+    for (final rule in remoteRules) {
+      if (rule is! Map ||
+          rule['category'] != category ||
+          rule['field'] != key ||
+          rule['parents'] is! Map) {
+        continue;
+      }
+      for (final parent in (rule['parents'] as Map).keys) {
+        final name = parent.toString();
+        final part = '$name=${currentValues[name]?.trim() ?? ''}';
+        if (!parentParts.contains(part)) parentParts.add(part);
+      }
+    }
+    if (parentParts.isNotEmpty) {
+      parentParts.sort();
+      return '$category:$key:${parentParts.join('|')}';
+    }
+  }
+  if (category == 'מוצרי חשמל') {
+    final applianceType = currentValues['appliance_type']?.trim() ?? '';
+    if (key == 'brand') return '$category:$key:$applianceType';
+    if (key == 'model') {
+      final brand = currentValues['brand']?.trim() ?? '';
+      return '$category:$key:$applianceType:$brand';
+    }
+  }
+  final parent = _kDependentPopularValues[category]?[key]?.$1;
+  final parentValue = parent == null ? '' : currentValues[parent]?.trim() ?? '';
+  return '$category:$key:$parentValue';
+}
+
 void _refreshCategoryDependencies(
   String category,
   String changedKey,
   Map<String, TextEditingController> controllers,
 ) {
+  final remoteRules = _listingCatalogOverlay['option_rules'];
+  if (remoteRules is List) {
+    for (final rule in remoteRules) {
+      if (rule is! Map ||
+          rule['category'] != category ||
+          rule['field'] is! String ||
+          rule['parents'] is! Map ||
+          !(rule['parents'] as Map).containsKey(changedKey)) {
+        continue;
+      }
+      final child = rule['field'] as String;
+      if (child != changedKey) controllers[child]?.clear();
+    }
+  }
   final dependencies = _kDependentPopularValues[category] ?? const {};
   final changed = <String>[changedKey];
   for (var index = 0; index < changed.length; index++) {
@@ -10317,6 +11413,21 @@ void _refreshCategoryDependencies(
     controllers['model']?.clear();
   }
   if (category == 'כלי נגינה' && changedKey == 'instrument_type') {
+    controllers['model']?.clear();
+  }
+  if (category == 'מוצרי חשמל' && changedKey == 'appliance_type') {
+    final brand = controllers['brand'];
+    final allowedBrands = _popularValuesFor(category, 'brand', {
+      for (final entry in controllers.entries) entry.key: entry.value.text,
+    });
+    if (brand != null &&
+        brand.text.isNotEmpty &&
+        !allowedBrands.contains(brand.text)) {
+      brand.clear();
+    }
+    controllers['model']?.clear();
+  }
+  if (category == 'מוצרי חשמל' && changedKey == 'brand') {
     controllers['model']?.clear();
   }
 }
@@ -10379,6 +11490,9 @@ String _listingPublishedAt(dynamic value, {bool compact = false}) {
   return 'פורסם ב־$day/$month/${parsed.year} בשעה $hour:$minute';
 }
 
+String normalizeListingSearchText(String value) =>
+    value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\u0590-\u05ff]+'), '');
+
 class _PopularValueField extends StatefulWidget {
   final TextEditingController controller;
   final String label;
@@ -10386,6 +11500,7 @@ class _PopularValueField extends StatefulWidget {
   final List<String> options;
   final ValueChanged<String>? onChanged;
   const _PopularValueField({
+    super.key,
     required this.controller,
     required this.label,
     required this.options,
@@ -10412,9 +11527,11 @@ class _PopularValueFieldState extends State<_PopularValueField> {
       ),
       builder: (sheetContext) => StatefulBuilder(
         builder: (context, setSheetState) {
+          final normalizedQuery = normalizeListingSearchText(query);
           final filtered = widget.options
-              .where(
-                  (value) => value.toLowerCase().contains(query.toLowerCase()))
+              .where((value) =>
+                  normalizedQuery.isEmpty ||
+                  normalizeListingSearchText(value).contains(normalizedQuery))
               .toList();
           return Directionality(
             textDirection: TextDirection.rtl,
@@ -10506,9 +11623,10 @@ class _PopularValueFieldState extends State<_PopularValueField> {
       focusNode: _focusNode,
       displayStringForOption: (option) => option,
       optionsBuilder: (value) {
-        final query = value.text.trim().toLowerCase();
-        return widget.options.where(
-            (option) => query.isEmpty || option.toLowerCase().contains(query));
+        final query = normalizeListingSearchText(value.text);
+        return widget.options.where((option) =>
+            query.isEmpty ||
+            normalizeListingSearchText(option).contains(query));
       },
       onSelected: (option) {
         widget.controller.text = option;
@@ -10763,7 +11881,7 @@ class _StreetAutocompleteFieldState extends State<_StreetAutocompleteField> {
 class ListingsScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   final Future<void> Function(Map<String, dynamic> recipient)?
       onConversationStarted;
   const ListingsScreen(
@@ -10785,6 +11903,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   String _queryFilter = '';
   final _searchCtrl = TextEditingController();
   Timer? _searchDebounce;
+  Timer? _listingCatalogTimer;
   double? _minPrice;
   double? _maxPrice;
   String _sortFilter = 'newest';
@@ -10798,11 +11917,20 @@ class _ListingsScreenState extends State<ListingsScreen> {
   void initState() {
     super.initState();
     _load();
+    _refreshListingCatalog().then((changed) {
+      if (changed && mounted) setState(() {});
+    });
+    _listingCatalogTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _refreshListingCatalog().then((changed) {
+        if (changed && mounted) setState(() {});
+      });
+    });
   }
 
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _listingCatalogTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -11071,7 +12199,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
                 onPublished: () async {
                   setState(() => _showPostForm = false);
                   await _load();
-                  if (mounted) {
+                  if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('המודעה פורסמה בהצלחה')));
                   }
@@ -11165,7 +12293,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
           ? controller.text
           : null;
       return DropdownButtonFormField<String>(
-        value: current,
+        initialValue: current,
         decoration: InputDecoration(
             labelText: field.$2,
             isDense: true,
@@ -11178,13 +12306,16 @@ class _ListingsScreenState extends State<ListingsScreen> {
         onChanged: (value) => controller.text = value ?? '',
       );
     }
+    final currentValues = {
+      for (final entry in controllers.entries) entry.key: entry.value.text,
+    };
     return _PopularValueField(
+      key: ValueKey(
+          '$_listingCatalogVersion:${_popularFieldStateKey(category, field.$1, currentValues)}'),
       controller: controller,
       label: field.$2,
       hint: field.$3.isEmpty ? null : field.$3,
-      options: _popularValuesFor(category, field.$1, {
-        for (final entry in controllers.entries) entry.key: entry.value.text,
-      }),
+      options: _popularValuesFor(category, field.$1, currentValues),
       onChanged: (_) {
         _refreshCategoryDependencies(category, field.$1, controllers);
         refresh?.call();
@@ -11237,7 +12368,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
                             ),
                             const SizedBox(height: 12),
                             DropdownButtonFormField<String>(
-                              value: tmpType,
+                              initialValue: tmpType,
                               decoration: const InputDecoration(
                                   labelText: 'סוג מודעה',
                                   prefixIcon: Icon(Icons.sell_outlined)),
@@ -11255,11 +12386,11 @@ class _ListingsScreenState extends State<ListingsScreen> {
                             ),
                             const SizedBox(height: 12),
                             DropdownButtonFormField<String>(
-                              value: tmpCategory,
+                              initialValue: tmpCategory,
                               decoration: const InputDecoration(
                                   labelText: 'קטגוריה',
                                   prefixIcon: Icon(Icons.category_outlined)),
-                              items: _kCategories
+                              items: _listingCategories
                                   .map((category) => DropdownMenuItem(
                                       value: category, child: Text(category)))
                                   .toList(),
@@ -11330,7 +12461,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
                                 tmpCategory != 'נדל״ן') ...[
                               const SizedBox(height: 12),
                               DropdownButtonFormField<String>(
-                                value: tmpCondition,
+                                initialValue: tmpCondition,
                                 decoration: const InputDecoration(
                                     labelText: 'מצב המוצר',
                                     prefixIcon: Icon(Icons.verified_outlined)),
@@ -11367,7 +12498,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
                             ),
                             const SizedBox(height: 8),
                             DropdownButtonFormField<String>(
-                              value: tmpSort,
+                              initialValue: tmpSort,
                               decoration: const InputDecoration(
                                   labelText: 'מיון תוצאות',
                                   prefixIcon: Icon(Icons.sort)),
@@ -11498,7 +12629,7 @@ class _ListingCard extends StatelessWidget {
             border: selected ? Border.all(color: kPrimary, width: 1.5) : null,
             boxShadow: [
               BoxShadow(
-                  color: Colors.black.withOpacity(0.06),
+                  color: Colors.black.withValues(alpha: 0.06),
                   blurRadius: 8,
                   offset: const Offset(0, 2))
             ]),
@@ -11631,30 +12762,39 @@ class _ListingContactPreferences extends StatelessWidget {
           const SizedBox(height: 4),
           Text('אפשר לבחור דרך אחת או לשלב כמה דרכים',
               style: TextStyle(color: kSubtext, fontSize: 12)),
-          CheckboxListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            value: inApp,
-            onChanged: (v) => onChanged('in_app', v ?? false),
-            title: const Text('הודעות בתוך בתשובה'),
-            subtitle: const Text('מומלץ — פרטי הקשר נשארים פרטיים'),
-            secondary: const Icon(Icons.chat_bubble_outline, color: kPrimary),
+          Material(
+            type: MaterialType.transparency,
+            child: CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              value: inApp,
+              onChanged: (v) => onChanged('in_app', v ?? false),
+              title: const Text('הודעות בתוך בתשובה'),
+              subtitle: const Text('מומלץ — פרטי הקשר נשארים פרטיים'),
+              secondary: const Icon(Icons.chat_bubble_outline, color: kPrimary),
+            ),
           ),
-          CheckboxListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            value: email,
-            onChanged: (v) => onChanged('email', v ?? false),
-            title: const Text('אימייל'),
-            secondary: const Icon(Icons.email_outlined, color: kPrimary),
+          Material(
+            type: MaterialType.transparency,
+            child: CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              value: email,
+              onChanged: (v) => onChanged('email', v ?? false),
+              title: const Text('אימייל'),
+              secondary: const Icon(Icons.email_outlined, color: kPrimary),
+            ),
           ),
-          CheckboxListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            value: phone,
-            onChanged: (v) => onChanged('phone', v ?? false),
-            title: const Text('שיחת טלפון'),
-            secondary: const Icon(Icons.phone_outlined, color: kPrimary),
+          Material(
+            type: MaterialType.transparency,
+            child: CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              value: phone,
+              onChanged: (v) => onChanged('phone', v ?? false),
+              title: const Text('שיחת טלפון'),
+              secondary: const Icon(Icons.phone_outlined, color: kPrimary),
+            ),
           ),
           TextField(
             controller: hoursController,
@@ -12092,20 +13232,24 @@ class _PostListingScreenState extends State<PostListingScreen> {
   bool _propertyAirConditioning = false;
   bool _propertyPets = false;
   Timer? _plateLookupTimer;
+  Timer? _listingCatalogTimer;
   String _mirroredTitle = '';
+  // Kept as draft state for the vehicle editor's next UI stage.
+  // ignore: unused_field
   String _generatedVehicleTitle = '';
+  // ignore: unused_field
   String _generatedVehicleDescription = '';
   bool _titleManuallyEdited = false;
   bool _descriptionManuallyEdited = false;
 
   Map<String, String> _categoryDetailsPayload() => {
-        for (final field in _kCategoryDetailFields[_category] ?? const [])
+        for (final field in _detailFieldsForCategory(_category))
           if ((_categoryDetailCtrls[field.$1]?.text.trim() ?? '').isNotEmpty)
             field.$1: _categoryDetailCtrls[field.$1]!.text.trim(),
       };
 
   Widget _categorySpecificFields() {
-    final fields = _kCategoryDetailFields[_category] ?? const [];
+    final fields = _detailFieldsForCategory(_category);
     if (fields.isEmpty) return const SizedBox.shrink();
     return Container(
       padding: const EdgeInsets.all(14),
@@ -12135,18 +13279,25 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
-  Widget _categoryDetailField((String, String, String) field) =>
-      _PopularValueField(
-        controller: _categoryDetailCtrls[field.$1]!,
-        label: field.$2,
-        hint: field.$3.isEmpty ? null : field.$3,
-        options: _popularValuesFor(_category, field.$1, {
-          for (final entry in _categoryDetailCtrls.entries)
-            entry.key: entry.value.text,
-        }),
-        onChanged: (_) => setState(() => _refreshCategoryDependencies(
-            _category, field.$1, _categoryDetailCtrls)),
-      );
+  Widget _categoryDetailField((String, String, String) field) {
+    final currentValues = {
+      for (final entry in _categoryDetailCtrls.entries)
+        entry.key: entry.value.text,
+    };
+    return _PopularValueField(
+      key: ValueKey(
+          '$_listingCatalogVersion:${_popularFieldStateKey(_category, field.$1, currentValues)}'),
+      controller:
+          _categoryDetailCtrls.putIfAbsent(field.$1, TextEditingController.new),
+      label: field.$2,
+      hint: field.$3.isEmpty ? null : field.$3,
+      options: _popularValuesFor(_category, field.$1, currentValues),
+      onChanged: (_) => setState(() {
+        _refreshCategoryDependencies(_category, field.$1, _categoryDetailCtrls);
+        _updateGeneratedCategoryText();
+      }),
+    );
+  }
 
   Map<String, String> _vehicleTextValues() => {
         'manufacturer': _vehicleManufacturerCtrl.text,
@@ -12272,6 +13423,20 @@ class _PostListingScreenState extends State<PostListingScreen> {
     }
   }
 
+  void _changeCategory(String? category) {
+    if (category == null || category == _category) return;
+    setState(() {
+      _category = category;
+      _titleManuallyEdited = false;
+      _descriptionManuallyEdited = false;
+      _generatedVehicleTitle = '';
+      _generatedVehicleDescription = '';
+      _mirroredTitle = '';
+      _titleCtrl.clear();
+      _descCtrl.clear();
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -12279,6 +13444,14 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _listenToVehicleFields();
     _listenToAllListingFields();
     if (_cityCtrl.text.trim().isEmpty) _loadCityFromProfile();
+    _refreshListingCatalog().then((changed) {
+      if (changed && mounted) setState(() {});
+    });
+    _listingCatalogTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _refreshListingCatalog().then((changed) {
+        if (changed && mounted) setState(() {});
+      });
+    });
   }
 
   void _mirrorTitleIntoDescription() {
@@ -12330,7 +13503,9 @@ class _PostListingScreenState extends State<PostListingScreen> {
         permission = await Geolocator.requestPermission();
       }
       if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever) return;
+          permission == LocationPermission.deniedForever) {
+        return;
+      }
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.low,
@@ -12683,6 +13858,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _pickupCtrl.dispose();
     _contactHoursCtrl.dispose();
     _plateLookupTimer?.cancel();
+    _listingCatalogTimer?.cancel();
     _plateCtrl.dispose();
     _vehicleManufacturerCtrl.dispose();
     _vehicleModelCtrl.dispose();
@@ -12738,18 +13914,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     // Choose the category first so category-specific fields
                     // are shown before the rest of the listing form.
                     DropdownButtonFormField<String>(
-                      value: _category,
+                      initialValue: _category,
                       decoration: const InputDecoration(
                           labelText: 'קטגוריה', border: OutlineInputBorder()),
-                      items: _kCategories
+                      items: _listingCategories
                           .skip(1)
                           .map(
                               (c) => DropdownMenuItem(value: c, child: Text(c)))
                           .toList(),
-                      onChanged: (v) => setState(() {
-                        _category = v!;
-                        _updateGeneratedCategoryText();
-                      }),
+                      onChanged: _changeCategory,
                     ),
                     if (_category == 'רכב') ...[
                       const SizedBox(height: 12),
@@ -12804,17 +13977,21 @@ class _PostListingScreenState extends State<PostListingScreen> {
                             border: const OutlineInputBorder(),
                             prefixText: '₪ ')),
                     const SizedBox(height: 12),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('המחיר גמיש'),
-                      subtitle: const Text('רלוונטי כאשר המחיר גדול מאפס'),
-                      value: _negotiable,
-                      onChanged: (value) => setState(() => _negotiable = value),
+                    Material(
+                      type: MaterialType.transparency,
+                      child: SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('המחיר גמיש'),
+                        subtitle: const Text('רלוונטי כאשר המחיר גדול מאפס'),
+                        value: _negotiable,
+                        onChanged: (value) =>
+                            setState(() => _negotiable = value),
+                      ),
                     ),
                     if (_category != 'רכב' && _category != 'נדל״ן') ...[
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
-                        value: _condition,
+                        initialValue: _condition,
                         decoration: const InputDecoration(
                             labelText: 'מצב המוצר *',
                             prefixIcon: Icon(Icons.verified_outlined),
@@ -12854,7 +14031,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     if (_category != 'רכב' && _category != 'נדל״ן') ...[
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
-                        value: _deliveryMethod,
+                        initialValue: _deliveryMethod,
                         decoration: const InputDecoration(
                             labelText: 'אופן קבלה *',
                             prefixIcon: Icon(Icons.local_shipping_outlined),
@@ -12897,7 +14074,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
                     ),
                     const SizedBox(height: 12),
                     DropdownButtonFormField<int>(
-                      value: _expiryDays,
+                      initialValue: _expiryDays,
                       decoration: const InputDecoration(
                           labelText: 'משך פרסום',
                           prefixIcon: Icon(Icons.schedule_outlined),
@@ -12946,6 +14123,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
+  // Kept for compatibility with saved vehicle drafts.
+  // ignore: unused_element
   Widget _unusedEditVehicleFieldsA() {
     Widget field(TextEditingController controller, String label,
             {bool numeric = false}) =>
@@ -13010,7 +14189,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
         ]),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
-          value: _vehicleTransmission,
+          initialValue: _vehicleTransmission,
           decoration: const InputDecoration(
               labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
           items: const [
@@ -13070,6 +14249,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _unusedEditVehicleFieldsB() {
     Widget field(TextEditingController controller, String label,
             {bool numeric = false}) =>
@@ -13134,7 +14314,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
         ]),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
-          value: _vehicleTransmission,
+          initialValue: _vehicleTransmission,
           decoration: const InputDecoration(
               labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
           items: const [
@@ -13364,7 +14544,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
         Row(children: [
           Expanded(
             child: DropdownButtonFormField<String>(
-              value: _propertyDealType,
+              initialValue: _propertyDealType,
               decoration: const InputDecoration(
                   labelText: 'סוג עסקה *', border: OutlineInputBorder()),
               items: const [
@@ -13380,7 +14560,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
           const SizedBox(width: 10),
           Expanded(
             child: DropdownButtonFormField<String>(
-              value: _propertyType,
+              initialValue: _propertyType,
               decoration: const InputDecoration(
                   labelText: 'סוג נכס *', border: OutlineInputBorder()),
               items: const [
@@ -13433,7 +14613,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
           const SizedBox(width: 10),
           Expanded(
             child: DropdownButtonFormField<String>(
-              value: _propertyFurniture,
+              initialValue: _propertyFurniture,
               decoration: const InputDecoration(
                   labelText: 'ריהוט', border: OutlineInputBorder()),
               items: const [
@@ -13609,7 +14789,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
           ]),
           const SizedBox(height: 10),
           DropdownButtonFormField<String>(
-            value: _vehicleTransmission,
+            initialValue: _vehicleTransmission,
             decoration: const InputDecoration(
                 labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
             items: const [
@@ -13740,19 +14920,23 @@ class _EditListingScreenState extends State<EditListingScreen> {
   bool _loading = true;
   bool _saving = false;
   String _mirroredTitle = '';
+  // Kept as draft state for the vehicle editor's next UI stage.
+  // ignore: unused_field
   String _generatedVehicleTitle = '';
+  // ignore: unused_field
   String _generatedVehicleDescription = '';
   bool _titleManuallyEdited = false;
   bool _descriptionManuallyEdited = false;
+  Timer? _listingCatalogTimer;
 
   Map<String, String> _categoryDetailsPayload() => {
-        for (final field in _kCategoryDetailFields[_category] ?? const [])
+        for (final field in _detailFieldsForCategory(_category))
           if ((_categoryDetailCtrls[field.$1]?.text.trim() ?? '').isNotEmpty)
             field.$1: _categoryDetailCtrls[field.$1]!.text.trim(),
       };
 
   Widget _editCategorySpecificFields() {
-    final fields = _kCategoryDetailFields[_category] ?? const [];
+    final fields = _detailFieldsForCategory(_category);
     if (fields.isEmpty) return const SizedBox.shrink();
     return Container(
       padding: const EdgeInsets.all(14),
@@ -13779,18 +14963,25 @@ class _EditListingScreenState extends State<EditListingScreen> {
     );
   }
 
-  Widget _editCategoryDetailField((String, String, String) field) =>
-      _PopularValueField(
-        controller: _categoryDetailCtrls[field.$1]!,
-        label: field.$2,
-        hint: field.$3.isEmpty ? null : field.$3,
-        options: _popularValuesFor(_category, field.$1, {
-          for (final entry in _categoryDetailCtrls.entries)
-            entry.key: entry.value.text,
-        }),
-        onChanged: (_) => setState(() => _refreshCategoryDependencies(
-            _category, field.$1, _categoryDetailCtrls)),
-      );
+  Widget _editCategoryDetailField((String, String, String) field) {
+    final currentValues = {
+      for (final entry in _categoryDetailCtrls.entries)
+        entry.key: entry.value.text,
+    };
+    return _PopularValueField(
+      key: ValueKey(
+          '$_listingCatalogVersion:${_popularFieldStateKey(_category, field.$1, currentValues)}'),
+      controller:
+          _categoryDetailCtrls.putIfAbsent(field.$1, TextEditingController.new),
+      label: field.$2,
+      hint: field.$3.isEmpty ? null : field.$3,
+      options: _popularValuesFor(_category, field.$1, currentValues),
+      onChanged: (_) => setState(() {
+        _refreshCategoryDependencies(_category, field.$1, _categoryDetailCtrls);
+        _updateGeneratedCategoryText();
+      }),
+    );
+  }
 
   Widget _editVehicleFields() {
     Widget field(TextEditingController controller, String label,
@@ -13856,7 +15047,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
         ]),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
-          value: _vehicleTransmission,
+          initialValue: _vehicleTransmission,
           decoration: const InputDecoration(
               labelText: 'תיבת הילוכים', border: OutlineInputBorder()),
           items: const [
@@ -13954,7 +15145,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
         Row(children: [
           Expanded(
               child: DropdownButtonFormField<String>(
-            value: _propertyDealType,
+            initialValue: _propertyDealType,
             decoration: const InputDecoration(
                 labelText: 'סוג עסקה', border: OutlineInputBorder()),
             items: const [
@@ -13969,7 +15160,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
           const SizedBox(width: 10),
           Expanded(
               child: DropdownButtonFormField<String>(
-            value: _propertyType,
+            initialValue: _propertyType,
             decoration: const InputDecoration(
                 labelText: 'סוג נכס', border: OutlineInputBorder()),
             items: const [
@@ -14014,7 +15205,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
           const SizedBox(width: 10),
           Expanded(
               child: DropdownButtonFormField<String>(
-            value: _propertyFurniture,
+            initialValue: _propertyFurniture,
             decoration: const InputDecoration(
                 labelText: 'ריהוט', border: OutlineInputBorder()),
             items: const [
@@ -14205,6 +15396,14 @@ class _EditListingScreenState extends State<EditListingScreen> {
     _listenToVehicleFields();
     _listenToAllListingFields();
     _loadDetail();
+    _refreshListingCatalog().then((changed) {
+      if (changed && mounted) setState(() {});
+    });
+    _listingCatalogTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      _refreshListingCatalog().then((changed) {
+        if (changed && mounted) setState(() {});
+      });
+    });
   }
 
   void _mirrorTitleIntoDescription() {
@@ -14231,6 +15430,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
 
   @override
   void dispose() {
+    _listingCatalogTimer?.cancel();
     _titleCtrl.removeListener(_mirrorTitleIntoDescription);
     _titleCtrl.dispose();
     _descCtrl.dispose();
@@ -14520,9 +15720,9 @@ class _EditListingScreenState extends State<EditListingScreen> {
         },
         body: jsonEncode(body),
       );
-      if (res.statusCode == 200 && mounted)
+      if (res.statusCode == 200 && mounted) {
         Navigator.pop(context, true);
-      else if (mounted) {
+      } else if (mounted) {
         final err = jsonDecode(res.body)['error'] ?? 'שגיאה';
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(err)));
@@ -14621,7 +15821,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                         if (_category != 'רכב' && _category != 'נדל״ן') ...[
                           const SizedBox(height: 12),
                           DropdownButtonFormField<String>(
-                            value: _condition,
+                            initialValue: _condition,
                             decoration: const InputDecoration(
                               labelText: 'מצב המוצר',
                               border: OutlineInputBorder(),
@@ -14653,7 +15853,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                           ),
                           const SizedBox(height: 12),
                           DropdownButtonFormField<String>(
-                            value: _deliveryMethod,
+                            initialValue: _deliveryMethod,
                             decoration: const InputDecoration(
                               labelText: 'אופן קבלה',
                               border: OutlineInputBorder(),
@@ -14701,7 +15901,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                         ),
                         const SizedBox(height: 12),
                         DropdownButtonFormField<int>(
-                          value: _expiryDays,
+                          initialValue: _expiryDays,
                           decoration: const InputDecoration(
                             labelText: 'הארכת הפרסום ממועד השמירה',
                             border: OutlineInputBorder(),
@@ -14894,7 +16094,7 @@ class ListingDetailScreen extends StatefulWidget {
   final Map<String, dynamic> item;
   final String token;
   final Map<String, dynamic>? me;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   final bool embedded;
   final VoidCallback? onClose;
   final Future<void> Function()? onUpdated;
@@ -15133,6 +16333,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     if (res.statusCode == 200 && mounted) {
       setState(() => _status = newStatus);
       await widget.onUpdated?.call();
+      if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('המודעה סומנה כ$label')));
     }
@@ -15553,9 +16754,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          for (final field in _kCategoryDetailFields[
-                                  widget.item['category']] ??
-                              const [])
+                          for (final field in _detailFieldsForCategory(
+                              widget.item['category']?.toString() ?? ''))
                             if ((categoryDetails[field.$1] ?? '')
                                 .toString()
                                 .trim()
@@ -15881,11 +17081,12 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
         imageQuality: 82);
     if (picked == null) return;
     final bytes = await picked.readAsBytes();
-    if (mounted)
+    if (mounted) {
       setState(() {
         _photo = picked;
         _photoBytes = bytes;
       });
+    }
   }
 
   String _normalizedPhone(String value) =>
@@ -16370,7 +17571,7 @@ class ConversationsScreen extends StatefulWidget {
   final List<Map<String, dynamic>> users;
   final String token;
   final Map<String, dynamic>? me;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   final Map<String, int> unreadCounts;
   final Map<String, int> groupUnreadCounts;
   final Map<String, String> groupTypingNames;
@@ -17218,7 +18419,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                               active ? FontWeight.w600 : FontWeight.w400,
                           color: active
                               ? Colors.white
-                              : Colors.white.withOpacity(0.6),
+                              : Colors.white.withValues(alpha: 0.6),
                         ),
                       ),
                     ),
@@ -17621,6 +18822,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                                             me: widget.me,
                                             recipient: user,
                                             socket: widget.socket,
+                                            onBlocked: () {
+                                              widget.onContactsChanged();
+                                            },
                                             onVoiceCall: () =>
                                                 widget.onVoiceCall(user))));
                               }
@@ -17915,6 +19119,8 @@ class _CompactMenuItem extends StatelessWidget {
       );
 }
 
+// Retained as the compact variant for narrow layouts.
+// ignore: unused_element
 class _BlockedReceivingFilterIcons extends StatelessWidget {
   final Map<String, bool>? filter;
   final bool forGroup;
@@ -17923,8 +19129,11 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
 
   const _BlockedReceivingFilterIcons({
     required this.filter,
+    // ignore: unused_element_parameter
     this.forGroup = false,
+    // ignore: unused_element_parameter
     this.onHeader = true,
+    // ignore: unused_element_parameter
     this.blockedForSending = false,
   });
 
@@ -18001,13 +19210,13 @@ Future<Map<String, bool>?> _chooseGroupInvitationFilter(
   final selected = Map<String, bool>.from(initialFilter);
   final normalizedGroupName = groupName?.trim() ?? '';
   final targetLabel =
-      normalizedGroupName.isEmpty ? counterpart : 'קבוצת $normalizedGroupName';
+      normalizedGroupName.isEmpty ? counterpart : '„$normalizedGroupName”';
   return showDialog<Map<String, bool>>(
     context: context,
     barrierDismissible: false,
     builder: (dialogContext) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
-        title: Text('בחירת הסינון שלי עבור $targetLabel'),
+        title: Text('בחירת התוכן שאקבל מהקבוצה $targetLabel'),
         content: SizedBox(
           width: 760,
           child: SingleChildScrollView(
@@ -18015,8 +19224,9 @@ Future<Map<String, bool>?> _chooseGroupInvitationFilter(
               groupName: groupName,
               groupFilter: groupFilter,
               personalFilter: selected,
-              counterpartFilterLabel: 'הסינון של $targetLabel',
-              personalFilterLabel: 'הסינון שלי עבור $targetLabel',
+              counterpartFilterLabel: 'מה מותר לשלוח בקבוצה $targetLabel',
+              personalFilterLabel:
+                  'איזה תוכן אני מוכן לקבל מהקבוצה $targetLabel',
               onPersonalFilterChanged: (updated) => setDialogState(() {
                 selected
                   ..clear()
@@ -18051,6 +19261,8 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
   final String counterpartFilterLabel;
   final String personalFilterLabel;
   final IconData counterpartIcon;
+  final bool showCounterpartFilter;
+  final String? hiddenCounterpartExplanation;
 
   const _InvitationFilterComparisonTable({
     this.groupName,
@@ -18059,9 +19271,11 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
     this.onPersonalFilterChanged,
     this.onCounterpartFilterChanged,
     this.counterpartKind = 'הקבוצה',
-    this.counterpartFilterLabel = 'סינון הקבוצה',
-    this.personalFilterLabel = 'הסינון האישי שלי',
+    this.counterpartFilterLabel = 'מה מותר לשלוח בקבוצה',
+    this.personalFilterLabel = 'איזה תוכן אני מוכן לקבל מהקבוצה',
     this.counterpartIcon = Icons.groups_outlined,
+    this.showCounterpartFilter = true,
+    this.hiddenCounterpartExplanation,
   });
 
   static const _items = <String, (IconData, String, String)>{
@@ -18094,20 +19308,40 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (groupFilter == null || personalFilter == null) {
+    if (personalFilter == null ||
+        (showCounterpartFilter && groupFilter == null)) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 10),
         child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
       );
     }
-    Widget cell(Widget child, {int flex = 1}) => Expanded(
+    Widget cell(
+      Widget child, {
+      int flex = 1,
+      AlignmentGeometry alignment = AlignmentDirectional.centerStart,
+    }) =>
+        Expanded(
           flex: flex,
           child: Container(
-            alignment: AlignmentDirectional.centerStart,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            alignment: alignment,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
             child: child,
           ),
         );
+
+    final namedCounterpart = groupName?.trim() ?? '';
+    final explanation = !showCounterpartFilter
+        ? hiddenCounterpartExplanation ??
+            (namedCounterpart.isEmpty
+                ? 'בחרו איזה תוכן תהיו מוכנים לקבל מהחבר.'
+                : 'בחרו איזה תוכן תהיו מוכנים לקבל מ„$namedCounterpart”.')
+        : counterpartKind == 'החבר'
+            ? namedCounterpart.isEmpty
+                ? 'העמודה הראשונה מציגה מה מותר לשלוח לחבר. בעמודה השנייה תוכלו לבחור איזה תוכן תהיו מוכנים לקבל ממנו.'
+                : 'העמודה הראשונה מציגה מה מותר לשלוח ל„$namedCounterpart”. בעמודה השנייה תוכלו לבחור איזה תוכן תהיו מוכנים לקבל ממנו.'
+            : namedCounterpart.isEmpty
+                ? 'העמודה הראשונה מציגה מה מותר לשלוח בקבוצה. בעמודה השנייה תוכלו לבחור איזה תוכן תהיו מוכנים לקבל ממנה.'
+                : 'העמודה הראשונה מציגה מה מותר לשלוח בקבוצה „$namedCounterpart”. בעמודה השנייה תוכלו לבחור איזה תוכן תהיו מוכנים לקבל ממנה.';
 
     Widget status(bool allowed, {bool editable = false, VoidCallback? onTap}) {
       final color = allowed ? kPrimary : Colors.red.shade600;
@@ -18172,10 +19406,23 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
             ),
             const SizedBox(height: 10),
           ],
-          Text(
-            'הגדרת $counterpartKind קובעת מה ניתן לשלוח. הבחירה האישית שלך קובעת מה יוצג עבורך.',
-            textAlign: TextAlign.right,
-            style: const TextStyle(fontSize: 13, color: kSubtext, height: 1.45),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3F8FC),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: const Color(0xFFD8E7F1)),
+            ),
+            child: Text(
+              explanation,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF526C80),
+                height: 1.35,
+              ),
+            ),
           ),
           const SizedBox(height: 10),
           Container(
@@ -18192,20 +19439,35 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
                   cell(
                       const Text('סוג התוכן והסבר',
                           textAlign: TextAlign.right,
-                          style: TextStyle(fontWeight: FontWeight.w800)),
-                      flex: 2),
-                  cell(Text(counterpartFilterLabel,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontWeight: FontWeight.w800))),
-                  cell(Text(personalFilterLabel,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontWeight: FontWeight.w800))),
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w800)),
+                      flex: 3),
+                  if (showCounterpartFilter)
+                    cell(
+                        Text(counterpartFilterLabel,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                height: 1.25)),
+                        flex: 2,
+                        alignment: Alignment.center),
+                  cell(
+                      Text(personalFilterLabel,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              height: 1.25)),
+                      flex: showCounterpartFilter ? 2 : 3,
+                      alignment: Alignment.center),
                 ]),
               ),
               ..._visibleKeys.map((key) {
                 final item = _itemFor(key);
                 final mine = personalFilter![key] == true;
-                final groupAllows = groupFilter![key] == true;
+                final groupAllows =
+                    showCounterpartFilter && groupFilter?[key] == true;
                 void togglePersonal() {
                   if (onPersonalFilterChanged == null) return;
                   final updated = Map<String, bool>.from(personalFilter!);
@@ -18214,7 +19476,11 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
                 }
 
                 void toggleCounterpart() {
-                  if (onCounterpartFilterChanged == null) return;
+                  if (!showCounterpartFilter ||
+                      groupFilter == null ||
+                      onCounterpartFilterChanged == null) {
+                    return;
+                  }
                   final updated = Map<String, bool>.from(groupFilter!);
                   updated[key] = !groupAllows;
                   onCounterpartFilterChanged!(updated);
@@ -18246,13 +19512,20 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
                             ),
                           ),
                         ]),
-                        flex: 2),
-                    cell(status(groupAllows,
-                        editable: onCounterpartFilterChanged != null,
-                        onTap: toggleCounterpart)),
-                    cell(status(mine,
-                        editable: onPersonalFilterChanged != null,
-                        onTap: togglePersonal)),
+                        flex: 3),
+                    if (showCounterpartFilter)
+                      cell(
+                          status(groupAllows,
+                              editable: onCounterpartFilterChanged != null,
+                              onTap: toggleCounterpart),
+                          flex: 2,
+                          alignment: Alignment.center),
+                    cell(
+                        status(mine,
+                            editable: onPersonalFilterChanged != null,
+                            onTap: togglePersonal),
+                        flex: showCounterpartFilter ? 2 : 3,
+                        alignment: Alignment.center),
                   ]),
                 );
               }),
@@ -18269,12 +19542,13 @@ class ChatScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
   final Map<String, dynamic> recipient;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   final String? initialText;
   final String? listingId;
   final VoidCallback? onMessageSent;
   final bool embedded;
   final VoidCallback? onClose;
+  final VoidCallback? onBlocked;
   final VoidCallback? onVoiceCall;
 
   const ChatScreen({
@@ -18288,6 +19562,7 @@ class ChatScreen extends StatefulWidget {
     this.onMessageSent,
     this.embedded = false,
     this.onClose,
+    this.onBlocked,
     this.onVoiceCall,
   });
 
@@ -18313,11 +19588,54 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _serverMessagesFingerprint;
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
+  bool _voiceSubmissionInProgress = false;
+  bool _cameraCaptureOpen = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
   String _voiceFileName = 'voice_message.webm';
   Map<String, bool>? _recipientReceivingFilter;
   Map<String, bool>? _outgoingFilter;
+  bool _counterpartFilterAvailable = false;
+  bool? _requiresFirstMessageFilterChoice;
+  Future<void>? _initialMessagesFuture;
+  Future<void>? _initialOutgoingFilterFuture;
+
+  bool get _recipientAllowsText =>
+      widget.recipient['id'] == kScanBotId ||
+      _recipientReceivingFilter?['text'] != false;
+  bool get _recipientAllowsVideo =>
+      widget.recipient['id'] == kScanBotId ||
+      _recipientReceivingFilter?['video'] != false;
+  bool get _recipientAllowsImages =>
+      widget.recipient['id'] == kScanBotId ||
+      _recipientReceivingFilter == null ||
+      const ['nonHumanImages', 'men', 'women', 'children']
+          .any((key) => _recipientReceivingFilter![key] == true);
+
+  void _showRecipientFilterNotice(String contentType) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$contentType חסום בהגדרות הקבלה של הנמען'),
+      backgroundColor: Colors.orange.shade800,
+    ));
+  }
+
+  void _markBlockedContent(String messageId) {
+    if (!mounted) return;
+    setState(() {
+      final index =
+          _messages.indexWhere((message) => message['id'] == messageId);
+      if (index == -1) return;
+      _messages[index]['text'] = _blockedContentText;
+      _messages[index]['status'] = 'blocked_content';
+      _messages[index]['blockedContent'] = true;
+    });
+    Future.delayed(const Duration(minutes: 2), () {
+      if (!mounted) return;
+      setState(() => _messages.removeWhere((message) =>
+          message['id'] == messageId && message['blockedContent'] == true));
+    });
+  }
 
   @override
   void initState() {
@@ -18338,9 +19656,9 @@ class _ChatScreenState extends State<ChatScreen> {
         TextPosition(offset: _msgCtrl.text.length),
       );
     }
-    _loadMessages();
+    _initialMessagesFuture = _loadMessages();
     _loadRecipientReceivingFilter();
-    _loadOutgoingFilter();
+    _initialOutgoingFilterFuture = _loadOutgoingFilter();
     _setupSocket();
     // WebSocket delivery is best-effort (a browser can sleep or reconnect).
     // Quietly reconcile with the server so an incoming message can never stay
@@ -18380,8 +19698,12 @@ class _ChatScreenState extends State<ChatScreen> {
       final body = jsonDecode(response.body);
       final raw = body is Map ? body['filter'] : null;
       if (raw is! Map) return;
-      setState(() => _outgoingFilter =
-          raw.map((key, value) => MapEntry(key.toString(), value == true)));
+      setState(() {
+        _outgoingFilter =
+            raw.map((key, value) => MapEntry(key.toString(), value == true));
+        _requiresFirstMessageFilterChoice =
+            body is Map && body['requiresChoice'] == true;
+      });
     } catch (_) {}
   }
 
@@ -18395,11 +19717,18 @@ class _ChatScreenState extends State<ChatScreen> {
       final body = jsonDecode(response.body);
       final recipient = body is Map ? body['recipientFilter'] : null;
       final personal = body is Map ? body['personalFilter'] : null;
-      if (recipient is! Map || personal is! Map) return false;
+      final counterpartAvailable =
+          body is Map && body['counterpartFilterAvailable'] == true;
+      if (personal is! Map || (counterpartAvailable && recipient is! Map)) {
+        return false;
+      }
       setState(() {
-        _recipientReceivingFilter = recipient.map(
-          (key, value) => MapEntry(key.toString(), value == true),
-        );
+        _counterpartFilterAvailable = counterpartAvailable;
+        _recipientReceivingFilter = recipient is Map
+            ? recipient.map(
+                (key, value) => MapEntry(key.toString(), value == true),
+              )
+            : null;
         _outgoingFilter = personal.map(
           (key, value) => MapEntry(key.toString(), value == true),
         );
@@ -18485,6 +19814,7 @@ class _ChatScreenState extends State<ChatScreen> {
         msgType == 'sticker' ? _avielStickerById(map['body']) : null;
     final isFile = (map['file_url'] != null) ||
         (msgType != 'text' && msgType != 'group_invite' && sticker == null);
+    final privateFilter = map['private_filter'];
     return {
       'id': map['id'],
       'text': map['body'] ?? map['file_name'] ?? '',
@@ -18521,6 +19851,11 @@ class _ChatScreenState extends State<ChatScreen> {
       'educationFormId': map['education_form_id'],
       'educationResponseStatus': map['education_response_status'],
       'isGroupInvite': msgType == 'group_invite',
+      'isPrivateFilterEntry': msgType == 'private_filter',
+      if (privateFilter is Map)
+        'privateFilter': privateFilter.map(
+          (key, value) => MapEntry(key.toString(), value == true),
+        ),
       'meta': map['file_name'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
     };
@@ -18731,13 +20066,31 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _toggleVoiceRecording() async {
+    if (_voiceSubmissionInProgress) return;
     try {
       if (_isRecording) {
-        _recordTimer?.cancel();
-        final path = await _audioRecorder.stop();
-        if (mounted) setState(() => _isRecording = false);
-        if (path != null) {
-          await _uploadAndSend(XFile(path), _voiceFileName, 'audio');
+        _voiceSubmissionInProgress = true;
+        try {
+          _recordTimer?.cancel();
+          final recordedSeconds = _recordSeconds;
+          final path = await _audioRecorder.stop();
+          if (mounted) setState(() => _isRecording = false);
+          if (path == null || recordedSeconds < 1) {
+            throw Exception('ההקלטה קצרה מדי או שלא נקלט בה קול');
+          }
+          final recording = XFile(
+            path,
+            name: _voiceFileName,
+            mimeType:
+                _voiceFileName.endsWith('.webm') ? 'audio/webm' : 'audio/wav',
+          );
+          final bytes = await recording.readAsBytes();
+          if (bytes.length < 256) {
+            throw Exception('ההקלטה ריקה ולא נשלחה');
+          }
+          await _uploadAndSend(recording, _voiceFileName, 'audio');
+        } finally {
+          _voiceSubmissionInProgress = false;
         }
         return;
       }
@@ -18752,12 +20105,15 @@ class _ChatScreenState extends State<ChatScreen> {
           ? ''
           : '${(await getTemporaryDirectory()).path}/voice_${DateTime.now().millisecondsSinceEpoch}.wav';
       var encoder = AudioEncoder.wav;
+      _voiceFileName = 'voice_message.wav';
       if (kIsWeb) {
-        if (!await _audioRecorder.isEncoderSupported(AudioEncoder.wav)) {
+        if (await _audioRecorder.isEncoderSupported(AudioEncoder.opus)) {
+          encoder = AudioEncoder.opus;
+          _voiceFileName = 'voice_message.webm';
+        } else if (!await _audioRecorder.isEncoderSupported(AudioEncoder.wav)) {
           throw Exception('הדפדפן אינו תומך בהקלטת אודיו');
         }
       }
-      _voiceFileName = 'voice_message.wav';
       await _audioRecorder.start(
           RecordConfig(
               encoder: encoder,
@@ -18765,6 +20121,9 @@ class _ChatScreenState extends State<ChatScreen> {
               sampleRate: 16000,
               bitRate: 32000),
           path: path);
+      if (!await _audioRecorder.isRecording()) {
+        throw Exception('המיקרופון לא התחיל להקליט');
+      }
       if (!mounted) return;
       setState(() {
         _isRecording = true;
@@ -18784,13 +20143,17 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (error) {
       if (mounted) {
         setState(() => _isRecording = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('לא ניתן להפעיל את המיקרופון: $error')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('ההקלטה נכשלה: $error')));
       }
     }
   }
 
   Future<void> _send({String? stickerId}) async {
+    if (!_recipientAllowsText) {
+      _showRecipientFilterNotice('תוכן טקסטואלי');
+      return;
+    }
     final sticker = _avielStickerById(stickerId);
     final text = sticker?.id ?? _msgCtrl.text.trim();
     if (text.isEmpty) return;
@@ -18830,6 +20193,10 @@ class _ChatScreenState extends State<ChatScreen> {
       } catch (_) {}
       return;
     }
+
+    // The private per-contact filter must be persisted successfully before
+    // the original message is added to the chat or sent to the recipient.
+    if (!await _ensureFirstMessageFilterChoice()) return;
 
     // Normal send
     final replySnapshot = _replyTo;
@@ -18896,9 +20263,15 @@ class _ChatScreenState extends State<ChatScreen> {
             if (idx != -1) _messages[idx]['status'] = 'failed';
           });
           var error = 'שליחת ההודעה נכשלה';
+          String? errorCode;
           try {
-            error = (jsonDecode(res.body)['error'] as String?) ?? error;
+            final payload = jsonDecode(res.body) as Map<String, dynamic>;
+            error = (payload['error'] as String?) ?? error;
+            errorCode = payload['code']?.toString();
           } catch (_) {}
+          if (errorCode == 'CHAT_CONTENT_BLOCKED') {
+            _markBlockedContent(tempId);
+          }
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(error),
             backgroundColor: res.statusCode == 422 ? Colors.red.shade700 : null,
@@ -18916,6 +20289,119 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }();
     _scrollToBottom();
+  }
+
+  Future<bool> _ensureFirstMessageFilterChoice() async {
+    if (widget.recipient['id'] == kScanBotId) return true;
+    await Future.wait([
+      if (_initialMessagesFuture != null) _initialMessagesFuture!,
+      if (_initialOutgoingFilterFuture != null) _initialOutgoingFilterFuture!,
+    ]);
+    if (!mounted) return false;
+
+    if (_requiresFirstMessageFilterChoice != true) return true;
+
+    final loaded = await _loadContactFilterComparison();
+    if (!mounted) return false;
+    if (!loaded || _outgoingFilter == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('לא ניתן לטעון כעת את נתוני הסינון')),
+      );
+      return false;
+    }
+
+    final recipientName =
+        widget.recipient['name']?.toString().trim().isNotEmpty == true
+            ? widget.recipient['name'].toString().trim()
+            : 'החבר';
+    var selected = Map<String, bool>.from(_outgoingFilter!);
+    final choice = await showDialog<Map<String, bool>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Row(
+            children: [
+              UserAvatar(
+                picUrl: widget.recipient['profile_pic_url']?.toString(),
+                name: recipientName,
+                radius: 21,
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  'בחירת התוכן שאקבל מ„$recipientName”',
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 760,
+            child: SingleChildScrollView(
+              child: _InvitationFilterComparisonTable(
+                groupName: recipientName,
+                groupFilter: _recipientReceivingFilter,
+                personalFilter: selected,
+                counterpartKind: 'החבר',
+                showCounterpartFilter: false,
+                counterpartFilterLabel: 'מה מותר לשלוח ל„$recipientName”',
+                personalFilterLabel:
+                    'איזה תוכן אני מוכן לקבל מ„$recipientName”',
+                counterpartIcon: Icons.person_outline,
+                onPersonalFilterChanged: (updated) =>
+                    setDialogState(() => selected = updated),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('ביטול'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, selected),
+              icon: const Icon(Icons.send_outlined),
+              label: const Text('שמור והמשך'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return false;
+
+    try {
+      final response = await http.put(
+        Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-settings'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'filter': choice}),
+      );
+      if (!mounted) return false;
+      if (response.statusCode != 200) throw Exception();
+      final payload = jsonDecode(response.body);
+      final privateEntry = payload is Map ? payload['privateEntry'] : null;
+      setState(() {
+        _outgoingFilter = Map<String, bool>.from(choice);
+        _requiresFirstMessageFilterChoice = false;
+        if (privateEntry is Map) {
+          final normalized = _normalizeDbMessage(privateEntry);
+          if (!_messages.any((message) => message['id'] == normalized['id'])) {
+            _messages.add(normalized);
+          }
+        }
+      });
+      return true;
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שמירת הסינון נכשלה')),
+        );
+      }
+      return false;
+    }
   }
 
   void _showMessageOptions(Map<String, dynamic> msg, bool isMe) {
@@ -19000,16 +20486,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   });
                 },
               ),
-            if (msg['id']?.toString().startsWith('temp_') != true)
-              ListTile(
-                leading: const Icon(Icons.delete_outline),
-                title: const Text('מחק אצלי'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _deleteMessage(msg, forEveryone: false);
-                },
-              ),
-            if (isMe && msg['id']?.toString().startsWith('temp_') != true)
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: Text(
+                  _isLocalOnlyChatMessage(msg) ? 'הסר את ההודעה' : 'מחק אצלי'),
+              onTap: () {
+                Navigator.pop(context);
+                _deleteMessage(msg, forEveryone: false);
+              },
+            ),
+            if (isMe && !_isLocalOnlyChatMessage(msg))
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.red),
                 title: const Text('מחק אצל כולם',
@@ -19048,6 +20534,14 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (confirmed != true) return;
+    final isLocalOnly = _isLocalOnlyChatMessage(message);
+    if (isLocalOnly) {
+      if (mounted) {
+        setState(
+            () => _messages.removeWhere((item) => item['id'] == message['id']));
+      }
+      return;
+    }
     try {
       final response = await http.delete(
         Uri.parse('$kApi/messages/${message['id']}'),
@@ -19330,6 +20824,8 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // Retained for the mobile navigation variant.
+  // ignore: unused_element
   void _showChatMenu() {
     final recipientName = widget.recipient['name'] as String? ?? '';
     showModalBottomSheet(
@@ -19367,10 +20863,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setBool(
                     'muted_chat_${widget.recipient['id']}', true);
-                if (mounted)
+                if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('ההתראות לשיחה הושתקו')),
                   );
+                }
               },
             ),
             const Divider(),
@@ -19416,10 +20913,11 @@ class _ChatScreenState extends State<ChatScreen> {
       case 'mute':
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('muted_chat_${widget.recipient['id']}', true);
-        if (mounted)
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('ההתראות לשיחה הושתקו')),
           );
+        }
         break;
       case 'report':
         if (mounted) {
@@ -19521,29 +21019,64 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (confirm != true) return;
     try {
-      await http.post(
+      final response = await http.post(
         Uri.parse('$kApi/block/${widget.recipient['id']}'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (response.statusCode != 200) {
+        var error = 'חסימת המשתמש נכשלה';
+        try {
+          final payload = jsonDecode(response.body);
+          if (payload is Map && payload['error'] != null) {
+            error = payload['error'].toString();
+          }
+        } catch (_) {}
+        throw Exception(error);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$recipientName נחסם בהצלחה')),
       );
-      if (mounted) Navigator.pop(context);
-    } catch (_) {}
+      widget.onBlocked?.call();
+      if (widget.embedded) {
+        widget.onClose?.call();
+      } else if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(true);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      final message = error.toString().replaceFirst('Exception: ', '');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: Colors.red.shade700),
+      );
+    }
   }
 
   Future<void> _sharePhoneContact() async {
-    final contact = await _pickPhoneContact(context);
+    if (!_recipientAllowsText) {
+      _showRecipientFilterNotice('שיתוף אנשי קשר');
+      return;
+    }
+    final contact = await _pickSharedContact(context, widget.token);
     if (contact == null || !mounted) return;
     _msgCtrl.text = _sharedContactText(contact);
     await _send();
   }
 
   Future<void> _shareMyContact() async {
+    if (!_recipientAllowsText) {
+      _showRecipientFilterNotice('שיתוף פרטים');
+      return;
+    }
     final contact = await _confirmMyContactShare(context, widget.token);
     if (contact == null || !mounted) return;
     _msgCtrl.text = _sharedContactText(contact);
     await _send();
   }
 
-  void _showAttachMenu() {
+  Future<void> _showAttachMenu() async {
+    await _loadRecipientReceivingFilter();
+    if (!mounted) return;
     showDialog(
       context: context,
       barrierColor: Colors.black54,
@@ -19567,51 +21100,56 @@ class _ChatScreenState extends State<ChatScreen> {
                   const SizedBox(height: 8),
                   Column(
                     children: [
-                      _AttachOption(
-                        icon: Icons.image_outlined,
-                        label: 'גלריה (עד 10)',
-                        color: kPrimary,
-                        onTap: () {
-                          Navigator.pop(context);
-                          _pickFile(ImageSource.gallery);
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.camera_alt_outlined,
-                        label: 'צלם תמונה',
-                        color: kPrimaryMid,
-                        onTap: () {
-                          Navigator.pop(context);
-                          _capturePhoto();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.picture_as_pdf_outlined,
-                        label: 'מסמכים (עד 20)',
-                        color: Colors.orange,
-                        onTap: () {
-                          Navigator.pop(context);
-                          _pickDocument();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.videocam_outlined,
-                        label: 'וידאו',
-                        color: Colors.deepPurple,
-                        onTap: () {
-                          Navigator.pop(context);
-                          _pickVideo();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.video_camera_back_outlined,
-                        label: 'צלם וידאו',
-                        color: Colors.redAccent,
-                        onTap: () {
-                          Navigator.pop(context);
-                          _recordVideo();
-                        },
-                      ),
+                      if (_recipientAllowsImages) ...[
+                        _AttachOption(
+                          icon: Icons.image_outlined,
+                          label: 'גלריה (עד 10)',
+                          color: kPrimary,
+                          onTap: () {
+                            Navigator.pop(context);
+                            _pickFile(ImageSource.gallery);
+                          },
+                        ),
+                        _AttachOption(
+                          icon: Icons.camera_alt_outlined,
+                          label: 'צלם תמונה',
+                          color: kPrimaryMid,
+                          onTap: () {
+                            Navigator.pop(context);
+                            _capturePhoto();
+                          },
+                        ),
+                      ],
+                      if (_recipientAllowsText)
+                        _AttachOption(
+                          icon: Icons.picture_as_pdf_outlined,
+                          label: 'מסמכים (עד 20)',
+                          color: Colors.orange,
+                          onTap: () {
+                            Navigator.pop(context);
+                            _pickDocument();
+                          },
+                        ),
+                      if (_recipientAllowsVideo) ...[
+                        _AttachOption(
+                          icon: Icons.videocam_outlined,
+                          label: 'וידאו',
+                          color: Colors.deepPurple,
+                          onTap: () {
+                            Navigator.pop(context);
+                            _pickVideo();
+                          },
+                        ),
+                        _AttachOption(
+                          icon: Icons.video_camera_back_outlined,
+                          label: 'צלם וידאו',
+                          color: Colors.redAccent,
+                          onTap: () {
+                            Navigator.pop(context);
+                            _recordVideo();
+                          },
+                        ),
+                      ],
                       _AttachOption(
                         icon: Icons.mic_none_rounded,
                         label: 'הקלטת שמע',
@@ -19623,43 +21161,49 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ],
                   ),
-                  _AttachOption(
-                    icon: Icons.contact_phone_outlined,
-                    label: 'שתף איש קשר',
-                    color: Colors.teal,
-                    onTap: () {
-                      Navigator.pop(context);
-                      _sharePhoneContact();
-                    },
-                  ),
-                  _AttachOption(
-                    icon: Icons.badge_outlined,
-                    label: 'שתף את הפרטים שלי',
-                    color: kPrimary,
-                    onTap: () {
-                      Navigator.pop(context);
-                      _shareMyContact();
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.blue.shade200),
+                  if (_recipientAllowsText) ...[
+                    _AttachOption(
+                      icon: Icons.contact_phone_outlined,
+                      label: 'שתף איש קשר',
+                      color: Colors.teal,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _sharePhoneContact();
+                      },
                     ),
-                    child: Row(children: [
-                      Icon(Icons.security_outlined,
-                          color: Colors.blue.shade700, size: 18),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text('סרטונים עד 50MB עוברים סריקה לפני השליחה',
-                            style: TextStyle(fontSize: 12, color: Colors.blue)),
+                    _AttachOption(
+                      icon: Icons.badge_outlined,
+                      label: 'שתף את הפרטים שלי',
+                      color: kPrimary,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _shareMyContact();
+                      },
+                    ),
+                  ],
+                  if (_recipientAllowsVideo) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.blue.shade200),
                       ),
-                    ]),
-                  ),
+                      child: Row(children: [
+                        Icon(Icons.security_outlined,
+                            color: Colors.blue.shade700, size: 18),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                              'סרטונים עד 50MB עוברים סריקה לפני השליחה',
+                              style:
+                                  TextStyle(fontSize: 12, color: Colors.blue)),
+                        ),
+                      ]),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -19811,14 +21355,21 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _capturePhoto() async {
-    final photo = kIsWeb
-        ? await captureWebPhoto(context)
-        : await ImagePicker().pickImage(
-            source: ImageSource.camera,
-            maxWidth: 1920,
-            maxHeight: 1920,
-            imageQuality: 85,
-          );
+    if (_cameraCaptureOpen) return;
+    _cameraCaptureOpen = true;
+    XFile? photo;
+    try {
+      photo = kIsWeb
+          ? await captureWebPhoto(context)
+          : await ImagePicker().pickImage(
+              source: ImageSource.camera,
+              maxWidth: 1920,
+              maxHeight: 1920,
+              imageQuality: 85,
+            );
+    } finally {
+      _cameraCaptureOpen = false;
+    }
     if (photo == null) return;
     await _uploadAndSend(photo, photo.name, 'image');
   }
@@ -19935,9 +21486,31 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
+    await _loadRecipientReceivingFilter();
+    if (!mounted) return;
+    final blockedByRecipient = switch (fileType) {
+      'video' => !_recipientAllowsVideo,
+      'image' => !_recipientAllowsImages,
+      'document' => !_recipientAllowsText,
+      _ => false,
+    };
+    if (blockedByRecipient) {
+      _showRecipientFilterNotice(switch (fileType) {
+        'video' => 'וידאו',
+        'image' => 'תמונות',
+        'document' => 'מסמכים',
+        _ => 'סוג התוכן',
+      });
+      return;
+    }
+    if (!await _ensureFirstMessageFilterChoice()) return;
+    if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
-    final showInlineProgress =
-        (fileType == 'image' || fileType == 'document') && !isClipboardPaste;
+    final showInlineProgress = (fileType == 'image' ||
+            fileType == 'document' ||
+            fileType == 'video' ||
+            fileType == 'audio') &&
+        !isClipboardPaste;
     final showProgress = !showInlineProgress;
     final uploadMessageId = _newUploadMessageId('uploading_');
     final uploadStartedAt = DateTime.now();
@@ -20001,7 +21574,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.removeWhere((message) => message['id'] == uploadMessageId));
     }
     await _applyPrivateUploadResult(result, fileName, fileType,
-        showNotice: fileType != 'image' || isClipboardPaste);
+        showNotice:
+            (fileType != 'image' && fileType != 'video') || isClipboardPaste);
   }
 
   Future<bool> _applyPrivateUploadResult(
@@ -20026,7 +21600,7 @@ class _ChatScreenState extends State<ChatScreen> {
             'isFile': true,
             'fileType': fileType,
             'fileName': fileName,
-            'uploadError': result.error ?? 'אירעה שגיאה בזמן העלאת התמונה',
+            'uploadError': result.error ?? 'אירעה שגיאה בזמן העלאת הקובץ',
           });
         });
         _scrollToBottom();
@@ -20212,7 +21786,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => Directionality(
+      builder: (dialogContext) => Directionality(
         textDirection: TextDirection.rtl,
         child: AlertDialog(
           shape:
@@ -20256,7 +21830,7 @@ class _ChatScreenState extends State<ChatScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () => Navigator.pop(_),
+                  onPressed: () => Navigator.pop(dialogContext),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: kPrimary,
                     foregroundColor: Colors.white,
@@ -20295,9 +21869,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final recipientName = widget.recipient['name']?.toString() ?? 'החבר';
     final loaded = await _loadContactFilterComparison();
     if (!mounted) return;
-    if (!loaded ||
-        _recipientReceivingFilter == null ||
-        _outgoingFilter == null) {
+    if (!loaded || _outgoingFilter == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: const Text('לא ניתן לטעון כעת את נתוני הסינון'),
@@ -20318,7 +21890,11 @@ class _ChatScreenState extends State<ChatScreen> {
         builder: (context, setDialogState) => AlertDialog(
           title: Row(
             children: [
-              const Icon(Icons.shield_outlined, color: kPrimary),
+              UserAvatar(
+                picUrl: widget.recipient['profile_pic_url']?.toString(),
+                name: recipientName,
+                radius: 21,
+              ),
               const SizedBox(width: 9),
               Expanded(
                 child: Text(
@@ -20340,8 +21916,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   groupFilter: _recipientReceivingFilter,
                   personalFilter: personalDraft,
                   counterpartKind: 'החבר',
-                  counterpartFilterLabel: 'סינון החבר',
-                  personalFilterLabel: 'הסינון שלי עבור $recipientName',
+                  showCounterpartFilter: _counterpartFilterAvailable,
+                  hiddenCounterpartExplanation:
+                      'בחרו איזה תוכן תהיו מוכנים לקבל מ„$recipientName”. לאחר שהחבר יאשר את הקשר, תוכלו לראות מה הוא מתיר לשלוח אליו.',
+                  counterpartFilterLabel: 'מה מותר לשלוח ל„$recipientName”',
+                  personalFilterLabel:
+                      'איזה תוכן אני מוכן לקבל מ„$recipientName”',
                   counterpartIcon: Icons.person_outline,
                   onPersonalFilterChanged: (updated) => setDialogState(() {
                     personalDraft = updated;
@@ -20369,8 +21949,12 @@ class _ChatScreenState extends State<ChatScreen> {
                         );
                         if (!mounted) return;
                         if (response.statusCode != 200) throw Exception();
-                        setState(
-                            () => _outgoingFilter = Map.from(personalDraft));
+                        setState(() {
+                          _outgoingFilter = Map.from(personalDraft);
+                          _requiresFirstMessageFilterChoice = false;
+                        });
+                        await _loadMessages(silent: true);
+                        if (!mounted) return;
                         if (dialogContext.mounted) {
                           Navigator.pop(dialogContext);
                         }
@@ -20678,6 +22262,27 @@ class _ChatScreenState extends State<ChatScreen> {
                                   token: widget.token,
                                   onJoined: () => setState(() {}),
                                 )
+                              else if (msg['isPrivateFilterEntry'] == true)
+                                _PrivateContactFilterEntry(
+                                  recipientName: widget.recipient['name']
+                                              ?.toString()
+                                              .trim()
+                                              .isNotEmpty ==
+                                          true
+                                      ? widget.recipient['name']
+                                          .toString()
+                                          .trim()
+                                      : 'החבר',
+                                  recipientAvatarUrl: widget
+                                      .recipient['profile_pic_url']
+                                      ?.toString(),
+                                  filter: (msg['privateFilter'] as Map?)?.map(
+                                        (key, value) => MapEntry(
+                                            key.toString(), value == true),
+                                      ) ??
+                                      const <String, bool>{},
+                                  onUpdate: _showContactFilterStatus,
+                                )
                               else
                                 GestureDetector(
                                   onTap: !kIsWeb && msg['isFile'] != true
@@ -20709,6 +22314,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                         : (widget.recipient['name']
                                                 ?.toString() ??
                                             ''),
+                                    recipientName:
+                                        widget.recipient['name']?.toString(),
                                     onMessageOptions: (message) =>
                                         _showMessageOptions(
                                             message,
@@ -20784,7 +22391,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           tooltip: 'סמיילים ומדבקות של בתשובה',
                           icon: const Icon(Icons.emoji_emotions_outlined,
                               size: 19, color: kPrimary),
-                          onPressed: _showExpressions,
+                          onPressed:
+                              _recipientAllowsText ? _showExpressions : null,
                           padding: const EdgeInsets.all(8),
                           constraints: const BoxConstraints(),
                         ),
@@ -20796,12 +22404,15 @@ class _ChatScreenState extends State<ChatScreen> {
                             child: TextField(
                               controller: _msgCtrl,
                               focusNode: _msgFocusNode,
+                              enabled: _recipientAllowsText,
                               textDirection: TextDirection.rtl,
                               maxLines: 4,
                               minLines: 1,
                               onChanged: (_) => _onTyping(),
                               decoration: InputDecoration(
-                                hintText: 'כתוב הודעה...',
+                                hintText: _recipientAllowsText
+                                    ? 'כתוב הודעה...'
+                                    : 'הנמען אינו מקבל תוכן טקסטואלי',
                                 hintTextDirection: TextDirection.rtl,
                                 hintStyle: const TextStyle(
                                     fontSize: 13, color: kSubtext),
@@ -20829,12 +22440,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 const SizedBox(width: 6),
                 GestureDetector(
-                  onTap: _send,
+                  onTap: _recipientAllowsText ? _send : null,
                   child: Container(
                     width: 44,
                     height: 44,
                     decoration: BoxDecoration(
-                      color: kPrimary,
+                      color: _recipientAllowsText ? kPrimary : Colors.grey,
                       borderRadius: BorderRadius.circular(22),
                     ),
                     child:
@@ -21061,9 +22672,10 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: kPrimary.withOpacity(0.3)),
+          border: Border.all(color: kPrimary.withValues(alpha: 0.3)),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 4)
+            BoxShadow(
+                color: Colors.black.withValues(alpha: 0.06), blurRadius: 4)
           ],
         ),
         child: Padding(
@@ -21175,15 +22787,24 @@ class VoiceMessagePlayer extends StatefulWidget {
   State<VoiceMessagePlayer> createState() => _VoiceMessagePlayerState();
 }
 
-class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
+class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
+    with SingleTickerProviderStateMixin {
   final AudioPlayer _player = AudioPlayer();
+  late final AnimationController _loadingController;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _playing = false;
+  bool _sourcePrepared = false;
+  bool _loading = true;
+  bool _loadFailed = false;
 
   @override
   void initState() {
     super.initState();
+    _loadingController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
     _player.onPositionChanged.listen((value) {
       if (mounted) setState(() => _position = value);
     });
@@ -21196,29 +22817,73 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
     _player.onPlayerComplete.listen((_) {
       if (mounted) setState(() => _position = Duration.zero);
     });
+    _prepareSource();
   }
 
   String _durationLabel(Duration value) =>
       '${value.inMinutes}:${(value.inSeconds % 60).toString().padLeft(2, '0')}';
 
-  Future<void> _toggle() async {
+  Future<void> _prepareSource() async {
+    if (_sourcePrepared) return;
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _loadFailed = false;
+      });
+      _loadingController.repeat();
+    }
     try {
-      if (_playing) {
-        await _player.pause();
-      } else if (kIsWeb && _duration == Duration.zero) {
+      if (kIsWeb) {
         final response =
             await http.get(Uri.parse(_absoluteMediaUrl(widget.url)));
-        if (response.statusCode != 200)
+        if (response.statusCode != 200 || response.bodyBytes.length < 256) {
           throw Exception('audio download failed');
+        }
         final lowerUrl = widget.url.toLowerCase();
         final mimeType = lowerUrl.endsWith('.webm')
             ? 'audio/webm'
             : lowerUrl.endsWith('.wav')
                 ? 'audio/wav'
                 : 'audio/mp4';
-        await _player.play(BytesSource(response.bodyBytes, mimeType: mimeType));
+        await _player
+            .setSource(BytesSource(response.bodyBytes, mimeType: mimeType));
       } else {
-        await _player.play(UrlSource(_absoluteMediaUrl(widget.url)));
+        await _player.setSourceUrl(_absoluteMediaUrl(widget.url));
+      }
+      _sourcePrepared = true;
+      var duration = await _player.getDuration();
+      if (duration == null || duration <= Duration.zero) {
+        duration = await _player.onDurationChanged
+            .firstWhere((value) => value > Duration.zero)
+            .timeout(const Duration(seconds: 8),
+                onTimeout: () => Duration.zero);
+      }
+      if (!mounted) return;
+      _loadingController.stop();
+      setState(() {
+        if (duration != null && duration > Duration.zero) {
+          _duration = duration;
+        }
+        _loading = false;
+      });
+    } catch (_) {
+      _sourcePrepared = false;
+      if (!mounted) return;
+      _loadingController.stop();
+      setState(() {
+        _loading = false;
+        _loadFailed = true;
+      });
+    }
+  }
+
+  Future<void> _toggle() async {
+    try {
+      if (_playing) {
+        await _player.pause();
+      } else {
+        await _prepareSource();
+        await _player.resume();
       }
     } catch (_) {
       if (mounted) {
@@ -21230,6 +22895,7 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
 
   @override
   void dispose() {
+    _loadingController.dispose();
     _player.dispose();
     super.dispose();
   }
@@ -21249,29 +22915,56 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer> {
           name: widget.senderName,
         ),
         IconButton(
-          onPressed: _toggle,
-          icon:
-              Icon(_playing ? Icons.pause : Icons.play_arrow, color: kTextDark),
+          onPressed: _loading
+              ? null
+              : _loadFailed
+                  ? _prepareSource
+                  : _toggle,
+          tooltip: _loadFailed ? 'נסה שוב' : null,
+          icon: Icon(
+            _loadFailed
+                ? Icons.refresh
+                : _playing
+                    ? Icons.pause
+                    : Icons.play_arrow,
+            color: _loading ? kSubtext : kTextDark,
+          ),
         ),
         Expanded(
           child:
               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(
-              children: List.generate(
-                  22,
-                  (i) => Expanded(
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 1),
-                          height: 5.0 + ((i * 7) % 15),
-                          color: i / 22 <= progress
-                              ? kPrimaryMid
-                              : const Color(0xFFCDD3D6),
-                        ),
-                      )),
+            AnimatedBuilder(
+              animation: _loadingController,
+              builder: (_, __) => Row(
+                children: List.generate(
+                    22,
+                    (i) => Expanded(
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 1),
+                            height: _loading
+                                ? 5.0 +
+                                    (((i * 7) +
+                                                (_loadingController.value * 20)
+                                                    .round()) %
+                                            15)
+                                        .toDouble()
+                                : 5.0 + ((i * 7) % 15),
+                            color: _loading
+                                ? kPrimaryMid.withValues(alpha: .55)
+                                : i / 22 <= progress
+                                    ? kPrimaryMid
+                                    : const Color(0xFFCDD3D6),
+                          ),
+                        )),
+              ),
             ),
             const SizedBox(height: 3),
             Text(
-              '${_durationLabel(_position)} / ${_durationLabel(_duration)}',
+              _loading
+                  ? 'טוען הקלטה...'
+                  : _loadFailed
+                      ? 'הטעינה נכשלה — לחצו לניסיון חוזר'
+                      : '${_durationLabel(_position)} / ${_durationLabel(_duration)}',
               style: const TextStyle(fontSize: 10, color: kSubtext),
             ),
           ]),
@@ -21513,7 +23206,7 @@ class _ImageStatusBadge extends StatelessWidget {
         width: 27,
         height: 27,
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.92),
+          color: Colors.white.withValues(alpha: 0.92),
           shape: BoxShape.circle,
           boxShadow: const [
             BoxShadow(color: Colors.black26, blurRadius: 3),
@@ -21654,9 +23347,12 @@ class _DocumentModerationCard extends StatelessWidget {
 
 class _UploadProcessingCard extends StatefulWidget {
   final String fileName;
+  final String fileType;
   final DateTime startedAt;
   const _UploadProcessingCard(
-      {required this.fileName, required this.startedAt});
+      {required this.fileName,
+      required this.startedAt,
+      this.fileType = 'image'});
 
   @override
   State<_UploadProcessingCard> createState() => _UploadProcessingCardState();
@@ -21676,63 +23372,70 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
   }
 
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-        animation: _controller,
-        builder: (_, __) {
-          final elapsed = DateTime.now().difference(widget.startedAt).inSeconds;
-          return Container(
-            width: 285,
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFFEAF6FD), Color(0xFFF8FCFF)],
-              ),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFB9D8ED)),
+  Widget build(BuildContext context) {
+    final typeLabel = widget.fileType == 'video'
+        ? 'הווידאו'
+        : widget.fileType == 'document'
+            ? 'המסמך'
+            : widget.fileType == 'audio'
+                ? 'ההקלטה'
+                : 'התמונה';
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (_, __) {
+        final elapsed = DateTime.now().difference(widget.startedAt).inSeconds;
+        return Container(
+          width: 285,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFEAF6FD), Color(0xFFF8FCFF)],
             ),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Row(children: [
-                RotationTransition(
-                  turns: _controller,
-                  child:
-                      const Icon(Icons.auto_awesome, color: kPrimary, size: 25),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      const Text('מעלה וסורק את התמונה',
-                          style: TextStyle(fontWeight: FontWeight.w800)),
-                      Text(widget.fileName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              const TextStyle(fontSize: 11, color: kSubtext)),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text('${elapsed}s',
-                    style: const TextStyle(
-                        color: kPrimary, fontWeight: FontWeight.bold)),
-              ]),
-              const SizedBox(height: 11),
-              LinearProgressIndicator(
-                value: _controller.value,
-                minHeight: 5,
-                borderRadius: BorderRadius.circular(5),
-                color: kPrimary,
-                backgroundColor: const Color(0xFFD7EAF6),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFFB9D8ED)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Row(children: [
+              RotationTransition(
+                turns: _controller,
+                child:
+                    const Icon(Icons.auto_awesome, color: kPrimary, size: 25),
               ),
-              const SizedBox(height: 7),
-              const Text('בדיקת בטיחות, זיהוי תוכן ואישור שליחה',
-                  style: TextStyle(fontSize: 10, color: kSubtext)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text('מעלה וסורק את $typeLabel',
+                        style: const TextStyle(fontWeight: FontWeight.w800)),
+                    Text(widget.fileName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11, color: kSubtext)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text('${elapsed}s',
+                  style: const TextStyle(
+                      color: kPrimary, fontWeight: FontWeight.bold)),
             ]),
-          );
-        },
-      );
+            const SizedBox(height: 11),
+            LinearProgressIndicator(
+              value: _controller.value,
+              minHeight: 5,
+              borderRadius: BorderRadius.circular(5),
+              color: kPrimary,
+              backgroundColor: const Color(0xFFD7EAF6),
+            ),
+            const SizedBox(height: 7),
+            const Text('בדיקת בטיחות, זיהוי תוכן ואישור שליחה',
+                style: TextStyle(fontSize: 10, color: kSubtext)),
+          ]),
+        );
+      },
+    );
+  }
 }
 
 class _UploadResultCard extends StatelessWidget {
@@ -21742,12 +23445,14 @@ class _UploadResultCard extends StatelessWidget {
   final String? imageUrl;
   final String? fileName;
   final String onlyYouText;
+  final String? recipientName;
   const _UploadResultCard(
       {required this.blocked,
       required this.title,
       required this.reason,
       this.imageUrl,
       this.fileName,
+      this.recipientName,
       this.onlyYouText = 'התמונה מוצגת רק לך ולא נשלחה'});
 
   @override
@@ -21833,6 +23538,14 @@ class _UploadResultCard extends StatelessWidget {
                   Text(title,
                       textAlign: TextAlign.right,
                       style: const TextStyle(fontWeight: FontWeight.w800)),
+                  if (recipientName?.trim().isNotEmpty == true) ...[
+                    const SizedBox(height: 5),
+                    Text('נמען: ${recipientName!.trim()}',
+                        textAlign: TextAlign.right,
+                        textDirection: TextDirection.rtl,
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w700)),
+                  ],
                   const SizedBox(height: 5),
                   Text(reason,
                       textAlign: TextAlign.right,
@@ -21919,7 +23632,7 @@ class _ImageClassificationBadges extends StatelessWidget {
                     width: 27,
                     height: 27,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.94),
+                      color: Colors.white.withValues(alpha: 0.94),
                       shape: BoxShape.circle,
                       boxShadow: const [
                         BoxShadow(color: Colors.black26, blurRadius: 3),
@@ -21973,7 +23686,7 @@ class _DocumentClassificationSummary extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
-        color: kPrimary.withOpacity(0.07),
+        color: kPrimary.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
@@ -22035,6 +23748,8 @@ String _imageSentAtLabel(Map<String, dynamic> message) {
       '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
 }
 
+// Retained for the optional compact gallery layout.
+// ignore: unused_element
 bool _sameImageSequenceSender(
     Map<String, dynamic> first, Map<String, dynamic> second) {
   final firstTime = DateTime.tryParse(first['createdAt']?.toString() ?? '');
@@ -22051,6 +23766,7 @@ bool _sameImageSequenceSender(
       first['senderName'] == second['senderName'];
 }
 
+// ignore: unused_element
 class _ConsecutiveImageGrid extends StatelessWidget {
   final List<Map<String, dynamic>> messages;
   final List<Map<String, dynamic>> conversationMessages;
@@ -22062,7 +23778,9 @@ class _ConsecutiveImageGrid extends StatelessWidget {
     required this.messages,
     required this.conversationMessages,
     required this.isMe,
+    // ignore: unused_element_parameter
     this.onForwardAll,
+    // ignore: unused_element_parameter
     this.onMessageOptions,
   });
 
@@ -22170,7 +23888,8 @@ class _ConsecutiveImageGrid extends StatelessWidget {
                           ),
                           if (index == maxVisible - 1 &&
                               messages.length > maxVisible) ...[
-                            ColoredBox(color: Colors.black.withOpacity(0.48)),
+                            ColoredBox(
+                                color: Colors.black.withValues(alpha: 0.48)),
                             Center(
                               child: Text(
                                 '+$hiddenCount',
@@ -22208,9 +23927,38 @@ class _ConsecutiveImageGrid extends StatelessWidget {
   }
 }
 
+class _OpenSharedContactChatNotification extends Notification {
+  final Map<String, dynamic> recipient;
+  bool handledInDesktopPane = false;
+
+  _OpenSharedContactChatNotification(this.recipient);
+}
+
 class _SharedContactCard extends StatelessWidget {
   final Map<String, dynamic> contact;
-  const _SharedContactCard(this.contact);
+  final String token;
+  final Map<String, dynamic>? me;
+  const _SharedContactCard(this.contact, {required this.token, this.me});
+
+  void _openAppFriend(
+      BuildContext context, String userId, String name, String? profilePicUrl) {
+    final recipient = <String, dynamic>{
+      'id': userId,
+      'name': name,
+      if (profilePicUrl != null) 'profile_pic_url': profilePicUrl,
+    };
+    final openNotification = _OpenSharedContactChatNotification(recipient);
+    openNotification.dispatch(context);
+    if (openNotification.handledInDesktopPane) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ChatScreen(
+        token: token,
+        me: me,
+        recipient: recipient,
+        socket: null,
+      ),
+    ));
+  }
 
   Future<void> _saveContact(BuildContext context, String name, String phone,
       String email, Uri uri) async {
@@ -22257,6 +24005,8 @@ class _SharedContactCard extends StatelessWidget {
     final name = contact['name']?.toString() ?? 'איש קשר';
     final phone = contact['phone']?.toString() ?? '';
     final email = contact['email']?.toString() ?? '';
+    final appUserId = contact['appUserId']?.toString() ?? '';
+    final profilePicUrl = contact['profilePicUrl']?.toString();
     final uri = Uri.parse('$kServer/contact-vcard').replace(queryParameters: {
       'name': name,
       if (phone.isNotEmpty) 'phone': phone,
@@ -22266,14 +24016,12 @@ class _SharedContactCard extends StatelessWidget {
       width: 250,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-          color: Colors.white.withOpacity(.85),
+          color: Colors.white.withValues(alpha: .85),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: kBorder)),
       child: Column(children: [
         Row(children: [
-          const CircleAvatar(
-              backgroundColor: kPrimary,
-              child: Icon(Icons.person, color: Colors.white)),
+          UserAvatar(picUrl: profilePicUrl, name: name, radius: 22),
           const SizedBox(width: 10),
           Expanded(
               child:
@@ -22292,9 +24040,14 @@ class _SharedContactCard extends StatelessWidget {
         SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: () => _saveContact(context, name, phone, email, uri),
-              icon: const Icon(Icons.person_add_alt_1),
-              label: const Text('שמור בטלפון'),
+              onPressed: appUserId.isNotEmpty
+                  ? () =>
+                      _openAppFriend(context, appUserId, name, profilePicUrl)
+                  : () => _saveContact(context, name, phone, email, uri),
+              icon: Icon(appUserId.isNotEmpty
+                  ? Icons.chat_bubble_outline
+                  : Icons.person_add_alt_1),
+              label: Text(appUserId.isNotEmpty ? 'פתח צ׳אט' : 'שמור בטלפון'),
             )),
       ]),
     );
@@ -22492,6 +24245,111 @@ class _WebsiteLinkPreviewState extends State<_WebsiteLinkPreview> {
   }
 }
 
+class _PrivateContactFilterEntry extends StatelessWidget {
+  final Map<String, bool> filter;
+  final String recipientName;
+  final String? recipientAvatarUrl;
+  final VoidCallback onUpdate;
+
+  const _PrivateContactFilterEntry({
+    required this.filter,
+    required this.recipientName,
+    required this.recipientAvatarUrl,
+    required this.onUpdate,
+  });
+
+  static const _labels = <String, String>{
+    'text': 'טקסט',
+    'nonHumanImages': 'נוף או חפצים',
+    'men': 'גברים',
+    'women': 'נשים',
+    'children': 'ילדים',
+    'video': 'וידאו',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final allowed = _labels.entries
+        .where((entry) => filter[entry.key] == true)
+        .map((entry) => entry.value)
+        .join(', ');
+    final blocked = _labels.entries
+        .where((entry) => filter[entry.key] != true)
+        .map((entry) => entry.value)
+        .join(', ');
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 520),
+        margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEAF5FD),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFAED4EE)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Image.asset(
+                'assets/stickers/aviel-guide/guide_here.png',
+                width: 64,
+                height: 68,
+                fit: BoxFit.contain,
+                semanticLabel: 'אביאל מזכיר את הגדרות הסינון',
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                UserAvatar(
+                  picUrl: recipientAvatarUrl,
+                  name: recipientName,
+                  radius: 17,
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'אני מוכן לקבל מ„$recipientName”',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(
+                      color: kPrimary,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 7),
+            Text('מותר: ${allowed.isEmpty ? "ללא" : allowed}',
+                textAlign: TextAlign.right),
+            const SizedBox(height: 3),
+            Text('חסום: ${blocked.isEmpty ? "ללא" : blocked}',
+                textAlign: TextAlign.right,
+                style: const TextStyle(color: Color(0xFFB42318))),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: onUpdate,
+                icon: const Icon(Icons.edit_outlined, size: 17),
+                label: const Text('עדכון הסינון'),
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'רק אני רואה את ההגדרה הזו',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: kSubtext),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic> message;
   final List<Map<String, dynamic>> conversationMessages;
@@ -22500,6 +24358,7 @@ class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic>? me;
   final String? senderAvatarUrl;
   final String senderName;
+  final String? recipientName;
   final void Function(Map<String, dynamic>)? onMessageOptions;
 
   const _MessageBubble({
@@ -22510,6 +24369,7 @@ class _MessageBubble extends StatelessWidget {
     required this.me,
     this.senderAvatarUrl,
     required this.senderName,
+    this.recipientName,
     this.onMessageOptions,
   });
 
@@ -22536,6 +24396,11 @@ class _MessageBubble extends StatelessWidget {
         return const Tooltip(
           message: 'השליחה נכשלה',
           child: Icon(Icons.error_outline, size: 15, color: Colors.red),
+        );
+      case 'blocked_content':
+        return const Tooltip(
+          message: 'נחסם בגלל תוכן לא ראוי — יימחק אוטומטית',
+          child: Icon(Icons.block, size: 15, color: Colors.red),
         );
       case 'rejected_scan':
         return const Tooltip(
@@ -22572,13 +24437,21 @@ class _MessageBubble extends StatelessWidget {
         ),
       );
     }
-    if (fileType == 'image' && uploadStatus == 'uploading') {
+    final isVisualUpload = fileType == 'image' || fileType == 'video';
+    final uploadTypeLabel = fileType == 'video'
+        ? 'הווידאו'
+        : fileType == 'audio'
+            ? 'ההקלטה'
+            : 'התמונה';
+    if ((isVisualUpload || fileType == 'audio') &&
+        uploadStatus == 'uploading') {
       return Align(
         alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadProcessingCard(
-            fileName: fileName ?? 'תמונה',
+            fileName: fileName ?? uploadTypeLabel,
+            fileType: fileType ?? 'image',
             startedAt: DateTime.tryParse(
                     message['uploadStartedAt']?.toString() ?? '') ??
                 DateTime.now(),
@@ -22586,32 +24459,37 @@ class _MessageBubble extends StatelessWidget {
         ),
       );
     }
-    if (fileType == 'image' && uploadStatus == 'failed') {
+    if (isVisualUpload && uploadStatus == 'failed') {
       return Align(
         alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadResultCard(
             blocked: false,
-            title: 'העלאת התמונה נכשלה',
+            title: 'העלאת $uploadTypeLabel נכשלה',
             reason: message['uploadError']?.toString() ??
-                'אירעה שגיאה בזמן העלאת התמונה',
+                'אירעה שגיאה בזמן העלאת $uploadTypeLabel',
           ),
         ),
       );
     }
-    if (fileType == 'image' && uploadStatus == 'rejected_scan') {
+    if (isVisualUpload && uploadStatus == 'rejected_scan') {
       return Align(
         alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadResultCard(
             blocked: true,
-            title: _imageBlockTitle(message['scanReason']),
+            title: fileType == 'video'
+                ? 'הווידאו נחסם ולא נשלח'
+                : _imageBlockTitle(message['scanReason']),
             reason: message['scanReason']?.toString() ??
-                'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה',
+                (fileType == 'video'
+                    ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
+                    : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה'),
             imageUrl: fileUrl,
             fileName: fileName,
+            recipientName: isMe ? recipientName : senderName,
           ),
         ),
       );
@@ -22684,7 +24562,7 @@ class _MessageBubble extends StatelessWidget {
 
     const textColor = kTextDark;
     const timeColor = kSubtext;
-    final replyBg = kPrimary.withOpacity(0.08);
+    final replyBg = kPrimary.withValues(alpha: 0.08);
     const replyBorder = kPrimary;
 
     return Align(
@@ -22708,7 +24586,7 @@ class _MessageBubble extends StatelessWidget {
           border: isMe ? null : Border.all(color: kBorder, width: 1),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.06),
+              color: Colors.black.withValues(alpha: 0.06),
               blurRadius: 4,
               offset: const Offset(0, 2),
             ),
@@ -22743,24 +24621,29 @@ class _MessageBubble extends StatelessWidget {
               ),
 
             if (isAudioFile)
-              VoiceMessagePlayer(
-                url: fileUrl!,
-                isMe: isMe,
-                senderAvatarUrl: senderAvatarUrl,
-                senderName: senderName,
-              )
+              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                VoiceMessagePlayer(
+                  url: fileUrl,
+                  isMe: isMe,
+                  senderAvatarUrl: senderAvatarUrl,
+                  senderName: senderName,
+                ),
+                if (uploadStatus == 'pending_scan')
+                  const Text('ההקלטה ממתינה לסריקה',
+                      style: TextStyle(fontSize: 10, color: Colors.orange)),
+              ])
             else if (isVideoFile)
               Stack(children: [
                 if (kIsWeb)
                   NativeWebVideoPlayer(
                     key: ValueKey('video-$fileUrl'),
-                    url: _absoluteMediaUrl(fileUrl!),
+                    url: _absoluteMediaUrl(fileUrl),
                     onOptions: onMessageOptions == null
                         ? null
                         : () => onMessageOptions!(message),
                   )
                 else
-                  _ChatVideoPlayer(url: fileUrl!),
+                  _ChatVideoPlayer(url: fileUrl),
                 Positioned(
                   right: 7,
                   top: 7,
@@ -22781,7 +24664,7 @@ class _MessageBubble extends StatelessWidget {
                         context,
                         MaterialPageRoute(
                           builder: (_) => ImagePreviewScreen(
-                            url: fileUrl!,
+                            url: fileUrl,
                             filename: fileName,
                             urls: conversationImages
                                 .map((item) => item['fileUrl'] as String)
@@ -22802,7 +24685,7 @@ class _MessageBubble extends StatelessWidget {
                         ClipRRect(
                           borderRadius: BorderRadius.circular(10),
                           child: _PersistentMediaImage(
-                            url: fileUrl!,
+                            url: fileUrl,
                             width: 220,
                             height: 180,
                             fit: BoxFit.contain,
@@ -22933,7 +24816,11 @@ class _MessageBubble extends StatelessWidget {
                 ),
               )
             else if (sharedContact != null)
-              _SharedContactCard(sharedContact)
+              _SharedContactCard(
+                sharedContact,
+                token: token,
+                me: me,
+              )
             else
               Text(
                 displayText,
@@ -22964,10 +24851,10 @@ class _MessageBubble extends StatelessWidget {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                   decoration: BoxDecoration(
-                    color: kPrimary.withOpacity(0.08),
+                    color: kPrimary.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: kPrimary.withOpacity(0.35),
+                      color: kPrimary.withValues(alpha: 0.35),
                       width: 1,
                     ),
                   ),
@@ -23097,6 +24984,8 @@ class _AvielEmptyChat extends StatelessWidget {
       );
 }
 
+// Legacy expression catalog retained for migration of saved messages.
+// ignore: unused_element
 const _originalSmileAssets = <String>[
   'assets/expressions/items/expression-01.png',
   'assets/expressions/items/expression-06.png',
@@ -23104,6 +24993,7 @@ const _originalSmileAssets = <String>[
   'assets/expressions/items/expression-16.png',
   'assets/expressions/items/expression-20.png',
 ];
+// ignore: unused_element
 const _originalStickerAssets = <String>[
   'assets/expressions/items/expression-02.png',
   'assets/expressions/items/expression-03.png',
@@ -23121,6 +25011,7 @@ const _originalStickerAssets = <String>[
   'assets/expressions/items/expression-18.png',
   'assets/expressions/items/expression-19.png',
 ];
+// ignore: unused_element
 const _originalGifAssets = <String>[
   'assets/expressions/items/expression-21.gif',
   'assets/expressions/items/expression-22.gif',
@@ -23128,6 +25019,7 @@ const _originalGifAssets = <String>[
   'assets/expressions/items/expression-24.gif',
   'assets/expressions/items/expression-25.gif',
 ];
+// ignore: unused_element
 const _originalSmileLabels = <String>[
   'שמחה',
   'צחוק',
@@ -23150,6 +25042,7 @@ const _originalSmileLabels = <String>[
   'לילה טוב',
   'חגיגה'
 ];
+// ignore: unused_element
 const _originalStickerLabels = <String>[
   'שבת שלום',
   'שבת מבורכת',
@@ -23172,6 +25065,7 @@ const _originalStickerLabels = <String>[
   'שלום ואחדות',
   'בשורות טובות'
 ];
+// ignore: unused_element
 const _originalFamilyLabels = <String>[
   'שמחה',
   'מודה ושמחה',
@@ -23194,6 +25088,7 @@ const _originalFamilyLabels = <String>[
   'חיבוק משפחתי',
   'שמחה משפחתית'
 ];
+// ignore: unused_element
 const _originalGifLabels = <String>[
   'שמחה מאירה',
   'אהבה זוהרת',
@@ -23216,6 +25111,7 @@ const _originalGifLabels = <String>[
   'יום מאיר',
   'לילה טוב'
 ];
+// ignore: unused_element
 const _emojiCategories = <String, List<String>>{
   'אחרונים': [],
   'חיוכים': [
@@ -23605,15 +25501,17 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
       final payload = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw Exception(payload['error'] ?? 'החיפוש נכשל');
+      }
       if (!mounted) return;
       setState(() => _gifs =
           (payload['results'] as List? ?? []).cast<Map<String, dynamic>>());
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         setState(
             () => _gifError = error.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _searchingGifs = false);
     }
@@ -24138,6 +26036,8 @@ class _RemoteExpressionGrid extends StatelessWidget {
           ));
 }
 
+// Legacy expression picker retained for messages created before the catalog API.
+// ignore: unused_element
 class _OriginalExpressionGrid extends StatelessWidget {
   final List<String> assets;
   final List<String> labels;
@@ -24221,7 +26121,7 @@ class _AttachOption extends StatelessWidget {
                   width: 34,
                   height: 34,
                   decoration: BoxDecoration(
-                    color: color.withOpacity(0.10),
+                    color: color.withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Icon(icon, color: color, size: 20),
@@ -24250,7 +26150,7 @@ class _AttachOption extends StatelessWidget {
 class GroupsScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   final Map<String, String> groupTypingNames;
   final String? selectedGroupId;
   final void Function(Map<String, dynamic> group, bool openMembers)?
@@ -24573,7 +26473,7 @@ class GroupChatScreen extends StatefulWidget {
   final Map<String, dynamic> group;
   final Map<String, dynamic>? me;
   final String token;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   final bool openAddMembersOnStart;
   final bool embedded;
   final VoidCallback? onClose;
@@ -24614,6 +26514,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Map<String, dynamic>? _editingMsg;
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
+  bool _voiceSubmissionInProgress = false;
   bool _processingInvite = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
@@ -24625,6 +26526,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Map<String, bool>? _invitationPersonalFilter;
   Map<String, bool>? _acceptedFilterNotice;
   String? _invitationFilterError;
+
+  void _markBlockedContent(String messageId) {
+    if (!mounted) return;
+    setState(() {
+      final index =
+          _messages.indexWhere((message) => message['id'] == messageId);
+      if (index == -1) return;
+      _messages[index]['text'] = _blockedContentText;
+      _messages[index]['status'] = 'blocked_content';
+      _messages[index]['blockedContent'] = true;
+    });
+    Future.delayed(const Duration(minutes: 2), () {
+      if (!mounted) return;
+      setState(() => _messages.removeWhere((message) =>
+          message['id'] == messageId && message['blockedContent'] == true));
+    });
+  }
 
   String get _groupId => widget.group['id'] as String;
 
@@ -24858,6 +26776,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
     if (!mounted) return;
     await _loadMembers();
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('נשלחו $invited הזמנות לקבוצה')),
     );
@@ -25018,6 +26937,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (res.statusCode == 200 && mounted) {
         await _loadMembers();
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('$userName הוסר מהקבוצה')),
         );
@@ -25138,8 +27058,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       for (final c in contacts) {
         for (final p in c.phones) {
           final norm = _normalizePhone(p.number);
-          if (norm.length >= 9)
+          if (norm.length >= 9) {
             phoneToName.putIfAbsent(norm, () => c.displayName);
+          }
         }
         for (final e in c.emails) {
           final email = e.address.trim().toLowerCase();
@@ -25693,8 +27614,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       }
       final clientMessageId = data['clientMessageId']?.toString();
       if (clientMessageId != null) {
-        setState(() => _messages.removeWhere(
-            (message) => message['id']?.toString() == clientMessageId));
+        if (data['code'] == 'CHAT_CONTENT_BLOCKED') {
+          _markBlockedContent(clientMessageId);
+        } else {
+          setState(() => _messages.removeWhere(
+              (message) => message['id']?.toString() == clientMessageId));
+        }
       }
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(data['reason']?.toString() ?? 'ההודעה נחסמה'),
@@ -25787,13 +27712,31 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _toggleVoiceRecording() async {
+    if (_voiceSubmissionInProgress) return;
     try {
       if (_isRecording) {
-        _recordTimer?.cancel();
-        final path = await _audioRecorder.stop();
-        if (mounted) setState(() => _isRecording = false);
-        if (path != null) {
-          await _uploadGroupFile(XFile(path), _voiceFileName, 'audio');
+        _voiceSubmissionInProgress = true;
+        try {
+          _recordTimer?.cancel();
+          final recordedSeconds = _recordSeconds;
+          final path = await _audioRecorder.stop();
+          if (mounted) setState(() => _isRecording = false);
+          if (path == null || recordedSeconds < 1) {
+            throw Exception('ההקלטה קצרה מדי או שלא נקלט בה קול');
+          }
+          final recording = XFile(
+            path,
+            name: _voiceFileName,
+            mimeType:
+                _voiceFileName.endsWith('.webm') ? 'audio/webm' : 'audio/wav',
+          );
+          final bytes = await recording.readAsBytes();
+          if (bytes.length < 256) {
+            throw Exception('ההקלטה ריקה ולא נשלחה');
+          }
+          await _uploadGroupFile(recording, _voiceFileName, 'audio');
+        } finally {
+          _voiceSubmissionInProgress = false;
         }
         return;
       }
@@ -25808,12 +27751,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ? ''
           : '${(await getTemporaryDirectory()).path}/voice_${DateTime.now().millisecondsSinceEpoch}.wav';
       var encoder = AudioEncoder.wav;
+      _voiceFileName = 'voice_message.wav';
       if (kIsWeb) {
-        if (!await _audioRecorder.isEncoderSupported(AudioEncoder.wav)) {
+        if (await _audioRecorder.isEncoderSupported(AudioEncoder.opus)) {
+          encoder = AudioEncoder.opus;
+          _voiceFileName = 'voice_message.webm';
+        } else if (!await _audioRecorder.isEncoderSupported(AudioEncoder.wav)) {
           throw Exception('הדפדפן אינו תומך בהקלטת אודיו');
         }
       }
-      _voiceFileName = 'voice_message.wav';
       await _audioRecorder.start(
           RecordConfig(
               encoder: encoder,
@@ -25821,6 +27767,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               sampleRate: 16000,
               bitRate: 32000),
           path: path);
+      if (!await _audioRecorder.isRecording()) {
+        throw Exception('המיקרופון לא התחיל להקליט');
+      }
       if (!mounted) return;
       setState(() {
         _isRecording = true;
@@ -25840,8 +27789,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     } catch (error) {
       if (mounted) {
         setState(() => _isRecording = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('לא ניתן להפעיל את המיקרופון: $error')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('ההקלטה נכשלה: $error')));
       }
     }
   }
@@ -26002,16 +27951,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   });
                 },
               ),
-            if (msg['id']?.toString().startsWith('temp_') != true)
-              ListTile(
-                leading: const Icon(Icons.delete_outline),
-                title: const Text('מחק אצלי'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _deleteGroupMessage(msg, forEveryone: false);
-                },
-              ),
-            if (isMe && msg['id']?.toString().startsWith('temp_') != true)
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: Text(
+                  _isLocalOnlyChatMessage(msg) ? 'הסר את ההודעה' : 'מחק אצלי'),
+              onTap: () {
+                Navigator.pop(context);
+                _deleteGroupMessage(msg, forEveryone: false);
+              },
+            ),
+            if (isMe && !_isLocalOnlyChatMessage(msg))
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.red),
                 title: const Text('מחק אצל כולם',
@@ -26050,6 +27999,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       ),
     );
     if (confirmed != true) return;
+    final isLocalOnly = _isLocalOnlyChatMessage(message);
+    if (isLocalOnly) {
+      if (mounted) {
+        setState(
+            () => _messages.removeWhere((item) => item['id'] == message['id']));
+      }
+      return;
+    }
     try {
       final response = await http.delete(
         Uri.parse('$kApi/messages/${message['id']}'),
@@ -26254,8 +28211,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               color: Colors.teal,
               onTap: () async {
                 Navigator.pop(context);
-                final contact =
-                    await _pickGroupSharedContact(context, _members);
+                final contact = await _pickGroupSharedContact(
+                    context, widget.token, _members);
                 if (contact == null || !mounted) return;
                 _msgCtrl.text = _sharedContactText(contact);
                 await _send();
@@ -26433,8 +28390,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       {Map<String, String> extraFields = const {}}) async {
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
-    final showInlineProgress =
-        (fileType == 'image' || fileType == 'document') && !isClipboardPaste;
+    final showInlineProgress = (fileType == 'image' ||
+            fileType == 'document' ||
+            fileType == 'video' ||
+            fileType == 'audio') &&
+        !isClipboardPaste;
     final showProgress = !showInlineProgress;
     final uploadMessageId = _newUploadMessageId('uploading_group_');
     final uploadStartedAt = DateTime.now();
@@ -26494,8 +28454,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       setState(() =>
           _messages.removeWhere((message) => message['id'] == uploadMessageId));
     }
-    await _applyGroupUploadResult(
-        result, fileName, fileType, fileType != 'image' || isClipboardPaste);
+    await _applyGroupUploadResult(result, fileName, fileType,
+        (fileType != 'image' && fileType != 'video') || isClipboardPaste);
   }
 
   Future<void> _applyGroupUploadResult(_FileUploadResult result,
@@ -26516,7 +28476,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             'isFile': true,
             'fileType': fileType,
             'fileName': fileName,
-            'uploadError': result.error ?? 'אירעה שגיאה בזמן העלאת התמונה',
+            'uploadError': result.error ?? 'אירעה שגיאה בזמן העלאת הקובץ',
           });
         });
         _scrollToBottom();
@@ -26676,7 +28636,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => Directionality(
+      builder: (dialogContext) => Directionality(
         textDirection: TextDirection.rtl,
         child: AlertDialog(
           shape:
@@ -26712,7 +28672,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () => Navigator.pop(_),
+                  onPressed: () => Navigator.pop(dialogContext),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: kPrimary,
                     foregroundColor: Colors.white,
@@ -27002,6 +28962,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
   }
 
+  // Retained for the standalone group layout.
+  // ignore: unused_element
   void _showAdminPanel() {
     showModalBottomSheet(
       context: context,
@@ -27065,10 +29027,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 Navigator.pop(context);
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setBool('muted_group_$_groupId', true);
-                if (mounted)
+                if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('התראות הקבוצה הושתקו')),
                   );
+                }
               },
             ),
             if (_isAdmin) ...[
@@ -27243,10 +29206,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       case 'mute':
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('muted_group_$_groupId', true);
-        if (mounted)
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('התראות הקבוצה הושתקו')),
           );
+        }
         break;
       case 'add':
         _showAddMemberDialog();
@@ -27461,9 +29425,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 groupFilter: groupDraft,
                 personalFilter: personalDraft,
                 counterpartFilterLabel:
-                    'הסינון של קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                    'מה מותר לשלוח בקבוצה „${widget.group['name']?.toString() ?? 'הקבוצה'}”',
                 personalFilterLabel:
-                    'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                    'איזה תוכן אני מוכן לקבל מהקבוצה „${widget.group['name']?.toString() ?? 'הקבוצה'}”',
                 onCounterpartFilterChanged: _isAdmin
                     ? (updated) => setDialogState(() {
                           groupDraft = updated;
@@ -27629,7 +29593,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                          'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                          'התוכן שבחרתי לקבל מהקבוצה „${widget.group['name']?.toString() ?? 'הקבוצה'}”',
                           textAlign: TextAlign.right,
                           style: const TextStyle(
                               fontSize: 15, fontWeight: FontWeight.w800)),
@@ -27642,9 +29606,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   groupFilter: _groupReceivingFilter,
                   personalFilter: filter,
                   counterpartFilterLabel:
-                      'הסינון של קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                      'מה מותר לשלוח בקבוצה „${widget.group['name']?.toString() ?? 'הקבוצה'}”',
                   personalFilterLabel:
-                      'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
+                      'איזה תוכן אני מוכן לקבל מהקבוצה „${widget.group['name']?.toString() ?? 'הקבוצה'}”',
                 ),
                 const SizedBox(height: 9),
                 Align(
@@ -27834,786 +29798,931 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         children: [
           // ── Pending banner ──────────────────────────────────────────
           if (_myStatus == 'pending')
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.sizeOf(context).height *
-                    (MediaQuery.sizeOf(context).width >= 900 ? 0.78 : 0.68),
-              ),
+            Expanded(
               child: Scrollbar(
                 thumbVisibility: true,
                 child: SingleChildScrollView(
                   primary: false,
                   physics: const AlwaysScrollableScrollPhysics(),
-                  child: Container(
-                    width: double.infinity,
-                    color: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          inviterName.isEmpty
-                              ? 'הוזמנת להצטרף לקבוצה זו'
-                              : 'הוזמנת על ידי $inviterName להצטרף לקבוצה זו',
-                          style: const TextStyle(
-                            color: kPrimary,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                          textDirection: TextDirection.rtl,
-                          textAlign: TextAlign.right,
-                        ),
-                        if (groupDescription.isNotEmpty) ...[
-                          const SizedBox(height: 5),
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Icon(Icons.info_outline,
-                                  size: 17, color: kPrimary),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  groupDescription,
-                                  textDirection: TextDirection.rtl,
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: kTextDark,
-                                    height: 1.4,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.start,
+                  child: Align(
+                    alignment: Alignment.topRight,
+                    child: FractionallySizedBox(
+                      widthFactor:
+                          MediaQuery.sizeOf(context).width >= 900 ? 2 / 3 : 1,
+                      child: Container(
+                        width: double.infinity,
+                        color: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            ElevatedButton(
-                              onPressed: _processingInvite
-                                  ? null
-                                  : () =>
-                                      _acceptPending(useCurrentFilter: true),
-                              style: ElevatedButton.styleFrom(
-                                  backgroundColor: kPrimary),
-                              child: _processingInvite
-                                  ? const SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2, color: Colors.white))
-                                  : const Text('אשר והצטרף',
-                                      style: TextStyle(color: Colors.white)),
+                            LayoutBuilder(
+                              builder: (context, constraints) {
+                                final invitationDetails = Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    Text(
+                                      inviterName.isEmpty
+                                          ? 'הוזמנת להצטרף לקבוצה זו'
+                                          : 'הוזמנת על ידי $inviterName להצטרף לקבוצה זו',
+                                      style: const TextStyle(
+                                        color: kPrimary,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
+                                      textDirection: TextDirection.rtl,
+                                      textAlign: TextAlign.right,
+                                    ),
+                                    if (groupDescription.isNotEmpty) ...[
+                                      const SizedBox(height: 5),
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const Icon(Icons.info_outline,
+                                              size: 17, color: kPrimary),
+                                          const SizedBox(width: 6),
+                                          Expanded(
+                                            child: Text(
+                                              groupDescription,
+                                              textDirection: TextDirection.rtl,
+                                              textAlign: TextAlign.right,
+                                              style: const TextStyle(
+                                                fontSize: 12,
+                                                color: kTextDark,
+                                                height: 1.4,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.start,
+                                      children: [
+                                        ElevatedButton(
+                                          onPressed: _processingInvite
+                                              ? null
+                                              : () => _acceptPending(
+                                                  useCurrentFilter: true),
+                                          style: ElevatedButton.styleFrom(
+                                              backgroundColor: kPrimary),
+                                          child: _processingInvite
+                                              ? const SizedBox(
+                                                  width: 20,
+                                                  height: 20,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                          strokeWidth: 2,
+                                                          color: Colors.white))
+                                              : const Text('אשר והצטרף',
+                                                  style: TextStyle(
+                                                      color: Colors.white)),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        TextButton(
+                                          onPressed: _declinePending,
+                                          style: TextButton.styleFrom(
+                                              foregroundColor: Colors.red),
+                                          child: const Text('דחה'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                );
+                                const guide = Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 2),
+                                  child: _AvielEmptyChat(
+                                    asset:
+                                        'assets/stickers/aviel-guide/guide_lantern.png',
+                                    text: 'אין הודעות עדיין — האירו את הדרך',
+                                  ),
+                                );
+                                if (constraints.maxWidth < 600) {
+                                  return Column(children: [
+                                    invitationDetails,
+                                    const SizedBox(height: 8),
+                                    guide,
+                                  ]);
+                                }
+                                return Row(
+                                  textDirection: TextDirection.rtl,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    Expanded(flex: 2, child: invitationDetails),
+                                    const SizedBox(width: 16),
+                                    const Expanded(child: guide),
+                                  ],
+                                );
+                              },
                             ),
-                            const SizedBox(width: 8),
-                            TextButton(
-                              onPressed: _declinePending,
-                              style: TextButton.styleFrom(
-                                  foregroundColor: Colors.red),
-                              child: const Text('דחה'),
-                            ),
+                            const SizedBox(height: 8),
+                            if (_invitationFilterError != null)
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border:
+                                      Border.all(color: Colors.red.shade200),
+                                ),
+                                child: Column(children: [
+                                  Text(
+                                    _invitationFilterError!,
+                                    textAlign: TextAlign.center,
+                                    style:
+                                        TextStyle(color: Colors.red.shade700),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  TextButton.icon(
+                                    onPressed: _loadInvitationFilters,
+                                    icon: const Icon(Icons.refresh),
+                                    label: const Text('נסה שוב'),
+                                  ),
+                                ]),
+                              )
+                            else
+                              _InvitationFilterComparisonTable(
+                                groupName: widget.group['name']?.toString(),
+                                groupFilter: _groupReceivingFilter,
+                                personalFilter: _invitationPersonalFilter,
+                                counterpartFilterLabel:
+                                    'מה מותר לשלוח בקבוצה „${widget.group['name']?.toString() ?? 'הקבוצה'}”',
+                                personalFilterLabel:
+                                    'איזה תוכן אני מוכן לקבל מהקבוצה „${widget.group['name']?.toString() ?? 'הקבוצה'}”',
+                                onPersonalFilterChanged: (filter) => setState(
+                                    () => _invitationPersonalFilter = filter),
+                              ),
                           ],
                         ),
-                        const SizedBox(height: 8),
-                        if (_invitationFilterError != null)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: Colors.red.shade200),
-                            ),
-                            child: Column(children: [
-                              Text(
-                                _invitationFilterError!,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.red.shade700),
-                              ),
-                              const SizedBox(height: 6),
-                              TextButton.icon(
-                                onPressed: _loadInvitationFilters,
-                                icon: const Icon(Icons.refresh),
-                                label: const Text('נסה שוב'),
-                              ),
-                            ]),
-                          )
-                        else
-                          _InvitationFilterComparisonTable(
-                            groupName: widget.group['name']?.toString(),
-                            groupFilter: _groupReceivingFilter,
-                            personalFilter: _invitationPersonalFilter,
-                            counterpartFilterLabel:
-                                'הסינון של קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
-                            personalFilterLabel:
-                                'הסינון שלי עבור קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}',
-                            onPersonalFilterChanged: (filter) => setState(
-                                () => _invitationPersonalFilter = filter),
-                          ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          Expanded(
-            child: _loading
-                ? const Center(
-                    child: CircularProgressIndicator(color: kPrimary))
-                : _messages.isEmpty &&
-                        !(_myStatus == 'member' &&
-                            _acceptedFilterNotice != null)
-                    ? const _AvielEmptyChat(
-                        asset: 'assets/stickers/aviel-guide/guide_lantern.png',
-                        text: 'אין הודעות עדיין — האירו את הדרך')
-                    : ListView.builder(
-                        controller: _scrollCtrl,
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.all(10),
-                        itemCount: _messages.length +
-                            (_myStatus == 'member' &&
-                                    _acceptedFilterNotice != null
-                                ? 1
-                                : 0),
-                        itemBuilder: (_, i) {
-                          final hasFilterNotice = _myStatus == 'member' &&
-                              _acceptedFilterNotice != null;
-                          if (hasFilterNotice && i == 0) {
-                            return _acceptedFilterMessage();
-                          }
-                          final messageIndex = i - (hasFilterNotice ? 1 : 0);
-                          final msg = _messages[messageIndex];
-                          final isMe = msg['isMe'] == true;
-                          final groupText = msg['text'] as String? ?? '';
-                          final uploadStatus = msg['status']?.toString();
-                          final uploadFileType = _normalizeIncomingFileType(
-                            msg['fileType'] as String?,
-                            fileUrl: msg['fileUrl'] as String?,
-                            fileName: msg['fileName'] as String?,
-                          );
-                          final avielSticker = _avielStickerById(
-                              msg['stickerId'] ??
-                                  (uploadFileType == 'sticker'
-                                      ? groupText
-                                      : null));
-                          final isPdfFile = msg['fileUrl'] != null &&
-                              uploadFileType == 'document' &&
-                              (((msg['fileName'] as String?) ?? '')
-                                      .toLowerCase()
-                                      .endsWith('.pdf') ||
-                                  Uri.tryParse(msg['fileUrl'] as String)
-                                          ?.path
-                                          .toLowerCase()
-                                          .endsWith('.pdf') ==
-                                      true);
-                          final isOfficeFile = msg['fileUrl'] != null &&
-                              uploadFileType == 'document' &&
-                              _isOfficePreviewFile(
-                                  msg['fileName']?.toString() ??
-                                      Uri.tryParse(msg['fileUrl'].toString())
-                                          ?.path);
-                          final isImageUploadState =
-                              uploadFileType == 'image' &&
-                                  (uploadStatus == 'uploading' ||
-                                      uploadStatus == 'failed' ||
-                                      uploadStatus == 'rejected_scan');
-                          final isDocumentModerationState =
-                              uploadFileType == 'document' &&
-                                  (uploadStatus == 'pending_scan' ||
-                                      uploadStatus == 'rejected_scan');
-                          final sharedContact = msg['fileUrl'] == null
-                              ? _sharedContactFromText(groupText)
-                              : null;
-                          final sharedUrl = msg['fileUrl'] == null
-                              ? _firstHttpUrl(groupText)
-                              : null;
-                          final isEducationAnnouncement =
-                              (msg['text'] as String? ?? '').startsWith('📋 ');
-                          final isFilterUpdateAnnouncement =
-                              groupText.startsWith('🛡️ סינון הקבוצה עודכן');
-                          final filterUpdateDetails = isFilterUpdateAnnouncement
-                              ? groupText.split('\n').skip(1).join('\n').trim()
-                              : '';
-                          final educationStatus =
-                              msg['educationResponseStatus']?.toString();
-                          final educationFormClosed =
-                              msg['educationFormStatus'] == 'closed';
-                          final educationStatusLabel = educationFormClosed
-                              ? 'הטופס נסגר'
-                              : _isAdmin
-                                  ? 'ניהול מסמך'
-                                  : educationStatus == 'declined'
-                                      ? 'לא אושר'
-                                      : educationStatus == 'approved' ||
-                                              educationStatus == 'completed'
-                                          ? 'בוצע'
-                                          : 'ממתין לפעולה';
-                          final educationStatusColor = educationFormClosed
-                              ? Colors.blueGrey.shade700
-                              : _isAdmin
-                                  ? kPrimary
-                                  : educationStatus == 'declined'
-                                      ? Colors.red.shade700
-                                      : educationStatus == 'approved' ||
-                                              educationStatus == 'completed'
-                                          ? Colors.green.shade700
-                                          : Colors.orange.shade800;
-                          final firstUnreadIndex = _messages.indexWhere(
-                              (message) => message['isUnread'] == true);
-                          final showDate = messageIndex == 0 ||
-                              !_sameMessageDay(
-                                  msg, _messages[messageIndex - 1]);
-                          return Column(
-                            crossAxisAlignment: isMe
-                                ? CrossAxisAlignment.end
-                                : CrossAxisAlignment.start,
-                            children: [
-                              if (showDate)
-                                _DateDivider(label: _messageDateLabel(msg)),
-                              if (firstUnreadIndex == messageIndex)
-                                const _UnreadMessagesDivider(),
-                              if (!isMe && !isFilterUpdateAnnouncement)
-                                Padding(
-                                  padding: const EdgeInsets.only(
-                                      right: 8, bottom: 2),
-                                  child: Text(
-                                    msg['senderName'] as String? ?? '',
-                                    style: const TextStyle(
-                                        fontSize: 12,
-                                        color: kPrimary,
-                                        fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                              if (isImageUploadState)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 6),
-                                  child: uploadStatus == 'uploading'
-                                      ? _UploadProcessingCard(
-                                          fileName:
-                                              msg['fileName']?.toString() ??
-                                                  'תמונה',
-                                          startedAt: DateTime.tryParse(
-                                                  msg['uploadStartedAt']
-                                                          ?.toString() ??
-                                                      '') ??
-                                              DateTime.now(),
-                                        )
-                                      : _UploadResultCard(
-                                          blocked:
-                                              uploadStatus == 'rejected_scan',
-                                          title: uploadStatus == 'rejected_scan'
-                                              ? _imageBlockTitle(
-                                                  msg['scanReason'])
-                                              : 'העלאת התמונה נכשלה',
-                                          reason: uploadStatus ==
-                                                  'rejected_scan'
-                                              ? msg['scanReason']?.toString() ??
-                                                  'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה'
-                                              : msg['uploadError']
-                                                      ?.toString() ??
-                                                  'אירעה שגיאה בזמן העלאת התמונה',
-                                          imageUrl:
-                                              uploadStatus == 'rejected_scan'
-                                                  ? msg['fileUrl'] as String?
-                                                  : null,
-                                          fileName: msg['fileName'] as String?,
-                                          onlyYouText:
-                                              'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
+          if (_myStatus != 'pending')
+            Expanded(
+              child: _loading
+                  ? const Center(
+                      child: CircularProgressIndicator(color: kPrimary))
+                  : _messages.isEmpty &&
+                          !(_myStatus == 'member' &&
+                              _acceptedFilterNotice != null)
+                      ? const _AvielEmptyChat(
+                          asset:
+                              'assets/stickers/aviel-guide/guide_lantern.png',
+                          text: 'אין הודעות עדיין — האירו את הדרך')
+                      : ListView.builder(
+                          controller: _scrollCtrl,
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.all(10),
+                          itemCount: _messages.length +
+                              (_myStatus == 'member' &&
+                                      _acceptedFilterNotice != null
+                                  ? 1
+                                  : 0),
+                          itemBuilder: (_, i) {
+                            final hasFilterNotice = _myStatus == 'member' &&
+                                _acceptedFilterNotice != null;
+                            if (hasFilterNotice && i == 0) {
+                              return _acceptedFilterMessage();
+                            }
+                            final messageIndex = i - (hasFilterNotice ? 1 : 0);
+                            final msg = _messages[messageIndex];
+                            final isMe = msg['isMe'] == true;
+                            final groupText = msg['text'] as String? ?? '';
+                            final uploadStatus = msg['status']?.toString();
+                            final uploadFileType = _normalizeIncomingFileType(
+                              msg['fileType'] as String?,
+                              fileUrl: msg['fileUrl'] as String?,
+                              fileName: msg['fileName'] as String?,
+                            );
+                            final avielSticker = _avielStickerById(
+                                msg['stickerId'] ??
+                                    (uploadFileType == 'sticker'
+                                        ? groupText
+                                        : null));
+                            final isPdfFile = msg['fileUrl'] != null &&
+                                uploadFileType == 'document' &&
+                                (((msg['fileName'] as String?) ?? '')
+                                        .toLowerCase()
+                                        .endsWith('.pdf') ||
+                                    Uri.tryParse(msg['fileUrl'] as String)
+                                            ?.path
+                                            .toLowerCase()
+                                            .endsWith('.pdf') ==
+                                        true);
+                            final isOfficeFile = msg['fileUrl'] != null &&
+                                uploadFileType == 'document' &&
+                                _isOfficePreviewFile(
+                                    msg['fileName']?.toString() ??
+                                        Uri.tryParse(msg['fileUrl'].toString())
+                                            ?.path);
+                            final isVisualUploadState =
+                                (uploadFileType == 'image' ||
+                                            uploadFileType == 'video') &&
+                                        (uploadStatus == 'uploading' ||
+                                            uploadStatus == 'failed' ||
+                                            uploadStatus == 'rejected_scan') ||
+                                    (uploadFileType == 'audio' &&
+                                        uploadStatus == 'uploading');
+                            final isDocumentModerationState =
+                                uploadFileType == 'document' &&
+                                    (uploadStatus == 'pending_scan' ||
+                                        uploadStatus == 'rejected_scan');
+                            final sharedContact = msg['fileUrl'] == null
+                                ? _sharedContactFromText(groupText)
+                                : null;
+                            final sharedUrl = msg['fileUrl'] == null
+                                ? _firstHttpUrl(groupText)
+                                : null;
+                            final isEducationAnnouncement =
+                                (msg['text'] as String? ?? '')
+                                    .startsWith('📋 ');
+                            final isFilterUpdateAnnouncement =
+                                groupText.startsWith('🛡️ סינון הקבוצה עודכן');
+                            final filterUpdateDetails =
+                                isFilterUpdateAnnouncement
+                                    ? groupText
+                                        .split('\n')
+                                        .skip(1)
+                                        .join('\n')
+                                        .trim()
+                                    : '';
+                            final educationStatus =
+                                msg['educationResponseStatus']?.toString();
+                            final educationFormClosed =
+                                msg['educationFormStatus'] == 'closed';
+                            final educationStatusLabel = educationFormClosed
+                                ? 'הטופס נסגר'
+                                : _isAdmin
+                                    ? 'ניהול מסמך'
+                                    : educationStatus == 'declined'
+                                        ? 'לא אושר'
+                                        : educationStatus == 'approved' ||
+                                                educationStatus == 'completed'
+                                            ? 'בוצע'
+                                            : 'ממתין לפעולה';
+                            final educationStatusColor = educationFormClosed
+                                ? Colors.blueGrey.shade700
+                                : _isAdmin
+                                    ? kPrimary
+                                    : educationStatus == 'declined'
+                                        ? Colors.red.shade700
+                                        : educationStatus == 'approved' ||
+                                                educationStatus == 'completed'
+                                            ? Colors.green.shade700
+                                            : Colors.orange.shade800;
+                            final sender = _voiceMessageSender(msg, isMe);
+                            final senderDisplayName =
+                                sender?['name']?.toString().trim().isNotEmpty ==
+                                        true
+                                    ? sender!['name'].toString().trim()
+                                    : (msg['senderName']
+                                                ?.toString()
+                                                .trim()
+                                                .isNotEmpty ==
+                                            true
+                                        ? msg['senderName'].toString().trim()
+                                        : isMe
+                                            ? 'אני'
+                                            : 'חבר קבוצה');
+                            final senderAvatarUrl =
+                                sender?['profile_pic_url']?.toString();
+                            final firstUnreadIndex = _messages.indexWhere(
+                                (message) => message['isUnread'] == true);
+                            final showDate = messageIndex == 0 ||
+                                !_sameMessageDay(
+                                    msg, _messages[messageIndex - 1]);
+                            return Column(
+                              crossAxisAlignment: isMe
+                                  ? CrossAxisAlignment.end
+                                  : CrossAxisAlignment.start,
+                              children: [
+                                if (showDate)
+                                  _DateDivider(label: _messageDateLabel(msg)),
+                                if (firstUnreadIndex == messageIndex)
+                                  const _UnreadMessagesDivider(),
+                                if (!isFilterUpdateAnnouncement)
+                                  Padding(
+                                    padding: const EdgeInsetsDirectional.only(
+                                        start: 8, end: 8, bottom: 4),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      textDirection: TextDirection.rtl,
+                                      children: [
+                                        UserAvatar(
+                                          picUrl: senderAvatarUrl,
+                                          name: senderDisplayName,
+                                          radius: 12,
                                         ),
-                                )
-                              else if (isDocumentModerationState)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 6),
-                                  child: _DocumentModerationCard(
-                                    fileName:
-                                        msg['fileName']?.toString() ?? 'מסמך',
-                                    blocked: uploadStatus == 'rejected_scan',
-                                    reason: msg['scanReason']?.toString(),
-                                  ),
-                                )
-                              else
-                                GestureDetector(
-                                  onTap: isFilterUpdateAnnouncement
-                                      ? _updateMyGroupFilter
-                                      : isEducationAnnouncement
-                                          ? () =>
-                                              _openEducationAnnouncement(msg)
-                                          : !kIsWeb && msg['fileUrl'] == null
-                                              ? () =>
-                                                  _copyMessageText(context, msg)
-                                              : null,
-                                  onDoubleTap: !isEducationAnnouncement &&
-                                          kIsWeb &&
-                                          msg['fileUrl'] == null
-                                      ? () => _copyMessageText(context, msg)
-                                      : null,
-                                  onLongPress: isFilterUpdateAnnouncement
-                                      ? null
-                                      : () => _showMessageOptions(msg),
-                                  child: Container(
-                                    margin: const EdgeInsets.only(bottom: 6),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 12, vertical: 8),
-                                    constraints: BoxConstraints(
-                                      maxWidth: msg['fileUrl'] != null
-                                          ? math.min(
-                                              330,
-                                              MediaQuery.of(context)
-                                                      .size
-                                                      .width *
-                                                  0.86)
-                                          : MediaQuery.of(context).size.width *
-                                              0.75,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: isMe ? kGroupOutgoing : kIncoming,
-                                      borderRadius: BorderRadius.circular(12),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withOpacity(0.05),
-                                          blurRadius: 3,
-                                        )
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          senderDisplayName,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: kPrimary,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
                                       ],
                                     ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.end,
-                                      children: [
-                                        if (avielSticker != null)
-                                          Semantics(
-                                            image: true,
-                                            label:
-                                                'מדבקת אביאל: ${avielSticker.label}',
-                                            child: Image.asset(
-                                                avielSticker.asset,
-                                                width: 180,
-                                                height: 180,
-                                                fit: BoxFit.contain),
+                                  ),
+                                if (isVisualUploadState)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 6),
+                                    child: uploadStatus == 'uploading'
+                                        ? _UploadProcessingCard(
+                                            fileName:
+                                                msg['fileName']?.toString() ??
+                                                    (uploadFileType == 'video'
+                                                        ? 'וידאו'
+                                                        : 'תמונה'),
+                                            fileType: uploadFileType ?? 'image',
+                                            startedAt: DateTime.tryParse(
+                                                    msg['uploadStartedAt']
+                                                            ?.toString() ??
+                                                        '') ??
+                                                DateTime.now(),
                                           )
-                                        else if (msg['fileUrl'] != null &&
-                                            _normalizeIncomingFileType(
-                                                    msg['fileType'] as String?,
-                                                    fileUrl: msg['fileUrl']
-                                                        as String?,
-                                                    fileName: msg['fileName']
-                                                        as String?) ==
-                                                'audio')
-                                          VoiceMessagePlayer(
-                                              url: msg['fileUrl'] as String,
-                                              isMe: isMe,
-                                              senderAvatarUrl:
-                                                  _voiceMessageSender(
-                                                              msg, isMe)?[
-                                                          'profile_pic_url']
-                                                      ?.toString(),
-                                              senderName: _voiceMessageSender(
-                                                          msg, isMe)?['name']
-                                                      ?.toString() ??
-                                                  msg['senderName']
-                                                      ?.toString() ??
-                                                  '')
-                                        else if (msg['fileUrl'] != null &&
-                                            _normalizeIncomingFileType(
-                                                    msg['fileType'] as String?,
-                                                    fileUrl: msg['fileUrl']
-                                                        as String?,
-                                                    fileName: msg['fileName']
-                                                        as String?) ==
-                                                'image')
-                                          GestureDetector(
-                                            onTap: () => Navigator.push(
-                                                context,
-                                                MaterialPageRoute(
-                                                    builder: (_) => ImagePreviewScreen(
-                                                        url: msg['fileUrl']
-                                                            as String,
-                                                        filename:
-                                                            msg['fileName']
-                                                                as String?,
-                                                        urls: _conversationImageMessages(_messages)
-                                                            .map((item) =>
-                                                                item['fileUrl']
-                                                                    as String)
-                                                            .toList(),
-                                                        filenames:
-                                                            _conversationImageMessages(_messages)
-                                                                .map((item) =>
-                                                                    item['fileName'] as String?)
-                                                                .toList(),
-                                                        dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
-                                                        messages: _conversationImageMessages(_messages),
-                                                        onMessageOptions: _showMessageOptions,
-                                                        initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
-                                            child: Stack(
-                                              children: [
-                                                ClipRRect(
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
-                                                  child: _PersistentMediaImage(
-                                                    url: msg['fileUrl']
-                                                        as String,
-                                                    width: 200,
-                                                    height: 160,
-                                                    fit: BoxFit.contain,
-                                                    loadingBuilder: (_) => Container(
-                                                        width: 200,
-                                                        height: 160,
-                                                        color: kBorder,
-                                                        child: const Center(
-                                                            child:
-                                                                CircularProgressIndicator(
-                                                                    color:
-                                                                        kPrimary,
-                                                                    strokeWidth:
-                                                                        2))),
-                                                    errorBuilder: (_) =>
-                                                        Container(
-                                                            width: 200,
-                                                            height: 160,
-                                                            color: kBorder,
-                                                            child: const Icon(
-                                                                Icons
-                                                                    .broken_image,
-                                                                color:
-                                                                    kSubtext)),
-                                                  ),
-                                                ),
-                                                Positioned(
-                                                  left: 7,
-                                                  bottom: 7,
-                                                  child: _ImageStatusBadge(
-                                                      message: msg, isMe: isMe),
-                                                ),
-                                                Positioned(
-                                                  right: 7,
-                                                  top: 7,
-                                                  child:
-                                                      _ImageClassificationBadges(
-                                                          message: msg),
-                                                ),
-                                              ],
-                                            ),
+                                        : _UploadResultCard(
+                                            blocked:
+                                                uploadStatus == 'rejected_scan',
+                                            title: uploadStatus ==
+                                                    'rejected_scan'
+                                                ? uploadFileType == 'video'
+                                                    ? 'הווידאו נחסם ולא נשלח'
+                                                    : _imageBlockTitle(
+                                                        msg['scanReason'])
+                                                : uploadFileType == 'video'
+                                                    ? 'העלאת הווידאו נכשלה'
+                                                    : 'העלאת התמונה נכשלה',
+                                            reason: uploadStatus ==
+                                                    'rejected_scan'
+                                                ? msg['scanReason']
+                                                        ?.toString() ??
+                                                    (uploadFileType == 'video'
+                                                        ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
+                                                        : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
+                                                : msg['uploadError']
+                                                        ?.toString() ??
+                                                    (uploadFileType == 'video'
+                                                        ? 'אירעה שגיאה בזמן העלאת הווידאו'
+                                                        : 'אירעה שגיאה בזמן העלאת התמונה'),
+                                            imageUrl:
+                                                uploadStatus == 'rejected_scan'
+                                                    ? msg['fileUrl'] as String?
+                                                    : null,
+                                            fileName:
+                                                msg['fileName'] as String?,
+                                            recipientName: uploadStatus ==
+                                                    'rejected_scan'
+                                                ? 'קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}'
+                                                : null,
+                                            onlyYouText:
+                                                'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
+                                          ),
+                                  )
+                                else if (isDocumentModerationState)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 6),
+                                    child: _DocumentModerationCard(
+                                      fileName:
+                                          msg['fileName']?.toString() ?? 'מסמך',
+                                      blocked: uploadStatus == 'rejected_scan',
+                                      reason: msg['scanReason']?.toString(),
+                                    ),
+                                  )
+                                else
+                                  GestureDetector(
+                                    onTap: isFilterUpdateAnnouncement
+                                        ? _updateMyGroupFilter
+                                        : isEducationAnnouncement
+                                            ? () =>
+                                                _openEducationAnnouncement(msg)
+                                            : !kIsWeb && msg['fileUrl'] == null
+                                                ? () => _copyMessageText(
+                                                    context, msg)
+                                                : null,
+                                    onDoubleTap: !isEducationAnnouncement &&
+                                            kIsWeb &&
+                                            msg['fileUrl'] == null
+                                        ? () => _copyMessageText(context, msg)
+                                        : null,
+                                    onLongPress: isFilterUpdateAnnouncement
+                                        ? null
+                                        : () => _showMessageOptions(msg),
+                                    child: Container(
+                                      margin: const EdgeInsets.only(bottom: 6),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 12, vertical: 8),
+                                      constraints: BoxConstraints(
+                                        maxWidth: msg['fileUrl'] != null
+                                            ? math.min(
+                                                330,
+                                                MediaQuery.of(context)
+                                                        .size
+                                                        .width *
+                                                    0.86)
+                                            : MediaQuery.of(context)
+                                                    .size
+                                                    .width *
+                                                0.75,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color:
+                                            isMe ? kGroupOutgoing : kIncoming,
+                                        borderRadius: BorderRadius.circular(12),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black
+                                                .withValues(alpha: 0.05),
+                                            blurRadius: 3,
                                           )
-                                        else if (msg['fileUrl'] != null)
-                                          InkWell(
-                                            onTap: () => isPdfFile
-                                                ? _openPdfInsideApp(
-                                                    context,
-                                                    msg['fileUrl'] as String,
-                                                    msg['fileName'] as String?)
-                                                : isOfficeFile
-                                                    ? _openOfficeInsideApp(
-                                                        context,
-                                                        msg['fileUrl']
-                                                            as String,
-                                                        msg['fileName']
-                                                            as String?,
-                                                        widget.token)
-                                                    : _downloadChatFile(
-                                                        context,
-                                                        msg['fileUrl']
-                                                            as String,
-                                                        msg['fileName']
-                                                            as String?),
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                            child: Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      vertical: 4),
-                                              child: Column(
-                                                mainAxisSize: MainAxisSize.min,
+                                        ],
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.end,
+                                        children: [
+                                          if (avielSticker != null)
+                                            Semantics(
+                                              image: true,
+                                              label:
+                                                  'מדבקת אביאל: ${avielSticker.label}',
+                                              child: Image.asset(
+                                                  avielSticker.asset,
+                                                  width: 180,
+                                                  height: 180,
+                                                  fit: BoxFit.contain),
+                                            )
+                                          else if (msg['fileUrl'] != null &&
+                                              _normalizeIncomingFileType(
+                                                      msg['fileType']
+                                                          as String?,
+                                                      fileUrl: msg['fileUrl']
+                                                          as String?,
+                                                      fileName: msg['fileName']
+                                                          as String?) ==
+                                                  'audio')
+                                            Column(
                                                 crossAxisAlignment:
                                                     CrossAxisAlignment.end,
                                                 children: [
-                                                  if (isPdfFile) ...[
-                                                    _PdfFirstPagePreview(
-                                                        url: msg['fileUrl']
-                                                            as String),
-                                                    const SizedBox(height: 6),
-                                                  ] else if (isOfficeFile) ...[
-                                                    _OfficeDocumentPreview(
-                                                        fileUrl: msg['fileUrl']
-                                                            as String,
-                                                        fileName: msg[
-                                                                    'fileName']
-                                                                ?.toString() ??
-                                                            'מסמך',
-                                                        token: widget.token),
-                                                    const SizedBox(height: 6),
-                                                  ],
-                                                  Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Icon(
-                                                          isPdfFile
-                                                              ? Icons
-                                                                  .picture_as_pdf_outlined
-                                                              : isOfficeFile
-                                                                  ? (msg['fileName']
-                                                                              ?.toString()
-                                                                              .toLowerCase()
-                                                                              .endsWith(
-                                                                                  '.xlsx') ==
-                                                                          true
-                                                                      ? Icons
-                                                                          .table_chart_outlined
-                                                                      : Icons
-                                                                          .description_outlined)
-                                                                  : Icons
-                                                                      .insert_drive_file,
-                                                          size: 16,
-                                                          color: isPdfFile
-                                                              ? Colors.red
-                                                              : kSubtext),
-                                                      const SizedBox(width: 4),
-                                                      Flexible(
-                                                          child: Text(
-                                                              msg['fileName']
-                                                                      as String? ??
-                                                                  msg['text']
-                                                                      as String? ??
-                                                                  '',
-                                                              style:
-                                                                  const TextStyle(
-                                                                      fontSize:
-                                                                          13))),
-                                                      const SizedBox(width: 10),
-                                                      const Icon(Icons.download,
-                                                          size: 19,
-                                                          color: kPrimary),
-                                                      const SizedBox(width: 3),
-                                                      const Text('הורדה',
-                                                          style: TextStyle(
-                                                              fontSize: 12,
-                                                              color: kPrimary,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600)),
-                                                    ],
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          )
-                                        else if (isFilterUpdateAnnouncement)
-                                          InkWell(
-                                            onTap: _updateMyGroupFilter,
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                            child: Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      vertical: 4),
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.end,
-                                                children: [
-                                                  const Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Icon(
-                                                          Icons.shield_outlined,
-                                                          color: kPrimary,
-                                                          size: 21),
-                                                      SizedBox(width: 8),
-                                                      Text(
-                                                        'סינון הקבוצה עודכן',
+                                                  VoiceMessagePlayer(
+                                                      url: msg['fileUrl']
+                                                          as String,
+                                                      isMe: isMe,
+                                                      senderAvatarUrl:
+                                                          _voiceMessageSender(
+                                                                      msg,
+                                                                      isMe)?[
+                                                                  'profile_pic_url']
+                                                              ?.toString(),
+                                                      senderName:
+                                                          _voiceMessageSender(
+                                                                          msg,
+                                                                          isMe)?[
+                                                                      'name']
+                                                                  ?.toString() ??
+                                                              msg['senderName']
+                                                                  ?.toString() ??
+                                                              ''),
+                                                  if (uploadStatus ==
+                                                      'pending_scan')
+                                                    const Text(
+                                                        'ההקלטה ממתינה לסריקה',
                                                         style: TextStyle(
-                                                          fontSize: 15,
-                                                          fontWeight:
-                                                              FontWeight.w800,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                  const SizedBox(height: 5),
-                                                  Text(
-                                                    filterUpdateDetails.isEmpty
-                                                        ? 'מדיניות התוכן של הקבוצה השתנתה.'
-                                                        : filterUpdateDetails,
-                                                    textAlign: TextAlign.right,
-                                                    textDirection:
-                                                        TextDirection.rtl,
-                                                    style: const TextStyle(
-                                                        fontSize: 12,
-                                                        color: kTextDark,
-                                                        height: 1.5),
-                                                  ),
-                                                  const SizedBox(height: 7),
-                                                  Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      const Icon(
-                                                          Icons.tune_rounded,
-                                                          size: 17,
-                                                          color: kPrimary),
-                                                      const SizedBox(width: 4),
-                                                      const Text(
-                                                        'עדכון הסינון האישי שלי',
-                                                        style: TextStyle(
-                                                          color: kPrimary,
-                                                          fontWeight:
-                                                              FontWeight.bold,
-                                                          decoration:
-                                                              TextDecoration
-                                                                  .underline,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          )
-                                        else if (isEducationAnnouncement)
-                                          InkWell(
-                                            onTap: () =>
-                                                _openEducationAnnouncement(msg),
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                            child: Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      vertical: 4),
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.end,
-                                                children: [
-                                                  Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      const Icon(
-                                                          Icons
-                                                              .fact_check_outlined,
-                                                          color: kPrimary),
-                                                      const SizedBox(width: 8),
-                                                      Flexible(
-                                                        child: Text(
-                                                          msg['text']
-                                                                  as String? ??
-                                                              '',
-                                                          style: const TextStyle(
-                                                              fontSize: 15,
-                                                              height: 1.4,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600),
-                                                          textDirection:
-                                                              TextDirection.rtl,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                  const SizedBox(height: 8),
-                                                  Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      const Icon(
-                                                          Icons.touch_app,
-                                                          size: 17,
-                                                          color: kPrimary),
-                                                      const SizedBox(width: 4),
-                                                      const Text(
-                                                          'לחץ לפתיחת המסמך',
-                                                          style: TextStyle(
-                                                              color: kPrimary,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold)),
-                                                      const SizedBox(width: 12),
-                                                      Container(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                horizontal: 9,
-                                                                vertical: 3),
-                                                        decoration:
-                                                            BoxDecoration(
-                                                          color:
-                                                              educationStatusColor
-                                                                  .withOpacity(
-                                                                      .12),
-                                                          borderRadius:
-                                                              BorderRadius
-                                                                  .circular(14),
-                                                        ),
-                                                        child: Text(
-                                                          educationStatusLabel,
-                                                          style: TextStyle(
+                                                            fontSize: 10,
                                                             color:
-                                                                educationStatusColor,
+                                                                Colors.orange)),
+                                                ])
+                                          else if (msg['fileUrl'] != null &&
+                                              _normalizeIncomingFileType(
+                                                      msg['fileType']
+                                                          as String?,
+                                                      fileUrl: msg['fileUrl']
+                                                          as String?,
+                                                      fileName: msg['fileName']
+                                                          as String?) ==
+                                                  'image')
+                                            GestureDetector(
+                                              onTap: () => Navigator.push(
+                                                  context,
+                                                  MaterialPageRoute(
+                                                      builder: (_) => ImagePreviewScreen(
+                                                          url: msg['fileUrl']
+                                                              as String,
+                                                          filename:
+                                                              msg['fileName']
+                                                                  as String?,
+                                                          urls: _conversationImageMessages(_messages)
+                                                              .map((item) =>
+                                                                  item['fileUrl']
+                                                                      as String)
+                                                              .toList(),
+                                                          filenames:
+                                                              _conversationImageMessages(_messages)
+                                                                  .map((item) =>
+                                                                      item['fileName'] as String?)
+                                                                  .toList(),
+                                                          dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
+                                                          messages: _conversationImageMessages(_messages),
+                                                          onMessageOptions: _showMessageOptions,
+                                                          initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
+                                              child: Stack(
+                                                children: [
+                                                  ClipRRect(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            8),
+                                                    child:
+                                                        _PersistentMediaImage(
+                                                      url: msg['fileUrl']
+                                                          as String,
+                                                      width: 200,
+                                                      height: 160,
+                                                      fit: BoxFit.contain,
+                                                      loadingBuilder: (_) => Container(
+                                                          width: 200,
+                                                          height: 160,
+                                                          color: kBorder,
+                                                          child: const Center(
+                                                              child: CircularProgressIndicator(
+                                                                  color:
+                                                                      kPrimary,
+                                                                  strokeWidth:
+                                                                      2))),
+                                                      errorBuilder: (_) => Container(
+                                                          width: 200,
+                                                          height: 160,
+                                                          color: kBorder,
+                                                          child: const Icon(
+                                                              Icons
+                                                                  .broken_image,
+                                                              color: kSubtext)),
+                                                    ),
+                                                  ),
+                                                  Positioned(
+                                                    left: 7,
+                                                    bottom: 7,
+                                                    child: _ImageStatusBadge(
+                                                        message: msg,
+                                                        isMe: isMe),
+                                                  ),
+                                                  Positioned(
+                                                    right: 7,
+                                                    top: 7,
+                                                    child:
+                                                        _ImageClassificationBadges(
+                                                            message: msg),
+                                                  ),
+                                                ],
+                                              ),
+                                            )
+                                          else if (msg['fileUrl'] != null)
+                                            InkWell(
+                                              onTap: () => isPdfFile
+                                                  ? _openPdfInsideApp(
+                                                      context,
+                                                      msg['fileUrl'] as String,
+                                                      msg['fileName']
+                                                          as String?)
+                                                  : isOfficeFile
+                                                      ? _openOfficeInsideApp(
+                                                          context,
+                                                          msg['fileUrl']
+                                                              as String,
+                                                          msg['fileName']
+                                                              as String?,
+                                                          widget.token)
+                                                      : _downloadChatFile(
+                                                          context,
+                                                          msg['fileUrl']
+                                                              as String,
+                                                          msg['fileName']
+                                                              as String?),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              child: Padding(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        vertical: 4),
+                                                child: Column(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.end,
+                                                  children: [
+                                                    if (isPdfFile) ...[
+                                                      _PdfFirstPagePreview(
+                                                          url: msg['fileUrl']
+                                                              as String),
+                                                      const SizedBox(height: 6),
+                                                    ] else if (isOfficeFile) ...[
+                                                      _OfficeDocumentPreview(
+                                                          fileUrl:
+                                                              msg['fileUrl']
+                                                                  as String,
+                                                          fileName: msg[
+                                                                      'fileName']
+                                                                  ?.toString() ??
+                                                              'מסמך',
+                                                          token: widget.token),
+                                                      const SizedBox(height: 6),
+                                                    ],
+                                                    Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Icon(
+                                                            isPdfFile
+                                                                ? Icons
+                                                                    .picture_as_pdf_outlined
+                                                                : isOfficeFile
+                                                                    ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') ==
+                                                                            true
+                                                                        ? Icons
+                                                                            .table_chart_outlined
+                                                                        : Icons
+                                                                            .description_outlined)
+                                                                    : Icons
+                                                                        .insert_drive_file,
+                                                            size: 16,
+                                                            color: isPdfFile
+                                                                ? Colors.red
+                                                                : kSubtext),
+                                                        const SizedBox(
+                                                            width: 4),
+                                                        Flexible(
+                                                            child: Text(
+                                                                msg['fileName']
+                                                                        as String? ??
+                                                                    msg['text']
+                                                                        as String? ??
+                                                                    '',
+                                                                style: const TextStyle(
+                                                                    fontSize:
+                                                                        13))),
+                                                        const SizedBox(
+                                                            width: 10),
+                                                        const Icon(
+                                                            Icons.download,
+                                                            size: 19,
+                                                            color: kPrimary),
+                                                        const SizedBox(
+                                                            width: 3),
+                                                        const Text('הורדה',
+                                                            style: TextStyle(
+                                                                fontSize: 12,
+                                                                color: kPrimary,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600)),
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            )
+                                          else if (isFilterUpdateAnnouncement)
+                                            InkWell(
+                                              onTap: _updateMyGroupFilter,
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              child: Padding(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        vertical: 4),
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.end,
+                                                  children: [
+                                                    const Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Icon(
+                                                            Icons
+                                                                .shield_outlined,
+                                                            color: kPrimary,
+                                                            size: 21),
+                                                        SizedBox(width: 8),
+                                                        Text(
+                                                          'סינון הקבוצה עודכן',
+                                                          style: TextStyle(
+                                                            fontSize: 15,
                                                             fontWeight:
-                                                                FontWeight.bold,
-                                                            fontSize: 12,
+                                                                FontWeight.w800,
                                                           ),
                                                         ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ],
+                                                      ],
+                                                    ),
+                                                    const SizedBox(height: 5),
+                                                    Text(
+                                                      filterUpdateDetails
+                                                              .isEmpty
+                                                          ? 'מדיניות התוכן של הקבוצה השתנתה.'
+                                                          : filterUpdateDetails,
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                      textDirection:
+                                                          TextDirection.rtl,
+                                                      style: const TextStyle(
+                                                          fontSize: 12,
+                                                          color: kTextDark,
+                                                          height: 1.5),
+                                                    ),
+                                                    const SizedBox(height: 7),
+                                                    Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const Icon(
+                                                            Icons.tune_rounded,
+                                                            size: 17,
+                                                            color: kPrimary),
+                                                        const SizedBox(
+                                                            width: 4),
+                                                        const Text(
+                                                          'עדכון הסינון האישי שלי',
+                                                          style: TextStyle(
+                                                            color: kPrimary,
+                                                            fontWeight:
+                                                                FontWeight.bold,
+                                                            decoration:
+                                                                TextDecoration
+                                                                    .underline,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
+                                            )
+                                          else if (isEducationAnnouncement)
+                                            InkWell(
+                                              onTap: () =>
+                                                  _openEducationAnnouncement(
+                                                      msg),
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              child: Padding(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        vertical: 4),
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.end,
+                                                  children: [
+                                                    Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const Icon(
+                                                            Icons
+                                                                .fact_check_outlined,
+                                                            color: kPrimary),
+                                                        const SizedBox(
+                                                            width: 8),
+                                                        Flexible(
+                                                          child: Text(
+                                                            msg['text']
+                                                                    as String? ??
+                                                                '',
+                                                            style: const TextStyle(
+                                                                fontSize: 15,
+                                                                height: 1.4,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600),
+                                                            textDirection:
+                                                                TextDirection
+                                                                    .rtl,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                    const SizedBox(height: 8),
+                                                    Row(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const Icon(
+                                                            Icons.touch_app,
+                                                            size: 17,
+                                                            color: kPrimary),
+                                                        const SizedBox(
+                                                            width: 4),
+                                                        const Text(
+                                                            'לחץ לפתיחת המסמך',
+                                                            style: TextStyle(
+                                                                color: kPrimary,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .bold)),
+                                                        const SizedBox(
+                                                            width: 12),
+                                                        Container(
+                                                          padding:
+                                                              const EdgeInsets
+                                                                  .symmetric(
+                                                                  horizontal: 9,
+                                                                  vertical: 3),
+                                                          decoration:
+                                                              BoxDecoration(
+                                                            color:
+                                                                educationStatusColor
+                                                                    .withValues(
+                                                                        alpha:
+                                                                            .12),
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        14),
+                                                          ),
+                                                          child: Text(
+                                                            educationStatusLabel,
+                                                            style: TextStyle(
+                                                              color:
+                                                                  educationStatusColor,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .bold,
+                                                              fontSize: 12,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            )
+                                          else if (sharedContact != null)
+                                            _SharedContactCard(
+                                              sharedContact,
+                                              token: widget.token,
+                                              me: widget.me,
+                                            )
+                                          else
+                                            Text(
+                                              msg['text'] as String? ?? '',
+                                              style: TextStyle(
+                                                  fontSize: _looksLikeSticker(
+                                                          msg['text']
+                                                                  as String? ??
+                                                              '')
+                                                      ? 44
+                                                      : 15,
+                                                  height: 1.4),
+                                              textDirection: TextDirection.rtl,
                                             ),
-                                          )
-                                        else if (sharedContact != null)
-                                          _SharedContactCard(sharedContact)
-                                        else
-                                          Text(
-                                            msg['text'] as String? ?? '',
-                                            style: TextStyle(
-                                                fontSize: _looksLikeSticker(
-                                                        msg['text']
-                                                                as String? ??
-                                                            '')
-                                                    ? 44
-                                                    : 15,
-                                                height: 1.4),
-                                            textDirection: TextDirection.rtl,
-                                          ),
-                                        if (sharedUrl != null) ...[
-                                          const SizedBox(height: 8),
-                                          _WebsiteLinkPreview(
-                                              sharedUrl, widget.token),
-                                        ],
-                                        if (isMe &&
-                                            msg['deliverySummary'] is Map)
-                                          _GroupDeliverySummary(
-                                            Map<String, dynamic>.from(
-                                                msg['deliverySummary'] as Map),
-                                          ),
-                                        const SizedBox(height: 4),
-                                        Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            if (msg['isEdited'] == true)
-                                              const Text('נערך · ',
-                                                  style: TextStyle(
-                                                      fontSize: 10,
-                                                      color: kSubtext,
-                                                      fontStyle:
-                                                          FontStyle.italic)),
-                                            Text(msg['time'] as String? ?? '',
-                                                style: const TextStyle(
-                                                    fontSize: 11,
-                                                    color: kSubtext)),
+                                          if (sharedUrl != null) ...[
+                                            const SizedBox(height: 8),
+                                            _WebsiteLinkPreview(
+                                                sharedUrl, widget.token),
                                           ],
-                                        ),
-                                      ],
+                                          if (isMe &&
+                                              msg['deliverySummary'] is Map)
+                                            _GroupDeliverySummary(
+                                              Map<String, dynamic>.from(
+                                                  msg['deliverySummary']
+                                                      as Map),
+                                            ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              if (msg['isEdited'] == true)
+                                                const Text('נערך · ',
+                                                    style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: kSubtext,
+                                                        fontStyle:
+                                                            FontStyle.italic)),
+                                              Text(msg['time'] as String? ?? '',
+                                                  style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: kSubtext)),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                ), // GestureDetector
-                            ],
-                          );
-                        },
-                      ),
-          ),
+                                  ), // GestureDetector
+                              ],
+                            );
+                          },
+                        ),
+            ),
           // Edit mode bar (group)
           if (_editingMsg != null)
             Container(
@@ -28796,7 +30905,7 @@ class _ContentFilterSettingsScreenState
   bool _saved = false;
   bool _inherit = true;
   late String _groupName = widget.groupName ?? 'קבוצה';
-  Map<String, bool> _filter = {
+  final Map<String, bool> _filter = {
     'text': true,
     'video': true,
     'nonHumanImages': true,
@@ -28940,10 +31049,11 @@ class _ContentFilterSettingsScreenState
         if (mounted) Navigator.pop(context, true);
       });
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('שמירת ההגדרות נכשלה: $e')),
         );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -29585,8 +31695,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
 
   String _size(Object? raw) {
     final bytes = (raw as num?)?.toInt() ?? 0;
-    if (bytes >= 1073741824)
+    if (bytes >= 1073741824) {
       return '${(bytes / 1073741824).toStringAsFixed(1)} GB';
+    }
     if (bytes >= 1048576) return '${(bytes / 1048576).toStringAsFixed(1)} MB';
     if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
     return '$bytes B';
@@ -30076,6 +32187,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     );
   }
 
+  // Retained for the compact document layout.
+  // ignore: unused_element
   Widget _card(Map<String, dynamic> item) => Card(
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
         clipBehavior: Clip.antiAlias,
@@ -30143,14 +32256,16 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'send') _send(item);
-              if (value == 'view')
+              if (value == 'view') {
                 _openOfficeInsideApp(context, item['url'].toString(),
                     item['name']?.toString(), widget.token);
+              }
               if (value == 'reclassify') _reclassify(item);
               if (value == 'appeal') _appealClassification(item);
-              if (value == 'download')
+              if (value == 'download') {
                 _downloadChatFile(
                     context, item['url'].toString(), item['name']?.toString());
+              }
               if (value == 'destinations') _showDestinations(item);
               if (value == 'delete') _delete(item);
             },
@@ -30209,9 +32324,10 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         tooltip: 'פעולות',
         onSelected: (value) {
           if (value == 'send') _send(item);
-          if (value == 'view')
+          if (value == 'view') {
             _openOfficeInsideApp(context, item['url'].toString(),
                 item['name']?.toString(), widget.token);
+          }
           if (value == 'reclassify') _reclassify(item);
           if (value == 'appeal') _appealClassification(item);
           if (value == 'download') {
@@ -30365,8 +32481,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                                   firstDate: DateTime(2020),
                                   lastDate: DateTime.now(),
                                 );
-                                if (picked != null)
+                                if (picked != null) {
                                   setDialogState(() => from = picked);
+                                }
                               },
                             ),
                             ListTile(
@@ -30381,13 +32498,14 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                                   firstDate: DateTime(2020),
                                   lastDate: DateTime.now(),
                                 );
-                                if (picked != null)
+                                if (picked != null) {
                                   setDialogState(() => to = picked);
+                                }
                               },
                             ),
                           ])
                         : DropdownButtonFormField<String>(
-                            value: selected,
+                            initialValue: selected,
                             isExpanded: true,
                             decoration: const InputDecoration(labelText: 'הצג'),
                             items: values.entries
@@ -30395,8 +32513,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                                     value: entry.key, child: Text(entry.value)))
                                 .toList(),
                             onChanged: (value) {
-                              if (value != null)
+                              if (value != null) {
                                 setDialogState(() => selected = value);
+                              }
                             },
                           ),
           ),
@@ -30603,7 +32722,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       SizedBox(
         width: width,
         child: DropdownButtonFormField<String>(
-          value: value,
+          initialValue: value,
           isDense: true,
           decoration: InputDecoration(labelText: label),
           items: values.entries
@@ -30877,8 +32996,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             .get(Uri.parse('$kApi/backup'), headers: _authHeaders)
             .timeout(const Duration(seconds: 10)),
       ]);
-      if (responses.any((response) => response.statusCode != 200))
+      if (responses.any((response) => response.statusCode != 200)) {
         throw Exception('status failed');
+      }
       final drive = jsonDecode(responses[0].body) as Map<String, dynamic>;
       final backup = jsonDecode(responses[1].body) as Map<String, dynamic>;
       final storage = backup['storage'] as Map<String, dynamic>? ?? const {};
@@ -30908,8 +33028,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _formatStorage(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024)
+    if (bytes < 1024 * 1024 * 1024) {
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
@@ -30920,15 +33041,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final response = await http.get(Uri.parse('$kApi/backup/google/connect'),
           headers: _authHeaders);
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw Exception(body['error'] ?? 'החיבור אינו זמין');
+      }
       final uri = Uri.parse(body['authorizationUrl'] as String);
       final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!opened) throw Exception('לא ניתן לפתוח את Google');
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
     } finally {
       if (mounted) setState(() => _backupBusy = false);
     }
@@ -30942,13 +33065,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           headers: _authHeaders);
       if (response.statusCode != 200) throw Exception('אימות החיבור נכשל');
       await _loadBackupStatus();
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('החיבור ל-Google Drive תקין')));
+      }
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
     } finally {
       if (mounted) setState(() => _backupBusy = false);
     }
@@ -30978,14 +33103,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (response.statusCode != 200) throw Exception('הניתוק נכשל');
       await _loadBackupStatus();
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
     } finally {
       if (mounted) setState(() => _backupBusy = false);
     }
   }
 
+  // Retained for resumable manual backup recovery.
+  // ignore: unused_element
   Future<void> _backupNextFile({bool replaceLatest = false}) async {
     final controller = TextEditingController();
     final confirmationController = TextEditingController();
@@ -31033,7 +33161,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     controller.dispose();
     confirmationController.dispose();
-    if (passwords == null || _backupBusy) return;
+    if (!mounted || passwords == null || _backupBusy) return;
     final passphrase = passwords[0];
     if (passphrase.length < 12) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -31072,6 +33200,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // ignore: unused_element
   Future<void> _verifyBackupRestore() async {
     if (_automaticBackup && _serverKeyReady) {
       await _runBackupRestoreVerification();
@@ -31109,7 +33238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     controller.dispose();
-    if (passphrase == null || _backupBusy) return;
+    if (!mounted || passphrase == null || _backupBusy) return;
     if (passphrase.length < 12) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('יש להזין לפחות 12 תווים')));
@@ -31176,8 +33305,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           headers: {..._authHeaders, 'Content-Type': 'application/json'},
           body: jsonEncode({'enabled': enabled}));
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw Exception(body['error'] ?? 'עדכון הגיבוי האוטומטי נכשל');
+      }
       if (!mounted) return;
       setState(() {
         _automaticBackup = body['enabled'] == true;
@@ -31188,9 +33318,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ? 'הגיבוי והפינוי האוטומטיים הופעלו.'
               : 'הגיבוי האוטומטי כובה. המפתח נשמר לצורך שחזור.')));
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
     } finally {
       if (mounted) setState(() => _backupBusy = false);
     }
@@ -31287,13 +33418,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'longitude': position.longitude,
           }));
       if (response.statusCode != 200) throw Exception('שמירת המיקום נכשלה');
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('המיקום נשמר')));
+      }
     } catch (error) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
     }
   }
 
@@ -31578,10 +33711,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             : _driveConnected
                                 ? PopupMenuButton<String>(
                                     onSelected: (value) {
-                                      if (value == 'verify')
+                                      if (value == 'verify') {
                                         _verifyPersonalDrive();
-                                      if (value == 'disconnect')
+                                      }
+                                      if (value == 'disconnect') {
                                         _disconnectPersonalDrive();
+                                      }
                                     },
                                     itemBuilder: (_) => const [
                                       PopupMenuItem(
@@ -31633,7 +33768,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Column(
                     children: [
                       SwitchListTile(
-                        activeColor: kPrimary,
+                        activeThumbColor: kPrimary,
                         title: const Text('התראות Push'),
                         value: _notifications,
                         onChanged: _savingPreferences
@@ -31642,7 +33777,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const Divider(height: 1, indent: 16),
                       SwitchListTile(
-                        activeColor: kPrimary,
+                        activeThumbColor: kPrimary,
                         title: const Text('אישורי קריאה'),
                         subtitle: const Text('שלח אישור כשנקראת הודעה'),
                         value: _readReceipts,
@@ -31949,11 +34084,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         });
       }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _error = 'שגיאת חיבור';
           _saving = false;
         });
+      }
     }
   }
 
@@ -32055,11 +34191,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         });
       }
     } catch (_) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _error = 'שגיאת העלאה';
           _saving = false;
         });
+      }
     }
   }
 
@@ -32561,8 +34698,9 @@ class _TablesView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (loading) return const Center(child: CircularProgressIndicator());
-    if (tables.isEmpty)
+    if (tables.isEmpty) {
       return const Center(child: Text('שגיאה בטעינת הנתונים'));
+    }
     return RefreshIndicator(
       onRefresh: () async => onRefresh(),
       child: ListView.separated(
@@ -32578,7 +34716,7 @@ class _TablesView extends StatelessWidget {
                 RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             child: ListTile(
               leading: CircleAvatar(
-                backgroundColor: kPrimaryMid.withOpacity(0.15),
+                backgroundColor: kPrimaryMid.withValues(alpha: 0.15),
                 child: Text('${t['count']}',
                     style: const TextStyle(
                         color: kPrimary,
@@ -32968,7 +35106,7 @@ class _PermissionsViewState extends State<_PermissionsView> {
                     ChoiceChip(
                       label: const Text('עריכה'),
                       selected: _newPerm == 'edit',
-                      selectedColor: kPrimary.withOpacity(0.2),
+                      selectedColor: kPrimary.withValues(alpha: 0.2),
                       onSelected: (_) => setState(() => _newPerm = 'edit'),
                     ),
                     const Spacer(),
@@ -33004,7 +35142,7 @@ class _PermissionsViewState extends State<_PermissionsView> {
                     ListTile(
                       leading: CircleAvatar(
                         backgroundColor:
-                            isEdit ? kPrimary.withOpacity(0.15) : kCard,
+                            isEdit ? kPrimary.withValues(alpha: 0.15) : kCard,
                         child: Icon(isEdit ? Icons.edit : Icons.visibility,
                             color: isEdit ? kPrimary : kSubtext, size: 18),
                       ),
@@ -33021,8 +35159,8 @@ class _PermissionsViewState extends State<_PermissionsView> {
                               label: Text(isEdit ? 'עריכה' : 'צפייה',
                                   style: const TextStyle(fontSize: 11)),
                               backgroundColor: isEdit
-                                  ? kPrimary.withOpacity(0.1)
-                                  : kBorder.withOpacity(0.3)),
+                                  ? kPrimary.withValues(alpha: 0.1)
+                                  : kBorder.withValues(alpha: 0.3)),
                     ),
                   ],
                 );
@@ -33040,7 +35178,7 @@ class EducationFormsScreen extends StatefulWidget {
   final String groupId;
   final String groupName;
   final bool isAdmin;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   const EducationFormsScreen(
       {super.key,
       required this.token,
@@ -33100,11 +35238,12 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
         _loading = false;
       });
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _error = e.toString().replaceFirst('Exception: ', '');
           _loading = false;
         });
+      }
     }
   }
 
@@ -33221,8 +35360,8 @@ class _EducationFormsScreenState extends State<EducationFormsScreen> {
                                         padding: const EdgeInsets.all(15),
                                         child: Row(children: [
                                           CircleAvatar(
-                                              backgroundColor:
-                                                  kPrimary.withOpacity(.12),
+                                              backgroundColor: kPrimary
+                                                  .withValues(alpha: .12),
                                               child: Icon(_icon(form),
                                                   color: kPrimary)),
                                           const SizedBox(width: 12),
@@ -33331,14 +35470,16 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
                 ? 'הקובץ ממתין לאישור הסריקה'
                 : 'העלאת הקובץ נכשלה'));
       }
-      if (mounted)
+      if (mounted) {
         setState(() {
           _fileUrl = data['url'] as String?;
           _fileName = file.name;
         });
+      }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -33395,9 +35536,10 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
         initialDate: DateTime.now().add(const Duration(days: 2)),
         firstDate: DateTime.now(),
         lastDate: DateTime.now().add(const Duration(days: 730)));
-    if (date != null)
+    if (date != null) {
       setState(
           () => _dueAt = DateTime(date.year, date.month, date.day, 23, 59));
+    }
   }
 
   void _selectType(String type) {
@@ -33450,15 +35592,17 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
             if (_dueAt != null) 'dueAt': _dueAt!.toUtc().toIso8601String()
           }));
       final data = jsonDecode(response.body);
-      if (response.statusCode != 201)
+      if (response.statusCode != 201) {
         throw Exception(data['error'] ?? 'יצירת הטופס נכשלה');
+      }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _error = e.toString().replaceFirst('Exception: ', '');
           _loading = false;
         });
+      }
     }
   }
 
@@ -33583,7 +35727,7 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
 class EducationFormDetailsScreen extends StatefulWidget {
   final String token, formId;
   final bool isAdmin;
-  final IO.Socket? socket;
+  final io.Socket? socket;
   const EducationFormDetailsScreen(
       {super.key,
       required this.token,
@@ -33673,11 +35817,12 @@ class _EducationFormDetailsScreenState
             ? []
             : (data['results'] as List).cast<Map<String, dynamic>>();
         final previous = _form?['my_answers'];
-        if (previous is Map)
+        if (previous is Map) {
           for (final entry in previous.entries) {
             final key = int.tryParse(entry.key.toString());
             if (key != null) _answers[key] = entry.value.toString();
           }
+        }
         if (_signerName.text.trim().isEmpty) {
           _signerName.text =
               _form?['my_signer_name']?.toString().trim().isNotEmpty == true
@@ -33687,11 +35832,12 @@ class _EducationFormDetailsScreenState
         _loading = false;
       });
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() {
           _error = e.toString().replaceFirst('Exception: ', '');
           _loading = false;
         });
+      }
     }
   }
 
@@ -33737,12 +35883,14 @@ class _EducationFormDetailsScreenState
             'signatureData': signatureData
           }));
       final data = jsonDecode(response.body);
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw Exception(data['error'] ?? 'שמירת התשובה נכשלה');
+      }
       if (mounted) Navigator.pop(context, status);
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -33816,15 +35964,18 @@ class _EducationFormDetailsScreenState
             'userIds': userId == null ? [] : [userId]
           }));
       final data = jsonDecode(response.body);
-      if (response.statusCode != 200)
+      if (response.statusCode != 200) {
         throw Exception(data['error'] ?? 'שליחת התזכורת נכשלה');
-      if (mounted)
+      }
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('נשלחו ${data['sent']} תזכורות')));
+      }
       await _load();
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -34050,11 +36201,12 @@ class _EducationFormDetailsScreenState
     final type = form['form_type'];
     final closed = form['status'] == 'closed';
     final answered = form['my_response_status'] != null;
-    if (closed)
+    if (closed) {
       return const Card(
           child: Padding(
               padding: EdgeInsets.all(18),
               child: Text('הטופס נסגר ולא ניתן עוד להשיב.')));
+    }
     if (answered) {
       final changeStatus = form['my_change_request_status']?.toString();
       return Card(
@@ -34089,21 +36241,26 @@ class _EducationFormDetailsScreenState
           return Card(
               child: Padding(
                   padding: const EdgeInsets.all(14),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('${entry.key + 1}. ${q['text']}',
-                            style:
-                                const TextStyle(fontWeight: FontWeight.bold)),
-                        ...(q['options'] as List).map((option) =>
-                            RadioListTile<String>(
-                                dense: true,
-                                value: option.toString(),
-                                groupValue: _answers[entry.key],
-                                title: Text(option.toString()),
-                                onChanged: (v) =>
-                                    setState(() => _answers[entry.key] = v!))),
-                      ])));
+                  child: RadioGroup<String>(
+                    groupValue: _answers[entry.key],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _answers[entry.key] = value);
+                      }
+                    },
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('${entry.key + 1}. ${q['text']}',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold)),
+                          ...(q['options'] as List).map((option) =>
+                              RadioListTile<String>(
+                                  dense: true,
+                                  value: option.toString(),
+                                  title: Text(option.toString()))),
+                        ]),
+                  )));
         }),
         ElevatedButton.icon(
             onPressed: _saving ? null : () => _respond('completed'),
@@ -34351,12 +36508,14 @@ class _EducationFormDetailsScreenState
 
   @override
   Widget build(BuildContext context) {
-    if (_loading)
+    if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    if (_form == null)
+    }
+    if (_form == null) {
       return Scaffold(
           appBar: AppBar(),
           body: Center(child: Text(_error ?? 'הטופס לא נמצא')));
+    }
     final form = _form!;
     return Scaffold(
         appBar: AppBar(
@@ -34452,8 +36611,9 @@ class _EducationSignaturePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;
     for (var i = 0; i < points.length - 1; i++) {
-      if (points[i] != null && points[i + 1] != null)
+      if (points[i] != null && points[i + 1] != null) {
         canvas.drawLine(points[i]!, points[i + 1]!, paint);
+      }
     }
   }
 
