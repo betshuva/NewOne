@@ -67,7 +67,7 @@ const groups = [
   {
     id: '05-guide-development',
     title: 'התפתחות מדריך בתשובה',
-    description: 'המעבר מדמות תלת־ממדית כללית לשפת גואש ודיו מקורית ולזהות אביאל.',
+    description: 'המעבר מדמות תלת־ממדית כללית לשפת גואש ודיו מקורית ולזהות ישראל.',
     items: [
       ['exec-5bf0b960-72f6-487c-9e19-6fe9b4e65603.png', 'guide-3d-exploration.png', 'מחקר מדריך ראשוני בסגנון תלת־ממד.'],
       ['exec-1f0a4ede-99ad-496f-b08b-8b6b851bd4b1.png', 'aviel-gouache-origin.png', 'הכיוון המקורי בגואש ודיו וחוט כחול־זהוב.'],
@@ -77,11 +77,11 @@ const groups = [
   },
   {
     id: '06-official-guide',
-    title: 'אביאל – הגרסה הרשמית למדריך',
+    title: 'ישראל – הגרסה הרשמית למדריך',
     description: 'קובץ הפרופיל שהוכן מן האיור שנבחר וצורף על ידי בעלת המיזם.',
     items: [
       ['exec-ede47b48-9763-4980-90e3-3ea508d3d27c.png', 'aviel-official-guide.png',
-        'אביאל מנופף, מותאם לתמונת פרופיל מרובעת.'],
+        'ישראל מנופף, מותאם לתמונת פרופיל מרובעת.'],
     ],
   },
 ];
@@ -158,7 +158,7 @@ fs.writeFileSync(path.join(evidenceRoot, 'SHA256SUMS.txt'),
   `${records.map(record => `${record.sha256}  ${record.file}`).join('\n')}\n`);
 fs.writeFileSync(path.join(evidenceRoot, 'ARCHIVE_ROOT_SHA256.txt'),
   `${chain}  BETSHUVA-CREATION-ARCHIVE-V1\n`);
-fs.writeFileSync(path.join(evidenceRoot, 'CREATION_RECORD.txt'), `ארכיון יצירת אביאל וביטויי בתשובה
+fs.writeFileSync(path.join(evidenceRoot, 'CREATION_RECORD.txt'), `ארכיון יצירת ישראל וביטויי בתשובה
 ====================================
 מועד איסוף (ישראל): ${manifest.generatedAtIsrael}
 מועד איסוף (UTC): ${manifest.generatedAtUtc}
@@ -166,7 +166,7 @@ fs.writeFileSync(path.join(evidenceRoot, 'CREATION_RECORD.txt'), `ארכיון �
 
 הצהרת מקור שנמסרה בשיחה:
 בעלת המיזם צילמה בעצמה את צילום בנה ששימש השראה לדמות.
-שם הילד אינו משמש כשם הדמות; הדמות נקראת "אביאל".
+שם הילד אינו משמש כשם הדמות; הדמות נקראת "ישראל".
 
 שיטת התיעוד:
 הקבצים הועתקו ללא שינוי מתיקיית הפלט המקורית, זמן השינוי שלהם נשמר,
@@ -201,7 +201,7 @@ const cardsByGroup = groups.map(group => {
 const html = `<!doctype html>
 <html lang="he" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ארכיון יצירת אביאל – בתשובה</title>
+<title>ארכיון יצירת ישראל – בתשובה</title>
 <style>
 :root{--blue:#075b91;--deep:#063c63;--gold:#d99a22;--cream:#fffaf0;--ink:#183247}
 *{box-sizing:border-box}body{margin:0;background:#eef5fa;color:var(--ink);font-family:Arial,"Noto Sans Hebrew",sans-serif;line-height:1.55}
@@ -216,7 +216,7 @@ section{margin-top:38px}h2{color:var(--deep);margin-bottom:4px;border-right:5px 
 dl{font-size:12px}dt{font-weight:700;color:#587184}dd{margin:0 0 8px}code{display:block;direction:ltr;overflow-wrap:anywhere;background:#f2f6f8;padding:7px;border-radius:7px}
 footer{text-align:center;padding:25px;color:#5c7282;background:white;border-top:1px solid #d9e5ec}
 </style></head><body>
-<header><h1>ארכיון יצירת אביאל</h1><p>תיעוד כרונולוגי של פיתוח דמות מדריך בתשובה, המדבקות והאנימציות.</p><p>צילום המקור הפרטי אינו מוצג בדף זה.</p></header>
+<header><h1>ארכיון יצירת ישראל</h1><p>תיעוד כרונולוגי של פיתוח דמות מדריך בתשובה, המדבקות והאנימציות.</p><p>צילום המקור הפרטי אינו מוצג בדף זה.</p></header>
 <main><section class="evidence"><h2>רשומת ראיות טכנית</h2>
 <p><strong>נאסף:</strong> ${escapeHtml(manifest.generatedAtIsrael)}</p>
 <p><strong>גיבוב שורש SHA-256:</strong></p><div class="root">${chain}</div>

@@ -47,6 +47,7 @@ const {
   transcribeAudio,
   transcriptDigest,
 } = require('./audio-moderation');
+const { encryptMessageText, decryptMessageText } = require('./message-at-rest');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
@@ -128,7 +129,7 @@ function normalizeBuiltinStickerId(value) {
   return BUILTIN_STICKER_IDS.has(id) ? id : null;
 }
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
-const SYSTEM_USER_NAME = 'אביאל – מדריך בתשובה';
+const SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה';
 const SYSTEM_USER_PROFILE_PIC =
   '/betshuva-app/assets/assets/guide/aviel-guide.jpg';
 const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
@@ -925,6 +926,7 @@ async function scanAudio(buffer, fileName) {
         speechDetected: transcript.length > 0,
         transcriptLength: transcript.length,
         transcriptHash: transcriptDigest(transcript),
+        transcriptEncrypted: transcript ? encryptMessageText(transcript) : null,
       },
     };
   } catch (error) {
@@ -936,6 +938,21 @@ async function scanAudio(buffer, fileName) {
       audio: { source: 'local-whisper-small', error: 'transcription_unavailable' },
     };
   }
+}
+
+function decryptAudioTranscript(details) {
+  const encrypted = details?.audio?.transcriptEncrypted;
+  if (!encrypted) return null;
+  try { return decryptMessageText(encrypted); } catch (_) { return null; }
+}
+
+function accountModerationError(user) {
+  if (user?.moderation_state === 'blocked')
+    return { status: 403, code: 'ACCOUNT_BLOCKED', error: 'החשבון נחסם לצמיתות' };
+  if (user?.moderation_state === 'suspended' &&
+      (!user.moderation_until || new Date(user.moderation_until) > new Date()))
+    return { status: 403, code: 'ACCOUNT_SUSPENDED', error: 'החשבון מושעה זמנית' };
+  return null;
 }
 
 function recordBlockedChat(userId, context, text, targetId, ip = null) {
@@ -1958,6 +1975,11 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INTEGER NOT NULL DEFAULT 0`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS moderation_state TEXT NOT NULL DEFAULT 'active'`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS moderation_reason TEXT`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS moderation_until TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS moderation_updated_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS moderation_updated_by UUID`);
     await pool.query(`
       INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city)
       VALUES($1,'סריקה',$2,'0000000000',TRUE,TRUE,'מערכת')
@@ -2388,6 +2410,26 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ALTER COLUMN moderation_status SET DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_details JSONB`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS blocked_content_expires_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS content_purged_at TIMESTAMPTZ`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS moderation_incidents (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        stored_file_id UUID REFERENCES stored_files(id) ON DELETE SET NULL, content_type TEXT NOT NULL,
+        context_type TEXT, context_id UUID, reason TEXT, blocked_by TEXT, transcript_hash TEXT,
+        transcript_length INTEGER NOT NULL DEFAULT 0, duration_seconds DOUBLE PRECISION,
+        status TEXT NOT NULL DEFAULT 'new', reviewer_note TEXT,
+        reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL, reviewed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS moderation_incidents_file_unique
+      ON moderation_incidents(stored_file_id) WHERE stored_file_id IS NOT NULL`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS moderation_actions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        admin_id UUID REFERENCES users(id) ON DELETE SET NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
+        expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS media_classification_appeals (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2582,7 +2624,7 @@ async function provisionSystemConversation(pool, userId, sendWelcome = true) {
   return result.rows[0] || null;
 }
 
-const SYSTEM_AI_PROMPT = `אתה העוזר הרשמי של אפליקציית "בתשובה" ושמך "אביאל – מדריך בתשובה".
+const SYSTEM_AI_PROMPT = `אתה העוזר הרשמי של אפליקציית "בתשובה" ושמך "ישראל – מדריך בתשובה".
 ענה בעברית, בקצרה, בנעימות ובצעדים מעשיים. ענה רק על שימוש באפליקציה.
 עובדות חשובות: מוסיפים חבר דרך סמל אדם עם +, מחפשים שם/טלפון/אימייל ולוחצים שמור;
 תוכן תמונה ווידאו נסרק אוטומטית; הגדרות הסינון נמצאות בהגדרות וניתן להגדיר גם לקבוצה;
@@ -2668,7 +2710,7 @@ function localSystemAnswer(question, uploadContext = null) {
   if (/מיקום|עיר|מרחק/.test(q))
     return 'שיתוף מיקום הוא אופציונלי. ניתן לעדכן או למחוק אותו בהגדרות; משתמשים אחרים רואים לכל היותר עיר ומרחק משוער ולא קואורדינטות.';
   if (/שלום|היי|מי אתה|עזרה/.test(q))
-    return 'שלום 🌿 אני אביאל, מדריך בתשובה. אפשר לשאול אותי על הוספת חברים, קבוצות, סינון תוכן, הודעות, כניסה או הגדרות.';
+    return 'שלום 🌿 אני ישראל, מדריך בתשובה. אפשר לשאול אותי על הוספת חברים, קבוצות, סינון תוכן, הודעות, כניסה או הגדרות.';
   return 'אני מסייע בשאלות על אפליקציית בתשובה. אפשר לשאול למשל איך מוסיפים חבר, משנים סינון, יוצרים קבוצה או מוחקים חשבון. אם הבעיה נמשכת, אפשר לפנות ל־support@betshuva.com.';
 }
 
@@ -3205,10 +3247,13 @@ async function auth(req, res, next) {
     const pool = await getPool();
     const result = await pool.query(
       `SELECT name,gender,phone, email_verified, phone_verified, birth_date,
+              moderation_state, moderation_reason, moderation_until,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length)
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
+    const moderationError = accountModerationError(result.rows[0]);
+    if (moderationError) return res.status(moderationError.status).json(moderationError);
     if (result.rows[0].name === 'משתמש' && result.rows[0].gender == null)
       return res.status(403).json({ error: 'ההרשמה לא הושלמה', code: 'REGISTRATION_INCOMPLETE' });
     const registrationComplete = !!result.rows[0].phone &&
@@ -3285,12 +3330,15 @@ async function authWithDbCheck(req, res, next) {
     const pool = await getPool();
     const exists = await pool.query(
       `SELECT name,gender,phone, email_verified, phone_verified, birth_date,
+              moderation_state, moderation_reason, moderation_until,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [req.user.id]);
     if (!exists.rows.length) {
       console.warn(`[AUTH] ghost session — id:${req.user.id} email:${req.user.email}`);
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
     }
+    const moderationError = accountModerationError(exists.rows[0]);
+    if (moderationError) return res.status(moderationError.status).json(moderationError);
     if (exists.rows[0].name === 'משתמש' && exists.rows[0].gender == null)
       return res.status(403).json({ error: 'ההרשמה לא הושלמה', code: 'REGISTRATION_INCOMPLETE' });
     if (!exists.rows[0].phone)
@@ -3313,12 +3361,14 @@ io.use(async (socket, next) => {
     const pool = await getPool();
     const exists = await pool.query(
       `SELECT name,gender,phone, email_verified, phone_verified, birth_date,
+              moderation_state, moderation_reason, moderation_until,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [socket.user.id]);
     if (!exists.rows.length) {
       console.warn(`[SOCKET] user_not_found — id:${socket.user.id} email:${socket.user.email} name:${socket.user.name}`);
       return next(new Error('user_not_found'));
     }
+    if (accountModerationError(exists.rows[0])) return next(new Error('account_blocked'));
     if (exists.rows[0].name === 'משתמש' && exists.rows[0].gender == null)
       return next(new Error('registration_incomplete'));
     if (!exists.rows[0].phone) return next(new Error('phone_required'));
@@ -4146,6 +4196,8 @@ app.post('/api/login', authRateLimit, credentialRateLimit, async (req, res) => {
     const user = result.rows[0];
     if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash)))
       return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
+    const moderationError = accountModerationError(user);
+    if (moderationError) return res.status(moderationError.status).json(moderationError);
     if (!user.phone) {
       const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
       return res.status(403).json({ error: 'יש להזין מספר טלפון', code: 'PHONE_REQUIRED', token });
@@ -4827,7 +4879,9 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
                   AND receipt_user.read_receipts_enabled=FALSE
              THEN 'delivered' ELSE ms.status END AS message_status,
         sf.moderation_details->'classification' AS image_classification,
-        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
+        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
+        sf.moderation_status AS audio_moderation_status,
+        sf.moderation_details AS _moderation_details
       FROM messages m
       LEFT JOIN messages r  ON m.reply_to_id = r.id
       LEFT JOIN users ru    ON r.sender_id = ru.id
@@ -4869,6 +4923,10 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.moderation_details->>'reason' AS scan_reason,
         sf.moderation_details->'classification' AS image_classification,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
+        sf.moderation_status AS audio_moderation_status,
+        sf.content_purged_at,
+        sf.blocked_content_expires_at,
+        sf.moderation_details AS _moderation_details,
         CASE WHEN sf.moderation_status='rejected'
           THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status
       FROM stored_files sf
@@ -4922,7 +4980,12 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       ...privateFilters.rows,
     ]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-      .slice(-50);
+      .slice(-50)
+      .map(row => {
+        const transcript = decryptAudioTranscript(row._moderation_details);
+        const { _moderation_details, ...safe } = row;
+        return { ...safe, audio_transcript: transcript };
+      });
     res.json(combined);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -7974,7 +8037,9 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         r.body AS reply_body,
         CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
         sf.moderation_details->'classification' AS image_classification,
-        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
+        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
+        sf.moderation_status AS audio_moderation_status,
+        sf.moderation_details AS _moderation_details
       FROM messages m
       JOIN users u ON m.sender_id = u.id
       LEFT JOIN messages r ON m.reply_to_id = r.id
@@ -8017,6 +8082,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         sf.moderation_details->>'reason' AS scan_reason,
         sf.moderation_details->'classification' AS image_classification,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
+        ,sf.moderation_status AS audio_moderation_status
+        ,sf.content_purged_at
+        ,sf.blocked_content_expires_at
+        ,sf.moderation_details AS _moderation_details
       FROM stored_files sf
       JOIN users u ON u.id=sf.user_id
       WHERE sf.context_type='group' AND sf.context_id=$1
@@ -8036,7 +8105,12 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         personalFilter, row.type, row.image_classification));
     const combined = [...visibleMessages, ...scans.rows]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-      .slice(-50);
+      .slice(-50)
+      .map(row => {
+        const transcript = decryptAudioTranscript(row._moderation_details);
+        const { _moderation_details, ...safe } = row;
+        return { ...safe, audio_transcript: transcript };
+      });
     res.json(combined);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -9709,6 +9783,70 @@ app.delete('/api/admin/permissions/:userId', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Persistent moderation history. Raw blocked content is deliberately excluded.
+app.get('/api/admin/moderation/users', adminAuth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(`
+      SELECT u.id,u.name,u.email,u.phone,u.moderation_state,u.moderation_reason,u.moderation_until,
+        COUNT(mi.id)::int AS incident_count,MAX(mi.created_at) AS last_incident_at,
+        COUNT(mi.id) FILTER (WHERE mi.created_at>now()-interval '30 days')::int AS recent_count
+      FROM users u JOIN moderation_incidents mi ON mi.user_id=u.id
+      GROUP BY u.id ORDER BY last_incident_at DESC`);
+    res.json(result.rows);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/api/admin/moderation/users/:userId', adminAuth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const [user, incidents, actions] = await Promise.all([
+      pool.query(`SELECT id,name,email,phone,moderation_state,moderation_reason,moderation_until
+        FROM users WHERE id=$1`, [req.params.userId]),
+      pool.query(`SELECT id,content_type,context_type,reason,blocked_by,transcript_length,
+        duration_seconds,status,reviewer_note,created_at,reviewed_at
+        FROM moderation_incidents WHERE user_id=$1 ORDER BY created_at DESC`, [req.params.userId]),
+      pool.query(`SELECT ma.id,ma.action,ma.reason,ma.expires_at,ma.created_at,u.name AS admin_name
+        FROM moderation_actions ma LEFT JOIN users u ON u.id=ma.admin_id
+        WHERE ma.user_id=$1 ORDER BY ma.created_at DESC`, [req.params.userId]),
+    ]);
+    if (!user.rows.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
+    res.json({ user: user.rows[0], incidents: incidents.rows, actions: actions.rows });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/admin/moderation/users/:userId/action', adminAuth, async (req, res) => {
+  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
+  const action = String(req.body.action || '');
+  const reason = String(req.body.reason || '').trim();
+  if (!['warn','suspend','block','unblock'].includes(action) || !reason)
+    return res.status(400).json({ error: 'יש לבחור פעולה ולכתוב סיבה' });
+  const hours = Math.max(1, Math.min(24 * 365, Number(req.body.durationHours) || 24));
+  const state = action === 'block' ? 'blocked' : action === 'suspend' ? 'suspended' :
+    action === 'warn' ? 'warned' : 'active';
+  const expiresAt = action === 'suspend' ? new Date(Date.now() + hours * 3600000) : null;
+  try {
+    const pool = await getPool();
+    const result = await pool.query(`UPDATE users SET moderation_state=$1,moderation_reason=$2,
+      moderation_until=$3,moderation_updated_at=now(),moderation_updated_by=$4 WHERE id=$5 RETURNING id`,
+      [state, action === 'unblock' ? null : reason, expiresAt, req.user.id, req.params.userId]);
+    if (!result.rows.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
+    await pool.query(`INSERT INTO moderation_actions(user_id,admin_id,action,reason,expires_at)
+      VALUES($1,$2,$3,$4,$5)`, [req.params.userId, req.user.id, action, reason, expiresAt]);
+    await pool.query(`UPDATE moderation_incidents SET status=$1,reviewed_by=$2,reviewed_at=now(),reviewer_note=$3
+      WHERE user_id=$4 AND status='new'`, [action, req.user.id, reason, req.params.userId]);
+    if (action !== 'unblock') await pool.query(`INSERT INTO messages(sender_id,recipient_id,type,body)
+      VALUES($1,$2,'text',$3)`, [SYSTEM_USER_ID, req.params.userId,
+      `הודעת בטיחות: ${reason}${action === 'block' ? ' — החשבון נחסם לצמיתות.' : action === 'suspend' ? ' — החשבון הושעה זמנית.' : ''}`]);
+    if (['suspend','block'].includes(action)) {
+      const sid = onlineUsers.get(req.params.userId);
+      if (sid) { io.to(sid).emit('force_logout', { reason }); io.sockets.sockets.get(sid)?.disconnect(true); }
+    }
+    logActivity(req.user.id, 'admin_moderation_action', { targetUserId: req.params.userId, action, reason }, req.ip);
+    res.json({ ok: true, state, expiresAt });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
 // ── Admin: Full User Delete ──────────────────────────────────────
 async function deleteStoredFile(url) {
   try {
@@ -9733,6 +9871,45 @@ async function deleteStoredFile(url) {
     return false;
   }
 }
+
+async function purgeExpiredBlockedAudio() {
+  if (purgeExpiredBlockedAudio.running) return;
+  purgeExpiredBlockedAudio.running = true;
+  try {
+    const pool = await getPool();
+    await pool.query(`
+      UPDATE stored_files SET blocked_content_expires_at=now()+interval '2 minutes'
+      WHERE file_type='audio' AND moderation_status='rejected'
+        AND blocked_content_expires_at IS NULL AND content_purged_at IS NULL`);
+    await pool.query(`
+      INSERT INTO moderation_incidents
+        (user_id,stored_file_id,content_type,context_type,context_id,reason,blocked_by,
+         transcript_hash,transcript_length,duration_seconds)
+      SELECT user_id,id,file_type,context_type,context_id,moderation_details->>'reason',
+        moderation_details->>'blockedBy',moderation_details->'audio'->>'transcriptHash',
+        COALESCE((moderation_details->'audio'->>'transcriptLength')::int,0),
+        (moderation_details->'audio'->>'durationSeconds')::double precision
+      FROM stored_files WHERE file_type='audio' AND moderation_status='rejected'
+      ON CONFLICT (stored_file_id) WHERE stored_file_id IS NOT NULL DO NOTHING`);
+    const expired = await pool.query(`SELECT id,storage_path,user_id FROM stored_files
+      WHERE file_type='audio' AND moderation_status='rejected' AND content_purged_at IS NULL
+        AND blocked_content_expires_at<=now() LIMIT 50`);
+    for (const row of expired.rows) {
+      const absolutePath = path.resolve(UPLOAD_ROOT, row.storage_path);
+      if (absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+        await fs.unlink(absolutePath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      await pool.query(`UPDATE stored_files SET content_purged_at=now(),
+        moderation_details=jsonb_set(
+          moderation_details #- '{audio,transcriptEncrypted}',
+          '{audio,contentPurged}','true'::jsonb,true)
+        WHERE id=$1`, [row.id]);
+      logActivity(row.user_id, 'blocked_audio_purged', { storedFileId: row.id }, null);
+    }
+  } catch (error) {
+    console.error('blocked audio purge:', error.message);
+  } finally { purgeExpiredBlockedAudio.running = false; }
+}
+purgeExpiredBlockedAudio.running = false;
 
 async function deleteUserPersonalDriveBackups(pool, userId) {
   // Stop the queue before enumerating remote objects so no new backup can be
@@ -10868,6 +11045,7 @@ async function retryPendingScans() {
             fileName: row.file_name, fileUrl: row.file_url,
             groupId: row.group_id || null, toUserId: row.to_user_id || null,
             reason: scanResult.reason,
+            audioTranscript: decryptAudioTranscript(scanResult),
           });
           continue;
         }
@@ -10989,6 +11167,8 @@ async function retryPendingScans() {
           const payload = {
             id: msg.id, fromUserId: row.user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
+            audioTranscript: decryptAudioTranscript(scanResult),
+            audioModerationStatus: row.file_type === 'audio' ? 'approved' : null,
           };
           const senderSid    = onlineUsers.get(row.user_id);
           const recipientSid = onlineUsers.get(row.to_user_id);
@@ -11040,6 +11220,8 @@ async function retryPendingScans() {
             clientMessageId: null,
             createdAt: msg.created_at,
             classification: scanResult.classification || null,
+            audioTranscript: decryptAudioTranscript(scanResult),
+            audioModerationStatus: row.file_type === 'audio' ? 'approved' : null,
             deliverySummary: deliveryPlan.summary,
           };
           const senderSid = onlineUsers.get(row.user_id);
@@ -11537,6 +11719,8 @@ async function startServer() {
   scheduleGovernmentLocalitiesSync();
   setTimeout(retryPendingScans, 1000); // process queued files after startup
   setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
+  setTimeout(purgeExpiredBlockedAudio, 1500);
+  setInterval(purgeExpiredBlockedAudio, 15 * 1000);
   const spawnBackupWorker = (workerIndex) => {
     const child = fork(__filename, [], {
       env: { ...process.env, BACKUP_WORKER_ONLY: '1', BACKUP_WORKER_INDEX: String(workerIndex) },

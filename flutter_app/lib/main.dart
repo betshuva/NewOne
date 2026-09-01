@@ -522,7 +522,7 @@ Future<void> _confirmAndOpenExternalLink(
               ),
               const SizedBox(width: 12),
               const Expanded(
-                child: Text('אביאל מבקש לעצור רגע',
+                child: Text('ישראל מבקש לעצור רגע',
                     textAlign: TextAlign.right,
                     style:
                         TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
@@ -1374,8 +1374,8 @@ final String? kPendingInviteId = Uri.base.queryParameters['invite'];
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.2';
-const kApkUrl = 'https://betshuva.com/betshuva-app/betshuva-1.3.2.apk';
+const kVersion = '1.3.4';
+const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
@@ -2064,12 +2064,55 @@ Widget _magenDavid(
       ),
     );
 
-Widget _androidDownloadLink() => TextButton.icon(
-      onPressed: () =>
-          launchUrl(Uri.parse(kApkUrl), mode: LaunchMode.externalApplication),
-      icon: const Icon(Icons.android, size: 20),
-      label: const Text('הורדת betshuva-$kVersion.apk  •  גרסה $kVersion'),
-      style: TextButton.styleFrom(foregroundColor: kPrimary),
+class _ReleaseInfo {
+  final String version;
+  final Uri apkUri;
+
+  const _ReleaseInfo(this.version, this.apkUri);
+}
+
+final _fallbackReleaseInfo = _ReleaseInfo(kVersion, Uri.parse(kApkUrl));
+Future<_ReleaseInfo>? _releaseInfoRequest;
+
+Future<_ReleaseInfo> _loadReleaseInfo() async {
+  try {
+    final response = await http
+        .get(Uri.parse('$kApi/version'))
+        .timeout(const Duration(seconds: 8));
+    if (response.statusCode != 200) return _fallbackReleaseInfo;
+    final data = jsonDecode(response.body);
+    if (data is! Map<String, dynamic>) return _fallbackReleaseInfo;
+    final version = data['version']?.toString().trim() ?? '';
+    final apkUri = Uri.tryParse(data['apkUrl']?.toString() ?? '');
+    final trustedServer = Uri.parse(kServer);
+    final isTrustedApk = apkUri != null &&
+        apkUri.scheme == trustedServer.scheme &&
+        apkUri.host == trustedServer.host &&
+        apkUri.path.startsWith('${trustedServer.path}/') &&
+        apkUri.path.toLowerCase().endsWith('.apk');
+    if (!RegExp(r'^\d+\.\d+\.\d+$').hasMatch(version) || !isTrustedApk) {
+      return _fallbackReleaseInfo;
+    }
+    return _ReleaseInfo(version, apkUri);
+  } catch (_) {
+    return _fallbackReleaseInfo;
+  }
+}
+
+Widget _androidDownloadLink() => FutureBuilder<_ReleaseInfo>(
+      future: _releaseInfoRequest ??= _loadReleaseInfo(),
+      initialData: _fallbackReleaseInfo,
+      builder: (context, snapshot) {
+        final release = snapshot.data ?? _fallbackReleaseInfo;
+        return TextButton.icon(
+          onPressed: () =>
+              launchUrl(release.apkUri, mode: LaunchMode.externalApplication),
+          icon: const Icon(Icons.android, size: 20),
+          label: Text(
+              'הורדת betshuva-${release.version}.apk  •  גרסה ${release.version}'),
+          style: TextButton.styleFrom(foregroundColor: kPrimary),
+        );
+      },
     );
 
 // ── App Root ──────────────────────────────────────────────────────
@@ -6194,6 +6237,7 @@ class _MainShellContentState extends State<_MainShellContent> {
   int _idx = 0;
   Map<String, dynamic>? _desktopRecipient;
   Map<String, dynamic>? _desktopGroup;
+  Map<String, dynamic>? _desktopListing;
   bool _openGroupMembersOnSelect = false;
   io.Socket? _socket;
   VoiceCallCoordinator? _voiceCalls;
@@ -6564,6 +6608,7 @@ class _MainShellContentState extends State<_MainShellContent> {
     setState(() {
       _desktopRecipient = null;
       _desktopGroup = group;
+      _desktopListing = null;
       _openGroupMembersOnSelect = openMembers;
       _groupUnreadCounts.remove(groupId);
     });
@@ -6583,6 +6628,7 @@ class _MainShellContentState extends State<_MainShellContent> {
           ? refreshed.first
           : Map<String, dynamic>.from(recipient);
       _desktopGroup = null;
+      _desktopListing = null;
       _openGroupMembersOnSelect = false;
     });
     if (MediaQuery.sizeOf(context).width < 900) {
@@ -6887,6 +6933,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         setState(() {
           _desktopRecipient = user;
           _desktopGroup = null;
+          _desktopListing = null;
           _openGroupMembersOnSelect = false;
         });
       },
@@ -6933,71 +6980,85 @@ class _MainShellContentState extends State<_MainShellContent> {
               const VerticalDivider(
                   width: 1, thickness: 1, color: Color(0xFFD9DEE1)),
               Expanded(
-                child: _idx == 0
-                    ? (_desktopGroup != null
-                        ? GroupChatScreen(
-                            key: ValueKey(
-                                'chat-tab:${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
-                            group: _desktopGroup!,
-                            me: _me,
-                            token: widget.token,
-                            socket: _socket,
-                            embedded: true,
-                            openAddMembersOnStart: _openGroupMembersOnSelect,
-                            onMembersChanged: (count) => setState(() {
-                              _desktopGroup?['member_count'] = count;
-                            }),
-                            onClose: () => setState(() {
-                              _desktopGroup = null;
-                              _openGroupMembersOnSelect = false;
-                            }),
-                          )
-                        : _desktopRecipient == null
-                            ? const _DesktopChatWelcome()
-                            : ChatScreen(
-                                key: ValueKey(_desktopRecipient!['id']),
-                                token: widget.token,
+                child: _desktopListing != null
+                    ? ListingDetailScreen(
+                        key: ValueKey('chat-listing:${_desktopListing!['id']}'),
+                        item: _desktopListing!,
+                        token: widget.token,
+                        me: _me,
+                        socket: _socket,
+                        embedded: true,
+                        onClose: () => setState(() => _desktopListing = null),
+                        onConversationStarted: _openMarketplaceConversation,
+                      )
+                    : _idx == 0
+                        ? (_desktopGroup != null
+                            ? GroupChatScreen(
+                                key: ValueKey(
+                                    'chat-tab:${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
+                                group: _desktopGroup!,
                                 me: _me,
-                                recipient: _desktopRecipient!,
+                                token: widget.token,
                                 socket: _socket,
-                                onVoiceCall: () => _voiceCalls?.startCall(
-                                  _desktopRecipient!['id'] as String,
-                                  _desktopRecipient!['name']?.toString() ??
-                                      'משתמש',
-                                ),
                                 embedded: true,
-                                onBlocked: () {
-                                  final blockedId =
-                                      _desktopRecipient!['id']?.toString();
-                                  setState(() {
-                                    _users.removeWhere((user) =>
-                                        user['id']?.toString() == blockedId);
-                                    _unreadCounts.remove(blockedId);
-                                  });
-                                  _loadUsers();
-                                },
-                                onClose: () =>
-                                    setState(() => _desktopRecipient = null),
-                              ))
-                    : (_desktopGroup == null
-                        ? const _DesktopGroupWelcome()
-                        : GroupChatScreen(
-                            key: ValueKey(
-                                '${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
-                            group: _desktopGroup!,
-                            me: _me,
-                            token: widget.token,
-                            socket: _socket,
-                            embedded: true,
-                            openAddMembersOnStart: _openGroupMembersOnSelect,
-                            onMembersChanged: (count) => setState(() {
-                              _desktopGroup?['member_count'] = count;
-                            }),
-                            onClose: () => setState(() {
-                              _desktopGroup = null;
-                              _openGroupMembersOnSelect = false;
-                            }),
-                          )),
+                                openAddMembersOnStart:
+                                    _openGroupMembersOnSelect,
+                                onMembersChanged: (count) => setState(() {
+                                  _desktopGroup?['member_count'] = count;
+                                }),
+                                onClose: () => setState(() {
+                                  _desktopGroup = null;
+                                  _openGroupMembersOnSelect = false;
+                                }),
+                              )
+                            : _desktopRecipient == null
+                                ? const _DesktopChatWelcome()
+                                : ChatScreen(
+                                    key: ValueKey(_desktopRecipient!['id']),
+                                    token: widget.token,
+                                    me: _me,
+                                    recipient: _desktopRecipient!,
+                                    socket: _socket,
+                                    onVoiceCall: () => _voiceCalls?.startCall(
+                                      _desktopRecipient!['id'] as String,
+                                      _desktopRecipient!['name']?.toString() ??
+                                          'משתמש',
+                                    ),
+                                    embedded: true,
+                                    onBlocked: () {
+                                      final blockedId =
+                                          _desktopRecipient!['id']?.toString();
+                                      setState(() {
+                                        _users.removeWhere((user) =>
+                                            user['id']?.toString() ==
+                                            blockedId);
+                                        _unreadCounts.remove(blockedId);
+                                      });
+                                      _loadUsers();
+                                    },
+                                    onClose: () => setState(
+                                        () => _desktopRecipient = null),
+                                  ))
+                        : (_desktopGroup == null
+                            ? const _DesktopGroupWelcome()
+                            : GroupChatScreen(
+                                key: ValueKey(
+                                    '${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
+                                group: _desktopGroup!,
+                                me: _me,
+                                token: widget.token,
+                                socket: _socket,
+                                embedded: true,
+                                openAddMembersOnStart:
+                                    _openGroupMembersOnSelect,
+                                onMembersChanged: (count) => setState(() {
+                                  _desktopGroup?['member_count'] = count;
+                                }),
+                                onClose: () => setState(() {
+                                  _desktopGroup = null;
+                                  _openGroupMembersOnSelect = false;
+                                }),
+                              )),
               ),
             ],
           )
@@ -7031,25 +7092,34 @@ class _MainShellContentState extends State<_MainShellContent> {
     );
 
     return Scaffold(
-      body: NotificationListener<_OpenSharedContactChatNotification>(
+      body: NotificationListener<_OpenListingNotification>(
         onNotification: (notification) {
-          if (!isDesktop) return false;
+          if (!isDesktop || (_idx != 0 && _idx != 1)) return false;
           notification.handledInDesktopPane = true;
-          final recipient = notification.recipient;
-          final recipientId = recipient['id']?.toString();
-          setState(() {
-            _idx = 0;
-            _desktopGroup = null;
-            _openGroupMembersOnSelect = false;
-            _desktopRecipient = _users.firstWhere(
-              (user) => user['id']?.toString() == recipientId,
-              orElse: () => recipient,
-            );
-            if (recipientId != null) _unreadCounts.remove(recipientId);
-          });
+          setState(() => _desktopListing = notification.listing);
           return true;
         },
-        child: body,
+        child: NotificationListener<_OpenSharedContactChatNotification>(
+          onNotification: (notification) {
+            if (!isDesktop) return false;
+            notification.handledInDesktopPane = true;
+            final recipient = notification.recipient;
+            final recipientId = recipient['id']?.toString();
+            setState(() {
+              _idx = 0;
+              _desktopGroup = null;
+              _desktopListing = null;
+              _openGroupMembersOnSelect = false;
+              _desktopRecipient = _users.firstWhere(
+                (user) => user['id']?.toString() == recipientId,
+                orElse: () => recipient,
+              );
+              if (recipientId != null) _unreadCounts.remove(recipientId);
+            });
+            return true;
+          },
+          child: body,
+        ),
       ),
       bottomNavigationBar: _idx == 3
           ? null
@@ -19842,6 +19912,11 @@ class _ChatScreenState extends State<ChatScreen> {
       if (map['audio_duration_seconds'] != null)
         'audioDurationSeconds':
             double.tryParse(map['audio_duration_seconds'].toString()),
+      if (map['audio_transcript'] != null)
+        'audioTranscript': map['audio_transcript'].toString(),
+      if (map['audio_moderation_status'] != null)
+        'audioModerationStatus': map['audio_moderation_status'].toString(),
+      if (map['content_purged_at'] != null) 'contentPurged': true,
       if (map['delivery_summary'] != null)
         'deliverySummary': map['delivery_summary'],
       if (map['reply_to_id'] != null)
@@ -19922,6 +19997,10 @@ class _ChatScreenState extends State<ChatScreen> {
           'classification': data['classification'],
         if (data['deliverySummary'] != null)
           'deliverySummary': data['deliverySummary'],
+        if (data['audioTranscript'] != null)
+          'audioTranscript': data['audioTranscript'].toString(),
+        if (data['audioModerationStatus'] != null)
+          'audioModerationStatus': data['audioModerationStatus'].toString(),
         if (data['replyToId'] != null)
           'replyTo': {'id': data['replyToId'], 'text': data['replyBody'] ?? ''},
       };
@@ -19949,6 +20028,10 @@ class _ChatScreenState extends State<ChatScreen> {
         _messages[index]['status'] = 'rejected_scan';
         _messages[index]['scanReason'] =
             data['reason']?.toString() ?? 'נדחתה בסריקה';
+        if (data['audioTranscript'] != null) {
+          _messages[index]['audioTranscript'] =
+              data['audioTranscript'].toString();
+        }
       });
     };
     widget.socket?.on('scan:rejected', _scanRejectedSocketHandler);
@@ -21059,6 +21142,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sharePhoneContact() async {
+    await _loadRecipientReceivingFilter();
+    if (!mounted) return;
     if (!_recipientAllowsText) {
       _showRecipientFilterNotice('שיתוף אנשי קשר');
       return;
@@ -21070,6 +21155,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _shareMyContact() async {
+    await _loadRecipientReceivingFilter();
+    if (!mounted) return;
     if (!_recipientAllowsText) {
       _showRecipientFilterNotice('שיתוף פרטים');
       return;
@@ -21106,87 +21193,144 @@ class _ChatScreenState extends State<ChatScreen> {
                   const SizedBox(height: 8),
                   Column(
                     children: [
-                      if (_recipientAllowsImages) ...[
-                        _AttachOption(
-                          icon: Icons.image_outlined,
-                          label: 'גלריה (עד 10)',
-                          color: kPrimary,
-                          onTap: () {
-                            Navigator.pop(context);
-                            _pickFile(ImageSource.gallery);
-                          },
-                        ),
-                        _AttachOption(
-                          icon: Icons.camera_alt_outlined,
-                          label: 'צלם תמונה',
-                          color: kPrimaryMid,
-                          onTap: () {
-                            Navigator.pop(context);
-                            _capturePhoto();
-                          },
-                        ),
-                      ],
-                      if (_recipientAllowsText)
-                        _AttachOption(
-                          icon: Icons.picture_as_pdf_outlined,
-                          label: 'מסמכים (עד 20)',
-                          color: Colors.orange,
-                          onTap: () {
-                            Navigator.pop(context);
-                            _pickDocument();
-                          },
-                        ),
-                      if (_recipientAllowsVideo) ...[
-                        _AttachOption(
-                          icon: Icons.videocam_outlined,
-                          label: 'וידאו',
-                          color: Colors.deepPurple,
-                          onTap: () {
-                            Navigator.pop(context);
-                            _pickVideo();
-                          },
-                        ),
-                        _AttachOption(
-                          icon: Icons.video_camera_back_outlined,
-                          label: 'צלם וידאו',
-                          color: Colors.redAccent,
-                          onTap: () {
-                            Navigator.pop(context);
-                            _recordVideo();
-                          },
-                        ),
-                      ],
+                      _AttachOption(
+                        icon: Icons.image_outlined,
+                        label: 'גלריה (עד 10)',
+                        color: kPrimary,
+                        allowed: _recipientAllowsImages,
+                        status: _recipientAllowsImages
+                            ? 'מותר לנמען'
+                            : 'חסום בסינון הנמען',
+                        onTap: () {
+                          if (!_recipientAllowsImages) {
+                            _showRecipientFilterNotice('תמונות');
+                            return;
+                          }
+                          Navigator.pop(context);
+                          _pickFile(ImageSource.gallery);
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.camera_alt_outlined,
+                        label: 'צלם תמונה',
+                        color: kPrimaryMid,
+                        allowed: _recipientAllowsImages,
+                        status: _recipientAllowsImages
+                            ? 'מותר לנמען'
+                            : 'חסום בסינון הנמען',
+                        onTap: () {
+                          if (!_recipientAllowsImages) {
+                            _showRecipientFilterNotice('תמונות');
+                            return;
+                          }
+                          Navigator.pop(context);
+                          _capturePhoto();
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.picture_as_pdf_outlined,
+                        label: 'מסמכים (עד 20)',
+                        color: Colors.orange,
+                        allowed: _recipientAllowsText,
+                        status: _recipientAllowsText
+                            ? 'מותר לנמען'
+                            : 'חסום בסינון הנמען',
+                        onTap: () {
+                          if (!_recipientAllowsText) {
+                            _showRecipientFilterNotice('מסמכים');
+                            return;
+                          }
+                          Navigator.pop(context);
+                          _pickDocument();
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.videocam_outlined,
+                        label: 'וידאו',
+                        color: Colors.deepPurple,
+                        allowed: _recipientAllowsVideo,
+                        status: _recipientAllowsVideo
+                            ? 'מותר לנמען'
+                            : 'חסום בסינון הנמען',
+                        onTap: () {
+                          if (!_recipientAllowsVideo) {
+                            _showRecipientFilterNotice('וידאו');
+                            return;
+                          }
+                          Navigator.pop(context);
+                          _pickVideo();
+                        },
+                      ),
+                      _AttachOption(
+                        icon: Icons.video_camera_back_outlined,
+                        label: 'צלם וידאו',
+                        color: Colors.redAccent,
+                        allowed: _recipientAllowsVideo,
+                        status: _recipientAllowsVideo
+                            ? 'מותר לנמען'
+                            : 'חסום בסינון הנמען',
+                        onTap: () {
+                          if (!_recipientAllowsVideo) {
+                            _showRecipientFilterNotice('וידאו');
+                            return;
+                          }
+                          Navigator.pop(context);
+                          _recordVideo();
+                        },
+                      ),
                       _AttachOption(
                         icon: Icons.mic_none_rounded,
                         label: 'הקלטת שמע',
                         color: Colors.deepOrange,
+                        allowed: _recipientAllowsText,
+                        status: _recipientAllowsText
+                            ? 'מותר לנמען'
+                            : 'חסום בסינון הנמען',
                         onTap: () {
+                          if (!_recipientAllowsText) {
+                            _showRecipientFilterNotice('הקלטות שמע');
+                            return;
+                          }
                           Navigator.pop(context);
                           _toggleVoiceRecording();
                         },
                       ),
                     ],
                   ),
-                  if (_recipientAllowsText) ...[
-                    _AttachOption(
-                      icon: Icons.contact_phone_outlined,
-                      label: 'שתף איש קשר',
-                      color: Colors.teal,
-                      onTap: () {
-                        Navigator.pop(context);
-                        _sharePhoneContact();
-                      },
-                    ),
-                    _AttachOption(
-                      icon: Icons.badge_outlined,
-                      label: 'שתף את הפרטים שלי',
-                      color: kPrimary,
-                      onTap: () {
-                        Navigator.pop(context);
-                        _shareMyContact();
-                      },
-                    ),
-                  ],
+                  _AttachOption(
+                    icon: Icons.contact_phone_outlined,
+                    label: 'שתף איש קשר',
+                    color: Colors.teal,
+                    allowed: _recipientAllowsText,
+                    status: _recipientAllowsText
+                        ? 'מותר לנמען'
+                        : 'חסום בסינון הנמען',
+                    onTap: () {
+                      if (!_recipientAllowsText) {
+                        _showRecipientFilterNotice('שיתוף אנשי קשר');
+                        return;
+                      }
+                      Navigator.pop(context);
+                      _sharePhoneContact();
+                    },
+                  ),
+                  _AttachOption(
+                    icon: Icons.badge_outlined,
+                    label: 'שתף את הפרטים שלי',
+                    color: kPrimary,
+                    allowed: _recipientAllowsText,
+                    status: _recipientAllowsText
+                        ? 'מותר לנמען'
+                        : 'חסום בסינון הנמען',
+                    onTap: () {
+                      if (!_recipientAllowsText) {
+                        _showRecipientFilterNotice('שיתוף פרטים');
+                        return;
+                      }
+                      Navigator.pop(context);
+                      _shareMyContact();
+                    },
+                  ),
                   if (_recipientAllowsVideo) ...[
                     const SizedBox(height: 16),
                     Container(
@@ -21497,13 +21641,14 @@ class _ChatScreenState extends State<ChatScreen> {
     final blockedByRecipient = switch (fileType) {
       'video' => !_recipientAllowsVideo,
       'image' => !_recipientAllowsImages,
-      'document' => !_recipientAllowsText,
+      'audio' || 'document' => !_recipientAllowsText,
       _ => false,
     };
     if (blockedByRecipient) {
       _showRecipientFilterNotice(switch (fileType) {
         'video' => 'וידאו',
         'image' => 'תמונות',
+        'audio' => 'הקלטות שמע',
         'document' => 'מסמכים',
         _ => 'סוג התוכן',
       });
@@ -22766,6 +22911,9 @@ Future<void> _openListingLink(BuildContext context, String listingId,
     );
     if (res.statusCode == 200 && context.mounted) {
       final item = jsonDecode(res.body) as Map<String, dynamic>;
+      final notification = _OpenListingNotification(item);
+      notification.dispatch(context);
+      if (notification.handledInDesktopPane) return;
       Navigator.push(
           context,
           MaterialPageRoute(
@@ -22774,6 +22922,13 @@ Future<void> _openListingLink(BuildContext context, String listingId,
           ));
     }
   } catch (_) {}
+}
+
+class _OpenListingNotification extends Notification {
+  final Map<String, dynamic> listing;
+  bool handledInDesktopPane = false;
+
+  _OpenListingNotification(this.listing);
 }
 
 class VoiceMessagePlayer extends StatefulWidget {
@@ -23456,6 +23611,49 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
   }
 }
 
+class _AudioScanBadge extends StatelessWidget {
+  final String? transcript;
+  const _AudioScanBadge({this.transcript});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Wrap(
+            spacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Icon(Icons.verified_user_outlined,
+                  size: 14, color: kPrimary),
+              const Text('נסרק ואושר',
+                  style: TextStyle(fontSize: 10, color: kPrimary)),
+              if (transcript != null && transcript!.isNotEmpty)
+                Tooltip(
+                  message: transcript!,
+                  child: InkWell(
+                    onTap: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: const Text('תמלול ההקלטה'),
+                        content: SelectableText(transcript!,
+                            textDirection: TextDirection.rtl),
+                        actions: [
+                          TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('סגור'))
+                        ],
+                      ),
+                    ),
+                    child: const Text('הצג תמלול',
+                        style: TextStyle(
+                            fontSize: 10,
+                            color: kPrimary,
+                            decoration: TextDecoration.underline)),
+                  ),
+                ),
+            ]),
+      );
+}
+
 class _UploadResultCard extends StatelessWidget {
   final bool blocked;
   final String title;
@@ -23464,6 +23662,8 @@ class _UploadResultCard extends StatelessWidget {
   final String? fileName;
   final String onlyYouText;
   final String? recipientName;
+  final String? transcript;
+  final bool contentPurged;
   const _UploadResultCard(
       {required this.blocked,
       required this.title,
@@ -23471,6 +23671,8 @@ class _UploadResultCard extends StatelessWidget {
       this.imageUrl,
       this.fileName,
       this.recipientName,
+      this.transcript,
+      this.contentPurged = false,
       this.onlyYouText = 'התמונה מוצגת רק לך ולא נשלחה'});
 
   @override
@@ -23486,6 +23688,21 @@ class _UploadResultCard extends StatelessWidget {
         ),
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (blocked && transcript != null && transcript!.isNotEmpty) ...[
+            Tooltip(
+              message: transcript!,
+              child: SelectableText('תמלול שנבדק: $transcript',
+                  textDirection: TextDirection.rtl,
+                  style: const TextStyle(fontSize: 12, color: kTextDark)),
+            ),
+            const SizedBox(height: 8),
+          ],
+          if (blocked && contentPurged) ...[
+            const Text('הקובץ והתמלול נמחקו. אירוע החסימה נשמר למעקב בטיחות.',
+                textDirection: TextDirection.rtl,
+                style: TextStyle(fontSize: 11, color: Colors.red)),
+            const SizedBox(height: 8),
+          ],
           if (blocked && imageUrl != null) ...[
             GestureDetector(
               onTap: () => Navigator.push(
@@ -24315,7 +24532,7 @@ class _PrivateContactFilterEntry extends StatelessWidget {
                 width: 64,
                 height: 68,
                 fit: BoxFit.contain,
-                semanticLabel: 'אביאל מזכיר את הגדרות הסינון',
+                semanticLabel: 'ישראל מזכיר את הגדרות הסינון',
               ),
             ),
             const SizedBox(height: 4),
@@ -24529,6 +24746,8 @@ class _MessageBubble extends StatelessWidget {
             imageUrl: fileType == 'audio' ? null : fileUrl,
             fileName: fileName,
             recipientName: isMe ? recipientName : senderName,
+            transcript: message['audioTranscript']?.toString(),
+            contentPurged: message['contentPurged'] == true,
           ),
         ),
       );
@@ -24582,7 +24801,7 @@ class _MessageBubble extends StatelessWidget {
               children: [
                 Semantics(
                   image: true,
-                  label: 'מדבקת אביאל: ${avielSticker.label}',
+                  label: 'מדבקת ישראל: ${avielSticker.label}',
                   child: Image.asset(avielSticker.asset,
                       width: 190, height: 190, fit: BoxFit.contain),
                 ),
@@ -24669,6 +24888,8 @@ class _MessageBubble extends StatelessWidget {
                   initialDurationSeconds:
                       (message['audioDurationSeconds'] as num?)?.toDouble(),
                 ),
+                _AudioScanBadge(
+                    transcript: message['audioTranscript']?.toString()),
               ])
             else if (isVideoFile)
               Stack(children: [
@@ -25700,7 +25921,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
               tabs: [
                 const Tab(
                     icon: Icon(Icons.emoji_emotions_outlined), text: 'אימוג׳י'),
-                const Tab(icon: Icon(Icons.light_mode_outlined), text: 'אביאל'),
+                const Tab(icon: Icon(Icons.light_mode_outlined), text: 'ישראל'),
                 ...categories.map((category) => Tab(
                       icon: Icon(_expressionCategoryIcon(
                           category['id']?.toString() ?? '')),
@@ -25749,7 +25970,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
           final sticker = _avielGuideStickers[index];
           return Semantics(
             button: true,
-            label: 'מדבקת אביאל: ${sticker.label}',
+            label: 'מדבקת ישראל: ${sticker.label}',
             child: InkWell(
               borderRadius: BorderRadius.circular(16),
               onTap: () =>
@@ -26145,12 +26366,16 @@ class _AttachOption extends StatelessWidget {
   final String label;
   final Color color;
   final VoidCallback onTap;
+  final bool allowed;
+  final String? status;
 
   const _AttachOption({
     required this.icon,
     required this.label,
     required this.color,
     required this.onTap,
+    this.allowed = true,
+    this.status,
   });
 
   @override
@@ -26180,12 +26405,42 @@ class _AttachOption extends StatelessWidget {
                   child: Text(
                     label,
                     textAlign: TextAlign.right,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
+                      color: allowed ? kTextDark : Colors.grey.shade600,
                     ),
                   ),
                 ),
+                const SizedBox(width: 8),
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(
+                    allowed
+                        ? Icons.check_circle_outline
+                        : Icons.shield_outlined,
+                    size: 16,
+                    color: allowed
+                        ? Colors.green.shade700
+                        : Colors.orange.shade800,
+                  ),
+                  if (status != null) ...[
+                    const SizedBox(width: 4),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 125),
+                      child: Text(
+                        status!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: allowed
+                              ? Colors.green.shade800
+                              : Colors.orange.shade900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ]),
               ],
             ),
           ),
@@ -26575,6 +26830,43 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Map<String, bool>? _invitationPersonalFilter;
   Map<String, bool>? _acceptedFilterNotice;
   String? _invitationFilterError;
+
+  bool get _groupAllowsText => _groupReceivingFilter?['text'] != false;
+  bool get _groupAllowsVideo => _groupReceivingFilter?['video'] != false;
+  bool get _groupAllowsImages =>
+      _groupReceivingFilter == null ||
+      const ['nonHumanImages', 'men', 'women', 'children']
+          .any((key) => _groupReceivingFilter![key] == true);
+
+  void _showGroupFilterNotice(String contentType) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$contentType חסום בהגדרות הסינון של הקבוצה'),
+      backgroundColor: Colors.orange.shade800,
+    ));
+  }
+
+  Future<bool> _groupAllowsFileType(String fileType) async {
+    await _loadGroupReceivingFilter();
+    if (!mounted) return false;
+    final allowed = switch (fileType) {
+      'video' => _groupAllowsVideo,
+      'image' => _groupAllowsImages,
+      'audio' || 'document' => _groupAllowsText,
+      _ => _groupAllowsText,
+    };
+    if (!allowed) {
+      final label = switch (fileType) {
+        'video' => 'וידאו',
+        'image' => 'תמונות',
+        'audio' => 'הקלטות שמע',
+        'document' => 'מסמכים',
+        _ => 'תוכן זה',
+      };
+      _showGroupFilterNotice(label);
+    }
+    return allowed;
+  }
 
   void _markBlockedContent(String messageId) {
     if (!mounted) return;
@@ -27544,6 +27836,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (map['audio_duration_seconds'] != null)
         'audioDurationSeconds':
             double.tryParse(map['audio_duration_seconds'].toString()),
+      if (map['audio_transcript'] != null)
+        'audioTranscript': map['audio_transcript'].toString(),
+      if (map['audio_moderation_status'] != null)
+        'audioModerationStatus': map['audio_moderation_status'].toString(),
+      if (map['content_purged_at'] != null) 'contentPurged': true,
       if (map['delivery_summary'] != null)
         'deliverySummary': map['delivery_summary'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
@@ -27612,6 +27909,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'classification': data['classification'],
         if (data['deliverySummary'] != null)
           'deliverySummary': data['deliverySummary'],
+        if (data['audioTranscript'] != null)
+          'audioTranscript': data['audioTranscript'].toString(),
+        if (data['audioModerationStatus'] != null)
+          'audioModerationStatus': data['audioModerationStatus'].toString(),
       };
       setState(() {
         final clientMessageId = data['clientMessageId'] as String?;
@@ -27651,6 +27952,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _messages[index]['status'] = 'rejected_scan';
         _messages[index]['scanReason'] =
             data['reason']?.toString() ?? 'נדחתה בסריקה';
+        if (data['audioTranscript'] != null) {
+          _messages[index]['audioTranscript'] =
+              data['audioTranscript'].toString();
+        }
       });
     };
     widget.socket?.on('scan:rejected', _scanRejectedSocketHandler);
@@ -28186,7 +28491,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
   }
 
-  void _showAttachMenu() {
+  Future<void> _showAttachMenu() async {
+    await _loadGroupReceivingFilter();
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -28205,7 +28512,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   icon: Icons.image_outlined,
                   label: 'גלריה (עד 10)',
                   color: kPrimary,
+                  allowed: _groupAllowsImages,
+                  status: _groupAllowsImages
+                      ? 'מותר • לפי סינון אישי'
+                      : 'חסום בסינון הקבוצה',
                   onTap: () {
+                    if (!_groupAllowsImages) {
+                      _showGroupFilterNotice('תמונות');
+                      return;
+                    }
                     Navigator.pop(context);
                     _pickFile(ImageSource.gallery);
                   },
@@ -28214,7 +28529,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   icon: Icons.camera_alt_outlined,
                   label: 'מצלמה',
                   color: kPrimaryMid,
+                  allowed: _groupAllowsImages,
+                  status: _groupAllowsImages
+                      ? 'מותר • לפי סינון אישי'
+                      : 'חסום בסינון הקבוצה',
                   onTap: () {
+                    if (!_groupAllowsImages) {
+                      _showGroupFilterNotice('תמונות');
+                      return;
+                    }
                     Navigator.pop(context);
                     _pickFile(ImageSource.camera);
                   },
@@ -28223,7 +28546,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   icon: Icons.picture_as_pdf_outlined,
                   label: 'מסמכים (עד 20)',
                   color: Colors.orange,
+                  allowed: _groupAllowsText,
+                  status: _groupAllowsText
+                      ? 'מותר • לפי סינון אישי'
+                      : 'חסום בסינון הקבוצה',
                   onTap: () {
+                    if (!_groupAllowsText) {
+                      _showGroupFilterNotice('מסמכים');
+                      return;
+                    }
                     Navigator.pop(context);
                     _pickDocument();
                   },
@@ -28232,7 +28563,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   icon: Icons.videocam_outlined,
                   label: 'וידאו',
                   color: Colors.deepPurple,
+                  allowed: _groupAllowsVideo,
+                  status: _groupAllowsVideo
+                      ? 'מותר • לפי סינון אישי'
+                      : 'חסום בסינון הקבוצה',
                   onTap: () {
+                    if (!_groupAllowsVideo) {
+                      _showGroupFilterNotice('וידאו');
+                      return;
+                    }
                     Navigator.pop(context);
                     _pickVideo();
                   },
@@ -28241,7 +28580,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   icon: Icons.video_camera_back_outlined,
                   label: 'צלם וידאו',
                   color: Colors.redAccent,
+                  allowed: _groupAllowsVideo,
+                  status: _groupAllowsVideo
+                      ? 'מותר • לפי סינון אישי'
+                      : 'חסום בסינון הקבוצה',
                   onTap: () {
+                    if (!_groupAllowsVideo) {
+                      _showGroupFilterNotice('וידאו');
+                      return;
+                    }
                     Navigator.pop(context);
                     _recordVideo();
                   },
@@ -28250,7 +28597,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   icon: Icons.mic_none_rounded,
                   label: 'הקלטת שמע',
                   color: Colors.deepOrange,
+                  allowed: _groupAllowsText,
+                  status: _groupAllowsText
+                      ? 'מותר • לפי סינון אישי'
+                      : 'חסום בסינון הקבוצה',
                   onTap: () {
+                    if (!_groupAllowsText) {
+                      _showGroupFilterNotice('הקלטות שמע');
+                      return;
+                    }
                     Navigator.pop(context);
                     _toggleVoiceRecording();
                   },
@@ -28261,7 +28616,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               icon: Icons.contact_phone_outlined,
               label: 'שתף איש קשר',
               color: Colors.teal,
+              allowed: _groupAllowsText,
+              status: _groupAllowsText
+                  ? 'מותר • לפי סינון אישי'
+                  : 'חסום בסינון הקבוצה',
               onTap: () async {
+                if (!await _groupAllowsFileType('document')) return;
+                if (!mounted) return;
                 Navigator.pop(context);
                 final contact = await _pickGroupSharedContact(
                     context, widget.token, _members);
@@ -28274,7 +28635,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               icon: Icons.badge_outlined,
               label: 'שתף את הפרטים שלי',
               color: kPrimary,
+              allowed: _groupAllowsText,
+              status: _groupAllowsText
+                  ? 'מותר • לפי סינון אישי'
+                  : 'חסום בסינון הקבוצה',
               onTap: () async {
+                if (!await _groupAllowsFileType('document')) return;
+                if (!mounted) return;
                 Navigator.pop(context);
                 final contact = await _confirmMyContactShare(
                   context,
@@ -28440,6 +28807,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {}}) async {
+    if (!mounted) return;
+    if (!await _groupAllowsFileType(fileType)) return;
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
     final showInlineProgress = (fileType == 'image' ||
@@ -30240,6 +30609,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                 'video'
                                                             ? 'אירעה שגיאה בזמן העלאת הווידאו'
                                                             : 'אירעה שגיאה בזמן העלאת התמונה'),
+                                            transcript: msg['audioTranscript']
+                                                ?.toString(),
+                                            contentPurged:
+                                                msg['contentPurged'] == true,
                                             imageUrl:
                                                 uploadStatus == 'rejected_scan'
                                                     ? msg['fileUrl'] as String?
@@ -30320,7 +30693,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                             Semantics(
                                               image: true,
                                               label:
-                                                  'מדבקת אביאל: ${avielSticker.label}',
+                                                  'מדבקת ישראל: ${avielSticker.label}',
                                               child: Image.asset(
                                                   avielSticker.asset,
                                                   width: 180,
@@ -30363,6 +30736,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                           (msg['audioDurationSeconds']
                                                                   as num?)
                                                               ?.toDouble()),
+                                                  _AudioScanBadge(
+                                                      transcript:
+                                                          msg['audioTranscript']
+                                                              ?.toString()),
                                                 ])
                                           else if (msg['fileUrl'] != null &&
                                               _normalizeIncomingFileType(
@@ -34679,7 +35056,7 @@ class _AdminScreenState extends State<AdminScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
+    _tabs = TabController(length: 3, vsync: this);
     _loadTables();
   }
 
@@ -34724,6 +35101,7 @@ class _AdminScreenState extends State<AdminScreen>
           tabs: const [
             Tab(icon: Icon(Icons.table_chart_outlined), text: 'טבלאות'),
             Tab(icon: Icon(Icons.manage_accounts_outlined), text: 'הרשאות'),
+            Tab(icon: Icon(Icons.shield_outlined), text: 'בטיחות'),
           ],
         ),
       ),
@@ -34737,9 +35115,135 @@ class _AdminScreenState extends State<AdminScreen>
               loading: _loadingTables,
               onRefresh: _loadTables),
           _PermissionsView(token: widget.token, perm: widget.perm),
+          _ModerationUsersView(token: widget.token, perm: widget.perm),
         ],
       ),
     );
+  }
+}
+
+class _ModerationUsersView extends StatefulWidget {
+  final String token;
+  final String perm;
+  const _ModerationUsersView({required this.token, required this.perm});
+  @override
+  State<_ModerationUsersView> createState() => _ModerationUsersViewState();
+}
+
+class _ModerationUsersViewState extends State<_ModerationUsersView> {
+  List<Map<String, dynamic>> _users = [];
+  bool _loading = true;
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final response = await http.get(Uri.parse('$kApi/admin/moderation/users'),
+        headers: {'Authorization': 'Bearer ${widget.token}'});
+    if (!mounted) return;
+    setState(() {
+      _users = response.statusCode == 200
+          ? (jsonDecode(response.body) as List).cast<Map<String, dynamic>>()
+          : [];
+      _loading = false;
+    });
+  }
+
+  Future<void> _act(Map<String, dynamic> user, String action) async {
+    final controller = TextEditingController();
+    final reason = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: Text(action == 'block'
+                  ? 'חסימה לצמיתות'
+                  : action == 'suspend'
+                      ? 'השעיה זמנית'
+                      : action == 'warn'
+                          ? 'שליחת אזהרה'
+                          : 'הסרת חסימה'),
+              content: TextField(
+                  controller: controller,
+                  autofocus: true,
+                  maxLines: 3,
+                  decoration:
+                      const InputDecoration(labelText: 'סיבה והערת מנהל')),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('ביטול')),
+                FilledButton(
+                    onPressed: () {
+                      if (controller.text.trim().isNotEmpty) {
+                        Navigator.pop(dialogContext, controller.text.trim());
+                      }
+                    },
+                    child: const Text('אישור'))
+              ],
+            ));
+    controller.dispose();
+    if (reason == null) return;
+    final response = await http.post(
+        Uri.parse('$kApi/admin/moderation/users/${user['id']}/action'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json'
+        },
+        body: jsonEncode(
+            {'action': action, 'reason': reason, 'durationHours': 24}));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            response.statusCode == 200 ? 'הפעולה נשמרה' : 'הפעולה נכשלה')));
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_users.isEmpty) {
+      return const Center(child: Text('אין אירועי חסימה שנשמרו'));
+    }
+    return RefreshIndicator(
+        onRefresh: _load,
+        child: ListView.builder(
+          padding: const EdgeInsets.all(12),
+          itemCount: _users.length,
+          itemBuilder: (_, index) {
+            final user = _users[index];
+            return Card(
+                child: ExpansionTile(
+              leading: const Icon(Icons.gpp_maybe_outlined, color: Colors.red),
+              title: Text(user['name']?.toString() ?? 'משתמש'),
+              subtitle: Text(
+                  '${user['incident_count']} אירועים • ${user['recent_count']} ב־30 יום • מצב: ${user['moderation_state']}'),
+              children: [
+                if (user['email'] != null)
+                  SelectableText(user['email'].toString()),
+                if (user['moderation_reason'] != null)
+                  Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Text('סיבה: ${user['moderation_reason']}')),
+                if (widget.perm == 'edit')
+                  Wrap(spacing: 6, children: [
+                    TextButton(
+                        onPressed: () => _act(user, 'warn'),
+                        child: const Text('אזהרה')),
+                    TextButton(
+                        onPressed: () => _act(user, 'suspend'),
+                        child: const Text('השעיה ל־24 שעות')),
+                    TextButton(
+                        onPressed: () => _act(user, 'block'),
+                        child: const Text('חסימה לצמיתות')),
+                    TextButton(
+                        onPressed: () => _act(user, 'unblock'),
+                        child: const Text('ביטול חסימה')),
+                  ]),
+              ],
+            ));
+          },
+        ));
   }
 }
 

@@ -10,6 +10,20 @@ const source = fs.readFileSync(
 const serverSource = fs.readFileSync(
   path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
 
+test('download link loads the current release from the version API', () => {
+  assert.match(source, /get\(Uri\.parse\('\$kApi\/version'\)\)/);
+  assert.match(source, /FutureBuilder<_ReleaseInfo>/);
+  assert.match(source, /release\.apkUri/);
+  assert.doesNotMatch(source, /const kVersion = '1\.3\.2'/);
+});
+
+test('the guide is displayed as Israel throughout the active application', () => {
+  assert.doesNotMatch(source, /אביאל/);
+  assert.doesNotMatch(serverSource, /אביאל/);
+  assert.match(source, /מדבקת ישראל/);
+  assert.match(serverSource, /SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה'/);
+});
+
 test('conversation refreshes do not pull users away from older messages', () => {
   const guardedScrollMethods = source.match(
     /void _scrollToBottom\(\{bool force = false\}\)[\s\S]*?if \(!shouldScroll\) return;/g,
@@ -298,6 +312,21 @@ test('contacts can be shared from app friends without exposing phone or email', 
   assert.match(cardSource, /ChatScreen\(/);
   assert.match(source, /_pickSharedContact\(context, widget\.token\)/);
   assert.match(source, /_pickGroupSharedContact\(\s+context, widget\.token/);
+});
+
+test('listing links open in the desktop detail pane and keep mobile navigation', () => {
+  assert.match(
+    source,
+    /NotificationListener<_OpenListingNotification>[\s\S]*?_desktopListing = notification\.listing/,
+  );
+  assert.match(
+    source,
+    /_desktopListing != null[\s\S]*?ListingDetailScreen\([\s\S]*?embedded: true[\s\S]*?onClose:/,
+  );
+  assert.match(
+    source,
+    /notification\.dispatch\(context\);[\s\S]*?if \(notification\.handledInDesktopPane\) return;[\s\S]*?Navigator\.push/,
+  );
 });
 
 test('new accounts, friendships and groups default to text and scenery only', () => {
