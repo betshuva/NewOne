@@ -1,44 +1,32 @@
 @JS()
 library;
 
-import 'package:js/js.dart';
+import 'dart:js_interop';
 
 @JS('Intl.DateTimeFormat')
-class _IntlDateTimeFormat {
-  external factory _IntlDateTimeFormat(
-      String locale, _DateTimeFormatOptions options);
-  external String format(_JsDate date);
+extension type _IntlDateTimeFormat._(JSObject _) implements JSObject {
+  external factory _IntlDateTimeFormat(JSString locale, JSObject options);
+  external JSString format(_JsDate date);
 }
 
 @JS('Date')
-class _JsDate {
-  external factory _JsDate(int milliseconds);
-}
-
-@JS()
-@anonymous
-class _DateTimeFormatOptions {
-  external factory _DateTimeFormatOptions({
-    String weekday,
-    String day,
-    String month,
-    String year,
-  });
+extension type _JsDate._(JSObject _) implements JSObject {
+  external factory _JsDate(JSNumber milliseconds);
 }
 
 String fullHebrewDate(DateTime date) {
   try {
     final formatter = _IntlDateTimeFormat(
-      'he-IL-u-ca-hebrew',
-      _DateTimeFormatOptions(
-        weekday: 'long',
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      ),
+      'he-IL-u-ca-hebrew'.toJS,
+      <String, String>{
+        'weekday': 'long',
+        'day': 'numeric',
+        'month': 'long',
+        'year': 'numeric',
+      }.jsify()! as JSObject,
     );
-    final jsDate = _JsDate(date.millisecondsSinceEpoch);
-    final formatted = formatter.format(jsDate);
+    final jsDate = _JsDate(date.millisecondsSinceEpoch.toJS);
+    final formatted = formatter.format(jsDate).toDart;
     return formatted.replaceAllMapped(RegExp(r'\d+'), (match) {
       final number = int.parse(match.group(0)!);
       return _hebrewNumber(number, omitThousands: number >= 5000);

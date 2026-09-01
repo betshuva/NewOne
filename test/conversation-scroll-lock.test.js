@@ -273,6 +273,8 @@ test('voice recordings use web opus, reject empty data, and preload duration', (
   assert.match(playerSource, /טוען הקלטה\.\.\./);
   assert.match(playerSource, /הטעינה נכשלה — לחצו לניסיון חוזר/);
   assert.match(playerSource, /await _player\.resume\(\)/);
+  assert.match(playerSource, /initialDurationSeconds/);
+  assert.match(source, /audio_duration_seconds/);
 });
 
 test('contacts can be shared from app friends without exposing phone or email', () => {

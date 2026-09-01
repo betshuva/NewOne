@@ -197,13 +197,29 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
           setState(() => _error = 'ההקלטה יצאה ריקה. יש לנסות שוב.');
           return;
         }
+        final isWebM = bytes.length >= 4 &&
+            bytes[0] == 0x1A &&
+            bytes[1] == 0x45 &&
+            bytes[2] == 0xDF &&
+            bytes[3] == 0xA3;
+        if (!isWebM) {
+          setState(() {
+            _recording = false;
+            _error =
+                'הדפדפן יצר קובץ וידאו לא תקין. יש לנסות שוב או לבחור סרטון מהמכשיר.';
+          });
+          return;
+        }
         Navigator.pop(
             context,
             XFile.fromData(bytes,
                 name: 'camera-${DateTime.now().millisecondsSinceEpoch}.webm',
                 mimeType: outputMime.split(';').first));
       });
-      recorder.start(1000);
+      // A single final MediaRecorder blob is the most interoperable WebM.
+      // Concatenating timed chunks can produce an invalid container in some
+      // Chromium versions even though each dataavailable event is non-empty.
+      recorder.start();
       _recordingClock
         ..reset()
         ..start();

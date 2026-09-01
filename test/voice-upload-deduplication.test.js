@@ -30,8 +30,12 @@ test('private and group recording submissions reject duplicate stop taps', () =>
 test('voice uploads and pending scans have explicit progress labels', () => {
   assert.match(source, /fileType == 'audio'\) &&[\s\S]*?!isClipboardPaste/);
   assert.match(source, /widget\.fileType == 'audio'[\s\S]*?'ההקלטה'/);
-  assert.ok(
-    (source.match(/ההקלטה ממתינה לסריקה/g) || []).length >= 2,
-    'private and group chats should both explain the pending scan',
+  assert.match(
+    source,
+    /fileType == 'audio'\)[\s\S]*?uploadStatus == 'pending_scan'[\s\S]*?_UploadProcessingCard/,
+  );
+  assert.match(
+    source,
+    /uploadFileType == 'audio'[\s\S]*?uploadStatus == 'pending_scan'[\s\S]*?_UploadProcessingCard/,
   );
 });

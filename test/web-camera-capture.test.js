@@ -20,6 +20,20 @@ test('web recorder handles unsupported codecs and empty recordings', () => {
   assert.match(source, /_chunks\.isEmpty/);
   assert.match(source, /bytes\.isEmpty/);
   assert.match(source, /addEventListener\('error'/);
+  assert.match(source, /recorder\.start\(\);/);
+  assert.doesNotMatch(source, /recorder\.start\(1000\)/);
+  assert.match(source, /bytes\[0\] == 0x1A[\s\S]*?bytes\[3\] == 0xA3/);
+});
+
+test('invalid recorded WebM is rejected before it can be uploaded', () => {
+  const serverSource = fs.readFileSync(
+    path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
+  const mainSource = fs.readFileSync(
+    path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
+  assert.match(serverSource, /INVALID_VIDEO_CONTAINER/);
+  assert.match(serverSource, /hasWebMSignature/);
+  assert.match(mainSource, /isVideo \? 210 : 60/);
+  assert.match(mainSource, /הזמן המוצג הוא זמן שחלף/);
 });
 
 test('camera failures offer an in-dialog retry', () => {

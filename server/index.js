@@ -623,8 +623,10 @@ async function scanVideo(buffer, fileName, mimeType) {
     const response = await fetch(`${VIDEO_MODERATION_URL}/analyze`, {
       method: 'POST', body: form, signal: AbortSignal.timeout(180000),
     });
-    if (!response.ok)
-      throw new Error(`video moderation returned HTTP ${response.status}`);
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 300);
+      throw new Error(`video moderation returned HTTP ${response.status}: ${detail}`);
+    }
     const result = await response.json();
     if (!Number.isFinite(Number(result.sampled_frames)) ||
         Number(result.sampled_frames) < 1)
@@ -4824,7 +4826,8 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         CASE WHEN ms.status='read' AND m.sender_id=$1
                   AND receipt_user.read_receipts_enabled=FALSE
              THEN 'delivered' ELSE ms.status END AS message_status,
-        sf.moderation_details->'classification' AS image_classification
+        sf.moderation_details->'classification' AS image_classification,
+        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
       FROM messages m
       LEFT JOIN messages r  ON m.reply_to_id = r.id
       LEFT JOIN users ru    ON r.sender_id = ru.id
@@ -4865,6 +4868,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.moderation_status = 'rejected' AS scan_rejected,
         sf.moderation_details->>'reason' AS scan_reason,
         sf.moderation_details->'classification' AS image_classification,
+        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
         CASE WHEN sf.moderation_status='rejected'
           THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status
       FROM stored_files sf
@@ -7231,6 +7235,19 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
   // Browsers sometimes upload selected videos as application/octet-stream.
   // Only whitelisted extensions reach this point, so use the canonical MIME.
   file.mimetype = allowed.mime;
+  if (allowed.dbType === 'video') {
+    const isWebM = file.originalname.toLowerCase().endsWith('.webm');
+    const hasWebMSignature = file.buffer.length >= 4 &&
+      file.buffer[0] === 0x1a && file.buffer[1] === 0x45 &&
+      file.buffer[2] === 0xdf && file.buffer[3] === 0xa3;
+    const hasIsoMediaSignature = file.buffer.length >= 12 &&
+      file.buffer.subarray(4, 8).toString('ascii') === 'ftyp';
+    if ((isWebM && !hasWebMSignature) || (!isWebM && !hasIsoMediaSignature))
+      return res.status(400).json({
+        error: 'קובץ הווידאו אינו תקין. יש לצלם שוב או לבחור סרטון אחר',
+        code: 'INVALID_VIDEO_CONTAINER',
+      });
+  }
   if (req.body.sharedGif === 'true' &&
       (file.mimetype !== 'image/gif' || req.body.rightsConfirmed !== 'true'))
     return res.status(400).json({
@@ -7956,7 +7973,8 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         u.name AS sender_name,
         r.body AS reply_body,
         CASE WHEN ms.status = 'read' THEN 1 ELSE 0 END AS is_read,
-        sf.moderation_details->'classification' AS image_classification
+        sf.moderation_details->'classification' AS image_classification,
+        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
       FROM messages m
       JOIN users u ON m.sender_id = u.id
       LEFT JOIN messages r ON m.reply_to_id = r.id
@@ -7997,7 +8015,8 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         CASE WHEN sf.moderation_status='rejected'
           THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status,
         sf.moderation_details->>'reason' AS scan_reason,
-        sf.moderation_details->'classification' AS image_classification
+        sf.moderation_details->'classification' AS image_classification,
+        sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
       FROM stored_files sf
       JOIN users u ON u.id=sf.user_id
       WHERE sf.context_type='group' AND sf.context_id=$1

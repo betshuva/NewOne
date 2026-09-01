@@ -1439,7 +1439,10 @@ Future<_FileUploadResult> _uploadFileRequest({
       ..fields.addAll(fields)
       ..files.add(http.MultipartFile.fromBytes('file', bytes,
           filename: fileName, contentType: contentType));
-    final streamed = await request.send().timeout(const Duration(seconds: 60));
+    final isVideo =
+        RegExp(r'\.(mp4|webm|mov)$', caseSensitive: false).hasMatch(fileName);
+    final streamed =
+        await request.send().timeout(Duration(seconds: isVideo ? 210 : 60));
     final body = await streamed.stream.bytesToString();
     Map<String, dynamic> data = const <String, dynamic>{};
     try {
@@ -19836,6 +19839,9 @@ class _ChatScreenState extends State<ChatScreen> {
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
+      if (map['audio_duration_seconds'] != null)
+        'audioDurationSeconds':
+            double.tryParse(map['audio_duration_seconds'].toString()),
       if (map['delivery_summary'] != null)
         'deliverySummary': map['delivery_summary'],
       if (map['reply_to_id'] != null)
@@ -22775,12 +22781,14 @@ class VoiceMessagePlayer extends StatefulWidget {
   final bool isMe;
   final String? senderAvatarUrl;
   final String senderName;
+  final double? initialDurationSeconds;
   const VoiceMessagePlayer({
     super.key,
     required this.url,
     required this.isMe,
     this.senderAvatarUrl,
     required this.senderName,
+    this.initialDurationSeconds,
   });
 
   @override
@@ -22801,6 +22809,11 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
   @override
   void initState() {
     super.initState();
+    final initialDurationSeconds = widget.initialDurationSeconds;
+    if (initialDurationSeconds != null && initialDurationSeconds > 0) {
+      _duration =
+          Duration(milliseconds: (initialDurationSeconds * 1000).round());
+    }
     _loadingController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
@@ -22809,7 +22822,9 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
       if (mounted) setState(() => _position = value);
     });
     _player.onDurationChanged.listen((value) {
-      if (mounted) setState(() => _duration = value);
+      if (mounted && value > Duration.zero) {
+        setState(() => _duration = value);
+      }
     });
     _player.onPlayerStateChanged.listen((value) {
       if (mounted) setState(() => _playing = value == PlayerState.playing);
@@ -23416,7 +23431,7 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
                 ),
               ),
               const SizedBox(width: 8),
-              Text('${elapsed}s',
+              Text('$elapsed שנ׳',
                   style: const TextStyle(
                       color: kPrimary, fontWeight: FontWeight.bold)),
             ]),
@@ -23429,8 +23444,11 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
               backgroundColor: const Color(0xFFD7EAF6),
             ),
             const SizedBox(height: 7),
-            const Text('בדיקת בטיחות, זיהוי תוכן ואישור שליחה',
-                style: TextStyle(fontSize: 10, color: kSubtext)),
+            Text(
+                elapsed >= 45
+                    ? 'הסריקה עדיין מתבצעת — הזמן המוצג הוא זמן שחלף'
+                    : 'בדיקת בטיחות, זיהוי תוכן ואישור שליחה',
+                style: const TextStyle(fontSize: 10, color: kSubtext)),
           ]),
         );
       },
@@ -24459,7 +24477,23 @@ class _MessageBubble extends StatelessWidget {
         ),
       );
     }
-    if (isVisualUpload && uploadStatus == 'failed') {
+    if ((isVisualUpload || fileType == 'audio') &&
+        uploadStatus == 'pending_scan') {
+      return Align(
+        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: _UploadProcessingCard(
+            fileName: fileName ?? uploadTypeLabel,
+            fileType: fileType ?? 'audio',
+            startedAt:
+                DateTime.tryParse(message['createdAt']?.toString() ?? '') ??
+                    DateTime.now(),
+          ),
+        ),
+      );
+    }
+    if ((isVisualUpload || fileType == 'audio') && uploadStatus == 'failed') {
       return Align(
         alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
         child: Padding(
@@ -24473,21 +24507,26 @@ class _MessageBubble extends StatelessWidget {
         ),
       );
     }
-    if (isVisualUpload && uploadStatus == 'rejected_scan') {
+    if ((isVisualUpload || fileType == 'audio') &&
+        uploadStatus == 'rejected_scan') {
       return Align(
         alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadResultCard(
             blocked: true,
-            title: fileType == 'video'
-                ? 'הווידאו נחסם ולא נשלח'
-                : _imageBlockTitle(message['scanReason']),
+            title: fileType == 'audio'
+                ? 'ההקלטה נחסמה ולא נשלחה'
+                : fileType == 'video'
+                    ? 'הווידאו נחסם ולא נשלח'
+                    : _imageBlockTitle(message['scanReason']),
             reason: message['scanReason']?.toString() ??
-                (fileType == 'video'
-                    ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
-                    : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה'),
-            imageUrl: fileUrl,
+                (fileType == 'audio'
+                    ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
+                    : fileType == 'video'
+                        ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
+                        : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה'),
+            imageUrl: fileType == 'audio' ? null : fileUrl,
             fileName: fileName,
             recipientName: isMe ? recipientName : senderName,
           ),
@@ -24627,10 +24666,9 @@ class _MessageBubble extends StatelessWidget {
                   isMe: isMe,
                   senderAvatarUrl: senderAvatarUrl,
                   senderName: senderName,
+                  initialDurationSeconds:
+                      (message['audioDurationSeconds'] as num?)?.toDouble(),
                 ),
-                if (uploadStatus == 'pending_scan')
-                  const Text('ההקלטה ממתינה לסריקה',
-                      style: TextStyle(fontSize: 10, color: Colors.orange)),
               ])
             else if (isVideoFile)
               Stack(children: [
@@ -24747,71 +24785,82 @@ class _MessageBubble extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (isPdfFile) ...[
-                        _PdfFirstPagePreview(url: fileUrl),
-                        const SizedBox(height: 7),
-                      ] else if (isOfficeFile) ...[
-                        _OfficeDocumentPreview(
-                            fileUrl: fileUrl,
-                            fileName: fileName ?? 'מסמך',
-                            token: token),
-                        const SizedBox(height: 7),
-                      ],
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                              isPdfFile
-                                  ? Icons.picture_as_pdf_outlined
-                                  : isOfficeFile
-                                      ? (fileName
-                                                  ?.toLowerCase()
-                                                  .endsWith('.xlsx') ==
-                                              true
-                                          ? Icons.table_chart_outlined
-                                          : Icons.description_outlined)
-                                      : isVideoFile
-                                          ? Icons.videocam_outlined
-                                          : Icons.insert_drive_file,
-                              size: 20,
-                              color: isPdfFile ? Colors.red : kPrimary),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              fileName ??
-                                  message['text'] as String? ??
-                                  (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
-                              style: TextStyle(fontSize: 14, color: textColor),
-                              textDirection: TextDirection.rtl,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          if (isPdfFile || isOfficeFile)
-                            IconButton(
-                              visualDensity: VisualDensity.compact,
-                              tooltip: 'הורדה',
-                              onPressed: () =>
-                                  _downloadChatFile(context, fileUrl, fileName),
-                              icon: const Icon(Icons.download_outlined,
-                                  size: 20, color: kPrimary),
-                            )
-                          else ...[
-                            const Icon(Icons.download,
-                                size: 20, color: kPrimary),
-                            const SizedBox(width: 3),
-                            const Text('הורדה',
-                                style: TextStyle(
-                                    fontSize: 12,
-                                    color: kPrimary,
-                                    fontWeight: FontWeight.w600)),
-                          ],
+                  child: SizedBox(
+                    width: 220,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (isPdfFile) ...[
+                          _PdfFirstPagePreview(url: fileUrl),
+                          const SizedBox(height: 7),
+                        ] else if (isOfficeFile) ...[
+                          _OfficeDocumentPreview(
+                              fileUrl: fileUrl,
+                              fileName: fileName ?? 'מסמך',
+                              token: token),
+                          const SizedBox(height: 7),
                         ],
-                      ),
-                    ],
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                                isPdfFile
+                                    ? Icons.picture_as_pdf_outlined
+                                    : isOfficeFile
+                                        ? (fileName
+                                                    ?.toLowerCase()
+                                                    .endsWith('.xlsx') ==
+                                                true
+                                            ? Icons.table_chart_outlined
+                                            : Icons.description_outlined)
+                                        : isVideoFile
+                                            ? Icons.videocam_outlined
+                                            : Icons.insert_drive_file,
+                                size: 20,
+                                color: isPdfFile ? Colors.red : kPrimary),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Tooltip(
+                                message: fileName ??
+                                    message['text'] as String? ??
+                                    (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
+                                child: Text(
+                                  fileName ??
+                                      message['text'] as String? ??
+                                      (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style:
+                                      TextStyle(fontSize: 14, color: textColor),
+                                  textDirection: TextDirection.rtl,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            if (isPdfFile || isOfficeFile)
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                tooltip: 'הורדה',
+                                onPressed: () => _downloadChatFile(
+                                    context, fileUrl, fileName),
+                                icon: const Icon(Icons.download_outlined,
+                                    size: 20, color: kPrimary),
+                              )
+                            else ...[
+                              const Icon(Icons.download,
+                                  size: 20, color: kPrimary),
+                              const SizedBox(width: 3),
+                              const Text('הורדה',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: kPrimary,
+                                      fontWeight: FontWeight.w600)),
+                            ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               )
@@ -27492,6 +27541,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
+      if (map['audio_duration_seconds'] != null)
+        'audioDurationSeconds':
+            double.tryParse(map['audio_duration_seconds'].toString()),
       if (map['delivery_summary'] != null)
         'deliverySummary': map['delivery_summary'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
@@ -30026,12 +30078,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                             ?.path);
                             final isVisualUploadState =
                                 (uploadFileType == 'image' ||
-                                            uploadFileType == 'video') &&
-                                        (uploadStatus == 'uploading' ||
-                                            uploadStatus == 'failed' ||
-                                            uploadStatus == 'rejected_scan') ||
-                                    (uploadFileType == 'audio' &&
-                                        uploadStatus == 'uploading');
+                                        uploadFileType == 'video' ||
+                                        uploadFileType == 'audio') &&
+                                    (uploadStatus == 'uploading' ||
+                                        uploadStatus == 'pending_scan' ||
+                                        uploadStatus == 'failed' ||
+                                        uploadStatus == 'rejected_scan');
                             final isDocumentModerationState =
                                 uploadFileType == 'document' &&
                                     (uploadStatus == 'pending_scan' ||
@@ -30137,12 +30189,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 if (isVisualUploadState)
                                   Padding(
                                     padding: const EdgeInsets.only(bottom: 6),
-                                    child: uploadStatus == 'uploading'
+                                    child: uploadStatus == 'uploading' ||
+                                            uploadStatus == 'pending_scan'
                                         ? _UploadProcessingCard(
-                                            fileName:
-                                                msg['fileName']?.toString() ??
-                                                    (uploadFileType == 'video'
-                                                        ? 'וידאו'
+                                            fileName: msg['fileName']
+                                                    ?.toString() ??
+                                                (uploadFileType == 'video'
+                                                    ? 'וידאו'
+                                                    : uploadFileType == 'audio'
+                                                        ? 'הקלטה'
                                                         : 'תמונה'),
                                             fileType: uploadFileType ?? 'image',
                                             startedAt: DateTime.tryParse(
@@ -30156,25 +30211,35 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                 uploadStatus == 'rejected_scan',
                                             title: uploadStatus ==
                                                     'rejected_scan'
-                                                ? uploadFileType == 'video'
-                                                    ? 'הווידאו נחסם ולא נשלח'
-                                                    : _imageBlockTitle(
-                                                        msg['scanReason'])
-                                                : uploadFileType == 'video'
-                                                    ? 'העלאת הווידאו נכשלה'
-                                                    : 'העלאת התמונה נכשלה',
+                                                ? uploadFileType == 'audio'
+                                                    ? 'ההקלטה נחסמה ולא נשלחה'
+                                                    : uploadFileType == 'video'
+                                                        ? 'הווידאו נחסם ולא נשלח'
+                                                        : _imageBlockTitle(
+                                                            msg['scanReason'])
+                                                : uploadFileType == 'audio'
+                                                    ? 'העלאת ההקלטה נכשלה'
+                                                    : uploadFileType == 'video'
+                                                        ? 'העלאת הווידאו נכשלה'
+                                                        : 'העלאת התמונה נכשלה',
                                             reason: uploadStatus ==
                                                     'rejected_scan'
                                                 ? msg['scanReason']
                                                         ?.toString() ??
-                                                    (uploadFileType == 'video'
-                                                        ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
-                                                        : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
+                                                    (uploadFileType == 'audio'
+                                                        ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
+                                                        : uploadFileType ==
+                                                                'video'
+                                                            ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
+                                                            : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
                                                 : msg['uploadError']
                                                         ?.toString() ??
-                                                    (uploadFileType == 'video'
-                                                        ? 'אירעה שגיאה בזמן העלאת הווידאו'
-                                                        : 'אירעה שגיאה בזמן העלאת התמונה'),
+                                                    (uploadFileType == 'audio'
+                                                        ? 'אירעה שגיאה בזמן העלאת ההקלטה'
+                                                        : uploadFileType ==
+                                                                'video'
+                                                            ? 'אירעה שגיאה בזמן העלאת הווידאו'
+                                                            : 'אירעה שגיאה בזמן העלאת התמונה'),
                                             imageUrl:
                                                 uploadStatus == 'rejected_scan'
                                                     ? msg['fileUrl'] as String?
@@ -30293,15 +30358,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                   ?.toString() ??
                                                               msg['senderName']
                                                                   ?.toString() ??
-                                                              ''),
-                                                  if (uploadStatus ==
-                                                      'pending_scan')
-                                                    const Text(
-                                                        'ההקלטה ממתינה לסריקה',
-                                                        style: TextStyle(
-                                                            fontSize: 10,
-                                                            color:
-                                                                Colors.orange)),
+                                                              '',
+                                                      initialDurationSeconds:
+                                                          (msg['audioDurationSeconds']
+                                                                  as num?)
+                                                              ?.toDouble()),
                                                 ])
                                           else if (msg['fileUrl'] != null &&
                                               _normalizeIncomingFileType(
