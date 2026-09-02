@@ -9,6 +9,8 @@ const source = fs.readFileSync(
   path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
 const serverSource = fs.readFileSync(
   path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
+const contentFilterSource = fs.readFileSync(
+  path.join(__dirname, '..', 'server', 'content-filter-policy.js'), 'utf8');
 
 test('download link loads the current release from the version API', () => {
   assert.match(source, /get\(Uri\.parse\('\$kApi\/version'\)\)/);
@@ -85,6 +87,13 @@ test('PDF messages show a first-page preview and open inside the app', () => {
   assert.match(source, /maxImageBytesCachedOnMemory: 32 \* 1024 \* 1024/);
 });
 
+test('desktop web documents open in the left detail pane', () => {
+  assert.match(source, /Widget\? _desktopDocument/);
+  assert.match(source, /onDocumentOpen: _openDesktopDocument/);
+  assert.match(source, /child: _desktopDocument != null[\s\S]{0,100}_desktopDocument!/);
+  assert.match(source, /embedded: true,[\s\S]{0,100}onClose:/);
+});
+
 test('contact filter status uses the full dynamic comparison table', () => {
   const start = source.indexOf('Future<void> _showContactFilterStatus()');
   const end = source.indexOf('Widget _contactFilterStatusButton()', start);
@@ -93,8 +102,7 @@ test('contact filter status uses the full dynamic comparison table', () => {
   assert.match(dialogSource, /SingleChildScrollView/);
   assert.match(dialogSource, /_InvitationFilterComparisonTable\(/);
   assert.match(dialogSource, /counterpartKind: 'החבר'/);
-  assert.match(dialogSource, /מה מותר לשלוח ל„\$recipientName”/);
-  assert.match(dialogSource, /איזה תוכן אני מוכן לקבל מ„\$recipientName”/);
+  assert.match(dialogSource, /groupName: recipientName/);
   assert.match(dialogSource, /onPersonalFilterChanged:/);
   assert.match(dialogSource, /filter-settings'[\s\S]*?Text\('שמור'\)/);
   assert.match(dialogSource, /await _loadContactFilterComparison\(\)/);
@@ -110,6 +118,29 @@ test('group status dialog edits personal and admin filters in place', () => {
   assert.match(dialogSource, /groups\/\$_groupId\/personal-filter/);
   assert.match(dialogSource, /groups\/\$_groupId\/filter-settings/);
   assert.match(dialogSource, /Text\('שמור'\)/);
+});
+
+test('filter tables use two-line headers and distinct read-only statuses', () => {
+  const start = source.indexOf('class _InvitationFilterComparisonTable');
+  const end = source.indexOf('// ── Chat Screen', start);
+  const tableSource = source.slice(start, end);
+  assert.match(tableSource, /filterHeader\('מה מותר לשלוח', counterpartTarget\)/);
+  assert.match(tableSource, /'איזה תוכן אני מוכן לקבל', personalTarget/);
+  assert.match(tableSource, /: 'ל - \$namedCounterpart'/);
+  assert.match(tableSource, /: 'מ - \$namedCounterpart'/);
+  assert.doesNotMatch(tableSource, /: 'ל - קבוצה \$namedCounterpart'/);
+  assert.doesNotMatch(tableSource, /: 'מ - קבוצה \$namedCounterpart'/);
+  assert.match(tableSource, /'ל - \$namedCounterpart'/);
+  assert.match(tableSource, /'מ - \$namedCounterpart'/);
+  assert.match(tableSource, /if \(!editable\)/);
+  assert.match(tableSource, /Icons\.check_circle : Icons\.block/);
+  assert.match(tableSource, /onTap: onTap/);
+  assert.match(tableSource, /BoxConstraints\(maxWidth: 680\)/);
+  assert.match(
+    tableSource,
+    /EdgeInsets\.symmetric\(horizontal: 6, vertical: 7\)/,
+  );
+  assert.doesNotMatch(tableSource, /[„”]/);
 });
 
 test('contact comparison loads both filter columns from one endpoint', () => {
@@ -128,8 +159,7 @@ test('friend approval mirrors group approval with an inline editable filter tabl
   assert.match(approvalSource, /בקשת חברות מאת/);
   assert.match(approvalSource, /_InvitationFilterComparisonTable\(/);
   assert.match(approvalSource, /counterpartKind: 'החבר'/);
-  assert.match(approvalSource, /מה מותר לשלוח ל„\$senderName”/);
-  assert.match(approvalSource, /איזה תוכן אני מוכן לקבל מ„\$senderName”/);
+  assert.match(approvalSource, /groupName: senderName\.toString\(\)/);
   assert.match(approvalSource, /onPersonalFilterChanged:/);
   assert.match(approvalSource, /אשר והוסף כחבר/);
   assert.match(approvalSource, /Text\('דחה'\)/);
@@ -150,14 +180,14 @@ test('the first outgoing message to a saved contact requires a receiving-filter 
   assert.match(source, /body\['requiresChoice'\] == true/);
   assert.match(guardSource, /_InvitationFilterComparisonTable\(/);
   assert.match(guardSource, /showCounterpartFilter: false/);
-  assert.match(guardSource, /איזה תוכן אני מוכן לקבל מ/);
+  assert.match(guardSource, /groupName: recipientName/);
   assert.match(guardSource, /contacts\/\$\{widget\.recipient\['id'\]\}\/filter-settings/);
   assert.match(guardSource, /Text\('שמור והמשך'\)/);
   assert.match(guardSource, /payload\['privateEntry'\]/);
   assert.match(guardSource, /_messages\.add\(normalized\)/);
   assert.match(source, /class _PrivateContactFilterEntry/);
   assert.match(source, /רק אני רואה את ההגדרה הזו/);
-  assert.match(source, /אני מוכן לקבל מ„\$recipientName”/);
+  assert.match(source, /אני מוכן לקבל מ\$recipientName/);
   assert.match(source, /recipientAvatarUrl:/);
   assert.match(source, /UserAvatar\(/);
   assert.match(source, /guide_here\.png/);
@@ -343,7 +373,7 @@ test('new accounts, friendships and groups default to text and scenery only', ()
   assert.match(source, /var selectedFilter = _newAccountFilter\(\)/);
   assert.match(source, /final Map<String, bool> _contentFilter =\s*_newAccountFilter\(\)/);
   assert.match(source, /_invitationPersonalFilter = _newAccountFilter\(\)/);
-  assert.match(serverSource,
+  assert.match(contentFilterSource,
     /const NEW_ACCOUNT_CONTENT_FILTER = Object\.freeze\(\{[\s\S]*?nonHumanImages: true/);
   assert.match(serverSource,
     /req\.body\?\.filter, NEW_ACCOUNT_CONTENT_FILTER/);
@@ -374,7 +404,7 @@ test('group senders see persisted per-member filter delivery results', () => {
   assert.match(source, /class _GroupDeliverySummary/);
   assert.match(source, /נשלח בקבוצה: \$deliveredCount קיבלו/);
   assert.match(source, /נחסם בסינון האישי אצל:/);
-  assert.match(source, /msg\['deliverySummary'\] is Map/);
+  assert.match(source, /msg\['deliverySummary'\]\s+is Map/);
 });
 
 test('forwarding reuses approved server files and reapplies destination filters', () => {
@@ -388,6 +418,23 @@ test('forwarding reuses approved server files and reapplies destination filters'
     /RECIPIENT_CONTENT_FILTERED/);
   assert.match(serverSource,
     /GROUP_CONTENT_FILTERED/);
+});
+
+test('multiple chat items can be forwarded to multiple users and groups', () => {
+  const forwarding = source.slice(
+    source.indexOf('Future<void> _forwardChatMessages'),
+    source.indexOf('// Google Web Client ID'),
+  );
+  assert.match(forwarding, /CheckboxListTile/);
+  assert.match(forwarding, /selected\.values\.toList\(\)/);
+  assert.match(forwarding, /messages\.length \* targets\.length/);
+  assert.match(forwarding, /users\/directory/);
+  assert.match(forwarding, /לא נמצאו משתתפים או קבוצות/);
+  assert.match(source, /בחר כמה פריטים/);
+  assert.match(source, /_selectedMessageKeys/);
+  assert.match(source, /_forwardSelectedMessages/);
+  assert.match(source, /Icons\.radio_button_unchecked/);
+  assert.match(source, /IgnorePointer\([\s\S]*?ignoring:\s*_selectedMessageKeys\.isNotEmpty/);
 });
 
 test('exact duplicate uploads reuse only current-version moderation results', () => {
