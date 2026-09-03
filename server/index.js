@@ -62,6 +62,7 @@ const {
   resolveScopedContentFilter,
 } = require('./content-filter-policy');
 const { generateGuideAnswer, localGuideAnswer } = require('./system-guide-ai');
+const { generateSafeInformationAnswer } = require('./safe-information-ai');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
@@ -143,12 +144,12 @@ function normalizeBuiltinStickerId(value) {
   return BUILTIN_STICKER_IDS.has(id) ? id : null;
 }
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
-const SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה';
+const SYSTEM_USER_NAME = 'מידע בטוח · AI';
 const SYSTEM_USER_PROFILE_PIC =
-  '/betshuva-app/assets/assets/guide/aviel-guide.jpg';
+  '/betshuva-app/assets/assets/guide/safe-information-ai.png';
 const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
 const WELCOME_MESSAGE =
-  'ברוך הבא לבתשובה 🌿\n\nשמחים שהצטרפת אלינו. כאן תקבל עדכונים חשובים, הודעות מערכת וטיפים שיעזרו לך להשתמש באפליקציה בבטחה ובנוחות.\n\nכך מוסיפים חברים:\n1. לחץ על סמל הוספת החבר (אדם עם סימן +) בחלק העליון של מסך השיחות.\n2. חפש לפי שם, מספר טלפון או כתובת אימייל.\n3. לחץ על „שמור” ליד האדם הרצוי.\n4. החבר יופיע ברשימת השיחות ותוכל לפתוח איתו שיחה.\n\nאם איש הקשר עדיין לא רשום, לחץ על „הזמן” כדי לשלוח לו קישור הצטרפות.\n\nנתקלת בתקלה או שמשהו לא עובד? אפשר לפתוח פנייה למפתח דרך „הפניות שלי” ולעקוב שם אחר הטיפול.\nbetshuva://app/my-issues\n\nמאחלים לך שיחות טובות ומועילות!';
+  'שלום 🌿 זהו מידע בטוח · AI — שירות אוטומטי ולא אדם.\n\nאפשר לשאול על השוואת מוצרים ומחירים, תחבורה ציבורית, טיולים, שירותי ממשלה, בתי חולים, בנקים ומשכנתאות, וגם על השימוש באפליקציה.\n\nהמידע מובא בסביבה מסוננת, עם עדיפות למקורות רשמיים וקישורים שנבדקו. השירות אינו רב, רופא או יועץ פיננסי. לשאלה הלכתית יש לשאול רב.\n\nלעולם אין לשלוח כאן סיסמה, קוד אימות או מספר כרטיס מלא.\n\nנתקלת בתקלה או שמשהו לא עובד? אפשר לפתוח פנייה למפתח דרך „הפניות שלי”.\nbetshuva://app/my-issues';
 
 const BUILTIN_EXPRESSION_ROOT = path.join(__dirname, '..', 'expression-library');
 const linkPreviewCache = new Map();
@@ -782,7 +783,8 @@ function clientIp(req) {
   return req.ip || remoteAddress || 'unknown';
 }
 
-function createRateLimiter({ windowMs, max, message, keyGenerator, maxBuckets = 50000 }) {
+function createRateLimiter({ windowMs, max, message, keyGenerator,
+  maxBuckets = 50000, name = 'unnamed' }) {
   const buckets = new Map();
   const cleanup = setInterval(() => {
     const now = Date.now();
@@ -812,6 +814,13 @@ function createRateLimiter({ windowMs, max, message, keyGenerator, maxBuckets = 
     });
     if (bucket.count > max) {
       res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+      console.warn('[rate-limit]', JSON.stringify({
+        limiter: name,
+        method: req.method,
+        path: req.originalUrl?.split('?')[0] || req.path,
+        authenticated: Boolean(req.user?.id),
+        retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+      }));
       return res.status(429).json({ error: message });
     }
     next();
@@ -835,6 +844,7 @@ function isValidIsraeliMobile(value) {
 }
 
 const apiRateLimit = createRateLimiter({
+  name: 'api',
   windowMs: 5 * 60 * 1000,
   max: 600,
   keyGenerator: clientIp,
@@ -859,9 +869,16 @@ const otpRateLimit = createRateLimiter({
   message: 'נשלחו יותר מדי בקשות לקוד אימות. נסה שוב מאוחר יותר',
 });
 const messageRateLimit = createRateLimiter({
+  name: 'message',
   windowMs: 60 * 1000,
   max: 120,
   message: 'נשלחו יותר מדי הודעות. נסה שוב בעוד דקה',
+});
+const supportIssueRateLimit = createRateLimiter({
+  name: 'support-issue',
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: 'נשלחו יותר מדי פניות. נסה שוב בעוד שעה',
 });
 const searchRateLimit = createRateLimiter({
   windowMs: 60 * 1000,
@@ -964,7 +981,7 @@ const CHAT_HARMFUL_TERMS = [
   // Threats, harassment and common abusive language. Sexual terms are loaded
   // from BLOCKED_WORDS below so administrators can extend them at runtime.
   'אני אהרוג אותך','אני אפגע בך','מוות לך','תתאבד','תמות','מטומטם',
-  'מפגר','שרמוטה','זונה','בן זונה','כלבה','מניאק',
+  'מפגר','טמבל','טמבלים','טמבלית','שרמוטה','זונה','בן זונה','כלבה','מניאק',
   'kill yourself','i will kill you','death threat','idiot','moron','bitch',
   'whore','slut','fuck you','stupid','retard',
 ];
@@ -995,6 +1012,10 @@ function moderateChatText(value) {
     }
   }
   return { blocked: false };
+}
+
+function redactHarmfulLanguageForDisplay(value) {
+  return String(value || '').replace(/טמבל(?:ים|ית)?/giu, 'מילה פוגענית');
 }
 
 async function scanAudio(buffer, fileName) {
@@ -2498,6 +2519,14 @@ async function migrateDatabase() {
       )`);
     await pool.query(`ALTER TABLE message_requests
       DROP CONSTRAINT IF EXISTS message_requests_sender_id_recipient_id_key`);
+    // A contact request to the same account is never meaningful. Clean up any
+    // legacy rows and enforce this invariant at the database boundary too.
+    await pool.query('DELETE FROM message_requests WHERE sender_id=recipient_id');
+    await pool.query(`ALTER TABLE message_requests
+      DROP CONSTRAINT IF EXISTS message_requests_no_self_request`);
+    await pool.query(`ALTER TABLE message_requests
+      ADD CONSTRAINT message_requests_no_self_request
+      CHECK (sender_id <> recipient_id)`);
     const contactsInitialized = await pool.query(
       `SELECT 1 FROM app_settings WHERE key_name='contacts_initialized'`);
     if (!contactsInitialized.rows.length) {
@@ -2990,7 +3019,13 @@ async function generateSystemAnswer(pool, userId, question) {
   const uploadContext = await rejectedUploadContext(pool, userId, question);
   const contextText = uploadContext ? describeUploadDecision(uploadContext) : null;
   const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  const appQuestion = /(?:בתשובה|האפליקציה|באפליקציה|צילום\s*מסך|הפניות\s*שלי|הגדרות\s*הסינון|המדיה\s*שלי|להוסיף\s*חבר|ליצור\s*קבוצה|גיבוי\s*(?:אישי|google\s*drive))/i
+    .test(String(question));
   try {
+    const audience = await pool.query(
+      `SELECT (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+       FROM users WHERE id=$1`, [userId]);
+    const isTeen = audience.rows[0]?.is_teen === true;
     const history = await pool.query(
       `SELECT sender_id,body FROM messages
        WHERE (sender_id=$1 AND recipient_id=$2)
@@ -3000,6 +3035,22 @@ async function generateSystemAnswer(pool, userId, question) {
       role: row.sender_id === SYSTEM_USER_ID ? 'assistant' : 'user',
       content: row.body || '',
     }));
+    if (!appQuestion && !contextText) {
+      return await generateSafeInformationAnswer({
+        apiKey,
+        model: process.env.SAFE_INFORMATION_MODEL ||
+          process.env.AI_GUIDE_MODEL || process.env.OPENAI_VISION_MODEL ||
+          'gpt-5.6-luna',
+        userId,
+        question,
+        history: messages,
+        isTeen,
+        validateSource: async url => {
+          const result = await inspectExternalLink(url);
+          return result?.safe === true;
+        },
+      });
+    }
     return await generateGuideAnswer({
       apiKey,
       model: process.env.AI_GUIDE_MODEL || process.env.OPENAI_VISION_MODEL ||
@@ -3011,7 +3062,8 @@ async function generateSystemAnswer(pool, userId, question) {
     });
   } catch (error) {
     console.error('system AI:', error.message);
-    return localGuideAnswer(question, contextText);
+    return appQuestion || contextText ? localGuideAnswer(question, contextText)
+      : 'שירות המידע לא הצליח להשלים בדיקת מקורות כרגע. לא אציג מידע שאינו מאומת; אפשר לנסות שוב מאוחר יותר.';
   }
 }
 
@@ -3192,12 +3244,14 @@ async function handleMessageBrowsing(pool, userId, question) {
 }
 
 async function createSystemExchange(pool, userId, question, file = null) {
+  const safeQuestion = redactHarmfulLanguageForDisplay(question);
   const sent = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name)
      VALUES($1,$2,$3,$4,$5,$6) RETURNING id,created_at`,
-    [userId, SYSTEM_USER_ID, file?.type || 'text', question,
+    [userId, SYSTEM_USER_ID, file?.type || 'text', safeQuestion,
      file?.url || null, file?.name || null]);
-  const answer = await generateSystemAnswer(pool, userId, question);
+  const answer = redactHarmfulLanguageForDisplay(
+    await generateSystemAnswer(pool, userId, question));
   const reply = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body)
      VALUES($1,$2,'text',$3) RETURNING id,created_at`,
@@ -3388,7 +3442,12 @@ app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_we
 
 // Baseline protection for all API routes. Sensitive/write-heavy routes below
 // receive additional, stricter per-account or per-user limits.
-app.use('/api', apiRateLimit);
+app.use('/api', (req, res, next) => {
+  // Support must remain reachable when another API bucket is exhausted. It
+  // has its own authenticated limiter on the routes below.
+  if (/^\/support-issues(?:\/|$)/.test(req.path)) return next();
+  return apiRateLimit(req, res, next);
+});
 
 app.get('/app', (req, res) => res.redirect('/app/'));
 app.get('/public-home', (req, res) => res.sendFile(require('path').join(__dirname, '..', 'home.html')));
@@ -3949,8 +4008,15 @@ io.on('connection', async (socket) => {
     }
     if (normalizedStickerId) text = normalizedStickerId;
     if (!toUserId || (!text && !fileUrl)) return;
+    if (String(toUserId) === String(socket.user.id)) {
+      socket.emit('message:rejected', { toUserId,
+        reason: 'אי אפשר לשלוח בקשת חברות לעצמך',
+        code: 'SELF_MESSAGE_NOT_ALLOWED' });
+      return;
+    }
     if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
-    if (!normalizedStickerId && text && moderateChatText(text).blocked) {
+    if (toUserId !== SYSTEM_USER_ID && !normalizedStickerId && text &&
+        moderateChatText(text).blocked) {
       recordBlockedChat(socket.user.id, 'private_socket', text, toUserId,
         socket.handshake.address);
       socket.emit('message:rejected', { toUserId,
@@ -5283,7 +5349,14 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   if (!toUserId || (!text && !fileUrl)) {
     return res.status(400).json({ error: 'חסר נמען או תוכן' });
   }
-  if (!normalizedStickerId && text && moderateChatText(text).blocked) {
+  if (String(toUserId) === String(senderId)) {
+    return res.status(400).json({
+      error: 'אי אפשר לשלוח בקשת חברות לעצמך',
+      code: 'SELF_MESSAGE_NOT_ALLOWED',
+    });
+  }
+  if (toUserId !== SYSTEM_USER_ID && !normalizedStickerId && text &&
+      moderateChatText(text).blocked) {
     recordBlockedChat(senderId, 'private_http', text, toUserId, clientIp(req));
     return res.status(422).json({
       error: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
@@ -5460,6 +5533,7 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
          ON sender_contact.owner_id=mr.sender_id
         AND sender_contact.contact_id=mr.recipient_id
        WHERE mr.recipient_id=$1
+         AND mr.sender_id<>mr.recipient_id
        ORDER BY mr.created_at`, [req.user.id]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -6764,8 +6838,9 @@ app.delete('/api/backup/google', auth, async (req, res) => {
   }
 });
 
-// A user's own contact card is intentionally available only to adults.
-// Address and location data are never included in this response.
+// A user's own contact card is intentionally available only to adults. The
+// values are returned only to their owner; the client decides which values to
+// include in the contact card sent to another user.
 app.get('/api/profile/share-card', authWithDbCheck, async (req, res) => {
   if (req.user.isTeen) {
     return res.status(403).json({
@@ -6776,7 +6851,7 @@ app.get('/api/profile/share-card', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT name, phone, email
+      `SELECT name, phone, email, city, street, house_number, apartment
        FROM users
        WHERE id=$1 AND birth_date <= CURRENT_DATE - INTERVAL '18 years'`,
       [req.user.id]);
@@ -6790,6 +6865,59 @@ app.get('/api/profile/share-card', authWithDbCheck, async (req, res) => {
     res.json(result.rows[0]);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Persist contact details entered while sharing only after explicit consent.
+// This deliberately updates only fields present in the request so that the
+// compact sharing flow cannot overwrite unrelated profile settings.
+app.patch('/api/profile/share-details', authWithDbCheck, async (req, res) => {
+  if (req.user.isTeen) {
+    return res.status(403).json({
+      error: 'שיתוף פרטי קשר אישיים זמין לבגירים בלבד',
+      code: 'ADULTS_ONLY',
+    });
+  }
+  const allowed = ['phone', 'email', 'city', 'street', 'house_number', 'apartment'];
+  const supplied = allowed.filter(field =>
+    Object.prototype.hasOwnProperty.call(req.body || {}, field));
+  if (!supplied.length)
+    return res.status(400).json({ error: 'לא נשלחו פרטים לשמירה' });
+  const values = {};
+  for (const field of supplied) {
+    if (typeof req.body[field] !== 'string')
+      return res.status(400).json({ error: 'פרטי הכתובת אינם תקינים' });
+    values[field] = req.body[field].trim();
+  }
+  if ((values.phone?.length || 0) > 40 || (values.email?.length || 0) > 160 ||
+      (values.city?.length || 0) > 80 || (values.street?.length || 0) > 120 ||
+      (values.house_number?.length || 0) > 20 || (values.apartment?.length || 0) > 20)
+    return res.status(400).json({ error: 'פרטי הכתובת ארוכים מדי' });
+  if (values.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email))
+    return res.status(400).json({ error: 'כתובת האימייל אינה תקינה' });
+  try {
+    const pool = await getPool();
+    const assignments = supplied.map((field, index) =>
+      (field === 'phone' || field === 'email')
+        ? `${field}=CASE WHEN COALESCE(${field}, '')='' THEN $${index + 1} ELSE ${field} END`
+        : `${field}=$${index + 1}`);
+    const params = supplied.map(field => values[field] || null);
+    params.push(req.user.id);
+    const result = await pool.query(
+      `UPDATE users SET ${assignments.join(', ')}
+       WHERE id=$${params.length}
+         AND birth_date <= CURRENT_DATE - INTERVAL '18 years'
+       RETURNING phone, email, city, street, house_number, apartment`, params);
+    if (!result.rows.length)
+      return res.status(403).json({
+        error: 'שיתוף פרטי קשר אישיים זמין לבגירים בלבד',
+        code: 'ADULTS_ONLY',
+      });
+    logActivity(req.user.id, 'save_shared_contact_details',
+      { fields: supplied }, req.ip);
+    res.json({ ok: true, ...result.rows[0] });
+  } catch (e) {
+    res.status(500).json({ error: 'שמירת הפרטים נכשלה' });
   }
 });
 
@@ -6920,10 +7048,38 @@ async function reverseGeocodeHebrew(lat, lng) {
     const data = await res.json();
     const addr = data.address || {};
     const city = addr.city || addr.town || addr.village || addr.municipality || addr.suburb || null;
+    const street = addr.road || addr.pedestrian || addr.residential || addr.footway || null;
+    const houseNumber = addr.house_number || null;
     const country = addr.country || null;
-    return { city, country };
-  } catch { return { city: null, country: null }; }
+    return { city, street, houseNumber, country };
+  } catch { return { city: null, street: null, houseNumber: null, country: null }; }
 }
+
+// Resolve an address for one-time form completion without retaining precise
+// coordinates or changing the user's saved profile.
+app.put('/api/location/address', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'שיתוף מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
+  const latitude = Number(req.body?.latitude);
+  const longitude = Number(req.body?.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+      Math.abs(latitude) > 90 || Math.abs(longitude) > 180)
+    return res.status(400).json({ error: 'מיקום לא תקין' });
+  try {
+    const { city, street, houseNumber } =
+      await reverseGeocodeHebrew(latitude, longitude);
+    if (!city && !street)
+      return res.status(404).json({ error: 'לא נמצאה כתובת עבור המיקום' });
+    res.json({
+      ok: true,
+      city: city || '',
+      street: street || '',
+      house_number: houseNumber || '',
+    });
+  } catch (_) {
+    res.status(503).json({ error: 'לא ניתן לזהות את הכתובת כרגע' });
+  }
+});
 
 // Resolve the locality for a listing without retaining precise coordinates.
 app.put('/api/location/city', auth, async (req, res) => {
@@ -7429,6 +7585,24 @@ app.get('/api/listings', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// A compact chat preview must not register a marketplace view. It intentionally
+// exposes only the title and primary image, never seller contact details.
+app.get('/api/listings/:id/preview', auth, async (req, res) => {
+  if (req.user.isTeen)
+    return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT l.id,l.title,
+              COALESCE((SELECT li.url FROM listing_images li
+                        WHERE li.listing_id=l.id ORDER BY li.sort_order LIMIT 1),
+                       l.image_url) AS image_url
+       FROM listings l WHERE l.id=$1`, [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'לא נמצא' });
+    res.json(result.rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/listings/:id', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
@@ -7647,10 +7821,14 @@ app.get('/contact-vcard', (req, res) => {
   const name = clean(req.query.name) || 'איש קשר';
   const phone = clean(req.query.phone, 40);
   const email = clean(req.query.email, 160);
+  const city = clean(req.query.city, 80);
+  const address = clean(req.query.address, 220);
   const escapeVcard = value => value.replace(/([,;\\])/g, '\\$1');
   const lines = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${escapeVcard(name)}`];
   if (phone) lines.push(`TEL;TYPE=CELL:${escapeVcard(phone)}`);
   if (email) lines.push(`EMAIL:${escapeVcard(email)}`);
+  if (city || address)
+    lines.push(`ADR;TYPE=HOME:;;${escapeVcard(address)};${escapeVcard(city)};;;`);
   lines.push('NOTE:שותף באמצעות בתשובה', 'END:VCARD');
   res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="betshuva-contact.vcf"');
@@ -9600,9 +9778,10 @@ app.post('/api/games', auth, async (req, res) => {
 });
 
 // ── User-confirmed open issues ────────────────────────────────────
-app.post('/api/support-issues', auth, messageRateLimit, async (req, res) => {
+app.post('/api/support-issues', auth, supportIssueRateLimit, async (req, res) => {
   const issueType = String(req.body?.issueType || '');
-  const description = String(req.body?.description || '').trim();
+  const description = redactHarmfulLanguageForDisplay(
+    String(req.body?.description || '').trim());
   if (!['bug', 'feature'].includes(issueType))
     return res.status(400).json({ error: 'סוג הפנייה אינו תקין' });
   if (description.length < 5 || description.length > 1200)
@@ -9704,7 +9883,7 @@ app.get('/api/support-issues', auth, async (req, res) => {
   }
 });
 
-app.patch('/api/support-issues/:id', auth, messageRateLimit, async (req, res) => {
+app.patch('/api/support-issues/:id', auth, supportIssueRateLimit, async (req, res) => {
   const update = String(req.body?.update || '').trim();
   if (!update || update.length > 1200)
     return res.status(400).json({ error: 'נדרש עדכון באורך של עד 1,200 תווים' });
@@ -10501,7 +10680,12 @@ app.patch('/api/admin/support-issues/:id', adminAuth, async (req, res) => {
       const statusLabels = { needs_info: 'נדרש ממך מידע נוסף',
         resolved: 'הפנייה טופלה', closed: 'הפנייה נסגרה',
         reviewing: 'הפנייה בבדיקה', received: 'הפנייה התקבלה' };
-      const notice = `עדכון בפנייה שלך: ${statusLabels[status]}.\n${responseText}`;
+      const issueLink = ['resolved', 'closed'].includes(status)
+        ? `\n\nלצפייה בפרטי הפנייה ובמה שבוצע:\n` +
+          `betshuva://app/my-issues/${issue.id}`
+        : '';
+      const notice = `עדכון בפנייה שלך: ${statusLabels[status]}.\n` +
+        `${responseText}${issueLink}`;
       const message = await pool.query(
         `INSERT INTO messages(sender_id,recipient_id,type,body)
          VALUES($1,$2,'text',$3) RETURNING id,created_at`,

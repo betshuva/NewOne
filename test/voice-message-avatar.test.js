@@ -27,9 +27,9 @@ test('private and group voice messages resolve the actual sender avatar', () => 
 test('a single group image keeps and displays its classification', () => {
   const server = fs.readFileSync(
     path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
+  const groupChat = source.slice(source.indexOf('class _GroupChatScreenState'));
   assert.match(server, /status: 'sent',\s*classification, deliverySummary/);
   assert.match(source, /sendData\['classification'\] \?\? data\['classification'\]/);
-  assert.match(
-    source,
-    /_ImageStatusBadge\([\s\S]{0,900}message: msg[\s\S]{0,900}_ImageClassificationBadges\([\s\S]{0,150}message: msg/);
+  assert.match(groupChat, /_ImageStatusBadge\([\s\S]*?message: msg/);
+  assert.match(groupChat, /_ImageClassificationBadges\([\s\S]*?message: msg/);
 });

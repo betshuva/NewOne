@@ -26,8 +26,8 @@ test('download link loads the current release from the version API', () => {
 test('the guide is displayed as Israel throughout the active application', () => {
   assert.doesNotMatch(source, /אביאל/);
   assert.doesNotMatch(serverSource, /אביאל/);
-  assert.match(source, /מדבקת ישראל/);
-  assert.match(serverSource, /SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה'/);
+  assert.match(source, /מדבקת עוזר AI/);
+  assert.match(serverSource, /SYSTEM_USER_NAME = 'מידע בטוח · AI'/);
 });
 
 test('conversation refreshes do not pull users away from older messages', () => {
@@ -103,14 +103,14 @@ test('chat image tiles keep a stable height while media loads', () => {
   const directImageStart = directSource.indexOf('_PersistentMediaImage(');
   const directImage = directSource.slice(directImageStart, directImageStart + 900);
   assert.equal((directImage.match(/height: 180/g) || []).length, 3);
-  assert.match(directImage, /width: 220,[\s\S]*?fit: BoxFit\.contain/);
+  assert.match(directImage, /width: 220,[\s\S]*?fit: BoxFit\s*\.contain/);
 
   const groupStart = source.indexOf('class _GroupChatScreenState');
   const groupSource = source.slice(groupStart);
   const groupImageStart = groupSource.indexOf('_PersistentMediaImage(');
   const groupImage = groupSource.slice(groupImageStart, groupImageStart + 1800);
   assert.equal((groupImage.match(/height: 160/g) || []).length, 3);
-  assert.match(groupImage, /width: 200,[\s\S]*?fit: BoxFit\.contain/);
+  assert.match(groupImage, /width: 200,[\s\S]*?fit: BoxFit\s*\.contain/);
 });
 
 test('PDF messages show a first-page preview and open inside the app', () => {
@@ -559,16 +559,16 @@ test('app screenshots can open a directly accessible issue without messaging Isr
   assert.match(source, /Navigator\.of\(dialogContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
   assert.match(source, /Navigator\.of\(sheetContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
   assert.match(screenshotSource, /destination\.kind == 'group'/);
-  assert.match(screenshotSource, /צילום המסך נשלח לישראל/);
+  assert.match(screenshotSource, /צילום המסך נשלח לשירות ה-AI/);
   assert.match(screenshotSource, /decoded\['status'\] == 'pending'/);
   assert.match(screenshotSource, /פתיחת קריאה/);
   assert.match(screenshotSource,
-    /ישראל ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב/);
+    /שירות ה-AI ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב/);
   assert.match(screenshotSource, /דיווח תקלה/);
   assert.match(screenshotSource, /בקשת פיתוח/);
   assert.match(screenshotSource, /israelDescription/);
   assert.match(screenshotSource,
-    /ישראל הוא מדריך התמיכה של אפליקציית בתשובה/);
+    /מידע בטוח · AI הוא שירות אוטומטי ומדריך התמיכה של אפליקציית בתשובה/);
   assert.match(screenshotSource, /שלח למשתמש או לקבוצה/);
   assert.match(screenshotSource, /פנייה לתמיכה/);
   assert.match(screenshotSource, /appScreenshotTargetSender/);
@@ -620,7 +620,7 @@ test('content and harmful-language warnings use the system warning artwork', () 
   assert.match(source, /SnackBar _contentWarningSnackBar/);
   assert.match(source, /errorCode == 'CHAT_CONTENT_BLOCKED'[\s\S]*?_contentWarningSnackBar\(error\)/);
   assert.match(source, /class _DocumentModerationCard[\s\S]*?if \(blocked\)[\s\S]*?_SystemContentWarningArtwork/);
-  assert.match(source, /class _UploadResultCard[\s\S]*?if \(blocked\)[\s\S]*?_SystemContentWarningArtwork/);
+  assert.match(source, /class _UploadResultCard[\s\S]*?if \(blocked && showBlockedArtwork\)[\s\S]*?_SystemContentWarningArtwork/);
   assert.match(source, /uploadStatus == 'blocked_content'[\s\S]*?_SystemContentWarningArtwork/);
 });
 

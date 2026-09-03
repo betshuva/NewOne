@@ -426,15 +426,30 @@ Future<Map<String, String>?> _confirmMyContactShare(
       'name': data['name']?.toString() ?? '',
       'phone': data['phone']?.toString() ?? '',
       'email': data['email']?.toString() ?? '',
+      'city': data['city']?.toString() ?? '',
+      'street': data['street']?.toString() ?? '',
+      'houseNumber': data['house_number']?.toString() ?? '',
+      'apartment': data['apartment']?.toString() ?? '',
     };
+    String formattedAddress() => [
+          contact['street']!,
+          if (contact['houseNumber']!.isNotEmpty) contact['houseNumber']!,
+          if (contact['apartment']!.isNotEmpty) 'דירה ${contact['apartment']}',
+        ].where((part) => part.isNotEmpty).join(' ');
     var shareName = contact['name']!.isNotEmpty;
-    var sharePhone = contact['phone']!.isNotEmpty;
-    var shareEmail = contact['email']!.isNotEmpty;
-    final selectedContact = await showDialog<Map<String, String>>(
+    var sharePhone = false;
+    var shareEmail = false;
+    var shareCity = false;
+    var shareAddress = false;
+    final selection = await showDialog<Map<String, bool>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) {
-          final hasSelection = shareName || sharePhone || shareEmail;
+          final hasSelection = shareName ||
+              sharePhone ||
+              shareEmail ||
+              shareCity ||
+              shareAddress;
           return AlertDialog(
             title: const Text('שיתוף הפרטים שלי'),
             content: Column(
@@ -459,22 +474,42 @@ Future<Map<String, String>?> _confirmMyContactShare(
                       : (value) =>
                           setDialogState(() => shareName = value ?? false),
                 ),
-                if (contact['phone']!.isNotEmpty)
-                  CheckboxListTile(
-                    value: sharePhone,
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('טלפון: ${contact['phone']}'),
-                    onChanged: (value) =>
-                        setDialogState(() => sharePhone = value ?? false),
-                  ),
-                if (contact['email']!.isNotEmpty)
-                  CheckboxListTile(
-                    value: shareEmail,
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('אימייל: ${contact['email']}'),
-                    onChanged: (value) =>
-                        setDialogState(() => shareEmail = value ?? false),
-                  ),
+                CheckboxListTile(
+                  value: sharePhone,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(contact['phone']!.isEmpty
+                      ? 'טלפון: לא הוגדר'
+                      : 'טלפון: ${contact['phone']}'),
+                  onChanged: (value) =>
+                      setDialogState(() => sharePhone = value ?? false),
+                ),
+                CheckboxListTile(
+                  value: shareEmail,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(contact['email']!.isEmpty
+                      ? 'אימייל: לא הוגדר'
+                      : 'אימייל: ${contact['email']}'),
+                  onChanged: (value) =>
+                      setDialogState(() => shareEmail = value ?? false),
+                ),
+                CheckboxListTile(
+                  value: shareCity,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(contact['city']!.isEmpty
+                      ? 'עיר מגורים: לא הוגדרה'
+                      : 'עיר מגורים: ${contact['city']}'),
+                  onChanged: (value) =>
+                      setDialogState(() => shareCity = value ?? false),
+                ),
+                CheckboxListTile(
+                  value: shareAddress,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(formattedAddress().isEmpty
+                      ? 'כתובת: לא הוגדרה'
+                      : 'כתובת: ${formattedAddress()}'),
+                  onChanged: (value) =>
+                      setDialogState(() => shareAddress = value ?? false),
+                ),
                 if (!hasSelection)
                   const Text(
                     'יש לבחור לפחות פרט אחד',
@@ -490,10 +525,12 @@ Future<Map<String, String>?> _confirmMyContactShare(
               ElevatedButton.icon(
                 onPressed: !hasSelection
                     ? null
-                    : () => Navigator.pop(dialogContext, <String, String>{
-                          if (shareName) 'name': contact['name']!,
-                          if (sharePhone) 'phone': contact['phone']!,
-                          if (shareEmail) 'email': contact['email']!,
+                    : () => Navigator.pop(dialogContext, <String, bool>{
+                          'name': shareName,
+                          'phone': sharePhone,
+                          'email': shareEmail,
+                          'city': shareCity,
+                          'address': shareAddress,
                         }),
                 icon: const Icon(Icons.send_outlined),
                 label: const Text('שתף'),
@@ -503,7 +540,223 @@ Future<Map<String, String>?> _confirmMyContactShare(
         },
       ),
     );
-    return selectedContact;
+    if (selection == null || !context.mounted) return null;
+
+    final missingPhone =
+        selection['phone'] == true && contact['phone']!.isEmpty;
+    final missingEmail =
+        selection['email'] == true && contact['email']!.isEmpty;
+    final missingCity = selection['city'] == true && contact['city']!.isEmpty;
+    final missingAddress =
+        selection['address'] == true && formattedAddress().isEmpty;
+    if (missingPhone || missingEmail || missingCity || missingAddress) {
+      final phoneCtrl = TextEditingController();
+      final emailCtrl = TextEditingController();
+      final cityCtrl = TextEditingController();
+      final streetCtrl = TextEditingController();
+      final houseCtrl = TextEditingController();
+      final apartmentCtrl = TextEditingController();
+      var saveForLater = false;
+      var locating = false;
+      String? locationError;
+      final completed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            final valid = (!missingPhone || phoneCtrl.text.trim().isNotEmpty) &&
+                (!missingEmail || emailCtrl.text.trim().isNotEmpty) &&
+                (!missingCity || cityCtrl.text.trim().isNotEmpty) &&
+                (!missingAddress || streetCtrl.text.trim().isNotEmpty);
+            return AlertDialog(
+              title: const Text('השלמת פרטים לשיתוף'),
+              content: SingleChildScrollView(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Text('הפרטים הבאים חסרים. הם ישותפו רק בהודעה זו.'),
+                  if (missingCity || missingAddress) ...[
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: locating
+                          ? null
+                          : () async {
+                              setDialogState(() {
+                                locating = true;
+                                locationError = null;
+                              });
+                              try {
+                                var permission =
+                                    await Geolocator.checkPermission();
+                                if (permission == LocationPermission.denied) {
+                                  permission =
+                                      await Geolocator.requestPermission();
+                                }
+                                if (permission == LocationPermission.denied ||
+                                    permission ==
+                                        LocationPermission.deniedForever) {
+                                  throw Exception('לא ניתנה הרשאת מיקום');
+                                }
+                                final position =
+                                    await Geolocator.getCurrentPosition(
+                                  locationSettings: const LocationSettings(
+                                    accuracy: LocationAccuracy.high,
+                                    timeLimit: Duration(seconds: 12),
+                                  ),
+                                );
+                                final response = await http.put(
+                                  Uri.parse('$kApi/location/address'),
+                                  headers: {
+                                    'Authorization': 'Bearer $token',
+                                    'Content-Type': 'application/json',
+                                  },
+                                  body: jsonEncode({
+                                    'latitude': position.latitude,
+                                    'longitude': position.longitude,
+                                  }),
+                                );
+                                if (response.statusCode != 200) {
+                                  throw Exception('לא ניתן לזהות את הכתובת');
+                                }
+                                final payload = jsonDecode(response.body)
+                                    as Map<String, dynamic>;
+                                cityCtrl.text =
+                                    payload['city']?.toString() ?? '';
+                                streetCtrl.text =
+                                    payload['street']?.toString() ?? '';
+                                houseCtrl.text =
+                                    payload['house_number']?.toString() ?? '';
+                              } catch (error) {
+                                locationError = error
+                                    .toString()
+                                    .replaceFirst('Exception: ', '');
+                              } finally {
+                                if (dialogContext.mounted) {
+                                  setDialogState(() => locating = false);
+                                }
+                              }
+                            },
+                      icon: locating
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.my_location),
+                      label: Text(locating
+                          ? 'מאתר את הכתובת...'
+                          : 'שיתוף המיקום שלי ומילוי אוטומטי'),
+                    ),
+                    if (locationError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(locationError!,
+                            style: const TextStyle(color: Colors.red)),
+                      ),
+                  ],
+                  if (missingPhone)
+                    TextField(
+                      controller: phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(labelText: 'טלפון'),
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                  if (missingEmail)
+                    TextField(
+                      controller: emailCtrl,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: const InputDecoration(labelText: 'אימייל'),
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                  if (missingCity)
+                    _LocationAutocompleteField(
+                      controller: cityCtrl,
+                      label: 'עיר מגורים',
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                  if (missingAddress) ...[
+                    _StreetAutocompleteField(
+                      controller: streetCtrl,
+                      cityController: cityCtrl,
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                    Row(children: [
+                      Expanded(
+                          child: TextField(
+                        controller: houseCtrl,
+                        decoration:
+                            const InputDecoration(labelText: 'מספר בית'),
+                      )),
+                      const SizedBox(width: 12),
+                      Expanded(
+                          child: TextField(
+                        controller: apartmentCtrl,
+                        decoration: const InputDecoration(labelText: 'דירה'),
+                      )),
+                    ]),
+                  ],
+                  CheckboxListTile(
+                    value: saveForLater,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('לשמור את הפרטים בפרופיל לשימוש עתידי?'),
+                    subtitle: const Text('לא יישמר דבר ללא סימון אפשרות זו'),
+                    onChanged: (value) =>
+                        setDialogState(() => saveForLater = value ?? false),
+                  ),
+                ]),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('ביטול'),
+                ),
+                ElevatedButton(
+                  onPressed:
+                      !valid ? null : () => Navigator.pop(dialogContext, true),
+                  child: const Text('המשך לשיתוף'),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+      if (completed != true) return null;
+      if (missingPhone) contact['phone'] = phoneCtrl.text.trim();
+      if (missingEmail) contact['email'] = emailCtrl.text.trim();
+      if (missingCity) contact['city'] = cityCtrl.text.trim();
+      if (missingAddress) {
+        contact['street'] = streetCtrl.text.trim();
+        contact['houseNumber'] = houseCtrl.text.trim();
+        contact['apartment'] = apartmentCtrl.text.trim();
+      }
+      if (saveForLater) {
+        final saved = await http.patch(
+          Uri.parse('$kApi/profile/share-details'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode({
+            if (missingPhone) 'phone': contact['phone'],
+            if (missingEmail) 'email': contact['email'],
+            if (missingCity) 'city': contact['city'],
+            if (missingAddress) 'street': contact['street'],
+            if (missingAddress) 'house_number': contact['houseNumber'],
+            if (missingAddress) 'apartment': contact['apartment'],
+          }),
+        );
+        if (saved.statusCode != 200 && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('הפרטים ישותפו כעת, אך לא נשמרו בפרופיל'),
+          ));
+        }
+      }
+    }
+
+    return <String, String>{
+      if (selection['name'] == true) 'name': contact['name']!,
+      if (selection['phone'] == true) 'phone': contact['phone']!,
+      if (selection['email'] == true) 'email': contact['email']!,
+      if (selection['city'] == true) 'city': contact['city']!,
+      if (selection['address'] == true) 'address': formattedAddress(),
+    };
   } catch (_) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -613,7 +866,7 @@ Future<void> _confirmAndOpenExternalLink(
               ),
               const SizedBox(width: 12),
               const Expanded(
-                child: Text('ישראל מבקש לעצור רגע',
+                child: Text('מידע בטוח · AI מבקש לעצור רגע',
                     textAlign: TextAlign.right,
                     style:
                         TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
@@ -5662,7 +5915,9 @@ class UserAvatar extends StatelessWidget {
       );
     }
     return GestureDetector(
-      onDoubleTap: picUrl != null ? () => _showExpandedImage(context) : null,
+      onTap: picUrl != null && !_isEmojiAvatar(picUrl)
+          ? () => _showExpandedImage(context)
+          : null,
       child: CircleAvatar(
         radius: radius,
         backgroundColor: kPrimary,
@@ -6866,7 +7121,7 @@ class _MainShellContentState extends State<_MainShellContent> {
           (user) => user?['id']?.toString() == kSystemGuideId,
           orElse: () => <String, dynamic>{
             'id': kSystemGuideId,
-            'name': 'ישראל – מדריך בתשובה',
+            'name': 'מידע בטוח · AI',
           },
         )!;
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
@@ -12369,10 +12624,12 @@ class _LocationAutocompleteField extends StatefulWidget {
   final TextEditingController controller;
   final String label;
   final String? hint;
+  final ValueChanged<String>? onChanged;
   const _LocationAutocompleteField({
     required this.controller,
     this.label = 'עיר או אזור',
     this.hint,
+    this.onChanged,
   });
 
   @override
@@ -12426,13 +12683,19 @@ class _LocationAutocompleteFieldState
           };
           return combined.take(30);
         },
-        onSelected: (option) => widget.controller.text = option,
+        onSelected: (option) {
+          widget.controller.text = option;
+          widget.onChanged?.call(option);
+        },
         fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
             TextField(
           controller: controller,
           focusNode: focusNode,
           textDirection: TextDirection.rtl,
-          onChanged: _searchGovernmentLocations,
+          onChanged: (value) {
+            _searchGovernmentLocations(value);
+            widget.onChanged?.call(value);
+          },
           onSubmitted: (_) => onSubmitted(),
           decoration: InputDecoration(
             labelText: widget.label,
@@ -12476,9 +12739,11 @@ class _LocationAutocompleteFieldState
 class _StreetAutocompleteField extends StatefulWidget {
   final TextEditingController controller;
   final TextEditingController cityController;
+  final ValueChanged<String>? onChanged;
   const _StreetAutocompleteField({
     required this.controller,
     required this.cityController,
+    this.onChanged,
   });
 
   @override
@@ -12529,13 +12794,19 @@ class _StreetAutocompleteFieldState extends State<_StreetAutocompleteField> {
         textEditingController: widget.controller,
         focusNode: _focusNode,
         optionsBuilder: (_) => _streets,
-        onSelected: (street) => widget.controller.text = street,
+        onSelected: (street) {
+          widget.controller.text = street;
+          widget.onChanged?.call(street);
+        },
         fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
             TextField(
           controller: controller,
           focusNode: focusNode,
           textDirection: TextDirection.rtl,
-          onChanged: _search,
+          onChanged: (value) {
+            _search(value);
+            widget.onChanged?.call(value);
+          },
           decoration: const InputDecoration(hintText: 'הקלד שם רחוב'),
         ),
         optionsViewBuilder: (context, onSelected, options) => Align(
@@ -12603,6 +12874,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   double _radius = 0; // 0 = no radius filter
   Map<String, dynamic>? _selectedItem;
   bool _showPostForm = false;
+  bool _showMyListings = false;
 
   @override
   void initState() {
@@ -12705,6 +12977,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
       setState(() {
         _selectedItem = null;
         _showPostForm = true;
+        _showMyListings = false;
       });
       return;
     }
@@ -12728,6 +13001,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
       setState(() {
         _selectedItem = item;
         _showPostForm = false;
+        _showMyListings = false;
       });
       return;
     }
@@ -12750,17 +13024,29 @@ class _ListingsScreenState extends State<ListingsScreen> {
       backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
         backgroundColor: kPrimary,
+        elevation: 0,
         toolbarHeight: 72,
+        titleSpacing: 16,
         title: _BrandAppBarTitle(me: widget.me),
         actions: [
           IconButton(
             icon: const Icon(Icons.format_list_bulleted, color: Colors.white),
             tooltip: 'המודעות שלי',
-            onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => MyListingsScreen(token: widget.token),
-                )),
+            onPressed: () {
+              if (MediaQuery.sizeOf(context).width >= 900) {
+                setState(() {
+                  _selectedItem = null;
+                  _showPostForm = false;
+                  _showMyListings = true;
+                });
+              } else {
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => MyListingsScreen(token: widget.token),
+                    ));
+              }
+            },
           ),
           TextButton.icon(
             onPressed: _openPost,
@@ -12772,67 +13058,70 @@ class _ListingsScreenState extends State<ListingsScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(150),
+          preferredSize: const Size.fromHeight(38),
           child: Container(
-            padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-            child: Column(children: [
-              _MainNavigationTabs(
-                currentIndex: widget.currentMainNavigationIndex,
-                onSelected: widget.onMainNavigationSelected,
-              ),
-              TextField(
-                controller: _searchCtrl,
-                onChanged: _onSearchChanged,
-                textDirection: TextDirection.rtl,
-                decoration: InputDecoration(
-                  hintText: 'חיפוש במודעות... ',
-                  prefixIcon: const Icon(Icons.search, size: 21),
-                  suffixIcon: _searchCtrl.text.isEmpty
-                      ? null
-                      : IconButton(
-                          tooltip: 'נקה חיפוש',
-                          icon: const Icon(Icons.close, size: 19),
-                          onPressed: () {
-                            _searchCtrl.clear();
-                            setState(() => _queryFilter = '');
-                            _load();
-                          },
-                        ),
-                  filled: true,
-                  fillColor: Colors.white,
-                  isDense: true,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 7),
-              Row(children: [
-                _quickFilterChip('all', 'הכול'),
-                const SizedBox(width: 5),
-                _quickFilterChip('free', 'למסירה'),
-                const SizedBox(width: 5),
-                _quickFilterChip('sale', 'למכירה'),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: _showFilterSheet,
-                  icon: Icon(Icons.tune,
-                      size: 18,
-                      color: _hasAdvancedFilters
-                          ? const Color(0xFFFFD180)
-                          : Colors.white),
-                  label: Text(
-                    _hasAdvancedFilters ? 'סינון פעיל' : 'סינון',
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                  ),
-                ),
-              ]),
-            ]),
+            color: kHeader,
+            child: _MainNavigationTabs(
+              currentIndex: widget.currentMainNavigationIndex,
+              onSelected: widget.onMainNavigationSelected,
+            ),
           ),
         ),
       ),
       body: Column(children: [
+        Container(
+          color: const Color(0xFFF5F7FA),
+          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+          child: Column(children: [
+            TextField(
+              controller: _searchCtrl,
+              onChanged: _onSearchChanged,
+              textDirection: TextDirection.rtl,
+              decoration: InputDecoration(
+                hintText: 'חיפוש במודעות... ',
+                prefixIcon: const Icon(Icons.search, size: 21),
+                suffixIcon: _searchCtrl.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'נקה חיפוש',
+                        icon: const Icon(Icons.close, size: 19),
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          setState(() => _queryFilter = '');
+                          _load();
+                        },
+                      ),
+                filled: true,
+                fillColor: Colors.white,
+                isDense: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+            const SizedBox(height: 7),
+            Row(children: [
+              _quickFilterChip('all', 'הכול'),
+              const SizedBox(width: 5),
+              _quickFilterChip('free', 'למסירה'),
+              const SizedBox(width: 5),
+              _quickFilterChip('sale', 'למכירה'),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _showFilterSheet,
+                icon: Icon(Icons.tune,
+                    size: 18, color: _hasAdvancedFilters ? kPrimary : kSubtext),
+                label: Text(
+                  _hasAdvancedFilters ? 'סינון פעיל' : 'סינון',
+                  style: TextStyle(
+                      color: _hasAdvancedFilters ? kPrimary : kSubtext,
+                      fontSize: 12),
+                ),
+              ),
+            ]),
+          ]),
+        ),
         // ── List ────────────────────────────────────────────────────
         Expanded(
           child: _loading
@@ -12885,34 +13174,41 @@ class _ListingsScreenState extends State<ListingsScreen> {
       SizedBox(width: 410, child: listPane),
       const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFD9DEE1)),
       Expanded(
-        child: _showPostForm
-            ? PostListingScreen(
+        child: _showMyListings
+            ? MyListingsScreen(
                 token: widget.token,
-                me: widget.me,
                 embedded: true,
-                onClose: () => setState(() => _showPostForm = false),
-                onPublished: () async {
-                  setState(() => _showPostForm = false);
-                  await _load();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('המודעה פורסמה בהצלחה')));
-                  }
-                },
+                onClose: () => setState(() => _showMyListings = false),
               )
-            : _selectedItem == null
-                ? const _DesktopListingWelcome()
-                : ListingDetailScreen(
-                    key: ValueKey(_selectedItem!['id']),
-                    item: _selectedItem!,
+            : _showPostForm
+                ? PostListingScreen(
                     token: widget.token,
                     me: widget.me,
-                    socket: widget.socket,
                     embedded: true,
-                    onClose: () => setState(() => _selectedItem = null),
-                    onUpdated: _load,
-                    onConversationStarted: widget.onConversationStarted,
-                  ),
+                    onClose: () => setState(() => _showPostForm = false),
+                    onPublished: () async {
+                      setState(() => _showPostForm = false);
+                      await _load();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text('המודעה פורסמה בהצלחה')));
+                      }
+                    },
+                  )
+                : _selectedItem == null
+                    ? const _DesktopListingWelcome()
+                    : ListingDetailScreen(
+                        key: ValueKey(_selectedItem!['id']),
+                        item: _selectedItem!,
+                        token: widget.token,
+                        me: widget.me,
+                        socket: widget.socket,
+                        embedded: true,
+                        onClose: () => setState(() => _selectedItem = null),
+                        onUpdated: _load,
+                        onConversationStarted: widget.onConversationStarted,
+                      ),
       ),
     ]);
   }
@@ -12932,7 +13228,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   Widget _quickFilterChip(String value, String label) {
     final selected = _typeFilter == value;
     return Material(
-      color: selected ? Colors.white : const Color(0xFF17679D),
+      color: selected ? kPrimary : Colors.white,
       borderRadius: BorderRadius.circular(9),
       child: InkWell(
         borderRadius: BorderRadius.circular(9),
@@ -12941,11 +13237,12 @@ class _ListingsScreenState extends State<ListingsScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(9),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.55)),
+            border: Border.all(
+                color: selected ? kPrimary : const Color(0xFFB8D4E8)),
           ),
           child: Text(label,
               style: TextStyle(
-                color: selected ? kPrimary : Colors.white,
+                color: selected ? Colors.white : kPrimary,
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
               )),
@@ -13519,7 +13816,10 @@ class _ListingContactPreferences extends StatelessWidget {
 
 class MyListingsScreen extends StatefulWidget {
   final String token;
-  const MyListingsScreen({super.key, required this.token});
+  final bool embedded;
+  final VoidCallback? onClose;
+  const MyListingsScreen(
+      {super.key, required this.token, this.embedded = false, this.onClose});
   @override
   State<MyListingsScreen> createState() => _MyListingsScreenState();
 }
@@ -13607,7 +13907,12 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
         backgroundColor: kPrimary,
         title: const Text('המודעות שלי',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        leading: BackButton(color: Colors.white),
+        leading: BackButton(
+          color: Colors.white,
+          onPressed: widget.embedded
+              ? widget.onClose
+              : () => Navigator.maybePop(context),
+        ),
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
@@ -18361,7 +18666,6 @@ class ConversationsScreen extends StatefulWidget {
 
 class _ConversationsScreenState extends State<ConversationsScreen> {
   int _tab = 0;
-  static const _tabs = ['שיחות', 'קבוצות', 'מודעות'];
   List<Map<String, dynamic>> _groups = [];
   bool _groupsLoaded = false;
   bool _openingPendingGroupInvitation = false;
@@ -19021,73 +19325,49 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                   fontWeight: FontWeight.w400),
             ),
             const SizedBox(height: 4),
-            if (_searching)
-              TextField(
-                autofocus: true,
-                style: const TextStyle(color: kTextDark, fontSize: 14),
-                cursorColor: kPrimary,
-                textDirection: TextDirection.rtl,
-                decoration: InputDecoration(
-                  hintText: 'חיפוש שיחה או קבוצה...',
-                  hintStyle: const TextStyle(color: kSubtext),
-                  filled: true,
-                  fillColor: Colors.white,
-                  prefixIcon:
-                      const Icon(Icons.search, color: kPrimary, size: 20),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(22),
-                    borderSide: BorderSide.none,
-                  ),
+            Row(
+              children: [
+                if ((widget.me?['profile_pic_url'] as String?) != null)
+                  UserAvatar(
+                    radius: 17,
+                    picUrl: widget.me?['profile_pic_url'] as String?,
+                    name: widget.me?['name'] as String? ?? '',
+                  )
+                else
+                  _magenDavid(size: 34),
+                const SizedBox(width: 10),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('בתשובה',
+                            style: TextStyle(
+                                fontSize: 19,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                                height: 1.1)),
+                        SizedBox(width: 7),
+                        Text('תוכן יהודי נקי',
+                            style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                                height: 1.1)),
+                      ],
+                    ),
+                    Text(widget.me?['name'] as String? ?? '',
+                        style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w300,
+                            color: Colors.white70,
+                            letterSpacing: 0.5)),
+                  ],
                 ),
-                onChanged: (value) =>
-                    setState(() => _searchQuery = value.trim().toLowerCase()),
-              )
-            else
-              Row(
-                children: [
-                  if ((widget.me?['profile_pic_url'] as String?) != null)
-                    UserAvatar(
-                      radius: 17,
-                      picUrl: widget.me?['profile_pic_url'] as String?,
-                      name: widget.me?['name'] as String? ?? '',
-                    )
-                  else
-                    _magenDavid(size: 34),
-                  const SizedBox(width: 10),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text('בתשובה',
-                              style: TextStyle(
-                                  fontSize: 19,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white,
-                                  height: 1.1)),
-                          SizedBox(width: 7),
-                          Text('תוכן יהודי נקי',
-                              style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white,
-                                  height: 1.1)),
-                        ],
-                      ),
-                      Text(widget.me?['name'] as String? ?? '',
-                          style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w300,
-                              color: Colors.white70,
-                              letterSpacing: 0.5)),
-                    ],
-                  ),
-                ],
-              ),
+              ],
+            ),
           ],
         ),
         actions: [
@@ -19159,44 +19439,41 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           preferredSize: const Size.fromHeight(38),
           child: Container(
             color: kHeader,
-            child: Row(
-              children: List.generate(_tabs.length, (i) {
-                final active = widget.currentMainNavigationIndex == i;
-                return Expanded(
-                  child: GestureDetector(
-                    onTap: () => widget.onMainNavigationSelected(i),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 9),
-                      decoration: BoxDecoration(
-                        border: Border(
-                          bottom: BorderSide(
-                            color: active ? Colors.white : Colors.transparent,
-                            width: 2,
-                          ),
-                        ),
-                      ),
-                      child: Text(
-                        _tabs[i],
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight:
-                              active ? FontWeight.w600 : FontWeight.w400,
-                          color: active
-                              ? Colors.white
-                              : Colors.white.withValues(alpha: 0.6),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }),
+            child: _MainNavigationTabs(
+              currentIndex: widget.currentMainNavigationIndex,
+              onSelected: widget.onMainNavigationSelected,
             ),
           ),
         ),
       ),
       body: Column(
         children: [
+          if (_searching)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+              child: TextField(
+                autofocus: true,
+                style: const TextStyle(color: kTextDark, fontSize: 14),
+                cursorColor: kPrimary,
+                textDirection: TextDirection.rtl,
+                decoration: InputDecoration(
+                  hintText: 'חיפוש שיחה או קבוצה...',
+                  hintStyle: const TextStyle(color: kSubtext),
+                  filled: true,
+                  fillColor: Colors.white,
+                  prefixIcon:
+                      const Icon(Icons.search, color: kPrimary, size: 20),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(22),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+                onChanged: (value) =>
+                    setState(() => _searchQuery = value.trim().toLowerCase()),
+              ),
+            ),
           // List
           if (_tab == 2) ...[
             // ── קבוצות tab ──
@@ -19387,7 +19664,16 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                                   .toLowerCase()
                                   .contains(_searchQuery))
                               .toList()
-                          : <Map<String, dynamic>>[];
+                          : _tab == 1
+                              ? _groups
+                                  .where((g) =>
+                                      (widget.groupUnreadCounts[g['id']] ?? 0) >
+                                          0 &&
+                                      (g['name'] as String? ?? '')
+                                          .toLowerCase()
+                                          .contains(_searchQuery))
+                                  .toList()
+                              : <Map<String, dynamic>>[];
                       final conversationItems = <Map<String, dynamic>>[
                         ...showGroups.map((group) => {
                               'isGroup': true,
@@ -23138,8 +23424,11 @@ class _ChatScreenState extends State<ChatScreen> {
                           const Icon(Icons.verified_user_outlined,
                               size: 10, color: Colors.white60),
                           const SizedBox(width: 3),
-                          const Text('מסונן · מקוון',
-                              style: TextStyle(
+                          Text(
+                              widget.recipient['id'] == kSystemGuideId
+                                  ? 'AI אוטומטי · מסונן'
+                                  : 'מסונן · מקוון',
+                              style: const TextStyle(
                                   fontSize: 11, color: Colors.white70)),
                           const SizedBox(width: 5),
                           _contactFilterStatusButton(),
@@ -23498,6 +23787,58 @@ class _ChatScreenState extends State<ChatScreen> {
                     _TypingDots(),
                   ],
                 ),
+              ),
+            ),
+
+          if (widget.recipient['id'] == kSystemGuideId)
+            SizedBox(
+              height: 43,
+              child: ListView(
+                reverse: true,
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                children: const [
+                  ('מוצרים', Icons.compare_arrows, 'עזור לי להשוות בין מוצרים'),
+                  (
+                    'תחבורה',
+                    Icons.directions_bus_outlined,
+                    'אני צריך מידע על תחבורה ציבורית'
+                  ),
+                  (
+                    'ממשלה',
+                    Icons.account_balance_outlined,
+                    'אני מחפש שירות או טופס ממשלתי'
+                  ),
+                  (
+                    'בריאות',
+                    Icons.local_hospital_outlined,
+                    'אני מחפש מידע רשמי על שירותי בריאות'
+                  ),
+                  (
+                    'משכנתא',
+                    Icons.home_work_outlined,
+                    'הסבר לי מידע כללי על משכנתא'
+                  ),
+                  (
+                    'טיולים',
+                    Icons.hiking_outlined,
+                    'עזור לי למצוא מידע על טיול'
+                  ),
+                ]
+                    .map((item) => Padding(
+                          padding: const EdgeInsetsDirectional.only(start: 6),
+                          child: ActionChip(
+                            avatar: Icon(item.$2, size: 17),
+                            label: Text(item.$1),
+                            onPressed: () {
+                              _msgCtrl.text = item.$3;
+                              _msgCtrl.selection = TextSelection.collapsed(
+                                  offset: _msgCtrl.text.length);
+                              _msgFocusNode.requestFocus();
+                            },
+                          ),
+                        ))
+                    .toList(),
               ),
             ),
 
@@ -24066,12 +24407,13 @@ Future<void> _openGuideAppLink(BuildContext context, String destination,
   );
 }
 
-String _guideAppLinkLabel(String destination) => switch (destination) {
+String _guideAppLinkLabel(String destination, {String? issueId}) =>
+    switch (destination) {
       'content-filter' => 'פתח הגדרות סינון',
       'profile' => 'פתח עריכת פרופיל',
       'personal-media' => 'פתח את המדיה שלי',
       'screenshot' => 'פתח צילום מסך',
-      'my-issues' => 'פתח את הפניות שלי',
+      'my-issues' => issueId == null ? 'פתח את הפניות שלי' : 'פתח את הפנייה',
       _ => 'פתח באפליקציה',
     };
 
@@ -25754,12 +26096,16 @@ class _SharedContactCard extends StatelessWidget {
     final name = contact['name']?.toString() ?? 'איש קשר';
     final phone = contact['phone']?.toString() ?? '';
     final email = contact['email']?.toString() ?? '';
+    final city = contact['city']?.toString() ?? '';
+    final address = contact['address']?.toString() ?? '';
     final appUserId = contact['appUserId']?.toString() ?? '';
     final profilePicUrl = contact['profilePicUrl']?.toString();
     final uri = Uri.parse('$kServer/contact-vcard').replace(queryParameters: {
       'name': name,
       if (phone.isNotEmpty) 'phone': phone,
       if (email.isNotEmpty) 'email': email,
+      if (city.isNotEmpty) 'city': city,
+      if (address.isNotEmpty) 'address': address,
     });
     return Container(
       width: 250,
@@ -25783,6 +26129,8 @@ class _SharedContactCard extends StatelessWidget {
               Text(email,
                   textDirection: TextDirection.ltr,
                   overflow: TextOverflow.ellipsis),
+            if (city.isNotEmpty) Text('עיר: $city'),
+            if (address.isNotEmpty) Text('כתובת: $address'),
           ])),
         ]),
         const Divider(),
@@ -26046,7 +26394,7 @@ class _PrivateContactFilterEntry extends StatelessWidget {
                 width: 64,
                 height: 68,
                 fit: BoxFit.contain,
-                semanticLabel: 'ישראל מזכיר את הגדרות הסינון',
+                semanticLabel: 'עוזר ה-AI מזכיר את הגדרות הסינון',
               ),
             ),
             const SizedBox(height: 4),
@@ -26312,6 +26660,16 @@ class _MessageBubble extends StatelessWidget {
     final rawText = message['text'] as String? ?? '';
     final sharedContact = !isFile ? _sharedContactFromText(rawText) : null;
     final sharedUrl = !isFile ? _firstHttpUrl(rawText) : null;
+    final guideExternalUrls = !isFile && message['from'] == kSystemGuideId
+        ? RegExp(r'https://[^\s<>]+')
+            .allMatches(rawText)
+            .map((match) => match.group(0))
+            .whereType<String>()
+            .map((value) => value.replaceFirst(RegExp(r'[.,;:)\]]+$'), ''))
+            .toSet()
+            .take(5)
+            .toList()
+        : const <String>[];
     final linkRegex = RegExp(r'betshuva://listing/([\w\-]+)');
     final linkMatch = !isFile ? linkRegex.firstMatch(rawText) : null;
     final listingId = linkMatch?.group(1);
@@ -26358,7 +26716,7 @@ class _MessageBubble extends StatelessWidget {
               children: [
                 Semantics(
                   image: true,
-                  label: 'מדבקת ישראל: ${avielSticker.label}',
+                  label: 'מדבקת עוזר AI: ${avielSticker.label}',
                   child: Image.asset(avielSticker.asset,
                       width: 190, height: 190, fit: BoxFit.contain),
                 ),
@@ -26686,11 +27044,29 @@ class _MessageBubble extends StatelessWidget {
               _WebsiteLinkPreview(sharedUrl, token),
             ],
 
+            if (guideExternalUrls.length > 1) ...[
+              const SizedBox(height: 7),
+              Wrap(
+                spacing: 6,
+                runSpacing: 5,
+                alignment: WrapAlignment.end,
+                children: guideExternalUrls.indexed
+                    .map((entry) => OutlinedButton.icon(
+                          onPressed: () => launchUrl(Uri.parse(entry.$2),
+                              mode: LaunchMode.externalApplication),
+                          icon: const Icon(Icons.verified_outlined, size: 16),
+                          label: Text('מקור ${entry.$1 + 1}'),
+                        ))
+                    .toList(),
+              ),
+            ],
+
             if (guideAppDestination != null) ...[
               const SizedBox(height: 8),
               Semantics(
                 button: true,
-                label: _guideAppLinkLabel(guideAppDestination),
+                label: _guideAppLinkLabel(guideAppDestination,
+                    issueId: guideIssueId),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(9),
                   onTap: () => _openGuideAppLink(
@@ -26712,7 +27088,8 @@ class _MessageBubble extends StatelessWidget {
                             size: 18, color: kPrimary),
                         const SizedBox(width: 7),
                         Text(
-                          _guideAppLinkLabel(guideAppDestination),
+                          _guideAppLinkLabel(guideAppDestination,
+                              issueId: guideIssueId),
                           style: const TextStyle(
                             color: kPrimary,
                             fontWeight: FontWeight.w600,
@@ -27514,7 +27891,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
               tabs: [
                 const Tab(
                     icon: Icon(Icons.emoji_emotions_outlined), text: 'אימוג׳י'),
-                const Tab(icon: Icon(Icons.light_mode_outlined), text: 'ישראל'),
+                const Tab(icon: Icon(Icons.light_mode_outlined), text: 'AI'),
                 ...categories.map((category) => Tab(
                       icon: Icon(_expressionCategoryIcon(
                           category['id']?.toString() ?? '')),
@@ -27563,7 +27940,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
           final sticker = _avielGuideStickers[index];
           return Semantics(
             button: true,
-            label: 'מדבקת ישראל: ${sticker.label}',
+            label: 'מדבקת עוזר AI: ${sticker.label}',
             child: InkWell(
               borderRadius: BorderRadius.circular(16),
               onTap: () =>
@@ -28220,7 +28597,10 @@ class _GroupsScreenState extends State<GroupsScreen> {
     return Scaffold(
       backgroundColor: kBg,
       appBar: AppBar(
+        backgroundColor: kPrimary,
+        elevation: 0,
         toolbarHeight: 72,
+        titleSpacing: 16,
         title: _BrandAppBarTitle(me: widget.me),
         actions: [
           IconButton(
@@ -28232,9 +28612,12 @@ class _GroupsScreenState extends State<GroupsScreen> {
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(38),
-          child: _MainNavigationTabs(
-            currentIndex: widget.currentMainNavigationIndex,
-            onSelected: widget.onMainNavigationSelected,
+          child: Container(
+            color: kHeader,
+            child: _MainNavigationTabs(
+              currentIndex: widget.currentMainNavigationIndex,
+              onSelected: widget.onMainNavigationSelected,
+            ),
           ),
         ),
       ),
@@ -32603,572 +32986,583 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                               ],
                                             ),
                                             child: Column(
+                                              mainAxisSize: MainAxisSize.min,
                                               crossAxisAlignment:
                                                   CrossAxisAlignment.end,
                                               children: [
                                                 if (uploadStatus ==
+                                                        'blocked_content' &&
+                                                    uploadFileType != 'image')
+                                                  const Center(
+                                                      child:
+                                                          _SystemContentWarningArtwork())
+                                                else if (uploadStatus ==
                                                     'blocked_content')
-                                                  if (uploadFileType != 'image')
-                                                    const Center(
-                                                        child:
-                                                            _SystemContentWarningArtwork())
-                                                  else if (avielSticker != null)
-                                                    Semantics(
-                                                      image: true,
-                                                      label:
-                                                          'מדבקת ישראל: ${avielSticker.label}',
-                                                      child: Image.asset(
-                                                          avielSticker.asset,
-                                                          width: 180,
-                                                          height: 180,
-                                                          fit: BoxFit.contain),
-                                                    )
-                                                  else if (msg['fileUrl'] != null &&
-                                                      _normalizeIncomingFileType(msg['fileType'] as String?,
-                                                              fileUrl: msg['fileUrl']
-                                                                  as String?,
-                                                              fileName: msg['fileName']
-                                                                  as String?) ==
-                                                          'audio')
-                                                    Column(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .end,
-                                                        children: [
-                                                          VoiceMessagePlayer(
-                                                              url:
-                                                                  msg['fileUrl']
-                                                                      as String,
-                                                              isMe: isMe,
-                                                              senderAvatarUrl: _voiceMessageSender(
-                                                                          msg,
-                                                                          isMe)?[
-                                                                      'profile_pic_url']
-                                                                  ?.toString(),
-                                                              senderName: _voiceMessageSender(
-                                                                              msg,
-                                                                              isMe)?[
-                                                                          'name']
-                                                                      ?.toString() ??
-                                                                  msg['senderName']
-                                                                      ?.toString() ??
-                                                                  '',
-                                                              initialDurationSeconds:
-                                                                  (msg['audioDurationSeconds']
-                                                                          as num?)
-                                                                      ?.toDouble()),
-                                                          _AudioScanBadge(
-                                                              transcript: msg[
-                                                                      'audioTranscript']
-                                                                  ?.toString()),
-                                                        ])
-                                                  else if (msg['fileUrl'] != null &&
-                                                      _normalizeIncomingFileType(msg['fileType'] as String?,
-                                                              fileUrl:
-                                                                  msg['fileUrl']
-                                                                      as String?,
-                                                              fileName: msg['fileName']
-                                                                  as String?) ==
-                                                          'video')
-                                                    Stack(
-                                                      children: [
-                                                        if (kIsWeb)
-                                                          NativeWebVideoPlayer(
-                                                            key: ValueKey(
-                                                                'group-video-${msg['fileUrl']}'),
-                                                            url: _absoluteMediaUrl(
+                                                  const SizedBox.shrink()
+                                                else if (avielSticker != null)
+                                                  Semantics(
+                                                    image: true,
+                                                    label:
+                                                        'מדבקת עוזר AI: ${avielSticker.label}',
+                                                    child: Image.asset(
+                                                        avielSticker.asset,
+                                                        width: 180,
+                                                        height: 180,
+                                                        fit: BoxFit.contain),
+                                                  )
+                                                else if (msg['fileUrl'] !=
+                                                        null &&
+                                                    _normalizeIncomingFileType(
+                                                            msg['fileType']
+                                                                as String?,
+                                                            fileUrl:
                                                                 msg['fileUrl']
-                                                                    as String),
-                                                            onOptions: () =>
-                                                                _showMessageOptions(
-                                                                    msg),
-                                                          )
-                                                        else
-                                                          _ChatVideoPlayer(
+                                                                    as String?,
+                                                            fileName: msg[
+                                                                    'fileName']
+                                                                as String?) ==
+                                                        'audio')
+                                                  Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .end,
+                                                      children: [
+                                                        VoiceMessagePlayer(
                                                             url: msg['fileUrl']
                                                                 as String,
+                                                            isMe: isMe,
+                                                            senderAvatarUrl:
+                                                                _voiceMessageSender(msg,
+                                                                            isMe)?[
+                                                                        'profile_pic_url']
+                                                                    ?.toString(),
+                                                            senderName: _voiceMessageSender(
+                                                                            msg,
+                                                                            isMe)?[
+                                                                        'name']
+                                                                    ?.toString() ??
+                                                                msg['senderName']
+                                                                    ?.toString() ??
+                                                                '',
+                                                            initialDurationSeconds:
+                                                                (msg['audioDurationSeconds']
+                                                                        as num?)
+                                                                    ?.toDouble()),
+                                                        _AudioScanBadge(
+                                                            transcript: msg[
+                                                                    'audioTranscript']
+                                                                ?.toString()),
+                                                      ])
+                                                else if (msg['fileUrl'] !=
+                                                        null &&
+                                                    _normalizeIncomingFileType(
+                                                            msg['fileType']
+                                                                as String?,
+                                                            fileUrl:
+                                                                msg['fileUrl']
+                                                                    as String?,
+                                                            fileName: msg[
+                                                                    'fileName']
+                                                                as String?) ==
+                                                        'video')
+                                                  Stack(
+                                                    children: [
+                                                      if (kIsWeb)
+                                                        NativeWebVideoPlayer(
+                                                          key: ValueKey(
+                                                              'group-video-${msg['fileUrl']}'),
+                                                          url: _absoluteMediaUrl(
+                                                              msg['fileUrl']
+                                                                  as String),
+                                                          onOptions: () =>
+                                                              _showMessageOptions(
+                                                                  msg),
+                                                        )
+                                                      else
+                                                        _ChatVideoPlayer(
+                                                          url: msg['fileUrl']
+                                                              as String,
+                                                        ),
+                                                      Positioned(
+                                                        right: 7,
+                                                        top: 7,
+                                                        child:
+                                                            _ImageClassificationBadges(
+                                                          message: msg,
+                                                        ),
+                                                      ),
+                                                      Positioned(
+                                                        left: 7,
+                                                        top: 7,
+                                                        child:
+                                                            _ImageStatusBadge(
+                                                          message: msg,
+                                                          isMe: isMe,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  )
+                                                else if (msg['fileUrl'] !=
+                                                        null &&
+                                                    _normalizeIncomingFileType(
+                                                            msg['fileType']
+                                                                as String?,
+                                                            fileUrl:
+                                                                msg['fileUrl']
+                                                                    as String?,
+                                                            fileName: msg[
+                                                                    'fileName']
+                                                                as String?) ==
+                                                        'image')
+                                                  GestureDetector(
+                                                    onTap: () => Navigator.push(
+                                                        context,
+                                                        MaterialPageRoute(
+                                                            builder: (_) => ImagePreviewScreen(
+                                                                url: msg['fileUrl']
+                                                                    as String,
+                                                                filename:
+                                                                    msg['fileName']
+                                                                        as String?,
+                                                                urls: _conversationImageMessages(_messages)
+                                                                    .map((item) =>
+                                                                        item['fileUrl']
+                                                                            as String)
+                                                                    .toList(),
+                                                                filenames: _conversationImageMessages(_messages)
+                                                                    .map((item) =>
+                                                                        item['fileName'] as String?)
+                                                                    .toList(),
+                                                                dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
+                                                                messages: _conversationImageMessages(_messages),
+                                                                onMessageOptions: _showMessageOptions,
+                                                                initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
+                                                    child: Stack(
+                                                      children: [
+                                                        ClipRRect(
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(8),
+                                                          child:
+                                                              _PersistentMediaImage(
+                                                            url: msg['fileUrl']
+                                                                as String,
+                                                            width: 200,
+                                                            height: 160,
+                                                            fit: BoxFit.contain,
+                                                            loadingBuilder: (_) => Container(
+                                                                width: 200,
+                                                                height: 160,
+                                                                color: kBorder,
+                                                                child: const Center(
+                                                                    child: CircularProgressIndicator(
+                                                                        color:
+                                                                            kPrimary,
+                                                                        strokeWidth:
+                                                                            2))),
+                                                            errorBuilder: (_) => Container(
+                                                                width: 200,
+                                                                height: 160,
+                                                                color: kBorder,
+                                                                child: const Icon(
+                                                                    Icons
+                                                                        .broken_image,
+                                                                    color:
+                                                                        kSubtext)),
                                                           ),
+                                                        ),
+                                                        Positioned(
+                                                          left: 7,
+                                                          bottom: 7,
+                                                          child:
+                                                              _ImageStatusBadge(
+                                                                  message: msg,
+                                                                  isMe: isMe),
+                                                        ),
                                                         Positioned(
                                                           right: 7,
                                                           top: 7,
                                                           child:
                                                               _ImageClassificationBadges(
-                                                            message: msg,
-                                                          ),
+                                                                  message: msg),
                                                         ),
                                                         Positioned(
                                                           left: 7,
                                                           top: 7,
                                                           child:
-                                                              _ImageStatusBadge(
-                                                            message: msg,
-                                                            isMe: isMe,
+                                                              _SmallImageOptionsButton(
+                                                            onPressed: () =>
+                                                                _showMessageOptions(
+                                                                    msg),
                                                           ),
                                                         ),
                                                       ],
-                                                    )
-                                                  else if (msg['fileUrl'] != null &&
-                                                      _normalizeIncomingFileType(
-                                                              msg['fileType'] as String?,
-                                                              fileUrl: msg['fileUrl'] as String?,
-                                                              fileName: msg['fileName'] as String?) ==
-                                                          'image')
-                                                    GestureDetector(
-                                                      onTap: () => Navigator.push(
-                                                          context,
-                                                          MaterialPageRoute(
-                                                              builder: (_) => ImagePreviewScreen(
-                                                                  url: msg['fileUrl']
-                                                                      as String,
-                                                                  filename:
-                                                                      msg['fileName']
-                                                                          as String?,
-                                                                  urls: _conversationImageMessages(_messages)
-                                                                      .map((item) =>
-                                                                          item['fileUrl']
-                                                                              as String)
-                                                                      .toList(),
-                                                                  filenames: _conversationImageMessages(_messages)
-                                                                      .map((item) =>
-                                                                          item['fileName'] as String?)
-                                                                      .toList(),
-                                                                  dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
-                                                                  messages: _conversationImageMessages(_messages),
-                                                                  onMessageOptions: _showMessageOptions,
-                                                                  initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
-                                                      child: Stack(
+                                                    ),
+                                                  )
+                                                else if (msg['fileUrl'] != null)
+                                                  InkWell(
+                                                    onTap: () => isPdfFile
+                                                        ? widget.onDocumentOpen !=
+                                                                null
+                                                            ? widget.onDocumentOpen!(
+                                                                msg['fileUrl']
+                                                                    as String,
+                                                                msg['fileName']
+                                                                    as String?,
+                                                                true)
+                                                            : _openPdfInsideApp(
+                                                                context,
+                                                                msg['fileUrl']
+                                                                    as String,
+                                                                msg['fileName']
+                                                                    as String?)
+                                                        : isOfficeFile
+                                                            ? widget.onDocumentOpen !=
+                                                                    null
+                                                                ? widget.onDocumentOpen!(
+                                                                    msg['fileUrl']
+                                                                        as String,
+                                                                    msg['fileName']
+                                                                        as String?,
+                                                                    false)
+                                                                : _openOfficeInsideApp(
+                                                                    context,
+                                                                    msg['fileUrl']
+                                                                        as String,
+                                                                    msg['fileName']
+                                                                        as String?,
+                                                                    widget
+                                                                        .token)
+                                                            : _downloadChatFile(
+                                                                context,
+                                                                msg['fileUrl']
+                                                                    as String,
+                                                                msg['fileName']
+                                                                    as String?),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            8),
+                                                    child: Padding(
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                          vertical: 4),
+                                                      child: Column(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .end,
                                                         children: [
-                                                          ClipRRect(
-                                                            borderRadius:
-                                                                BorderRadius
-                                                                    .circular(
-                                                                        8),
-                                                            child:
-                                                                _PersistentMediaImage(
-                                                              url:
-                                                                  msg['fileUrl']
-                                                                      as String,
-                                                              width: 200,
-                                                              height: 160,
-                                                              fit: BoxFit
-                                                                  .contain,
-                                                              loadingBuilder: (_) => Container(
-                                                                  width: 200,
-                                                                  height: 160,
+                                                          if (isPdfFile) ...[
+                                                            _PdfFirstPagePreview(
+                                                                url: msg[
+                                                                        'fileUrl']
+                                                                    as String),
+                                                            const SizedBox(
+                                                                height: 6),
+                                                          ] else if (isOfficeFile) ...[
+                                                            _OfficeDocumentPreview(
+                                                                fileUrl: msg[
+                                                                        'fileUrl']
+                                                                    as String,
+                                                                fileName:
+                                                                    msg['fileName']
+                                                                            ?.toString() ??
+                                                                        'מסמך',
+                                                                token: widget
+                                                                    .token),
+                                                            const SizedBox(
+                                                                height: 6),
+                                                          ],
+                                                          Row(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              Icon(
+                                                                  isPdfFile
+                                                                      ? Icons
+                                                                          .picture_as_pdf_outlined
+                                                                      : isOfficeFile
+                                                                          ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true
+                                                                              ? Icons
+                                                                                  .table_chart_outlined
+                                                                              : Icons
+                                                                                  .description_outlined)
+                                                                          : Icons
+                                                                              .insert_drive_file,
+                                                                  size: 16,
+                                                                  color: isPdfFile
+                                                                      ? Colors
+                                                                          .red
+                                                                      : kSubtext),
+                                                              const SizedBox(
+                                                                  width: 4),
+                                                              Flexible(
+                                                                  child: Text(
+                                                                      msg['fileName']
+                                                                              as String? ??
+                                                                          msg['text']
+                                                                              as String? ??
+                                                                          '',
+                                                                      style: const TextStyle(
+                                                                          fontSize:
+                                                                              13))),
+                                                              const SizedBox(
+                                                                  width: 10),
+                                                              const Icon(
+                                                                  Icons
+                                                                      .download,
+                                                                  size: 19,
                                                                   color:
-                                                                      kBorder,
-                                                                  child: const Center(
-                                                                      child: CircularProgressIndicator(
-                                                                          color:
-                                                                              kPrimary,
-                                                                          strokeWidth:
-                                                                              2))),
-                                                              errorBuilder: (_) => Container(
-                                                                  width: 200,
-                                                                  height: 160,
-                                                                  color:
-                                                                      kBorder,
-                                                                  child: const Icon(
-                                                                      Icons
-                                                                          .broken_image,
+                                                                      kPrimary),
+                                                              const SizedBox(
+                                                                  width: 3),
+                                                              const Text(
+                                                                  'הורדה',
+                                                                  style: TextStyle(
+                                                                      fontSize:
+                                                                          12,
                                                                       color:
-                                                                          kSubtext)),
-                                                            ),
-                                                          ),
-                                                          Positioned(
-                                                            left: 7,
-                                                            bottom: 7,
-                                                            child:
-                                                                _ImageStatusBadge(
-                                                                    message:
-                                                                        msg,
-                                                                    isMe: isMe),
-                                                          ),
-                                                          Positioned(
-                                                            right: 7,
-                                                            top: 7,
-                                                            child:
-                                                                _ImageClassificationBadges(
-                                                                    message:
-                                                                        msg),
-                                                          ),
-                                                          Positioned(
-                                                            left: 7,
-                                                            top: 7,
-                                                            child:
-                                                                _SmallImageOptionsButton(
-                                                              onPressed: () =>
-                                                                  _showMessageOptions(
-                                                                      msg),
-                                                            ),
+                                                                          kPrimary,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w600)),
+                                                            ],
                                                           ),
                                                         ],
                                                       ),
-                                                    )
-                                                  else if (msg['fileUrl'] != null)
-                                                    InkWell(
-                                                      onTap: () => isPdfFile
-                                                          ? widget.onDocumentOpen !=
-                                                                  null
-                                                              ? widget.onDocumentOpen!(
-                                                                  msg['fileUrl']
-                                                                      as String,
-                                                                  msg['fileName']
-                                                                      as String?,
-                                                                  true)
-                                                              : _openPdfInsideApp(
-                                                                  context,
-                                                                  msg['fileUrl']
-                                                                      as String,
-                                                                  msg['fileName']
-                                                                      as String?)
-                                                          : isOfficeFile
-                                                              ? widget.onDocumentOpen !=
-                                                                      null
-                                                                  ? widget.onDocumentOpen!(
-                                                                      msg['fileUrl']
-                                                                          as String,
-                                                                      msg['fileName']
-                                                                          as String?,
-                                                                      false)
-                                                                  : _openOfficeInsideApp(
-                                                                      context,
-                                                                      msg['fileUrl']
-                                                                          as String,
-                                                                      msg['fileName']
-                                                                          as String?,
-                                                                      widget
-                                                                          .token)
-                                                              : _downloadChatFile(
-                                                                  context,
-                                                                  msg['fileUrl']
-                                                                      as String,
-                                                                  msg['fileName']
-                                                                      as String?),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              8),
-                                                      child: Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                vertical: 4),
-                                                        child: Column(
-                                                          mainAxisSize:
-                                                              MainAxisSize.min,
-                                                          crossAxisAlignment:
-                                                              CrossAxisAlignment
-                                                                  .end,
-                                                          children: [
-                                                            if (isPdfFile) ...[
-                                                              _PdfFirstPagePreview(
-                                                                  url: msg[
-                                                                          'fileUrl']
-                                                                      as String),
-                                                              const SizedBox(
-                                                                  height: 6),
-                                                            ] else if (isOfficeFile) ...[
-                                                              _OfficeDocumentPreview(
-                                                                  fileUrl: msg[
-                                                                          'fileUrl']
-                                                                      as String,
-                                                                  fileName: msg[
-                                                                              'fileName']
-                                                                          ?.toString() ??
-                                                                      'מסמך',
-                                                                  token: widget
-                                                                      .token),
-                                                              const SizedBox(
-                                                                  height: 6),
-                                                            ],
-                                                            Row(
-                                                              mainAxisSize:
-                                                                  MainAxisSize
-                                                                      .min,
-                                                              children: [
-                                                                Icon(
-                                                                    isPdfFile
-                                                                        ? Icons
-                                                                            .picture_as_pdf_outlined
-                                                                        : isOfficeFile
-                                                                            ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true
-                                                                                ? Icons
-                                                                                    .table_chart_outlined
-                                                                                : Icons
-                                                                                    .description_outlined)
-                                                                            : Icons
-                                                                                .insert_drive_file,
-                                                                    size: 16,
-                                                                    color: isPdfFile
-                                                                        ? Colors
-                                                                            .red
-                                                                        : kSubtext),
-                                                                const SizedBox(
-                                                                    width: 4),
-                                                                Flexible(
-                                                                    child: Text(
-                                                                        msg['fileName']
-                                                                                as String? ??
-                                                                            msg['text']
-                                                                                as String? ??
-                                                                            '',
-                                                                        style: const TextStyle(
-                                                                            fontSize:
-                                                                                13))),
-                                                                const SizedBox(
-                                                                    width: 10),
-                                                                const Icon(
-                                                                    Icons
-                                                                        .download,
-                                                                    size: 19,
-                                                                    color:
-                                                                        kPrimary),
-                                                                const SizedBox(
-                                                                    width: 3),
-                                                                const Text(
-                                                                    'הורדה',
-                                                                    style: TextStyle(
-                                                                        fontSize:
-                                                                            12,
-                                                                        color:
-                                                                            kPrimary,
-                                                                        fontWeight:
-                                                                            FontWeight.w600)),
-                                                              ],
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    )
-                                                  else if (isFilterUpdateAnnouncement)
-                                                    InkWell(
-                                                      onTap:
-                                                          _updateMyGroupFilter,
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              8),
-                                                      child: Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                vertical: 4),
-                                                        child: Column(
-                                                          crossAxisAlignment:
-                                                              CrossAxisAlignment
-                                                                  .end,
-                                                          children: [
-                                                            const Row(
-                                                              mainAxisSize:
-                                                                  MainAxisSize
-                                                                      .min,
-                                                              children: [
-                                                                Icon(
-                                                                    Icons
-                                                                        .shield_outlined,
-                                                                    color:
-                                                                        kPrimary,
-                                                                    size: 21),
-                                                                SizedBox(
-                                                                    width: 8),
-                                                                Text(
-                                                                  'סינון הקבוצה עודכן',
-                                                                  style:
-                                                                      TextStyle(
-                                                                    fontSize:
-                                                                        15,
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .w800,
-                                                                  ),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                            const SizedBox(
-                                                                height: 5),
-                                                            Text(
-                                                              filterUpdateDetails
-                                                                      .isEmpty
-                                                                  ? 'מדיניות התוכן של הקבוצה השתנתה.'
-                                                                  : filterUpdateDetails,
-                                                              textAlign:
-                                                                  TextAlign
-                                                                      .right,
-                                                              textDirection:
-                                                                  TextDirection
-                                                                      .rtl,
-                                                              style: const TextStyle(
-                                                                  fontSize: 12,
+                                                    ),
+                                                  )
+                                                else if (isFilterUpdateAnnouncement)
+                                                  InkWell(
+                                                    onTap: _updateMyGroupFilter,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            8),
+                                                    child: Padding(
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                          vertical: 4),
+                                                      child: Column(
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .end,
+                                                        children: [
+                                                          const Row(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              Icon(
+                                                                  Icons
+                                                                      .shield_outlined,
                                                                   color:
-                                                                      kTextDark,
-                                                                  height: 1.5),
-                                                            ),
-                                                            const SizedBox(
-                                                                height: 7),
-                                                            Row(
-                                                              mainAxisSize:
-                                                                  MainAxisSize
-                                                                      .min,
-                                                              children: [
-                                                                const Icon(
-                                                                    Icons
-                                                                        .tune_rounded,
-                                                                    size: 17,
+                                                                      kPrimary,
+                                                                  size: 21),
+                                                              SizedBox(
+                                                                  width: 8),
+                                                              Text(
+                                                                'סינון הקבוצה עודכן',
+                                                                style:
+                                                                    TextStyle(
+                                                                  fontSize: 15,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w800,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                          const SizedBox(
+                                                              height: 5),
+                                                          Text(
+                                                            filterUpdateDetails
+                                                                    .isEmpty
+                                                                ? 'מדיניות התוכן של הקבוצה השתנתה.'
+                                                                : filterUpdateDetails,
+                                                            textAlign:
+                                                                TextAlign.right,
+                                                            textDirection:
+                                                                TextDirection
+                                                                    .rtl,
+                                                            style:
+                                                                const TextStyle(
+                                                                    fontSize:
+                                                                        12,
                                                                     color:
-                                                                        kPrimary),
-                                                                const SizedBox(
-                                                                    width: 4),
-                                                                const Text(
-                                                                  'עדכון הסינון האישי שלי',
+                                                                        kTextDark,
+                                                                    height:
+                                                                        1.5),
+                                                          ),
+                                                          const SizedBox(
+                                                              height: 7),
+                                                          Row(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              const Icon(
+                                                                  Icons
+                                                                      .tune_rounded,
+                                                                  size: 17,
+                                                                  color:
+                                                                      kPrimary),
+                                                              const SizedBox(
+                                                                  width: 4),
+                                                              const Text(
+                                                                'עדכון הסינון האישי שלי',
+                                                                style:
+                                                                    TextStyle(
+                                                                  color:
+                                                                      kPrimary,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .bold,
+                                                                  decoration:
+                                                                      TextDecoration
+                                                                          .underline,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  )
+                                                else if (isEducationAnnouncement)
+                                                  InkWell(
+                                                    onTap: () =>
+                                                        _openEducationAnnouncement(
+                                                            msg),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            8),
+                                                    child: Padding(
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                          vertical: 4),
+                                                      child: Column(
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .end,
+                                                        children: [
+                                                          Row(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              const Icon(
+                                                                  Icons
+                                                                      .fact_check_outlined,
+                                                                  color:
+                                                                      kPrimary),
+                                                              const SizedBox(
+                                                                  width: 8),
+                                                              Flexible(
+                                                                child: Text(
+                                                                  msg['text']
+                                                                          as String? ??
+                                                                      '',
+                                                                  style: const TextStyle(
+                                                                      fontSize:
+                                                                          15,
+                                                                      height:
+                                                                          1.4,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w600),
+                                                                  textDirection:
+                                                                      TextDirection
+                                                                          .rtl,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                          const SizedBox(
+                                                              height: 8),
+                                                          Row(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              const Icon(
+                                                                  Icons
+                                                                      .touch_app,
+                                                                  size: 17,
+                                                                  color:
+                                                                      kPrimary),
+                                                              const SizedBox(
+                                                                  width: 4),
+                                                              const Text(
+                                                                  'לחץ לפתיחת המסמך',
+                                                                  style: TextStyle(
+                                                                      color:
+                                                                          kPrimary,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .bold)),
+                                                              const SizedBox(
+                                                                  width: 12),
+                                                              Container(
+                                                                padding: const EdgeInsets
+                                                                    .symmetric(
+                                                                    horizontal:
+                                                                        9,
+                                                                    vertical:
+                                                                        3),
+                                                                decoration:
+                                                                    BoxDecoration(
+                                                                  color: educationStatusColor
+                                                                      .withValues(
+                                                                          alpha:
+                                                                              .12),
+                                                                  borderRadius:
+                                                                      BorderRadius
+                                                                          .circular(
+                                                                              14),
+                                                                ),
+                                                                child: Text(
+                                                                  educationStatusLabel,
                                                                   style:
                                                                       TextStyle(
                                                                     color:
-                                                                        kPrimary,
+                                                                        educationStatusColor,
                                                                     fontWeight:
                                                                         FontWeight
                                                                             .bold,
-                                                                    decoration:
-                                                                        TextDecoration
-                                                                            .underline,
+                                                                    fontSize:
+                                                                        12,
                                                                   ),
                                                                 ),
-                                                              ],
-                                                            ),
-                                                          ],
-                                                        ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ],
                                                       ),
-                                                    )
-                                                  else if (isEducationAnnouncement)
-                                                    InkWell(
-                                                      onTap: () =>
-                                                          _openEducationAnnouncement(
-                                                              msg),
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              8),
-                                                      child: Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                vertical: 4),
-                                                        child: Column(
-                                                          crossAxisAlignment:
-                                                              CrossAxisAlignment
-                                                                  .end,
-                                                          children: [
-                                                            Row(
-                                                              mainAxisSize:
-                                                                  MainAxisSize
-                                                                      .min,
-                                                              children: [
-                                                                const Icon(
-                                                                    Icons
-                                                                        .fact_check_outlined,
-                                                                    color:
-                                                                        kPrimary),
-                                                                const SizedBox(
-                                                                    width: 8),
-                                                                Flexible(
-                                                                  child: Text(
-                                                                    msg['text']
-                                                                            as String? ??
-                                                                        '',
-                                                                    style: const TextStyle(
-                                                                        fontSize:
-                                                                            15,
-                                                                        height:
-                                                                            1.4,
-                                                                        fontWeight:
-                                                                            FontWeight.w600),
-                                                                    textDirection:
-                                                                        TextDirection
-                                                                            .rtl,
-                                                                  ),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                            const SizedBox(
-                                                                height: 8),
-                                                            Row(
-                                                              mainAxisSize:
-                                                                  MainAxisSize
-                                                                      .min,
-                                                              children: [
-                                                                const Icon(
-                                                                    Icons
-                                                                        .touch_app,
-                                                                    size: 17,
-                                                                    color:
-                                                                        kPrimary),
-                                                                const SizedBox(
-                                                                    width: 4),
-                                                                const Text(
-                                                                    'לחץ לפתיחת המסמך',
-                                                                    style: TextStyle(
-                                                                        color:
-                                                                            kPrimary,
-                                                                        fontWeight:
-                                                                            FontWeight.bold)),
-                                                                const SizedBox(
-                                                                    width: 12),
-                                                                Container(
-                                                                  padding: const EdgeInsets
-                                                                      .symmetric(
-                                                                      horizontal:
-                                                                          9,
-                                                                      vertical:
-                                                                          3),
-                                                                  decoration:
-                                                                      BoxDecoration(
-                                                                    color: educationStatusColor
-                                                                        .withValues(
-                                                                            alpha:
-                                                                                .12),
-                                                                    borderRadius:
-                                                                        BorderRadius.circular(
-                                                                            14),
-                                                                  ),
-                                                                  child: Text(
-                                                                    educationStatusLabel,
-                                                                    style:
-                                                                        TextStyle(
-                                                                      color:
-                                                                          educationStatusColor,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .bold,
-                                                                      fontSize:
-                                                                          12,
-                                                                    ),
-                                                                  ),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    )
-                                                  else if (sharedContact != null)
-                                                    _SharedContactCard(
-                                                      sharedContact,
-                                                      token: widget.token,
-                                                      me: widget.me,
-                                                    )
-                                                  else
-                                                    Text(
-                                                      msg['text'] as String? ??
-                                                          '',
-                                                      style: TextStyle(
-                                                          fontSize:
-                                                              _looksLikeSticker(
-                                                                      msg['text']
-                                                                              as String? ??
-                                                                          '')
-                                                                  ? 44
-                                                                  : 15,
-                                                          height: 1.4),
-                                                      textDirection:
-                                                          TextDirection.rtl,
                                                     ),
+                                                  )
+                                                else if (sharedContact != null)
+                                                  _SharedContactCard(
+                                                    sharedContact,
+                                                    token: widget.token,
+                                                    me: widget.me,
+                                                  )
+                                                else
+                                                  Text(
+                                                    msg['text'] as String? ??
+                                                        '',
+                                                    style: TextStyle(
+                                                        fontSize: _looksLikeSticker(
+                                                                msg['text']
+                                                                        as String? ??
+                                                                    '')
+                                                            ? 44
+                                                            : 15,
+                                                        height: 1.4),
+                                                    textDirection:
+                                                        TextDirection.rtl,
+                                                  ),
                                                 if (sharedUrl != null) ...[
                                                   const SizedBox(height: 8),
                                                   _WebsiteLinkPreview(
@@ -35643,6 +36037,32 @@ class _OpenIssuesScreenState extends State<OpenIssuesScreen> {
     );
   }
 
+  Future<void> _openIssueImage(
+      List<Map<String, dynamic>> images, int initialIndex) async {
+    if (images.isEmpty) return;
+    final urls = images
+        .map((image) => image['url']?.toString() ?? '')
+        .where((url) => url.isNotEmpty)
+        .toList();
+    if (urls.isEmpty || !mounted) return;
+    final filenames = images
+        .where((image) => (image['url']?.toString() ?? '').isNotEmpty)
+        .map((image) => image['name']?.toString())
+        .toList();
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ImagePreviewScreen(
+          url: urls[initialIndex.clamp(0, urls.length - 1)],
+          filename: filenames[initialIndex.clamp(0, filenames.length - 1)],
+          urls: urls,
+          filenames: filenames,
+          initialIndex: initialIndex,
+        ),
+      ),
+    );
+  }
+
   Widget _issueCard(Map<String, dynamic> issue) {
     final status = issue['status']?.toString() ?? '';
     final closed = ['resolved', 'closed'].contains(status);
@@ -35652,6 +36072,11 @@ class _OpenIssuesScreenState extends State<OpenIssuesScreen> {
     final attachments = (issue['attachments'] as List? ?? const [])
         .whereType<Map>()
         .map((value) => Map<String, dynamic>.from(value))
+        .toList();
+    final imageAttachments = attachments
+        .where((attachment) =>
+            attachment['type'] == 'image' &&
+            (attachment['url']?.toString() ?? '').isNotEmpty)
         .toList();
     final isNewlyOpened = issue['id']?.toString() == widget.initialIssueId;
     return Card(
@@ -35719,8 +36144,11 @@ class _OpenIssuesScreenState extends State<OpenIssuesScreen> {
                 return InkWell(
                   onTap: url.isEmpty
                       ? null
-                      : () => launchUrl(Uri.parse(_absoluteMediaUrl(url)),
-                          mode: LaunchMode.externalApplication),
+                      : isImage
+                          ? () => _openIssueImage(imageAttachments,
+                              imageAttachments.indexOf(attachment))
+                          : () => launchUrl(Uri.parse(_absoluteMediaUrl(url)),
+                              mode: LaunchMode.externalApplication),
                   child: Container(
                     width: 150,
                     padding: const EdgeInsets.all(8),
@@ -38967,7 +39395,7 @@ class _AdminOpenIssuesViewState extends State<_AdminOpenIssuesView> {
                 textDirection: TextDirection.rtl,
                 decoration: const InputDecoration(
                   labelText: 'תשובה למשתמש',
-                  helperText: 'תגובה תישלח למשתמש כהודעה מישראל',
+                  helperText: 'תגובה תישלח למשתמש כהודעה משירות ה-AI',
                 ),
               ),
             ]),

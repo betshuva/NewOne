@@ -34,6 +34,7 @@ String _descriptionTemplate(String requestType) => requestType == 'development'
     : _bugDescriptionTemplate;
 
 final appScreenshotNavigatorKey = GlobalKey<NavigatorState>();
+final appScreenshotBoundaryKey = GlobalKey();
 final appScreenshotToken = ValueNotifier<String?>(null);
 final appScreenshotBusy = ValueNotifier<bool>(false);
 Future<void> Function(String issueId)? appScreenshotIssueOpened;
@@ -73,11 +74,6 @@ Future<void> openAppScreenshot(
   String? token,
   AppScreenshotDestination? destination,
 }) async {
-  if (!kIsWeb) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('צילום מסך מתוך האפליקציה זמין כעת בווב')));
-    return;
-  }
   final authToken = token ?? appScreenshotToken.value;
   if (appScreenshotBusy.value) return;
   if (authToken == null || authToken.isEmpty) {
@@ -90,11 +86,28 @@ Future<void> openAppScreenshot(
   }
   appScreenshotBusy.value = true;
   try {
+    final capturePixelRatio =
+        MediaQuery.devicePixelRatioOf(context).clamp(1.0, 2.0);
     // Browsers require getDisplayMedia to run directly inside the click's user
     // activation. Even a short delay can make Chrome reject the request before
     // showing its tab picker.
-    final captured =
-        await captureCurrentAppScreen().timeout(const Duration(seconds: 45));
+    final Uint8List captured;
+    if (kIsWeb) {
+      captured =
+          await captureCurrentAppScreen().timeout(const Duration(seconds: 45));
+    } else {
+      await WidgetsBinding.instance.endOfFrame;
+      final boundary = appScreenshotBoundaryKey.currentContext
+          ?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) {
+        throw StateError('app capture boundary unavailable');
+      }
+      final image = await boundary.toImage(pixelRatio: capturePixelRatio);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      if (data == null) throw StateError('app capture failed');
+      captured = data.buffer.asUint8List();
+    }
     if (!context.mounted) return;
     final navigator = appScreenshotNavigatorKey.currentState;
     if (navigator == null) throw StateError('app navigator unavailable');
@@ -302,7 +315,7 @@ Future<void> _sendScreenshot(
   if (context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(destination.id == _israelId
-            ? 'צילום המסך נשלח לישראל'
+            ? 'צילום המסך נשלח לשירות ה-AI'
             : 'צילום המסך נשלח')));
   }
 }
@@ -439,7 +452,7 @@ class _ScreenshotEditorState extends State<_ScreenshotEditor> {
             width: 440,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               const Text(
-                'צילום המסך, התיאור והקבצים שתצרף יישמרו יחד בקריאה לצוות הפיתוח. לאחר הפתיחה תועבר לקריאה, וישראל ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב.',
+                'צילום המסך, התיאור והקבצים שתצרף יישמרו יחד בקריאה לצוות הפיתוח. לאחר הפתיחה תועבר לקריאה, ושירות ה-AI ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב.',
                 textDirection: TextDirection.rtl,
                 textAlign: TextAlign.right,
               ),
@@ -560,33 +573,41 @@ class _ScreenshotEditorState extends State<_ScreenshotEditor> {
   Widget build(BuildContext context) {
     final visibleWidth = 1 - _left - _right;
     final visibleHeight = 1 - _top - _bottom;
+    final compact = MediaQuery.sizeOf(context).width < 600;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('עריכת צילום מסך'),
+        title: Text(compact ? 'צילום מסך' : 'עריכת צילום מסך'),
         leading: IconButton(
+            tooltip: 'סגור',
             icon: const Icon(Icons.close),
             onPressed: () => Navigator.pop(context)),
-        actions: [
-          TextButton.icon(
-            onPressed: _working ? null : _sendToIsrael,
-            icon: const Icon(Icons.support_agent, color: Colors.white),
-            label: const Text('פנייה לתמיכה',
-                style: TextStyle(color: Colors.white)),
-          ),
-          TextButton.icon(
-            onPressed: _working ? null : () => _finish(true),
-            icon: const Icon(Icons.download_outlined, color: Colors.white),
-            label: const Text('שמור', style: TextStyle(color: Colors.white)),
-          ),
-          FilledButton.icon(
-            onPressed: _working
-                ? null
-                : () => _finish(false, chooseTargets: widget.sendsToIsrael),
-            icon: const Icon(Icons.send),
-            label: Text(widget.sendsToIsrael ? 'שלח למשתמש או לקבוצה' : 'שלח'),
-          ),
-          const SizedBox(width: 10),
-        ],
+        actions: compact
+            ? null
+            : [
+                TextButton.icon(
+                  onPressed: _working ? null : _sendToIsrael,
+                  icon: const Icon(Icons.support_agent, color: Colors.white),
+                  label: const Text('פנייה לתמיכה',
+                      style: TextStyle(color: Colors.white)),
+                ),
+                TextButton.icon(
+                  onPressed: _working ? null : () => _finish(true),
+                  icon:
+                      const Icon(Icons.download_outlined, color: Colors.white),
+                  label:
+                      const Text('שמור', style: TextStyle(color: Colors.white)),
+                ),
+                FilledButton.icon(
+                  onPressed: _working
+                      ? null
+                      : () =>
+                          _finish(false, chooseTargets: widget.sendsToIsrael),
+                  icon: const Icon(Icons.send),
+                  label: Text(
+                      widget.sendsToIsrael ? 'שלח למשתמש או לקבוצה' : 'שלח'),
+                ),
+                const SizedBox(width: 10),
+              ],
       ),
       body: Column(children: [
         Wrap(
@@ -622,7 +643,7 @@ class _ScreenshotEditorState extends State<_ScreenshotEditor> {
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 2, 16, 6),
             child: Text(
-              'ישראל הוא מדריך התמיכה של אפליקציית בתשובה. אפשר לשלוח אליו צילום מסך כדי לקבל עזרה או להכין פנייה למפתח.',
+              'מידע בטוח · AI הוא שירות אוטומטי ומדריך התמיכה של אפליקציית בתשובה. אפשר לשלוח אליו צילום מסך כדי לקבל עזרה או להכין פנייה למפתח.',
               textAlign: TextAlign.center,
               textDirection: TextDirection.rtl,
             ),
@@ -742,6 +763,45 @@ class _ScreenshotEditorState extends State<_ScreenshotEditor> {
             }),
           ),
         ),
+        if (compact)
+          SafeArea(
+            top: false,
+            child: Material(
+              elevation: 8,
+              color: Theme.of(context).colorScheme.surface,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+                child: Row(children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _working ? null : _sendToIsrael,
+                      icon: const Icon(Icons.support_agent),
+                      label: const Text('תמיכה'),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _working ? null : () => _finish(true),
+                      icon: const Icon(Icons.download_outlined),
+                      label: const Text('שמור'),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _working
+                          ? null
+                          : () => _finish(false,
+                              chooseTargets: widget.sendsToIsrael),
+                      icon: const Icon(Icons.send),
+                      label: const Text('שלח'),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ),
       ]),
     );
   }

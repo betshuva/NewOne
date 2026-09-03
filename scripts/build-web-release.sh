@@ -10,12 +10,25 @@ cd "$repo_root/flutter_app"
 "$flutter_bin" pub get
 "$flutter_bin" build web --release --no-wasm-dry-run --base-href "$web_base"
 
+# Some Flutter SDK builds can leave the template fallback (`/`) in place even
+# when --base-href is supplied. Normalize the generated artifact before the
+# release checks so a sub-path deployment can never be published at root.
+sed -i "s#<base href=\"/\">#<base href=\"$web_base\">#" \
+  "$build_dir/index.html"
+
 # Replace the source placeholder with a content-derived id on every build.
 # This gives browsers a new bootstrap and application URL immediately after a
 # deployment, even when an older Flutter bundle is still present in cache.
 build_id="$(sha256sum "$build_dir/main.dart.js" | cut -c1-16)"
-sed -i "s/__BETSHUVA_BUILD_ID__/$build_id/g" \
-  "$build_dir/index.html" "$build_dir/flutter_bootstrap.js"
+# A local deployment watcher may replace the placeholder with a timestamp
+# while Flutter is compiling. Replace either form so the published cache key
+# always matches the content-derived release id.
+sed -i -E \
+  "s/(flutter_bootstrap\.js\?v=)(__BETSHUVA_BUILD_ID__|[0-9a-f]+)/\1$build_id/g" \
+  "$build_dir/index.html"
+sed -i -E \
+  "s/(main\.dart\.js\?v=)(__BETSHUVA_BUILD_ID__|[0-9a-f]+)/\1$build_id/g" \
+  "$build_dir/flutter_bootstrap.js"
 
 grep -Fq "?v=$build_id" "$build_dir/index.html" || {
   echo "ERROR: index.html is missing the generated build id" >&2

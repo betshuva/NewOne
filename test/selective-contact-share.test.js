@@ -14,18 +14,21 @@ test('my contact dialog lets the sender select each shared field', () => {
   const dialog = source.slice(start, end);
 
   assert.match(dialog, /var shareName = contact\['name'\]!\.isNotEmpty/);
-  assert.match(dialog, /var sharePhone = contact\['phone'\]!\.isNotEmpty/);
-  assert.match(dialog, /var shareEmail = contact\['email'\]!\.isNotEmpty/);
-  assert.equal((dialog.match(/CheckboxListTile\(/g) || []).length, 3);
-  assert.match(dialog, /final hasSelection = shareName \|\| sharePhone \|\| shareEmail/);
+  assert.match(dialog, /var sharePhone = false/);
+  assert.match(dialog, /var shareEmail = false/);
+  assert.match(dialog, /var shareCity = false/);
+  assert.match(dialog, /var shareAddress = false/);
+  assert.equal((dialog.match(/CheckboxListTile\(/g) || []).length, 6);
+  assert.match(dialog, /shareCity \|\|\s+shareAddress/);
   assert.match(dialog, /onPressed: !hasSelection[\s\S]*?\? null/);
 });
 
 test('only selected contact fields are encoded for sending', () => {
-  assert.match(source, /if \(shareName\) 'name': contact\['name'\]!/);
-  assert.match(source, /if \(sharePhone\) 'phone': contact\['phone'\]!/);
-  assert.match(source, /if \(shareEmail\) 'email': contact\['email'\]!/);
-  assert.match(source, /return selectedContact/);
+  assert.match(source, /if \(selection\['name'\] == true\) 'name': contact\['name'\]!/);
+  assert.match(source, /if \(selection\['phone'\] == true\) 'phone': contact\['phone'\]!/);
+  assert.match(source, /if \(selection\['email'\] == true\) 'email': contact\['email'\]!/);
+  assert.match(source, /if \(selection\['city'\] == true\) 'city': contact\['city'\]!/);
+  assert.match(source, /if \(selection\['address'\] == true\) 'address': formattedAddress\(\)/);
 });
 
 test('received contact card tolerates omitted fields', () => {
