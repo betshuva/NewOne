@@ -16,6 +16,7 @@ const MODEL_DIR = process.env.WHISPER_MODEL_DIR ||
 const MAX_AUDIO_SECONDS = 120;
 
 let transcriptionQueue = Promise.resolve();
+let queuedTranscriptions = 0;
 
 function extensionFor(fileName) {
   const extension = path.extname(String(fileName || '')).toLowerCase();
@@ -55,10 +56,15 @@ async function probeAudio(buffer, fileName) {
 }
 
 function transcribeAudio(buffer, fileName) {
+  queuedTranscriptions += 1;
   const task = () => runTool('transcribe', buffer, fileName, 10 * 60_000);
   const result = transcriptionQueue.then(task, task);
   transcriptionQueue = result.catch(() => {});
-  return result;
+  return result.finally(() => { queuedTranscriptions -= 1; });
+}
+
+function isAudioTranscriptionBusy() {
+  return queuedTranscriptions > 0;
 }
 
 function transcriptDigest(transcript) {
@@ -70,4 +76,5 @@ module.exports = {
   probeAudio,
   transcribeAudio,
   transcriptDigest,
+  isAudioTranscriptionBusy,
 };

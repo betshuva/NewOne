@@ -30,7 +30,10 @@ test('server startup recovers uploads interrupted before scan queueing', () => {
   assert.match(source, /sf\.moderation_status='pending'/);
   assert.match(source, /sf\.context_type IN \('chat','group'\)/);
   assert.match(source, /NOT EXISTS \(\s*SELECT 1 FROM pending_scans ps WHERE ps\.file_url=sf\.public_url/);
+  assert.match(source, /if \(recovered\.rowCount\) requestPendingScanRetry\(\)/);
   assert.match(source, /await recoverOrphanedPendingScans\(pool\)/);
+  assert.match(source,
+    /setInterval\(\(\) => recoverOrphanedPendingScans\(pool\)[\s\S]*?30 \* 1000\)/);
 });
 
 test('JWT authentication has no built-in default secret', () => {

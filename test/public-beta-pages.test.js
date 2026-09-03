@@ -44,3 +44,18 @@ test('public child safety standards include the required protections and contact
   assert.match(childSafety, /support@betshuva\.com/);
   assert.match(childSafety, /מוקד 105/);
 });
+
+test('every registration flow exposes the full legal documents before acceptance', () => {
+  const app = read('flutter_app/lib/main.dart');
+  const usages = app.match(/_TermsAgreementTile\(/g) || [];
+
+  // One constructor declaration and three registration-flow usages.
+  assert.equal(usages.length, 4);
+  assert.match(app, /_LegalDocumentLink\(label: 'תנאי השימוש', path: '\/terms'\)/);
+  assert.match(app, /_LegalDocumentLink\(label: 'מדיניות הפרטיות', path: '\/privacy'\)/);
+  assert.match(app, /decoration: TextDecoration\.underline/);
+  assert.doesNotMatch(
+    app,
+    /Text\('קראתי ואני מסכים\/ה לתנאי השימוש ולמדיניות הפרטיות'/,
+  );
+});

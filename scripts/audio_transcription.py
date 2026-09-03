@@ -47,6 +47,7 @@ def main() -> int:
     )
     segments, info = model.transcribe(
         args.path,
+        language="he",
         beam_size=3,
         vad_filter=True,
         condition_on_previous_text=False,

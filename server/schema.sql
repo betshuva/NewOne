@@ -311,6 +311,42 @@ CREATE TABLE IF NOT EXISTS stored_files (
 CREATE INDEX IF NOT EXISTS stored_files_content_sha256_idx
   ON stored_files(content_sha256) WHERE content_sha256 IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS classification_shadow_jobs (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  stored_file_id UUID NOT NULL UNIQUE REFERENCES stored_files(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','running','completed','failed','skipped')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS classification_shadow_jobs_status_idx
+  ON classification_shadow_jobs(status,created_at);
+
+CREATE OR REPLACE FUNCTION enqueue_classification_shadow_job()
+RETURNS trigger AS $$
+BEGIN
+  IF NEW.file_type='image'
+     AND NEW.moderation_details->'classificationStats' IS NOT NULL THEN
+    INSERT INTO classification_shadow_jobs(stored_file_id)
+    VALUES(NEW.id) ON CONFLICT(stored_file_id) DO NOTHING;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS stored_files_shadow_classification ON stored_files;
+CREATE TRIGGER stored_files_shadow_classification
+AFTER INSERT OR UPDATE OF moderation_details ON stored_files
+FOR EACH ROW EXECUTE FUNCTION enqueue_classification_shadow_job();
+INSERT INTO classification_shadow_jobs(stored_file_id)
+SELECT id FROM stored_files
+WHERE file_type='image'
+  AND moderation_details->'classificationStats' IS NOT NULL
+  AND content_purged_at IS NULL
+ON CONFLICT(stored_file_id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS media_classification_appeals (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   stored_file_id UUID NOT NULL REFERENCES stored_files(id) ON DELETE CASCADE,
@@ -325,6 +361,55 @@ CREATE TABLE IF NOT EXISTS media_classification_appeals (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS media_classification_appeals_pending_idx
   ON media_classification_appeals(stored_file_id,user_id) WHERE status='pending';
+
+-- Human labels are evaluation evidence only. They never approve, block, send,
+-- or delete media and therefore cannot bypass the moderation pipeline.
+CREATE TABLE IF NOT EXISTS moderation_ground_truth (
+  stored_file_id UUID PRIMARY KEY REFERENCES stored_files(id) ON DELETE CASCADE,
+  expected_decision TEXT NOT NULL
+    CHECK (expected_decision IN ('approved','rejected')),
+  expected_category TEXT
+    CHECK (expected_category IS NULL OR expected_category IN
+      ('men','women','children','people','nonHumanImages')),
+  reason_class TEXT NOT NULL DEFAULT 'other'
+    CHECK (reason_class IN ('modesty','explicit','classification','other')),
+  reviewer_note TEXT,
+  reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS moderation_provider_calls (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  request_id UUID NOT NULL UNIQUE,
+  stored_file_id UUID REFERENCES stored_files(id) ON DELETE SET NULL,
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL,
+  model TEXT,
+  operation TEXT NOT NULL,
+  workflow TEXT NOT NULL,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL,
+  input_tokens BIGINT NOT NULL DEFAULT 0,
+  output_tokens BIGINT NOT NULL DEFAULT 0,
+  thought_tokens BIGINT NOT NULL DEFAULT 0,
+  total_tokens BIGINT NOT NULL DEFAULT 0,
+  billable_units DOUBLE PRECISION NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  usage_reported BOOLEAN NOT NULL DEFAULT FALSE,
+  cache_hit BOOLEAN NOT NULL DEFAULT FALSE,
+  error_code TEXT,
+  input_price_usd_per_million DOUBLE PRECISION,
+  output_price_usd_per_million DOUBLE PRECISION,
+  unit_price_usd DOUBLE PRECISION,
+  price_source TEXT NOT NULL DEFAULT 'unknown',
+  estimated_cost_usd DOUBLE PRECISION,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS moderation_provider_calls_created_idx
+  ON moderation_provider_calls(created_at DESC);
+CREATE INDEX IF NOT EXISTS moderation_provider_calls_file_idx
+  ON moderation_provider_calls(stored_file_id,created_at DESC);
 
 -- Metadata for encrypted backups in storage owned by the user. Nothing here
 -- deletes local media; release is enabled only after upload verification.

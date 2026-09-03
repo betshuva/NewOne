@@ -18,7 +18,8 @@ test('voice messages show the recorder profile photo instead of a generic icon',
 });
 
 test('private and group voice messages resolve the actual sender avatar', () => {
-  assert.match(source, /senderAvatarUrl: isMe[\s\S]*profile_pic_url/);
+  assert.match(source, /final senderAvatarUrl = isMe[\s\S]*profile_pic_url/);
+  assert.match(source, /senderAvatarUrl: senderAvatarUrl/);
   assert.match(source, /'senderId': map\['sender_id'\]/);
   assert.match(source, /_voiceMessageSender\(\s*msg, isMe\)/);
 });
@@ -30,5 +31,5 @@ test('a single group image keeps and displays its classification', () => {
   assert.match(source, /sendData\['classification'\] \?\? data\['classification'\]/);
   assert.match(
     source,
-    /child: _ImageStatusBadge\([\s\S]{0,700}_ImageClassificationBadges\([\s\S]{0,100}message: msg/);
+    /_ImageStatusBadge\([\s\S]{0,900}message: msg[\s\S]{0,900}_ImageClassificationBadges\([\s\S]{0,150}message: msg/);
 });

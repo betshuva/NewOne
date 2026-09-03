@@ -8,19 +8,25 @@ const source = fs.readFileSync(
   'utf8',
 );
 
-test('blocked private uploads identify the recipient by name', () => {
+test('only destination-filtered private uploads identify the recipient', () => {
   assert.match(source, /final String\? recipientName/);
+  assert.match(source, /final bool destinationFilterRejected/);
   assert.match(source, /Text\('נמען: \$\{recipientName!\.trim\(\)\}'/);
-  assert.match(source, /recipientName: isMe \? recipientName : senderName/);
+  assert.match(source,
+    /if \(destinationFilterRejected &&[\s\S]*?recipientName\?\.trim\(\)\.isNotEmpty == true\)/);
+  assert.match(source,
+    /recipientName: message\['forwardAllowed'\] == true[\s\S]*?isMe \? recipientName : senderName[\s\S]*?: null/);
   assert.match(
     source,
     /recipientName: widget\.recipient\['name'\][\s\S]*?\.toString\(\)/,
   );
 });
 
-test('blocked group uploads identify the destination group', () => {
+test('only destination-filtered group uploads identify the group', () => {
   assert.match(
     source,
-    /recipientName: uploadStatus ==[\s\S]*?'rejected_scan'[\s\S]*?'קבוצת \$\{widget\.group\['name'\]/,
+    /recipientName: uploadStatus ==[\s\S]*?'rejected_scan' &&[\s\S]*?msg\['forwardAllowed'\] ==\s*true[\s\S]*?'קבוצת \$\{widget\.group\['name'\]/,
   );
+  assert.match(source,
+    /destinationFilterRejected:[\s\S]*?msg\['forwardAllowed'\] == true/);
 });

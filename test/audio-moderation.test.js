@@ -19,11 +19,18 @@ test('audio moderation is local, serialized and limited to two minutes', () => {
   assert.match(workerSource, /compute_type="int8"/);
   assert.match(workerSource, /device="cpu"/);
   assert.match(workerSource, /vad_filter=True/);
+  assert.match(workerSource, /language="he"/);
 });
 
 test('audio stays pending until its transcript passes harmful-text moderation', () => {
   const source = fs.readFileSync(path.join(root, 'server', 'index.js'), 'utf8');
   assert.match(source, /allowed\.dbType === 'audio'[\s\S]*pending: true/);
+  assert.match(source,
+    /INSERT INTO pending_scans[\s\S]*?requestPendingScanRetry\(\)/);
+  assert.match(source,
+    /function requestPendingScanRetry\(\)[\s\S]*?setImmediate\([\s\S]*?retryPendingScans\(\)/);
+  assert.match(source,
+    /finally \{[\s\S]*?retryPendingScans\.running = false;[\s\S]*?pendingScanRetryRequested/);
   assert.match(source, /row\.file_type === 'audio'[\s\S]*scanAudio\(buffer, row\.file_name\)/);
   assert.match(source, /moderateChatText\(transcript\)/);
   assert.match(source, /transcriptHash: transcriptDigest\(transcript\)/);
@@ -49,4 +56,30 @@ test('voice recording stops automatically at the server duration limit', () => {
     path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
   assert.equal((source.match(/_recordSeconds >= 120/g) || []).length, 2);
   assert.match(source, /ההקלטה נעצרה לאחר מגבלת שתי דקות/);
+});
+
+test('attachment menus identify the private recipient or group', () => {
+  const source = fs.readFileSync(
+    path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
+  assert.match(source, /שיתוף קובץ עם \$recipientName/);
+  assert.match(source, /שיתוף קובץ בקבוצה \$groupName/);
+});
+
+test('attachment menus use the approved compact five-row grid', () => {
+  const source = fs.readFileSync(
+    path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
+  assert.match(source,
+    /class _AttachGrid[\s\S]*?rowSizes = \[3, 2, 2, 1, 2\]/);
+  assert.ok((source.match(/_AttachGrid\(/g) || []).length >= 3);
+  assert.match(source,
+    /כל הקבצים עוברים בדיקת בטיחות וסינון לפני השליחה/);
+});
+
+test('small chat images expose the three-dot message menu', () => {
+  const source = fs.readFileSync(
+    path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
+  assert.match(source, /class _SmallImageOptionsButton/);
+  assert.match(source, /Icons\.more_vert/);
+  assert.match(source, /_SmallImageOptionsButton\([\s\S]*onMessageOptions!/);
+  assert.match(source, /_SmallImageOptionsButton\([\s\S]*_showMessageOptions/);
 });

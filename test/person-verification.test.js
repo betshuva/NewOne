@@ -141,6 +141,94 @@ test('an uncertain local result without demographics still reaches OpenAI', asyn
   assert.equal(result.verification.decision, 'non_human_confirmed');
 });
 
+test('substantial local person evidence escalates a false scenery result', async () => {
+  let objectCalls = 0;
+  let faceCalls = 0;
+  let openAICalls = 0;
+  const falseScenery = {
+    category: 'nonHumanImages',
+    detectedCategories: ['nonHumanImages'],
+    uncertain: false,
+    life: {
+      'person or people are visible': 0.44,
+      'animal or plant is visible': 0.5429,
+    },
+    stages: [{ name: 'life', personScore: 0.44 }],
+  };
+  const result = await verifyPersonClassification(Buffer.from('portrait'),
+    falseScenery, {
+      scanObjects: async () => {
+        objectCalls += 1;
+        return { available: true, personDetected: true,
+          maxPersonScore: 0.87, persons: [{ score: 0.87 }] };
+      },
+      scanFaces: async () => {
+        faceCalls += 1;
+        return { available: true, faceDetected: true,
+          faceCount: 1, faces: [{ detectionConfidence: 0.98 }] };
+      },
+      classifyOpenAI: async () => {
+        openAICalls += 1;
+        return { available: true, decision: 'person',
+          personCategories: ['men'], confidence: 0.99 };
+      },
+    });
+  assert.equal(objectCalls, 1);
+  assert.equal(faceCalls, 1);
+  assert.equal(openAICalls, 1);
+  assert.equal(result.classification.category, 'men');
+  assert.deepEqual(result.classification.detectedCategories, ['men']);
+  assert.equal(result.verification.decision, 'demographics_reviewed_by_openai');
+});
+
+test('confirmed person without demographics never remains scenery', async () => {
+  const falseScenery = {
+    category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
+    uncertain: false,
+    life: { 'person or people are visible': 0.44 },
+  };
+  const result = await verifyPersonClassification(Buffer.from('portrait'),
+    falseScenery, {
+      scanObjects: async () => ({ available: true, personDetected: true,
+        maxPersonScore: 0.9, persons: [{ score: 0.9 }] }),
+      scanFaces: async () => ({ available: true, faceDetected: true,
+        faceCount: 1, faces: [{}] }),
+      classifyOpenAI: async () => ({ available: false, status: 'error' }),
+    });
+  assert.equal(result.classification.category, 'people');
+  assert.deepEqual(result.classification.detectedCategories, []);
+  assert.equal(result.classification.uncertain, true);
+});
+
+test('Google checks every confident non-human image without unnecessary OpenAI', async () => {
+  let objectCalls = 0;
+  let faceCalls = 0;
+  let openAICalls = 0;
+  const scenery = {
+    category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
+    uncertain: false,
+    life: { 'person or people are visible': 0.04 },
+  };
+  const result = await verifyPersonClassification(Buffer.from('scenery'), scenery, {
+    scanObjects: async () => {
+      objectCalls += 1;
+      return { available: true, personDetected: false, persons: [] };
+    },
+    scanFaces: async () => {
+      faceCalls += 1;
+      return { available: true, faceDetected: false, faces: [] };
+    },
+    classifyOpenAI: async () => {
+      openAICalls += 1;
+      return { available: true, decision: 'non_human', confidence: 1 };
+    },
+  });
+  assert.equal(objectCalls, 1);
+  assert.equal(faceCalls, 1);
+  assert.equal(openAICalls, 0);
+  assert.equal(result.verification.decision, 'non_human_google_consensus');
+});
+
 test('an illustrated person can be rescued when Google person checks are unavailable', async () => {
   const uncertain = {
     category: null,

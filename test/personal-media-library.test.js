@@ -60,10 +60,20 @@ test('approved personal media can be sent to a friend or group by reference', ()
   assert.doesNotMatch(screen, /MultipartRequest\('POST'/);
 });
 
-test('image classification supports a fresh scan and a human appeal', () => {
+test('images support a full fresh scan and a human classification appeal', () => {
   assert.match(server, /CREATE TABLE IF NOT EXISTS media_classification_appeals/);
   assert.match(server, /app\.post\('\/api\/media-library\/:id\/reclassify', auth, messageRateLimit/);
-  assert.match(server, /scanResult = await scanImage\(loaded\.bytes\)/);
+  assert.match(server, /scanResult = await scanImage\(loaded\.bytes,/);
+  assert.match(server, /persistFullImageRescan\(pool, loaded, scanResult, req\.user\.id\)/);
+  assert.match(server, /moderation_status='rejected',moderation_details=\$1/);
+  assert.match(server, /blocked_content_expires_at=now\(\)\+interval '2 minutes'/);
+  assert.match(server, /UPDATE messages SET deleted_for_everyone=TRUE/);
+  assert.match(server, /UPDATE users SET profile_pic_url=NULL/);
+  assert.match(server, /UPDATE groups SET profile_pic_url=NULL/);
+  assert.match(server, /DELETE FROM listing_images/);
+  assert.match(server, /UPDATE listings SET image_url=NULL/);
+  assert.match(server, /UPDATE education_forms SET file_url=NULL/);
+  assert.match(server, /UPDATE shared_gifs SET status='hidden'/);
   assert.match(server, /app\.post\('\/api\/media-library\/:id\/classification-appeal', auth, messageRateLimit/);
   assert.match(server, /INSERT INTO media_classification_appeals/);
   assert.match(server, /SYSTEM_USER_ID, body, loaded\.file\.public_url/);
@@ -73,7 +83,8 @@ test('image classification supports a fresh scan and a human appeal', () => {
   assert.match(server, /source: 'human_review'/);
 
   const app = fs.readFileSync(path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
-  assert.match(app, /בדיקת סיווג נוספת/);
+  assert.match(app, /סריקה נוספת/);
+  assert.doesNotMatch(app, /בדיקת סיווג נוספת/);
   assert.match(app, /ערעור על הסיווג/);
   assert.match(app, /בקשה לבדיקה אנושית/);
   assert.match(app, /צוות ההדרכה של בתשובה/);
@@ -134,14 +145,15 @@ test('released cloud media retries transient image failures in place', () => {
   assert.match(app, /setState\(\(\) => _bytes = _loadPersistentMedia\(widget\.url\)\)/);
 });
 
-test('image reclassification is available from private, group and fullscreen message options', () => {
+test('full image rescan is available from private, group and fullscreen message options', () => {
   assert.match(server, /app\.post\('\/api\/media\/reclassify', auth, messageRateLimit/);
   assert.match(server, /loadAccessibleMediaForReview/);
   assert.match(server, /m\.sender_id=\$1 OR m\.recipient_id=\$1/);
   assert.match(server, /gm\.user_id=\$1 AND gm\.status='member'/);
   const app = fs.readFileSync(path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
   assert.match(app, /Future<void> _requestImageReclassification/);
-  assert.ok((app.match(/title: const Text\('בדיקת סיווג נוספת'\)/g) || []).length >= 2);
+  assert.ok((app.match(/title: const Text\('סריקה נוספת'\)/g) || []).length >= 2);
+  assert.match(app, /body\['status'\] == 'rejected'/);
   assert.match(app, /onMessageOptions: onMessageOptions/);
   assert.match(app, /Icons\.more_vert/);
 });

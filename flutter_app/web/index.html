@@ -35,6 +35,43 @@
 </head>
 <body>
   <script>
+    window.betshuvaCopyImage = async (imageUrl) => {
+      if (!navigator.clipboard?.write || !window.ClipboardItem) {
+        return 'הדפדפן אינו תומך בהעתקת תמונות ללוח';
+      }
+      try {
+        const pngPromise = (async () => {
+          const response = await fetch(imageUrl, {
+            credentials: 'same-origin', cache: 'no-store'
+          });
+          if (!response.ok) throw new Error('image_load_failed');
+          const source = await response.blob();
+          const bitmap = await createImageBitmap(source);
+          const canvas = document.createElement('canvas');
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          canvas.getContext('2d').drawImage(bitmap, 0, 0);
+          bitmap.close();
+          return await new Promise((resolve, reject) =>
+            canvas.toBlob(
+              blob => blob ? resolve(blob) : reject(new Error('png_failed')),
+              'image/png'
+            )
+          );
+        })();
+        await navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': pngPromise })
+        ]);
+        return '';
+      } catch (error) {
+        const text = String(error?.name || error || '').toLowerCase();
+        if (text.includes('notallowed') || text.includes('permission')) {
+          return 'הדפדפן חסם גישה ללוח. יש לאפשר הרשאת לוח ולנסות שוב';
+        }
+        return 'לא ניתן להעתיק את התמונה. נסה לפתוח אותה שוב';
+      }
+    };
+
     // Finish removing stale Flutter workers/caches before loading the app.
     // The Firebase worker is kept because it is used for background push.
     window.betshuvaWebReady = (async () => {

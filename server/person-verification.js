@@ -1,5 +1,7 @@
 'use strict';
 
+const { recordProviderCall } = require('./provider-usage-log');
+
 function hasLocalPeople(classification) {
   return Array.isArray(classification?.detectedCategories) &&
     classification.detectedCategories.some(category =>
@@ -54,10 +56,13 @@ function parseOpenAIDecision(text) {
 }
 
 async function classifyOpenAIPersonPresence(buffer, options = {}) {
+  const startedAt = performance.now();
   const apiKey = String(options.apiKey ?? process.env.OPENAI_API_KEY ?? '').trim();
   if (!apiKey) return { configured: false, available: false, status: 'not_configured' };
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const model = options.model || process.env.OPENAI_VISION_MODEL || 'gpt-5.6-luna';
+  let usageLogged = false;
+  let capturedUsage = null;
   try {
     const response = await fetchImpl('https://api.openai.com/v1/responses', {
       method: 'POST',
@@ -77,25 +82,49 @@ async function classifyOpenAIPersonPresence(buffer, options = {}) {
       signal: AbortSignal.timeout(30000),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${response.status}`);
+    const usage = {
+      inputTokens: Number(data.usage?.input_tokens || 0),
+      outputTokens: Number(data.usage?.output_tokens || 0),
+      totalTokens: Number(data.usage?.total_tokens || 0),
+    };
+    capturedUsage = usage;
+    if (!response.ok) {
+      await recordProviderCall({ provider: 'openai', model,
+        operation: 'person_presence', tracking: options.tracking, status: 'failed',
+        usage, usageReported: Boolean(data.usage),
+        durationMs: Math.round(performance.now() - startedAt),
+        errorCode: data?.error?.code || `HTTP_${response.status}` });
+      usageLogged = true;
+      throw new Error(data?.error?.message || `OpenAI HTTP ${response.status}`);
+    }
     const text = data.output_text || data.output?.flatMap(item => item.content || [])
       .find(item => item.type === 'output_text')?.text;
     const result = parseOpenAIDecision(text);
     if (!result) throw new Error('OpenAI returned an invalid classification');
-    return { configured: true, available: true, status: 'completed', model, ...result };
+    await recordProviderCall({ provider: 'openai', model,
+      operation: 'person_presence', tracking: options.tracking, status: 'completed',
+      usage, usageReported: true,
+      durationMs: Math.round(performance.now() - startedAt) });
+    usageLogged = true;
+    return { configured: true, available: true, status: 'completed', model, ...result,
+      durationMs: Math.round(performance.now() - startedAt),
+      usage };
   } catch (error) {
+    if (!usageLogged) await recordProviderCall({ provider: 'openai', model,
+      operation: 'person_presence', tracking: options.tracking, status: 'failed',
+      usage: capturedUsage, usageReported: capturedUsage != null,
+      durationMs: Math.round(performance.now() - startedAt),
+      errorCode: error?.code || error?.name || 'INVALID_RESPONSE' });
     return { configured: true, available: false, status: 'error',
-      error: String(error?.message || error).slice(0, 300) };
+      error: String(error?.message || error).slice(0, 300),
+      durationMs: Math.round(performance.now() - startedAt) };
   }
 }
 
 async function verifyPersonClassification(buffer, classification, options) {
-  // An uncertain result with no demographic category is exactly where the
-  // local classifier needs a second opinion. Previously it was skipped, so
-  // OpenAI never examined ambiguous posters and illustrations.
-  if (!hasLocalPeople(classification) && classification?.uncertain !== true) {
-    return { classification, verification: { required: false, decision: 'not_needed' } };
-  }
+  // Google person and face detection run for every image. Besides enforcing
+  // the final decision, this gives us a stable reference for measuring the
+  // local classifier's real-world agreement rate.
   const [objects, faces] = await Promise.all([
     options.scanObjects(buffer),
     options.scanFaces(buffer),
@@ -113,11 +142,13 @@ async function verifyPersonClassification(buffer, classification, options) {
   // incomplete (for example, adults surrounding a child). Ask the multimodal
   // model for all visible categories instead of accepting that partial result.
   const needsDemographicReview = googleAvailable && googleFoundPerson && (
+    localCategories.length === 0 ||
     (googlePersonCount >= 2 && localCategories.length < 2) ||
     (googlePersonCount === 1 && localCategories.length > 1)
   );
   if (needsDemographicReview) {
-    const openai = await (options.classifyOpenAI || classifyOpenAIPersonPresence)(buffer);
+    const openai = await (options.classifyOpenAI || classifyOpenAIPersonPresence)(
+      buffer, { tracking: options.tracking });
     providers.openai = openai;
     if (openai.available && openai.decision === 'person') {
       const reviewedCategories = Array.isArray(openai.personCategories)
@@ -143,14 +174,33 @@ async function verifyPersonClassification(buffer, classification, options) {
     }
   }
   if (googleFoundPerson) {
-    return { classification, verification: {
+    const verifiedClassification = localCategories.length
+      ? classification
+      : { ...classification, category: 'people', detectedCategories: [],
+        uncertain: true, uncertainStage: 'demographics' };
+    return { classification: verifiedClassification, verification: {
       required: true, decision: 'person_confirmed',
       confidence: objects.maxPersonScore || faces.faces?.[0]?.detectionConfidence || 0,
       providers,
     } };
   }
 
-  const openai = await (options.classifyOpenAI || classifyOpenAIPersonPresence)(buffer);
+  if (!hasLocalPeople(classification) &&
+      classification?.uncertain !== true) {
+    const verification = {
+      required: true,
+      decision: 'non_human_google_consensus',
+      confidence: 1,
+      providers,
+    };
+    return {
+      classification: nonHumanClassification(classification, verification),
+      verification,
+    };
+  }
+
+  const openai = await (options.classifyOpenAI || classifyOpenAIPersonPresence)(
+    buffer, { tracking: options.tracking });
   providers.openai = openai;
   if (openai.available && openai.decision === 'person') {
     const categories = Array.isArray(openai.personCategories)

@@ -1,6 +1,7 @@
 'use strict';
 
 const sharp = require('sharp');
+const { recordProviderCall } = require('./provider-usage-log');
 
 const GOOGLE_VISION_ENDPOINT = 'https://vision.googleapis.com/v1/images:annotate';
 const MAX_INLINE_IMAGE_BYTES = 7 * 1024 * 1024;
@@ -155,11 +156,13 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
   const timeoutMs = Number(options.timeoutMs ?? process.env.GOOGLE_VISION_TIMEOUT_MS) ||
     DEFAULT_TIMEOUT_MS;
 
+  let requestSent = false;
   try {
     // REST embeds bytes as base64. A derived JPEG is created in memory when
     // necessary so 7–10 MiB uploads fit the 10 MiB JSON limit. The stored and
     // delivered original is never modified.
     const prepared = await prepareInlineImage(buffer);
+    requestSent = true;
     const response = await fetchImpl(GOOGLE_VISION_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -189,6 +192,10 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
     }
 
     const evaluation = evaluateSafeSearch(annotationResponse.safeSearchAnnotation, threshold);
+    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
+      operation: 'safe_search', tracking: options.tracking, status: 'completed',
+      units: 1, usageReported: true,
+      durationMs: Math.round(performance.now() - startedAt) });
     return {
       ...baseResult,
       ...evaluation,
@@ -200,6 +207,11 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
       durationMs: Math.round(performance.now() - startedAt),
     };
   } catch (error) {
+    if (requestSent) await recordProviderCall({ provider: 'google_vision',
+      model: 'cloud-vision-v1', operation: 'safe_search',
+      tracking: options.tracking, status: 'failed', units: 1,
+      durationMs: Math.round(performance.now() - startedAt),
+      errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
     const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
     return {
       ...baseResult,
@@ -246,8 +258,10 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const timeoutMs = Number(options.timeoutMs ?? process.env.GOOGLE_VISION_TIMEOUT_MS) ||
     DEFAULT_TIMEOUT_MS;
+  let requestSent = false;
   try {
     const prepared = await prepareInlineImage(buffer);
+    requestSent = true;
     const response = await fetchImpl(GOOGLE_VISION_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -282,6 +296,10 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
       .filter(person => person.score >= threshold);
     const maxPersonScore = persons.reduce((maximum, person) =>
       Math.max(maximum, person.score), 0);
+    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
+      operation: 'object_localization', tracking: options.tracking,
+      status: 'completed', units: 1, usageReported: true,
+      durationMs: Math.round(performance.now() - startedAt) });
     return {
       ...baseResult,
       available: true,
@@ -296,6 +314,11 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
       durationMs: Math.round(performance.now() - startedAt),
     };
   } catch (error) {
+    if (requestSent) await recordProviderCall({ provider: 'google_vision',
+      model: 'cloud-vision-v1', operation: 'object_localization',
+      tracking: options.tracking, status: 'failed', units: 1,
+      durationMs: Math.round(performance.now() - startedAt),
+      errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
     const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
     return {
       ...baseResult,
@@ -335,8 +358,10 @@ async function scanGoogleFaceDetection(buffer, options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   const timeoutMs = Number(options.timeoutMs ?? process.env.GOOGLE_VISION_TIMEOUT_MS) ||
     DEFAULT_TIMEOUT_MS;
+  let requestSent = false;
   try {
     const prepared = await prepareInlineImage(buffer);
+    requestSent = true;
     const response = await fetchImpl(GOOGLE_VISION_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -366,6 +391,10 @@ async function scanGoogleFaceDetection(buffer, options = {}) {
       detectionConfidence: Number(face.detectionConfidence) || 0,
       boundingPoly: face.boundingPoly || null,
     }));
+    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
+      operation: 'face_detection', tracking: options.tracking,
+      status: 'completed', units: 1, usageReported: true,
+      durationMs: Math.round(performance.now() - startedAt) });
     return {
       ...baseResult,
       available: true,
@@ -379,6 +408,11 @@ async function scanGoogleFaceDetection(buffer, options = {}) {
       durationMs: Math.round(performance.now() - startedAt),
     };
   } catch (error) {
+    if (requestSent) await recordProviderCall({ provider: 'google_vision',
+      model: 'cloud-vision-v1', operation: 'face_detection',
+      tracking: options.tracking, status: 'failed', units: 1,
+      durationMs: Math.round(performance.now() - startedAt),
+      errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
     const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
     return {
       ...baseResult,

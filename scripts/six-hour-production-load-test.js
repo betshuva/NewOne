@@ -14,6 +14,8 @@ const base = process.env.LOAD_API_BASE || 'http://127.0.0.1:5003';
 const durationMs = Number(process.env.LOAD_DURATION_MS || 6 * 60 * 60 * 1000);
 const userCount = Number(process.env.LOAD_USERS || 60);
 const targetRps = Number(process.env.LOAD_RPS || 6);
+const maxSocketUsers = Number(process.env.LOAD_SOCKET_USERS || userCount);
+const videoFixturePath = process.env.LOAD_VIDEO_FIXTURE || '';
 const cleanupAfter = process.env.LOAD_CLEANUP !== 'false';
 const prefix = process.env.LOAD_PREFIX || `LOADTEST-6H-${Date.now()}`;
 const password = `Load-${Date.now()}-Betshuva`;
@@ -107,7 +109,8 @@ async function loginUsers() {
 }
 
 async function setupGroups(pool) {
-  const groupCount = Math.max(3, Math.ceil(userCount / 15));
+  // Keep each admin below the production invitation limit (10/hour).
+  const groupCount = Math.max(3, Math.ceil(userCount / 9));
   for (let g = 0; g < groupCount; g++) {
     const admin = users[g];
     const created = await request('/api/groups', { user: admin, method: 'POST', body: {
@@ -137,8 +140,18 @@ async function setupGroups(pool) {
   emit('groups-created', { count: groups.length, memberships: groups.reduce((n, g) => n + g.members.length, 0) });
 }
 
-async function connectSockets() {
-  const realtimeUsers = users.slice(0, Math.min(users.length, 5));
+async function connectSockets(targetCount) {
+  const connectedOrConnecting = users.filter(user => user.socket).length;
+  if (targetCount < connectedOrConnecting) {
+    for (const user of users.slice(targetCount)) {
+      user.socket?.disconnect();
+      delete user.socket;
+    }
+    emit('sockets-resized', { targetCount, connected: sockets.filter(s => s.connected).length });
+    return;
+  }
+  const realtimeUsers = users.slice(connectedOrConnecting,
+    Math.min(users.length, targetCount, maxSocketUsers));
   await Promise.all(realtimeUsers.map(user =>
       new Promise((resolve, reject) => {
         const socket = io(base, { auth: { token: user.token },
@@ -167,14 +180,12 @@ async function connectSockets() {
         });
         socket.connect();
       })));
-  if (users.length > realtimeUsers.length)
-    emit('socket-sampling', { connectedUsers: realtimeUsers.length,
-      httpOnlyUsers: users.length - realtimeUsers.length });
   for (const group of groups) {
     for (const member of group.members)
       if (member.socket?.connected) member.socket.emit('group:join', { groupId: group.id });
   }
-  emit('sockets-connected', { count: sockets.filter(s => s.connected).length });
+  emit('sockets-connected', { targetCount,
+    count: sockets.filter(s => s.connected).length });
 }
 
 async function uploadImage(user, context = {}) {
@@ -195,6 +206,52 @@ async function uploadImage(user, context = {}) {
   return response.ok && data?.url && data.status !== 'rejected' ? data : null;
 }
 
+function createWavFixture(seconds = 2) {
+  const sampleRate = 16000;
+  const samples = sampleRate * seconds;
+  const data = Buffer.alloc(samples * 2);
+  for (let i = 0; i < samples; i++) {
+    const sample = Math.round(Math.sin(2 * Math.PI * 440 * i / sampleRate) * 1800);
+    data.writeInt16LE(sample, i * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVEfmt ', 8); header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24); header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34);
+  header.write('data', 36); header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
+
+async function uploadMedia(user, kind, buffer, mimeType, extension, context = {}) {
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mimeType }),
+    `${prefix}-${kind}-${Date.now()}.${extension}`);
+  for (const [key, value] of Object.entries(context)) form.append(key, value);
+  const started = performance.now();
+  let status = 0;
+  try {
+    const response = await fetch(`${base}/api/upload`, {
+      method: 'POST', headers: { Authorization: `Bearer ${user.token}` }, body: form,
+      signal: AbortSignal.timeout(kind === 'video' ? 210000 : 120000),
+    });
+    status = response.status;
+    const data = await response.json().catch(() => null);
+    if (response.ok) { totals.ok++; totals.uploads++; }
+    else totals.errors[status] = (totals.errors[status] || 0) + 1;
+    return response.ok && data?.url ? data : null;
+  } catch (error) {
+    totals.errors[0] = (totals.errors[0] || 0) + 1;
+    emit('media-error', { kind, message: error.message });
+    return null;
+  } finally {
+    totals.requests++;
+    samples.push({ at: Date.now(), route: `/api/upload/${kind}`, status,
+      ms: performance.now() - started });
+  }
+}
+
 async function seedImages() {
   for (let i = 0; i < Math.min(groups.length, 4); i++) {
     const group = groups[i];
@@ -205,8 +262,8 @@ async function seedImages() {
   emit('images-seeded', { uploads: totals.uploads });
 }
 
-async function oneOperation(sequence) {
-  const user = users[sequence % users.length];
+async function oneOperation(sequence, activeCount) {
+  const user = users[sequence % activeCount];
   const peer = users[(user.index ^ 1) % users.length];
   const choice = sequence % 28;
   if (choice < 7) return request('/api/messages', { user, method: 'POST', body: {
@@ -302,12 +359,29 @@ async function sustainedRun() {
   let nextReport = Date.now() + 60000;
   let nextCall = Date.now() + 30000;
   let nextUpload = Date.now() + 30 * 60 * 1000;
+  let nextAudio = Date.now() + 20 * 60 * 1000;
+  let nextVideo = Date.now() + 30 * 60 * 1000;
+  let currentActive = 0;
+  const stagePlan = [
+    { until: .05, users: 10 }, { until: .12, users: 25 },
+    { until: .22, users: 50 }, { until: .38, users: 100 },
+    { until: .58, users: 250 }, { until: .90, users: 500 },
+    { until: 1, users: 100 },
+  ];
   emit('load-started', { durationHours: durationMs / 3600000, targetRps, endsAt: new Date(endsAt).toISOString() });
   while (!stopping && Date.now() < endsAt) {
     const elapsed = Date.now() - startedAt;
-    const ramp = Math.min(1, .2 + elapsed / (30 * 60 * 1000));
-    const batch = Math.max(1, Math.round(targetRps * ramp));
-    await Promise.all(Array.from({ length: batch }, () => oneOperation(sequence++)));
+    const progress = elapsed / durationMs;
+    const activeCount = Math.min(userCount,
+      stagePlan.find(stage => progress < stage.until)?.users || 100);
+    if (activeCount !== currentActive) {
+      currentActive = activeCount;
+      await connectSockets(activeCount);
+      emit('stage-started', { activeUsers: activeCount,
+        elapsedMinutes: +(elapsed / 60000).toFixed(1) });
+    }
+    const batch = Math.max(1, Math.min(targetRps, Math.ceil(activeCount / 10)));
+    await Promise.all(Array.from({ length: batch }, () => oneOperation(sequence++, activeCount)));
     if (Date.now() >= nextCall) {
       const caller = users[sequence % users.length];
       const callee = users[(sequence + 1) % users.length];
@@ -320,7 +394,20 @@ async function sustainedRun() {
       const uploaded = await uploadImage(group.admin, { groupId: group.id });
       if (uploaded) await request(`/api/groups/${group.id}/messages`, { user: group.admin,
         method: 'POST', body: { fileUrl: uploaded.url, fileName: uploaded.fileName, fileType: 'image' } });
-      nextUpload = Date.now() + 30 * 60 * 1000;
+      nextUpload = Date.now() + 10 * 60 * 1000;
+    }
+    if (Date.now() >= nextAudio) {
+      const group = groups[sequence % groups.length];
+      await uploadMedia(group.admin, 'audio', createWavFixture(), 'audio/wav', 'wav',
+        { groupId: group.id });
+      nextAudio = Date.now() + 20 * 60 * 1000;
+    }
+    if (videoFixturePath && Date.now() >= nextVideo) {
+      const group = groups[sequence % groups.length];
+      const video = fs.readFileSync(videoFixturePath);
+      await uploadMedia(group.admin, 'video', video, 'video/mp4', 'mp4',
+        { groupId: group.id });
+      nextVideo = Date.now() + 30 * 60 * 1000;
     }
     if (Date.now() >= nextReport) { reportWindow(startedAt); nextReport = Date.now() + 60000; }
     await sleep(1000);
@@ -337,7 +424,7 @@ async function main() {
     await createUsers(pool);
     await loginUsers();
     await setupGroups(pool);
-    await connectSockets();
+    await connectSockets(0);
     await seedImages();
     await sustainedRun();
     emit('complete', { prefix, totals, retained: !cleanupAfter });

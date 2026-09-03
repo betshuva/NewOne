@@ -21,7 +21,8 @@ test('recipient policy keeps every attachment visible with an allowed or blocked
 });
 
 test('group attachment menu refreshes policy and marks every option', () => {
-  assert.match(source, /Future<void> _showAttachMenu\(\) async \{\s*await _loadGroupReceivingFilter\(\)/);
+  assert.match(source,
+    /Future<void> _showAttachMenu\(\) async \{\s*if \(!await _ensureCanSendToGroup\(\)\) return;\s*await _loadGroupReceivingFilter\(\)/);
   assert.match(source, /allowed: _groupAllowsImages/);
   assert.match(source, /allowed: _groupAllowsVideo/);
   assert.match(source, /allowed: _groupAllowsText/);

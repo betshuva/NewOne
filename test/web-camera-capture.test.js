@@ -33,7 +33,7 @@ test('invalid recorded WebM is rejected before it can be uploaded', () => {
   assert.match(serverSource, /INVALID_VIDEO_CONTAINER/);
   assert.match(serverSource, /hasWebMSignature/);
   assert.match(mainSource, /isVideo \? 210 : 60/);
-  assert.match(mainSource, /הזמן המוצג הוא זמן שחלף/);
+  assert.match(mainSource, /הקובץ נשמר; בדיקת הבטיחות עדיין מתבצעת/);
 });
 
 test('camera failures offer an in-dialog retry', () => {
@@ -43,22 +43,33 @@ test('camera failures offer an in-dialog retry', () => {
 
 test('recording clock uses wall time and an unambiguous LTR display', () => {
   assert.match(source, /final Stopwatch _recordingClock = Stopwatch\(\)/);
-  assert.match(source, /_recordingClock\.elapsed\.inSeconds\.clamp\(0, 30\)/);
+  assert.match(source, /30 - _recordingClock\.elapsed\.inSeconds/);
   assert.match(source, /Duration\(milliseconds: 200\)/);
   assert.match(source, /_recordingClock\.elapsed >= const Duration\(seconds: 30\)/);
   assert.match(source, /textDirection: TextDirection\.ltr/);
-  assert.match(source, /_recordingTime\(\)\} \/ 00:30/);
+  assert.match(source, /זמן שנותר  \$\{_recordingTime\(\)\}/);
 });
 
 test('photo capture prevents duplicate dialogs and duplicate snapshots', () => {
   const mainSource = fs.readFileSync(
     path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
-  assert.match(mainSource, /bool _cameraCaptureOpen = false/);
-  assert.match(mainSource, /if \(_cameraCaptureOpen\) return/);
-  assert.match(mainSource, /finally \{\s*_cameraCaptureOpen = false/);
+  assert.ok((mainSource.match(/bool _cameraCaptureOpen = false/g) || []).length >= 2);
+  assert.ok((mainSource.match(/if \(_cameraCaptureOpen\) return/g) || []).length >= 2);
+  assert.ok((mainSource.match(/finally \{\s*_cameraCaptureOpen = false/g) || []).length >= 2);
   assert.match(source, /bool _capturingPhoto = false/);
   assert.match(source, /if \(_capturingPhoto \|\|\s*_preview\.videoWidth <= 0/);
   assert.match(source, /setState\(\(\) => _capturingPhoto = true\)/);
   assert.match(source, /Text\('מעבד את התמונה\.\.\.'\)/);
   assert.match(source, /_ready && !_capturingPhoto \? _takePhoto : null/);
+});
+
+test('private and group camera actions use the in-app web preview', () => {
+  const mainSource = fs.readFileSync(
+    path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
+  const group = mainSource.slice(
+    mainSource.indexOf('class _GroupChatScreenState'),
+    mainSource.indexOf('class ContentFilterSettingsScreen'));
+  assert.match(group, /label: 'מצלמה'[\s\S]{0,500}_capturePhoto\(\)/);
+  assert.match(group, /photo = kIsWeb\s*\? await captureWebPhoto\(context\)/);
+  assert.match(group, /await _uploadGroupFile\(photo, photo\.name, 'image'\)/);
 });

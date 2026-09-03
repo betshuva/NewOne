@@ -11,6 +11,10 @@ const serverSource = fs.readFileSync(
   path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
 const contentFilterSource = fs.readFileSync(
   path.join(__dirname, '..', 'server', 'content-filter-policy.js'), 'utf8');
+const screenshotSource = fs.readFileSync(
+  path.join(__dirname, '..', 'flutter_app', 'lib', 'app_screenshot.dart'), 'utf8');
+const screenCaptureWebSource = fs.readFileSync(
+  path.join(__dirname, '..', 'flutter_app', 'lib', 'screen_capture_web.dart'), 'utf8');
 
 test('download link loads the current release from the version API', () => {
   assert.match(source, /get\(Uri\.parse\('\$kApi\/version'\)\)/);
@@ -36,6 +40,15 @@ test('conversation refreshes do not pull users away from older messages', () => 
     /maxScrollExtent - _scrollCtrl\.position\.pixels <=\s*80/);
 });
 
+test('pending friendship messages are retried after startup and resume races', () => {
+  assert.match(source,
+    /_loadMessageRequests\(\)[\s\S]*?WidgetsBinding\.instance\.addPostFrameCallback/);
+  assert.match(source,
+    /Future<void> _refreshConversationState\(\)[\s\S]*?_loadMessageRequests\(\)/);
+  assert.match(source,
+    /decision = await showDialog<Map<String, dynamic>>[\s\S]*?catch \(_\) \{[\s\S]*?_showingMessageRequest = false/);
+});
+
 test('group messages use chronological scrolling without a reversed web edge', () => {
   const groupStart = source.indexOf('class GroupChatScreen');
   const groupSource = source.slice(groupStart);
@@ -43,6 +56,28 @@ test('group messages use chronological scrolling without a reversed web edge', (
     /ListView\.builder\([\s\S]*?final messageIndex = i - \(hasFilterNotice \? 1 : 0\)/);
   assert.doesNotMatch(groupSource.slice(0, groupSource.indexOf('final messageIndex')),
     /reverse: true/);
+});
+
+test('admin-only groups disable every member send entry point', () => {
+  const groupStart = source.indexOf('class _GroupChatScreenState');
+  const groupSource = source.slice(groupStart);
+  assert.match(groupSource,
+    /bool get _canSendToGroup =>[\s\S]*?_isAdmin \|\| widget\.group\['send_permission'\] != 'admin'/);
+  assert.match(groupSource,
+    /Future<bool> _ensureCanSendToGroup\(\)[\s\S]*?רק מנהלי הקבוצה רשאים לשלוח הודעות/);
+  for (const method of [
+    '_showAttachMenu',
+    '_showGroupExpressions',
+    '_uploadGroupImageBatch',
+    '_uploadGroupFile',
+  ]) {
+    assert.match(groupSource,
+      new RegExp(`Future<[^>]+> ${method}\\([^]*?_ensureCanSendToGroup\\(\\)`));
+  }
+  assert.match(groupSource,
+    /if \(_myStatus == 'member' && !_canSendToGroup\)[\s\S]*?רק מנהלי הקבוצה רשאים לשלוח הודעות[\s\S]*?else if \(_myStatus == 'member'\)/);
+  assert.match(serverSource,
+    /member\.send_permission === 'admin' && member\.role !== 'admin'[\s\S]*?רק מנהלי הקבוצה רשאים לשלוח הודעות/);
 });
 
 test('chat images render separately while full-screen browsing stays available', () => {
@@ -90,7 +125,7 @@ test('PDF messages show a first-page preview and open inside the app', () => {
 test('desktop web documents open in the left detail pane', () => {
   assert.match(source, /Widget\? _desktopDocument/);
   assert.match(source, /onDocumentOpen: _openDesktopDocument/);
-  assert.match(source, /child: _desktopDocument != null[\s\S]{0,100}_desktopDocument!/);
+  assert.match(source, /_desktopIssueId != null[\s\S]{0,500}_desktopDocument != null[\s\S]{0,100}_desktopDocument!/);
   assert.match(source, /embedded: true,[\s\S]{0,100}onClose:/);
 });
 
@@ -281,8 +316,18 @@ test('picked and recorded videos use the same inline upload animation as images'
     source,
     /\(isVisualUpload \|\| fileType == 'audio'\) &&[\s\S]*?uploadStatus == 'uploading'/,
   );
-  assert.match(source, /מעלה וסורק את \$typeLabel/);
+  assert.match(source, /מעלה ואחר כך סורק את \$typeLabel/);
+  assert.match(source, /קודם העלאה לאחסון, אחריה בדיקת בטיחות וסינון/);
   assert.match(source, /העלאת הווידאו נכשלה/);
+});
+
+test('failed upload attempts are not persisted as chat messages', () => {
+  const privateResultStart = source.indexOf('Future<bool> _applyPrivateUploadResult');
+  const privateResultEnd = source.indexOf('case _FileUploadOutcome.rejected:', privateResultStart);
+  const groupResultStart = source.indexOf('Future<void> _applyGroupUploadResult');
+  const groupResultEnd = source.indexOf('case _FileUploadOutcome.rejected:', groupResultStart);
+  assert.doesNotMatch(source.slice(privateResultStart, privateResultEnd), /_messages\.add/);
+  assert.doesNotMatch(source.slice(groupResultStart, groupResultEnd), /_messages\.add/);
 });
 
 test('voice recordings use web opus, reject empty data, and preload duration', () => {
@@ -319,6 +364,12 @@ test('voice recordings use web opus, reject empty data, and preload duration', (
   assert.match(playerSource, /await _player\.resume\(\)/);
   assert.match(playerSource, /initialDurationSeconds/);
   assert.match(source, /audio_duration_seconds/);
+});
+
+test('private and group voice recording display a two-minute countdown', () => {
+  const countdowns = source.match(/120 - _recordSeconds/g) || [];
+  assert.ok(countdowns.length >= 4);
+  assert.match(source, /נותרו \$\{\(\(120 - _recordSeconds\)/);
 });
 
 test('contacts can be shared from app friends without exposing phone or email', () => {
@@ -405,11 +456,18 @@ test('group senders see persisted per-member filter delivery results', () => {
   assert.match(source, /נשלח בקבוצה: \$deliveredCount קיבלו/);
   assert.match(source, /נחסם בסינון האישי אצל:/);
   assert.match(source, /msg\['deliverySummary'\]\s+is Map/);
+  const summaryStart = source.indexOf('class _GroupDeliverySummary');
+  const summaryEnd = source.indexOf('class _DocumentModerationCard', summaryStart);
+  const summarySource = source.slice(summaryStart, summaryEnd);
+  assert.match(summarySource, /alignment: Alignment\.centerRight/);
+  assert.match(summarySource, /BoxConstraints\(maxWidth: 420\)/);
+  assert.match(summarySource, /mainAxisSize: MainAxisSize\.min/);
+  assert.doesNotMatch(summarySource, /Expanded\(/);
 });
 
 test('forwarding reuses approved server files and reapplies destination filters', () => {
   assert.match(source,
-    /already approved file is forwarded by reference[\s\S]*?if \(localPath != null\)/);
+    /already approved file is forwarded by reference[\s\S]*?if \(localPath != null \|\| localBytes != null\)/);
   assert.doesNotMatch(source,
     /Could not download forwarded file/);
   assert.match(serverSource,
@@ -418,6 +476,22 @@ test('forwarding reuses approved server files and reapplies destination filters'
     /RECIPIENT_CONTENT_FILTERED/);
   assert.match(serverSource,
     /GROUP_CONTENT_FILTERED/);
+});
+
+test('destination filter rejection remains forwardable while safety rejection stays blocked', () => {
+  assert.match(serverSource,
+    /destinationFilterRejected: true[\s\S]*?moderation_status='approved'/);
+  assert.match(serverSource,
+    /moderation_status='approved'[\s\S]*?destinationFilterRejected: true/);
+  assert.match(serverSource, /forwardAllowed: true/);
+  assert.match(serverSource,
+    /moderation_details->>'destinationFilterRejected'='true'[\s\S]*?AS forward_allowed/);
+  assert.match(serverSource,
+    /scanResult\?\.blocked[\s\S]*?moderation_status='rejected'/);
+  assert.match(source,
+    /status == 'rejected_scan' && message\['forwardAllowed'\] != true/);
+  assert.match(source,
+    /הקובץ עבר את בדיקת הבטיחות\. ניתן להעביר אותו/);
 });
 
 test('multiple chat items can be forwarded to multiple users and groups', () => {
@@ -435,6 +509,181 @@ test('multiple chat items can be forwarded to multiple users and groups', () => 
   assert.match(source, /_forwardSelectedMessages/);
   assert.match(source, /Icons\.radio_button_unchecked/);
   assert.match(source, /IgnorePointer\([\s\S]*?ignoring:\s*_selectedMessageKeys\.isNotEmpty/);
+});
+
+test('desktop chat composers stay compact and keep attachment controls on the right', () => {
+  const compactComposers = source.match(/BoxConstraints\(maxWidth: 900\)/g) || [];
+  assert.ok(compactComposers.length >= 2);
+  const rightAlignedComposers =
+    source.match(/alignment: Alignment\.centerRight/g) || [];
+  assert.ok(rightAlignedComposers.length >= 2);
+  const privateComposer = source.slice(
+    source.indexOf("tooltip: 'צירוף קובץ'"),
+    source.indexOf("hintText: _recipientAllowsText"),
+  );
+  assert.match(privateComposer, /Icons\.attach_file/);
+  assert.match(privateComposer, /Icons\.verified_user_outlined/);
+  assert.ok(
+    privateComposer.indexOf('Icons.attach_file') <
+      privateComposer.indexOf('Icons.verified_user_outlined'),
+  );
+});
+
+test('app screenshots can open a directly accessible issue without messaging Israel', () => {
+  assert.match(source, /navigatorKey: appScreenshotNavigatorKey/);
+  assert.doesNotMatch(source, /const AppScreenshotButton\(\)/);
+  assert.match(source, /value: 'screenshot'[\s\S]*?Text\('צילום מסך'\)/);
+  const threeDotMenus = source.match(/PopupMenuButton<String>/g) || [];
+  const screenshotItems = source.match(/value: 'screenshot'/g) || [];
+  assert.ok(screenshotItems.length >= threeDotMenus.length,
+    'every three-dot popup menu should expose screenshot capture');
+  assert.match(source, /label: 'צילום מסך'/);
+  assert.match(screenshotSource, /const _israelId = '00000000-0000-4000-8000-000000000002'/);
+  assert.match(screenshotSource, /enum _EditTool \{ crop, blur, mark, text \}/);
+  assert.match(screenshotSource, /BackdropFilter/);
+  assert.match(screenshotSource, /_ScreenshotStrokePainter/);
+  assert.match(screenshotSource, /triggerBytesDownload/);
+  assert.match(screenshotSource, /navigator\.push<_ScreenshotResult>\(MaterialPageRoute/);
+  assert.match(screenshotSource, /appScreenshotBusy/);
+  assert.match(screenshotSource, /openRegisteredAppScreenshotMenu/);
+  assert.match(source, /registerAppScreenshotMenu\(this, _showAttachMenu\)/);
+  assert.match(source, /_openScreenshotThroughIsrael/);
+  assert.match(source, /openScreenshotMenuOnStart: true/);
+  assert.doesNotMatch(screenshotSource, /showDialog<void>/);
+  assert.doesNotMatch(screenshotSource, /Duration\(milliseconds: 220\)/);
+  assert.match(screenshotSource, /captureCurrentAppScreen\(\)/);
+  assert.match(screenCaptureWebSource, /getDisplayMedia/);
+  assert.match(screenCaptureWebSource, /Duration\(milliseconds: 120\)/);
+  assert.match(screenCaptureWebSource, /context\.drawImage\(video, 0, 0\)/);
+  assert.match(screenCaptureWebSource, /track\.stop\(\)/);
+  assert.match(source, /Navigator\.of\(dialogContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
+  assert.match(source, /Navigator\.of\(sheetContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
+  assert.match(screenshotSource, /destination\.kind == 'group'/);
+  assert.match(screenshotSource, /צילום המסך נשלח לישראל/);
+  assert.match(screenshotSource, /decoded\['status'\] == 'pending'/);
+  assert.match(screenshotSource, /פתיחת קריאה/);
+  assert.match(screenshotSource,
+    /ישראל ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב/);
+  assert.match(screenshotSource, /דיווח תקלה/);
+  assert.match(screenshotSource, /בקשת פיתוח/);
+  assert.match(screenshotSource, /israelDescription/);
+  assert.match(screenshotSource,
+    /ישראל הוא מדריך התמיכה של אפליקציית בתשובה/);
+  assert.match(screenshotSource, /שלח למשתמש או לקבוצה/);
+  assert.match(screenshotSource, /פנייה לתמיכה/);
+  assert.match(screenshotSource, /appScreenshotTargetSender/);
+  assert.match(source,
+    /appScreenshotTargetSender[\s\S]*_forwardChatMessage[\s\S]*'localBytes': bytes/);
+  assert.match(source,
+    /class _OpenIssuesNotification[\s\S]*handledInDesktopPane/);
+  assert.match(source,
+    /_desktopIssueId != null[\s\S]*OpenIssuesScreen\([\s\S]*embedded: true/);
+  assert.match(screenshotSource,
+    /לחיתוך: גרור פנימה מהצד שברצונך להסיר/);
+  assert.doesNotMatch(screenshotSource, /child: Slider\(/);
+  assert.match(screenshotSource, /מה ניסיתי לעשות:/);
+  assert.match(screenshotSource, /מה קרה בפועל:/);
+  assert.match(screenshotSource, /מה ציפיתי שיקרה:/);
+  assert.match(screenshotSource, /מה הייתי רוצה שיהיה אפשר לעשות:/);
+  assert.match(screenshotSource, /איך הייתי מציע שזה יעבוד:/);
+  assert.match(screenshotSource, /controller\.text == activeTemplate/);
+  assert.match(screenshotSource, /attachmentUrls/);
+  assert.match(screenshotSource, /הוסף קבצים לפנייה/);
+  assert.match(screenshotSource, /appScreenshotIssueOpened/);
+  assert.match(source, /initialIssueId: issueId/);
+});
+
+test('group video messages render inline instead of as download-only files', () => {
+  assert.match(
+    source,
+    /==\s*'video'\)[\s\S]*?NativeWebVideoPlayer\([\s\S]*?'group-video-\$\{msg\['fileUrl'\]\}'[\s\S]*?_absoluteMediaUrl\([\s\S]*?_ChatVideoPlayer\(/,
+  );
+  assert.match(
+    source,
+    /'group-video-\$\{msg\['fileUrl'\]\}'[\s\S]*?_ImageClassificationBadges\([\s\S]*?_ImageStatusBadge\(/,
+  );
+});
+
+test('content and harmful-language warnings use the system warning artwork', () => {
+  assert.equal(
+    fs.existsSync(path.join(
+      __dirname,
+      '..',
+      'flutter_app',
+      'assets',
+      'guide',
+      'system-content-warning.png',
+    )),
+    true,
+  );
+  assert.match(source, /class _SystemContentWarningArtwork/);
+  assert.match(source, /SnackBar _contentWarningSnackBar/);
+  assert.match(source, /errorCode == 'CHAT_CONTENT_BLOCKED'[\s\S]*?_contentWarningSnackBar\(error\)/);
+  assert.match(source, /class _DocumentModerationCard[\s\S]*?if \(blocked\)[\s\S]*?_SystemContentWarningArtwork/);
+  assert.match(source, /class _UploadResultCard[\s\S]*?if \(blocked\)[\s\S]*?_SystemContentWarningArtwork/);
+  assert.match(source, /uploadStatus == 'blocked_content'[\s\S]*?_SystemContentWarningArtwork/);
+});
+
+test('OpenAI and Gemini both decide modesty while local clothing scores are disabled', () => {
+  assert.match(serverSource,
+    /status: 'disabled_for_modesty_decisions'/);
+  assert.match(serverSource,
+    /const localBlockedBy = localExplicitContent \? 'localExplicitContent' : null/);
+  assert.match(serverSource,
+    /adultScore >= 0\.75 \|\| nudityScore >= 0\.65/);
+  assert.doesNotMatch(serverSource,
+    /nudityScore >= 0\.65 \|\| revealingScore/);
+  assert.doesNotMatch(serverSource,
+    /const localBlockedBy = strictModesty\.blocked/);
+  assert.match(serverSource,
+    /classifyOpenAIModesty\(buffer,/);
+  assert.match(serverSource,
+    /classifyGeminiModesty\(buffer,/);
+  assert.match(serverSource, /await Promise\.all/);
+  assert.match(serverSource, /person_confirmed_by_openai/);
+  assert.match(serverSource, /enforceableViolation\(modestyVerification\)/);
+  assert.match(serverSource,
+    /modestyReviewsDisagree && safetyConsensusClean[\s\S]*?blocked: false/);
+  assert.match(serverSource,
+    /action: 'approved_by_clean_safety_consensus'/);
+  assert.match(serverSource,
+    /MODERATION_CACHE_VERSION = '2026-09-03-video-frame-image-pipeline-12'/);
+});
+
+test('safety-rejected media cannot be served locally or restored from Drive', () => {
+  assert.match(serverSource,
+    /fileState\?\.moderation_status === 'rejected'[\s\S]*?!destinationFilterRejected/);
+  assert.match(serverSource, /הקובץ נחסם ואינו זמין לפתיחה או להורדה/);
+  assert.equal((serverSource.match(/AND sf\.content_purged_at IS NULL/g) || []).length >= 2,
+    true);
+});
+
+test('blocked image preview is uploader-only, expires in two minutes and is purged', () => {
+  assert.match(serverSource,
+    /app\.get\('\/api\/blocked-media\/:id', auth, messageRateLimit/);
+  assert.match(serverSource,
+    /WHERE id=\$1 AND user_id=\$2 AND file_type='image'/);
+  assert.match(serverSource, /blocked_content_expires_at>now\(\)/);
+  assert.match(serverSource, /Cache-Control': 'private, no-store, max-age=0'/);
+  assert.match(serverSource,
+    /blocked_content_expires_at=CASE WHEN file_type='image'[\s\S]*?interval '2 minutes'/);
+  assert.match(serverSource, /async function purgeExpiredBlockedImages\(\)/);
+  assert.match(serverSource, /setInterval\(purgeExpiredBlockedImages, 5 \* 1000\)/);
+  assert.match(source, /class _BlockedImagePreview extends StatefulWidget/);
+  assert.match(source, /Authorization': 'Bearer \$\{widget\.token\}'/);
+  assert.match(source, /מוצגת רק לך ותימחק בעוד/);
+  assert.match(source, /blockedPreviewUrl: message\['blockedPreviewUrl'\]/);
+});
+
+test('recovered uploads replace recent local failure cards', () => {
+  assert.match(source, /bool _matchesRecentFailedUpload\(/);
+  assert.match(source, /Duration\(minutes: 10\)/);
+  assert.match(source,
+    /recoveredFailedIndex[\s\S]*?_matchesRecentFailedUpload\(message, fileName, 'failed_'\)/);
+  assert.match(source,
+    /_matchesRecentFailedUpload\([\s\S]*?'failed_group_file_'\)/);
+  assert.ok((source.match(/_messages\[recoveredFailedIndex\] = incoming/g) || []).length >= 2);
+  assert.ok((source.match(/הסריקה הושלמה והתמונה נשלחה/g) || []).length >= 2);
 });
 
 test('exact duplicate uploads reuse only current-version moderation results', () => {

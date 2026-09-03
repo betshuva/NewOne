@@ -47,8 +47,8 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   final Stopwatch _recordingClock = Stopwatch();
 
   String _recordingTime() {
-    final seconds = _recordingClock.elapsed.inSeconds.clamp(0, 30);
-    return '00:${seconds.toString().padLeft(2, '0')}';
+    final remaining = (30 - _recordingClock.elapsed.inSeconds).clamp(0, 30);
+    return '00:${remaining.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -312,7 +312,7 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
                   const SizedBox(height: 10),
                   Directionality(
                     textDirection: TextDirection.ltr,
-                    child: Text('● מקליט  ${_recordingTime()} / 00:30',
+                    child: Text('● זמן שנותר  ${_recordingTime()}',
                         style: const TextStyle(
                             color: Colors.red, fontWeight: FontWeight.bold)),
                   ),
