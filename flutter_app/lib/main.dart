@@ -861,7 +861,7 @@ Future<void> _confirmAndOpenExternalLink(
             contentPadding: const EdgeInsets.fromLTRB(22, 12, 22, 8),
             title: Row(children: [
               ClipOval(
-                child: Image.asset('assets/guide/aviel-guide.jpg',
+                child: Image.asset('assets/guide/safe-information-ai.png',
                     width: 64, height: 64, fit: BoxFit.cover),
               ),
               const SizedBox(width: 12),
@@ -23595,7 +23595,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: CircularProgressIndicator(color: kPrimary))
                 : _messages.isEmpty
                     ? const _AvielEmptyChat(
-                        asset: 'assets/stickers/aviel-guide/guide_welcome.png',
+                        asset: 'assets/guide/safe-information-ai.png',
                         text: 'אין הודעות עדיין — שלח הודעה ראשונה!')
                     : ListView.builder(
                         controller: _scrollCtrl,
@@ -26390,7 +26390,7 @@ class _PrivateContactFilterEntry extends StatelessWidget {
           children: [
             Center(
               child: Image.asset(
-                'assets/stickers/aviel-guide/guide_here.png',
+                'assets/guide/safe-information-ai.png',
                 width: 64,
                 height: 68,
                 fit: BoxFit.contain,
@@ -27159,42 +27159,42 @@ const _remoteExpressionPrefix = '__betshuva_remote_expression__:';
 const _avielGuideStickers = <({String id, String asset, String label})>[
   (
     id: 'betshuva_guide_welcome',
-    asset: 'assets/stickers/aviel-guide/guide_welcome.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'ברוכים הבאים'
   ),
   (
     id: 'betshuva_guide_great',
-    asset: 'assets/stickers/aviel-guide/guide_great.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'כל הכבוד'
   ),
   (
     id: 'betshuva_guide_here',
-    asset: 'assets/stickers/aviel-guide/guide_here.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'אני כאן'
   ),
   (
     id: 'betshuva_guide_home',
-    asset: 'assets/stickers/aviel-guide/guide_home.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'בבית'
   ),
   (
     id: 'betshuva_guide_ready',
-    asset: 'assets/stickers/aviel-guide/guide_ready.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'יוצאים לדרך'
   ),
   (
     id: 'betshuva_guide_on_the_way',
-    asset: 'assets/stickers/aviel-guide/guide_on_the_way.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'בדרך'
   ),
   (
     id: 'betshuva_guide_hello',
-    asset: 'assets/stickers/aviel-guide/guide_hello.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'שלום'
   ),
   (
     id: 'betshuva_guide_lantern',
-    asset: 'assets/stickers/aviel-guide/guide_lantern.png',
+    asset: 'assets/guide/safe-information-ai.png',
     label: 'אור בדרך'
   ),
 ];
@@ -27927,49 +27927,15 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     );
   }
 
-  Widget _buildAvielStickerPicker() => GridView.builder(
-        padding: const EdgeInsets.all(12),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 4,
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 10,
-          childAspectRatio: .82,
+  Widget _buildAvielStickerPicker() => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'מדבקות המדריך הוסרו. אפשר להשתמש באימוג׳י ובמדבקות האחרות.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: kSubtext),
+          ),
         ),
-        itemCount: _avielGuideStickers.length,
-        itemBuilder: (_, index) {
-          final sticker = _avielGuideStickers[index];
-          return Semantics(
-            button: true,
-            label: 'מדבקת עוזר AI: ${sticker.label}',
-            child: InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () =>
-                  Navigator.pop(context, '$_avielStickerPrefix${sticker.id}'),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF3F8FC),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: kBorder),
-                ),
-                child: Column(children: [
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.all(6),
-                      child: Image.asset(sticker.asset, fit: BoxFit.contain),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(4, 0, 4, 6),
-                    child: Text(sticker.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11)),
-                  ),
-                ]),
-              ),
-            ),
-          );
-        },
       );
 
   @override
@@ -32592,7 +32558,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   padding: EdgeInsets.symmetric(vertical: 2),
                                   child: _AvielEmptyChat(
                                     asset:
-                                        'assets/stickers/aviel-guide/guide_lantern.png',
+                                        'assets/guide/safe-information-ai.png',
                                     text: 'אין הודעות עדיין — האירו את הדרך',
                                   ),
                                 );
@@ -32665,8 +32631,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           !(_myStatus == 'member' &&
                               _acceptedFilterNotice != null)
                       ? const _AvielEmptyChat(
-                          asset:
-                              'assets/stickers/aviel-guide/guide_lantern.png',
+                          asset: 'assets/guide/safe-information-ai.png',
                           text: 'אין הודעות עדיין — האירו את הדרך')
                       : ListView.builder(
                           controller: _scrollCtrl,
