@@ -3,6 +3,12 @@
 This inventory covers application-owned and third-party assets bundled with or
 displayed by Betshuva. It does not cover content uploaded by users.
 
+Betshuva is operated by Betshuva Digital Solutions Ltd (בתשובה פתרונות
+דיגיטליים בע״מ), Israeli company no. 517401238. Assets originally created by
+Yaniv Eliyahu are intended to be assigned to the company under
+`INTELLECTUAL_PROPERTY_ASSIGNMENT.md`; the assignment should be marked complete
+here only after that document has been signed by both parties.
+
 | Asset | Use | Recorded source | Status / required evidence |
 |---|---|---|---|
 | `flutter_app/icon_source.png` | Primary application logo | Created by Yaniv Eliyahu; added in commit `d0f51bc` and later revised | Creator ownership declaration recorded in `ASSET_OWNERSHIP_DECLARATION.md`. Preserve original editable files and metadata. |

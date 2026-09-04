@@ -1761,7 +1761,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.9';
+const kVersion = '1.3.13';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -6324,7 +6324,8 @@ class _BetaNotice extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
         ),
         child: const Text(
-          'BETSHUVA מופעלת על ידי יניב אליהו בגרסת בטא פתוחה וללא תשלום. '
+          'BETSHUVA מופעלת על ידי בתשובה פתרונות דיגיטליים בע״מ, ח״פ '
+          '517401238, בגרסת בטא פתוחה וללא תשלום. '
           'השירות נמצא בבדיקה ועלולות להתרחש תקלות, הפסקות זמניות, שינויים '
           'או אובדן מידע. אין לשמור בשירות מידע שהעותק היחיד שלו נמצא '
           'באפליקציה. השימוש כפוף לתנאי השימוש ולמדיניות הפרטיות. '
@@ -7122,7 +7123,9 @@ class _MainShellContentState extends State<_MainShellContent> {
           (user) => user?['id']?.toString() == kSystemGuideId,
           orElse: () => <String, dynamic>{
             'id': kSystemGuideId,
-            'name': 'ישראל – מדריך בתשובה',
+            'name': 'מדריך בתשובה',
+            'profile_pic_url':
+                '/betshuva-app/assets/assets/icon_source.png',
           },
         )!;
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
@@ -23598,7 +23601,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ? _AvielEmptyChat(
                         asset: widget.recipient['id'] == kSafeInformationAiId
                             ? 'assets/guide/safe-information-ai.png'
-                            : 'assets/guide/safe-information-ai.png',
+                            : 'icon_source.png',
                         text: 'אין הודעות עדיין — שלח הודעה ראשונה!')
                     : ListView.builder(
                         controller: _scrollCtrl,

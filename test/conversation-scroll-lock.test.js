@@ -27,7 +27,7 @@ test('the guide is displayed as Israel throughout the active application', () =>
   assert.doesNotMatch(source, /אביאל/);
   assert.doesNotMatch(serverSource, /אביאל/);
   assert.match(source, /מדבקת עוזר AI/);
-  assert.match(serverSource, /SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה'/);
+  assert.match(serverSource, /SYSTEM_USER_NAME = 'מדריך בתשובה'/);
   assert.match(serverSource, /SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI'/);
 });
 

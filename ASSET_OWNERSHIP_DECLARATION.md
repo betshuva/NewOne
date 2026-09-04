@@ -27,3 +27,13 @@ Declared by: Yaniv Eliyahu (יניב אליהו)
 
 For a stronger legal record, retain the original editable files and export
 metadata, and sign/date a PDF or printed copy of this declaration.
+
+## Corporate ownership update
+
+Betshuva is operated from 2026-09-04 by Betshuva Digital Solutions Ltd
+(בתשובה פתרונות דיגיטליים בע״מ), Israeli company no. 517401238. Yaniv Eliyahu
+remains identified as the original creator of the covered assets. Transfer of
+his economic intellectual-property rights to the company is documented in
+`INTELLECTUAL_PROPERTY_ASSIGNMENT.md` and takes effect only when that document
+is executed by both parties. This update does not alter the historical record
+of authorship above.

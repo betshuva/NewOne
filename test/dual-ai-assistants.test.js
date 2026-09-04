@@ -12,7 +12,7 @@ const screenshot = fs.readFileSync(path.join(__dirname, '..', 'flutter_app', 'li
 test('Israel and Safe Information use separate immutable system identities', () => {
   assert.match(server, /SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002'/);
   assert.match(server, /SAFE_INFORMATION_USER_ID = '00000000-0000-4000-8000-000000000003'/);
-  assert.match(server, /SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה'/);
+  assert.match(server, /SYSTEM_USER_NAME = 'מדריך בתשובה'/);
   assert.match(server, /SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI'/);
   assert.match(client, /const kSafeInformationAiId = '00000000-0000-4000-8000-000000000003'/);
 });

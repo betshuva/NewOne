@@ -145,9 +145,9 @@ function normalizeBuiltinStickerId(value) {
   return BUILTIN_STICKER_IDS.has(id) ? id : null;
 }
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
-const SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה';
+const SYSTEM_USER_NAME = 'מדריך בתשובה';
 const SYSTEM_USER_PROFILE_PIC =
-  '/betshuva-app/assets/assets/guide/safe-information-ai.png';
+  '/betshuva-app/assets/assets/icon_source.png';
 const SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI';
 const SAFE_INFORMATION_USER_EMAIL = 'safe-information@betshuva.system';
 const SAFE_INFORMATION_PROFILE_PIC =

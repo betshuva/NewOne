@@ -75,7 +75,8 @@ test('account deletion removes personal Drive backups before keys and identity',
 
 test('public deletion instructions match the in-app deletion label', () => {
   assert.match(deletionPage, /מחיקת תוכן, פרופיל או חשבון/);
-  assert.match(deletionPage, /מפעיל הבטא: יניב אליהו/);
+  assert.match(deletionPage, /מפעילת השירות: בתשובה פתרונות דיגיטליים בע״מ/);
+  assert.match(deletionPage, /517401238/);
   assert.doesNotMatch(deletionPage, /לא יאוחר מ־90 יום/);
 });
 

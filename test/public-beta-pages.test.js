@@ -10,14 +10,16 @@ test('public home identifies the free beta and its operator', () => {
   const home = read('home.html');
 
   assert.match(home, /בטא פתוחה ללא תשלום/);
-  assert.match(home, /מופעלת על ידי יניב אליהו/);
+  assert.match(home, /מופעל על ידי בתשובה פתרונות דיגיטליים בע״מ/);
+  assert.match(home, /517401238/);
   assert.match(home, /\/betshuva-app\/terms/);
   assert.match(home, /\/betshuva-app\/privacy/);
 });
 
-test('legal pages consistently identify the beta operator', () => {
+test('legal pages consistently identify the company as operator', () => {
   for (const file of ['terms.html', 'privacy.html', 'delete-account.html']) {
-    assert.match(read(file), /יניב אליהו/, `${file} does not identify the operator`);
+    assert.match(read(file), /בתשובה פתרונות דיגיטליים בע״מ/, `${file} does not identify the operator`);
+    assert.match(read(file), /517401238/, `${file} does not include the company number`);
   }
 });
 

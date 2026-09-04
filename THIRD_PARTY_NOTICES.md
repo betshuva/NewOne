@@ -80,6 +80,10 @@ covering commercial use and redistribution of the weights.
 
 ## Application-owned and branded assets
 
+- Betshuva is operated by Betshuva Digital Solutions Ltd (בתשובה פתרונות
+  דיגיטליים בע״מ), Israeli company no. 517401238. The proposed transfer to the
+  company of rights in assets originally created by Yaniv Eliyahu is recorded
+  in `INTELLECTUAL_PROPERTY_ASSIGNMENT.md` and is effective only upon signature.
 - Primary logo and generated launcher icons: Yaniv Eliyahu declared himself
   the creator and copyright owner on 2026-08-21. The covered files are listed
   in `ASSET_OWNERSHIP_DECLARATION.md`; retain the editable sources and metadata.
