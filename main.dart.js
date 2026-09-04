@@ -78919,7 +78919,7 @@ else{s=J.d(a,"id")
 s=s==null?null:J.t(s)}return s==="00000000-0000-4000-8000-000000000002"},
 $S:812}
 A.bwi.prototype={
-$0(){return A.B(["id","00000000-0000-4000-8000-000000000002","name","\u05de\u05d3\u05e8\u05d9\u05da \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","profile_pic_url","/betshuva-app/assets/assets/icon_source.png"],t.N,t.z)},
+$0(){return A.B(["id","00000000-0000-4000-8000-000000000002","name","\u05de\u05d3\u05e8\u05d9\u05da \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","profile_pic_url","/betshuva-app/assets/icon_source.png"],t.N,t.z)},
 $S:146}
 A.bwj.prototype={
 $0(){var s=this.a
@@ -87139,7 +87139,7 @@ i=t.N
 h=A.B(["Authorization","Bearer "+m.a.d,"Content-Type","application/json"],i,i)
 g=m.a
 s=7
-return A.e(A.df(j,B.E.by(A.B(["issueType",g.c.a,"description",a,"sourceMessageId",g.e,"clientContext",A.B(["appVersion","1.3.13","platform","web","screen","israel-chat"],i,i)],i,t.K),null),h),$async$Ik)
+return A.e(A.df(j,B.E.by(A.B(["issueType",g.c.a,"description",a,"sourceMessageId",g.e,"clientContext",A.B(["appVersion","1.3.14","platform","web","screen","israel-chat"],i,i)],i,t.K),null),h),$async$Ik)
 case 7:l=c
 if(m.c==null){n=[1]
 s=5
@@ -94666,7 +94666,7 @@ A.bKQ.prototype={
 $0(){return A.hD(A.ak("https://betshuva.com/betshuva-app/privacy",0,null),B.eb)},
 $S:0}
 A.bKR.prototype={
-$0(){return A.cBN(new A.ah(B.cd,A.pi("icon_source.png",B.a1,null,64,null,64),null),"\xa9 2026 \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","\u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","1.3.13",this.a)},
+$0(){return A.cBN(new A.ah(B.cd,A.pi("icon_source.png",B.a1,null,64,null,64),null),"\xa9 2026 \u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","\u05d1\u05ea\u05e9\u05d5\u05d1\u05d4","1.3.14",this.a)},
 $S:0}
 A.bKS.prototype={
 $0(){var s=A.cj(new A.bKB(this.a),!1,null,t.z)
@@ -198844,7 +198844,7 @@ B.bTl=new A.u("\u05de\u05e1\u05e8\u05d9\u05dd \u05dc\u05e7\u05d4\u05d9\u05dc\u05
 B.awJ=new A.k7(B.atA,B.bYf,B.bTl,null,null,null,null,null,null,null,!0,null,null,!1,null,null,null,!1,null,null,null,null,null,null,null,null,!0,null,null)
 B.asp=new A.Y(B.l_,null,null,B.a9,null,null)
 B.bUn=new A.u("\u05d2\u05e8\u05e1\u05d4",null,null,null,null,null,null,null,null,null,null)
-B.bXF=new A.u("1.3.13",null,B.cF,null,null,null,null,null,null,null,null)
+B.bXF=new A.u("1.3.14",null,B.cF,null,null,null,null,null,null,null,null)
 B.awK=new A.k7(B.asp,B.bUn,null,B.bXF,null,null,null,null,null,null,!0,null,null,!1,null,null,null,!1,null,null,null,null,null,null,null,null,!0,null,null)
 B.Fp=new A.E(0.10196078431372549,0.050980392156862744,0.30980392156862746,0.5098039215686274,B.v)
 B.J=new A.q(0,0)
@@ -208476,7 +208476,7 @@ s($,"cKM","cht",()=>{var q=$.bWc()
 return q.gE3(q)})
 s($,"cKN","chu",()=>{var q=$.bWc()
 return q.geB(q)+"/socket.io/"})
-s($,"cIJ","NQ",()=>A.cuG("1.3.13",A.ak("https://betshuva.com/betshuva-app/betshuva-1.3.13.apk",0,null)))
+s($,"cIJ","NQ",()=>A.cuG("1.3.14",A.ak("https://betshuva.com/betshuva-app/betshuva-1.3.14.apk",0,null)))
 s($,"cHv","cfz",()=>A.c9n(new A.bgf(),t.Pb))
 s($,"cKo","chi",()=>new A.alc())
 s($,"cKq","chj",()=>new A.a88())

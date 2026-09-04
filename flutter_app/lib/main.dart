@@ -1761,7 +1761,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.13';
+const kVersion = '1.3.14';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -7124,8 +7124,7 @@ class _MainShellContentState extends State<_MainShellContent> {
           orElse: () => <String, dynamic>{
             'id': kSystemGuideId,
             'name': 'מדריך בתשובה',
-            'profile_pic_url':
-                '/betshuva-app/assets/assets/icon_source.png',
+            'profile_pic_url': '/betshuva-app/assets/icon_source.png',
           },
         )!;
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
