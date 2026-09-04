@@ -46,7 +46,7 @@ _flutter.buildConfig = {"engineRevision":"5d531788691ec3404cac0cee66ead4007b1773
 // own worker separately from index.html.
 for (const build of _flutter.buildConfig.builds) {
   if (build.mainJsPath === 'main.dart.js') {
-    build.mainJsPath = 'main.dart.js?v=20260904060941';
+    build.mainJsPath = 'main.dart.js?v=6d0b5d5eb9fa145e';
   }
 }
 
