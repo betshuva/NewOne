@@ -15,9 +15,8 @@ test('insult variants are included in harmful chat moderation', () => {
 });
 
 test('reports to Israel remain available and redact the insult in storage and replies', () => {
-  assert.match(source, /toUserId !== SYSTEM_USER_ID[\s\S]*?moderateChatText\(text\)\.blocked/);
+  assert.match(source, /\[SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID\]\.includes\(toUserId\)[\s\S]*?moderateChatText\(text\)\.blocked/);
   assert.match(source, /const safeQuestion = redactHarmfulLanguageForDisplay\(question\)/);
   assert.match(source, /const answer = redactHarmfulLanguageForDisplay\(/);
   assert.match(source, /const description = redactHarmfulLanguageForDisplay\(/);
 });
-

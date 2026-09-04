@@ -27,7 +27,8 @@ test('the guide is displayed as Israel throughout the active application', () =>
   assert.doesNotMatch(source, /אביאל/);
   assert.doesNotMatch(serverSource, /אביאל/);
   assert.match(source, /מדבקת עוזר AI/);
-  assert.match(serverSource, /SYSTEM_USER_NAME = 'מידע בטוח · AI'/);
+  assert.match(serverSource, /SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה'/);
+  assert.match(serverSource, /SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI'/);
 });
 
 test('conversation refreshes do not pull users away from older messages', () => {
@@ -559,16 +560,16 @@ test('app screenshots can open a directly accessible issue without messaging Isr
   assert.match(source, /Navigator\.of\(dialogContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
   assert.match(source, /Navigator\.of\(sheetContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
   assert.match(screenshotSource, /destination\.kind == 'group'/);
-  assert.match(screenshotSource, /צילום המסך נשלח לשירות ה-AI/);
+  assert.match(screenshotSource, /צילום המסך נשלח לישראל/);
   assert.match(screenshotSource, /decoded\['status'\] == 'pending'/);
   assert.match(screenshotSource, /פתיחת קריאה/);
   assert.match(screenshotSource,
-    /שירות ה-AI ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב/);
+    /ישראל ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב/);
   assert.match(screenshotSource, /דיווח תקלה/);
   assert.match(screenshotSource, /בקשת פיתוח/);
   assert.match(screenshotSource, /israelDescription/);
   assert.match(screenshotSource,
-    /מידע בטוח · AI הוא שירות אוטומטי ומדריך התמיכה של אפליקציית בתשובה/);
+    /ישראל הוא מדריך התמיכה של אפליקציית בתשובה/);
   assert.match(screenshotSource, /שלח למשתמש או לקבוצה/);
   assert.match(screenshotSource, /פנייה לתמיכה/);
   assert.match(screenshotSource, /appScreenshotTargetSender/);

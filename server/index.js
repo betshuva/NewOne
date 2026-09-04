@@ -133,6 +133,7 @@ clearExpiredDriveMediaCache.running = false;
 const SCAN_BOT_ID = '00000000-0000-4000-8000-000000000001';
 const SCAN_BOT_EMAIL = 'scan@betshuva.system';
 const SYSTEM_USER_ID = '00000000-0000-4000-8000-000000000002';
+const SAFE_INFORMATION_USER_ID = '00000000-0000-4000-8000-000000000003';
 const BUILTIN_STICKER_IDS = new Set([
   'betshuva_guide_welcome', 'betshuva_guide_great',
   'betshuva_guide_here', 'betshuva_guide_home',
@@ -144,12 +145,18 @@ function normalizeBuiltinStickerId(value) {
   return BUILTIN_STICKER_IDS.has(id) ? id : null;
 }
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
-const SYSTEM_USER_NAME = 'מידע בטוח · AI';
+const SYSTEM_USER_NAME = 'ישראל – מדריך בתשובה';
 const SYSTEM_USER_PROFILE_PIC =
+  '/betshuva-app/assets/assets/guide/safe-information-ai.png';
+const SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI';
+const SAFE_INFORMATION_USER_EMAIL = 'safe-information@betshuva.system';
+const SAFE_INFORMATION_PROFILE_PIC =
   '/betshuva-app/assets/assets/guide/safe-information-ai.png';
 const GOOGLE_PLAY_REVIEWER_ID = '5256aa61-3180-414c-bbf6-a036e8c16248';
 const WELCOME_MESSAGE =
-  'שלום 🌿 זהו מידע בטוח · AI — שירות אוטומטי ולא אדם.\n\nאפשר לשאול על השוואת מוצרים ומחירים, תחבורה ציבורית, טיולים, שירותי ממשלה, בתי חולים, בנקים ומשכנתאות, וגם על השימוש באפליקציה.\n\nהמידע מובא בסביבה מסוננת, עם עדיפות למקורות רשמיים וקישורים שנבדקו. השירות אינו רב, רופא או יועץ פיננסי. לשאלה הלכתית יש לשאול רב.\n\nלעולם אין לשלוח כאן סיסמה, קוד אימות או מספר כרטיס מלא.\n\nנתקלת בתקלה או שמשהו לא עובד? אפשר לפתוח פנייה למפתח דרך „הפניות שלי”.\nbetshuva://app/my-issues';
+  'שלום 🌿 אני ישראל, מדריך התמיכה של בתשובה. אפשר לשאול אותי על חברים, שיחות, קבוצות, סינון, קבצים, גיבוי, מודעות והגדרות.\n\nנתקלת בתקלה או שמשהו לא עובד? אעזור להכין פנייה למפתח דרך „הפניות שלי”, ורק לאחר אישורך היא תיפתח.\nbetshuva://app/my-issues';
+const SAFE_INFORMATION_WELCOME_MESSAGE =
+  'שלום 🌿 זהו מידע בטוח · AI — שירות אוטומטי ולא אדם.\n\nאפשר לשאול על השוואת מוצרים ומחירים, תחבורה ציבורית, טיולים, שירותי ממשלה, בתי חולים, בנקים ומשכנתאות.\n\nהמידע מובא בסביבה מסוננת, עם עדיפות למקורות רשמיים וקישורים שנבדקו. השירות אינו רב, רופא או יועץ פיננסי. לשאלה הלכתית יש לשאול רב.\n\nלעולם אין לשלוח כאן סיסמה, קוד אימות או מספר כרטיס מלא.';
 
 const BUILTIN_EXPRESSION_ROOT = path.join(__dirname, '..', 'expression-library');
 const linkPreviewCache = new Map();
@@ -2195,6 +2202,14 @@ async function migrateDatabase() {
         birth_date='1900-01-01', profile_pic_url=$4`,
       [SYSTEM_USER_ID, SYSTEM_USER_NAME, SYSTEM_USER_EMAIL,
        SYSTEM_USER_PROFILE_PIC]);
+    await pool.query(`
+      INSERT INTO users(id,name,email,phone,email_verified,phone_verified,city,birth_date,profile_pic_url)
+      VALUES($1,$2,$3,'0000000003',TRUE,TRUE,'מערכת','1900-01-01',$4)
+      ON CONFLICT (id) DO UPDATE SET name=$2, email=$3,
+        email_verified=TRUE, phone_verified=TRUE, city='מערכת',
+        birth_date='1900-01-01', profile_pic_url=$4`,
+      [SAFE_INFORMATION_USER_ID, SAFE_INFORMATION_USER_NAME,
+       SAFE_INFORMATION_USER_EMAIL, SAFE_INFORMATION_PROFILE_PIC]);
 
     // Only one verified identity may own a phone number or email address.
     // Unverified drafts may coexist, but a second one can never be verified.
@@ -2435,6 +2450,21 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS filter_choice_confirmed BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
     await pool.query(`
+      INSERT INTO user_contacts(owner_id,contact_id)
+      SELECT id,$1 FROM users
+      WHERE id NOT IN ($1,$2,$3)
+      ON CONFLICT DO NOTHING`,
+      [SAFE_INFORMATION_USER_ID, SYSTEM_USER_ID, SCAN_BOT_ID]);
+    await pool.query(`
+      INSERT INTO messages(sender_id,recipient_id,type,body)
+      SELECT $1,u.id,'text',$2 FROM users u
+      WHERE u.id NOT IN ($1,$3,$4)
+        AND NOT EXISTS (
+          SELECT 1 FROM messages m
+          WHERE m.sender_id=$1 AND m.recipient_id=u.id
+        )`, [SAFE_INFORMATION_USER_ID, SAFE_INFORMATION_WELCOME_MESSAGE,
+      SYSTEM_USER_ID, SCAN_BOT_ID]);
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS contact_filter_chat_entries (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         owner_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -2481,8 +2511,9 @@ async function migrateDatabase() {
     await pool.query(`
       INSERT INTO user_contacts(owner_id,contact_id)
       SELECT id,$1 FROM users
-      WHERE id NOT IN ($1,$2)
-      ON CONFLICT DO NOTHING`, [SYSTEM_USER_ID, SCAN_BOT_ID]);
+      WHERE id NOT IN ($1,$2,$3)
+      ON CONFLICT DO NOTHING`,
+      [SYSTEM_USER_ID, SCAN_BOT_ID, SAFE_INFORMATION_USER_ID]);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS system_ai_pending_actions (
         user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -2942,10 +2973,11 @@ async function migrateDatabase() {
 }
 
 async function provisionSystemConversation(pool, userId, sendWelcome = true) {
-  if (!userId || [SYSTEM_USER_ID, SCAN_BOT_ID].includes(userId)) return null;
+  if (!userId || [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID, SCAN_BOT_ID]
+      .includes(userId)) return null;
   await pool.query(
-    `INSERT INTO user_contacts(owner_id,contact_id) VALUES($1,$2)
-     ON CONFLICT DO NOTHING`, [userId, SYSTEM_USER_ID]);
+    `INSERT INTO user_contacts(owner_id,contact_id) VALUES($1,$2),($1,$3)
+     ON CONFLICT DO NOTHING`, [userId, SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID]);
   if (!sendWelcome) return null;
   const result = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body)
@@ -2954,6 +2986,12 @@ async function provisionSystemConversation(pool, userId, sendWelcome = true) {
        SELECT 1 FROM messages WHERE sender_id=$1 AND recipient_id=$2
      ) RETURNING id,created_at`,
     [SYSTEM_USER_ID, userId, WELCOME_MESSAGE]);
+  await pool.query(
+    `INSERT INTO messages(sender_id,recipient_id,type,body)
+     SELECT $1,$2,'text',$3
+     WHERE NOT EXISTS (
+       SELECT 1 FROM messages WHERE sender_id=$1 AND recipient_id=$2
+     )`, [SAFE_INFORMATION_USER_ID, userId, SAFE_INFORMATION_WELCOME_MESSAGE]);
   return result.rows[0] || null;
 }
 
@@ -3019,13 +3057,7 @@ async function generateSystemAnswer(pool, userId, question) {
   const uploadContext = await rejectedUploadContext(pool, userId, question);
   const contextText = uploadContext ? describeUploadDecision(uploadContext) : null;
   const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
-  const appQuestion = /(?:בתשובה|האפליקציה|באפליקציה|צילום\s*מסך|הפניות\s*שלי|הגדרות\s*הסינון|המדיה\s*שלי|להוסיף\s*חבר|ליצור\s*קבוצה|גיבוי\s*(?:אישי|google\s*drive))/i
-    .test(String(question));
   try {
-    const audience = await pool.query(
-      `SELECT (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
-       FROM users WHERE id=$1`, [userId]);
-    const isTeen = audience.rows[0]?.is_teen === true;
     const history = await pool.query(
       `SELECT sender_id,body FROM messages
        WHERE (sender_id=$1 AND recipient_id=$2)
@@ -3035,22 +3067,6 @@ async function generateSystemAnswer(pool, userId, question) {
       role: row.sender_id === SYSTEM_USER_ID ? 'assistant' : 'user',
       content: row.body || '',
     }));
-    if (!appQuestion && !contextText) {
-      return await generateSafeInformationAnswer({
-        apiKey,
-        model: process.env.SAFE_INFORMATION_MODEL ||
-          process.env.AI_GUIDE_MODEL || process.env.OPENAI_VISION_MODEL ||
-          'gpt-5.6-luna',
-        userId,
-        question,
-        history: messages,
-        isTeen,
-        validateSource: async url => {
-          const result = await inspectExternalLink(url);
-          return result?.safe === true;
-        },
-      });
-    }
     return await generateGuideAnswer({
       apiKey,
       model: process.env.AI_GUIDE_MODEL || process.env.OPENAI_VISION_MODEL ||
@@ -3062,8 +3078,44 @@ async function generateSystemAnswer(pool, userId, question) {
     });
   } catch (error) {
     console.error('system AI:', error.message);
-    return appQuestion || contextText ? localGuideAnswer(question, contextText)
-      : 'שירות המידע לא הצליח להשלים בדיקת מקורות כרגע. לא אציג מידע שאינו מאומת; אפשר לנסות שוב מאוחר יותר.';
+    return localGuideAnswer(question, contextText);
+  }
+}
+
+async function generateSafeInformationSystemAnswer(pool, userId, question) {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  try {
+    const [audience, history] = await Promise.all([
+      pool.query(
+        `SELECT (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+         FROM users WHERE id=$1`, [userId]),
+      pool.query(
+        `SELECT sender_id,body FROM messages
+         WHERE (sender_id=$1 AND recipient_id=$2)
+            OR (sender_id=$2 AND recipient_id=$1)
+         ORDER BY created_at DESC LIMIT 8`, [userId, SAFE_INFORMATION_USER_ID]),
+    ]);
+    const messages = history.rows.reverse().map(row => ({
+      role: row.sender_id === SAFE_INFORMATION_USER_ID ? 'assistant' : 'user',
+      content: row.body || '',
+    }));
+    return await generateSafeInformationAnswer({
+      apiKey,
+      model: process.env.SAFE_INFORMATION_MODEL ||
+        process.env.AI_GUIDE_MODEL || process.env.OPENAI_VISION_MODEL ||
+        'gpt-5.6-luna',
+      userId,
+      question,
+      history: messages,
+      isTeen: audience.rows[0]?.is_teen === true,
+      validateSource: async url => {
+        const result = await inspectExternalLink(url);
+        return result?.safe === true;
+      },
+    });
+  } catch (error) {
+    console.error('safe information AI:', error.message);
+    return 'שירות המידע לא הצליח להשלים בדיקת מקורות כרגע. לא אציג מידע שאינו מאומת; אפשר לנסות שוב מאוחר יותר.';
   }
 }
 
@@ -3137,8 +3189,8 @@ async function handleSystemAction(pool, userId, question) {
   if (!asksGroupChange) {
     const contacts = await pool.query(
       `SELECT u.id,u.name FROM user_contacts c JOIN users u ON u.id=c.contact_id
-       WHERE c.owner_id=$1 AND u.id NOT IN ($2,$3) ORDER BY u.name`,
-      [userId, SYSTEM_USER_ID, SCAN_BOT_ID]);
+       WHERE c.owner_id=$1 AND u.id NOT IN ($2,$3,$4) ORDER BY u.name`,
+      [userId, SYSTEM_USER_ID, SCAN_BOT_ID, SAFE_INFORMATION_USER_ID]);
     const matches = contacts.rows.filter(contact => normalized.includes(
       String(contact.name).replace(/\s+/g, '').toLowerCase()));
     const contact = matches.length === 1 ? matches[0]
@@ -3200,9 +3252,9 @@ async function sentMessagesPage(pool, userId, offset) {
      LEFT JOIN groups g ON g.id=m.group_id
      WHERE m.sender_id=$1 AND m.deleted_for_everyone=FALSE
        AND m.deleted_for_sender=FALSE
-       AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3)
-     ORDER BY m.created_at DESC OFFSET $4 LIMIT 6`,
-    [userId, SYSTEM_USER_ID, SCAN_BOT_ID, offset]);
+       AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3,$4)
+     ORDER BY m.created_at DESC OFFSET $5 LIMIT 6`,
+    [userId, SYSTEM_USER_ID, SCAN_BOT_ID, SAFE_INFORMATION_USER_ID, offset]);
   const rows = result.rows.slice(0, 5);
   if (!rows.length) return { answer: offset
     ? 'אין עוד הודעות ששלחת להצגה.'
@@ -3243,19 +3295,22 @@ async function handleMessageBrowsing(pool, userId, question) {
   return page.answer;
 }
 
-async function createSystemExchange(pool, userId, question, file = null) {
+async function createSystemExchange(pool, userId, question, file = null,
+    assistantId = SYSTEM_USER_ID) {
   const safeQuestion = redactHarmfulLanguageForDisplay(question);
   const sent = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name)
      VALUES($1,$2,$3,$4,$5,$6) RETURNING id,created_at`,
-    [userId, SYSTEM_USER_ID, file?.type || 'text', safeQuestion,
+    [userId, assistantId, file?.type || 'text', safeQuestion,
      file?.url || null, file?.name || null]);
   const answer = redactHarmfulLanguageForDisplay(
-    await generateSystemAnswer(pool, userId, question));
+    assistantId === SAFE_INFORMATION_USER_ID
+      ? await generateSafeInformationSystemAnswer(pool, userId, question)
+      : await generateSystemAnswer(pool, userId, question));
   const reply = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body)
      VALUES($1,$2,'text',$3) RETURNING id,created_at`,
-    [SYSTEM_USER_ID, userId, answer]);
+    [assistantId, userId, answer]);
   return { sent: sent.rows[0], reply: reply.rows[0], answer };
 }
 
@@ -3287,6 +3342,17 @@ app.set('io', io);
 app.disable('x-powered-by');
 // Nginx runs on the same host. Trust only the local reverse proxy when resolving req.ip.
 app.set('trust proxy', 'loopback');
+// Nginx supplies the original address as X-Real-IP. Express resolves req.ip from
+// X-Forwarded-For, so copy the trusted local proxy value when that header is absent.
+// Never accept X-Real-IP from a client connected directly to Node.
+app.use((req, _res, next) => {
+  const remoteAddress = req.socket?.remoteAddress || '';
+  const realIp = req.get('x-real-ip');
+  if (isLoopbackAddress(remoteAddress) && realIp && !req.get('x-forwarded-for')) {
+    req.headers['x-forwarded-for'] = realIp.trim();
+  }
+  next();
+});
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use((req, res, next) => {
@@ -3551,7 +3617,8 @@ async function youthPolicy(pool, ...userIds) {
 }
 
 async function teenContactAllowed(pool, firstId, secondId) {
-  if ([firstId, secondId].includes(SYSTEM_USER_ID)) return true;
+  if ([firstId, secondId].some(id =>
+      [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(id))) return true;
   const policies = await youthPolicy(pool, firstId, secondId);
   if (![...policies.values()].some(policy => policy.is_teen)) return true;
   const mutual = await pool.query(
@@ -4015,7 +4082,8 @@ io.on('connection', async (socket) => {
       return;
     }
     if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
-    if (toUserId !== SYSTEM_USER_ID && !normalizedStickerId && text &&
+    if (![SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId) &&
+        !normalizedStickerId && text &&
         moderateChatText(text).blocked) {
       recordBlockedChat(socket.user.id, 'private_socket', text, toUserId,
         socket.handshake.address);
@@ -4033,17 +4101,18 @@ io.on('connection', async (socket) => {
     }
     try {
       const pool = await getPool();
-      if (toUserId === SYSTEM_USER_ID) {
+      if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
         if (fileUrl || !text) {
           socket.emit('message:rejected', { toUserId,
             reason: 'העוזר מקבל כעת שאלות טקסט בלבד' });
           return;
         }
         const exchange = await createSystemExchange(
-          pool, socket.user.id, String(text).slice(0, 2000));
+          pool, socket.user.id, String(text).slice(0, 2000), null, toUserId);
         socket.emit('chat:message', {
-          id: exchange.reply.id, fromUserId: SYSTEM_USER_ID,
-          fromName: SYSTEM_USER_NAME, text: exchange.answer,
+          id: exchange.reply.id, fromUserId: toUserId,
+          fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
+            : SAFE_INFORMATION_USER_NAME, text: exchange.answer,
           fileType: 'text',
           createdAt: exchange.reply.created_at,
         });
@@ -5173,9 +5242,10 @@ app.get('/api/messages/recent-sent', auth, async (req, res) => {
        LEFT JOIN groups g ON g.id=m.group_id
        WHERE m.sender_id=$1 AND m.deleted_for_everyone=FALSE
          AND m.deleted_for_sender=FALSE
-         AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3)
-       ORDER BY m.created_at DESC LIMIT $4`,
-      [req.user.id, SYSTEM_USER_ID, SCAN_BOT_ID, limit]);
+         AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3,$4)
+       ORDER BY m.created_at DESC LIMIT $5`,
+      [req.user.id, SYSTEM_USER_ID, SCAN_BOT_ID,
+       SAFE_INFORMATION_USER_ID, limit]);
     res.json(result.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5355,7 +5425,8 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       code: 'SELF_MESSAGE_NOT_ALLOWED',
     });
   }
-  if (toUserId !== SYSTEM_USER_ID && !normalizedStickerId && text &&
+  if (![SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId) &&
+      !normalizedStickerId && text &&
       moderateChatText(text).blocked) {
     recordBlockedChat(senderId, 'private_http', text, toUserId, clientIp(req));
     return res.status(422).json({
@@ -5371,7 +5442,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   }
   try {
     const pool = await getPool();
-    if (toUserId === SYSTEM_USER_ID) {
+    if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
       if (!text && !fileUrl)
         return res.status(400).json({ error: 'לא נשלח תוכן' });
       const directQuestion = text || (fileType === 'image'
@@ -5380,11 +5451,12 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       const exchange = await createSystemExchange(
         pool, senderId, String(directQuestion).slice(0, 2000), fileUrl ? {
           url: fileUrl, name: fileName, type: fileType || 'document',
-        } : null);
+        } : null, toUserId);
       const sid = onlineUsers.get(senderId);
       if (sid) io.to(sid).emit('chat:message', {
-        id: exchange.reply.id, fromUserId: SYSTEM_USER_ID,
-        fromName: SYSTEM_USER_NAME, text: exchange.answer,
+        id: exchange.reply.id, fromUserId: toUserId,
+        fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
+          : SAFE_INFORMATION_USER_NAME, text: exchange.answer,
         fileType: 'text',
         createdAt: exchange.reply.created_at,
       });

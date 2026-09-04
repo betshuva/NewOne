@@ -866,7 +866,7 @@ Future<void> _confirmAndOpenExternalLink(
               ),
               const SizedBox(width: 12),
               const Expanded(
-                child: Text('מידע בטוח · AI מבקש לעצור רגע',
+                child: Text('ישראל מבקש לעצור רגע',
                     textAlign: TextAlign.right,
                     style:
                         TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
@@ -1765,6 +1765,7 @@ const kVersion = '1.3.9';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
+const kSafeInformationAiId = '00000000-0000-4000-8000-000000000003';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
 const _maxBatchImages = 20;
@@ -7121,7 +7122,7 @@ class _MainShellContentState extends State<_MainShellContent> {
           (user) => user?['id']?.toString() == kSystemGuideId,
           orElse: () => <String, dynamic>{
             'id': kSystemGuideId,
-            'name': 'מידע בטוח · AI',
+            'name': 'ישראל – מדריך בתשובה',
           },
         )!;
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
@@ -23425,7 +23426,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               size: 10, color: Colors.white60),
                           const SizedBox(width: 3),
                           Text(
-                              widget.recipient['id'] == kSystemGuideId
+                              widget.recipient['id'] == kSafeInformationAiId
                                   ? 'AI אוטומטי · מסונן'
                                   : 'מסונן · מקוון',
                               style: const TextStyle(
@@ -23594,8 +23595,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 ? const Center(
                     child: CircularProgressIndicator(color: kPrimary))
                 : _messages.isEmpty
-                    ? const _AvielEmptyChat(
-                        asset: 'assets/guide/safe-information-ai.png',
+                    ? _AvielEmptyChat(
+                        asset: widget.recipient['id'] == kSafeInformationAiId
+                            ? 'assets/guide/safe-information-ai.png'
+                            : 'assets/guide/safe-information-ai.png',
                         text: 'אין הודעות עדיין — שלח הודעה ראשונה!')
                     : ListView.builder(
                         controller: _scrollCtrl,
@@ -23790,7 +23793,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
 
-          if (widget.recipient['id'] == kSystemGuideId)
+          if (widget.recipient['id'] == kSafeInformationAiId)
             SizedBox(
               height: 43,
               child: ListView(
@@ -26660,7 +26663,7 @@ class _MessageBubble extends StatelessWidget {
     final rawText = message['text'] as String? ?? '';
     final sharedContact = !isFile ? _sharedContactFromText(rawText) : null;
     final sharedUrl = !isFile ? _firstHttpUrl(rawText) : null;
-    final guideExternalUrls = !isFile && message['from'] == kSystemGuideId
+    final guideExternalUrls = !isFile && message['from'] == kSafeInformationAiId
         ? RegExp(r'https://[^\s<>]+')
             .allMatches(rawText)
             .map((match) => match.group(0))

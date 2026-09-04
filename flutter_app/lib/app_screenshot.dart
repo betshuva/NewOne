@@ -315,7 +315,7 @@ Future<void> _sendScreenshot(
   if (context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(destination.id == _israelId
-            ? 'צילום המסך נשלח לשירות ה-AI'
+            ? 'צילום המסך נשלח לישראל'
             : 'צילום המסך נשלח')));
   }
 }
@@ -452,7 +452,7 @@ class _ScreenshotEditorState extends State<_ScreenshotEditor> {
             width: 440,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               const Text(
-                'צילום המסך, התיאור והקבצים שתצרף יישמרו יחד בקריאה לצוות הפיתוח. לאחר הפתיחה תועבר לקריאה, ושירות ה-AI ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב.',
+                'צילום המסך, התיאור והקבצים שתצרף יישמרו יחד בקריאה לצוות הפיתוח. לאחר הפתיחה תועבר לקריאה, וישראל ישלח בצ׳אט אישור עם פרטי הפנייה וקישור ישיר למעקב.',
                 textDirection: TextDirection.rtl,
                 textAlign: TextAlign.right,
               ),
@@ -643,7 +643,7 @@ class _ScreenshotEditorState extends State<_ScreenshotEditor> {
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 2, 16, 6),
             child: Text(
-              'מידע בטוח · AI הוא שירות אוטומטי ומדריך התמיכה של אפליקציית בתשובה. אפשר לשלוח אליו צילום מסך כדי לקבל עזרה או להכין פנייה למפתח.',
+              'ישראל הוא מדריך התמיכה של אפליקציית בתשובה. אפשר לשלוח אליו צילום מסך כדי לקבל עזרה או להכין פנייה למפתח.',
               textAlign: TextAlign.center,
               textDirection: TextDirection.rtl,
             ),
