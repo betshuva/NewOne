@@ -27,7 +27,7 @@ test('the guide is displayed as Israel throughout the active application', () =>
   assert.doesNotMatch(source, /אביאל/);
   assert.doesNotMatch(serverSource, /אביאל/);
   assert.match(source, /מדבקת עוזר AI/);
-  assert.match(serverSource, /SYSTEM_USER_NAME = 'מדריך בתשובה'/);
+  assert.match(serverSource, /SYSTEM_USER_NAME = 'ישראל מדריך בתשובה'/);
   assert.match(serverSource, /SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI'/);
 });
 
@@ -411,7 +411,7 @@ test('listing links open in the desktop detail pane and keep mobile navigation',
   );
 });
 
-test('new accounts, friendships and groups default to text and scenery only', () => {
+test('new accounts default to text and scenery; new conversations inherit account settings', () => {
   const clientDefault = source.slice(
     source.indexOf('Map<String, bool> _newAccountFilter()'),
     source.indexOf('class _RegistrationFilterSelector'));
@@ -422,13 +422,13 @@ test('new accounts, friendships and groups default to text and scenery only', ()
   assert.match(clientDefault, /'women': false/);
   assert.match(clientDefault, /'children': false/);
 
-  assert.match(source, /var selectedFilter = _newAccountFilter\(\)/);
+  assert.match(source, /readFilter\(request\['my_filter'\]\)/);
   assert.match(source, /final Map<String, bool> _contentFilter =\s*_newAccountFilter\(\)/);
-  assert.match(source, /_invitationPersonalFilter = _newAccountFilter\(\)/);
+  assert.match(source, /_invitationPersonalFilter = readFilter\(data\['myFilter'\]\)/);
   assert.match(contentFilterSource,
     /const NEW_ACCOUNT_CONTENT_FILTER = Object\.freeze\(\{[\s\S]*?nonHumanImages: true/);
   assert.match(serverSource,
-    /req\.body\?\.filter, NEW_ACCOUNT_CONTENT_FILTER/);
+    /pendingRow.rows\[0\].content_filter, req\.body\?\.filter/);
 });
 
 test('pending group invitations open automatically on entry and realtime arrival', () => {
@@ -497,7 +497,7 @@ test('destination filter rejection remains forwardable while safety rejection st
 
 test('multiple chat items can be forwarded to multiple users and groups', () => {
   const forwarding = source.slice(
-    source.indexOf('Future<void> _forwardChatMessages'),
+    source.indexOf('Future<void> forwardChatMessages'),
     source.indexOf('// Google Web Client ID'),
   );
   assert.match(forwarding, /CheckboxListTile/);
@@ -648,7 +648,7 @@ test('OpenAI and Gemini both decide modesty while local clothing scores are disa
   assert.match(serverSource,
     /action: 'approved_by_clean_safety_consensus'/);
   assert.match(serverSource,
-    /MODERATION_CACHE_VERSION = '2026-09-03-video-frame-image-pipeline-12'/);
+    /MODERATION_CACHE_VERSION = '2026-09-06-classification-verification-13'/);
 });
 
 test('safety-rejected media cannot be served locally or restored from Drive', () => {

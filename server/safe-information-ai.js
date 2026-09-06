@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { MARKETPLACE_TOOL, MARKETPLACE_INSTRUCTIONS } = require('./ai-marketplace');
 const { recordProviderCall } = require('./provider-usage-log');
 
 const HALACHA_PATTERN = /(?:הלכה|הלכתי|מותר|אסור|כשר|כשרות|שבת|נידה|ברכה|תפילה|צום|מוקצה|ריבית\s+הלכתית|שעטנז|רבנות)/i;
@@ -12,7 +13,7 @@ const SAFE_INFORMATION_INSTRUCTIONS = `
 מטרתך להנגיש מידע כללי ועדכני בעברית לציבור דתי וחרדי בלי לחשוף אותו לגלישה פתוחה.
 
 כללי יסוד מחייבים:
-- השתמש בחיפוש ברשת כאשר השאלה תלויה במידע עדכני. אל תנחש מחיר, שעה, כתובת, זכאות, זמינות או תנאי שירות.
+- החיפוש ברשת מושבת זמנית. אין לך גישה לאתרים חיצוניים. אל תנחש מחיר, שעה, כתובת, זכאות, זמינות או תנאי שירות.
 - העדף לפי הסדר: אתר ממשלתי או רגולטור; הגוף הרשמי שנותן את השירות; יצרן; ורק אז מקור מסחרי מוכר.
 - במידע רפואי העדף משרד הבריאות, קופות חולים ובתי חולים. תן מידע כללי ואיתור שירות בלבד; אל תאבחן, אל תשנה תרופה ואל תחליף רופא.
 - במידע פיננסי העדף בנק ישראל, gov.il ואתרי הבנקים. הסבר מידע כללי ותרחישים; אל תיתן ייעוץ השקעות או המלצה אישית מחייבת.
@@ -29,7 +30,10 @@ const SAFE_INFORMATION_INSTRUCTIONS = `
 1. תשובה קצרה ומעשית בעברית נקייה.
 2. פרטים חשובים או השוואה תמציתית.
 3. הסתייגות רפואית או פיננסית רק כשנדרשת.
-אין לכתוב רשימת מקורות ידנית; המערכת תצרף קישורים שנבדקו מתוך ציטוטי החיפוש.
+אין לכתוב רשימת מקורות חיצוניים או להסתמך על מחירי שוק מהזיכרון או מהודעות קודמות.
+עד לבירור הרשאות השימוש, מידע עדכני זמין רק ממודעות בתשובה באמצעות הכלי. אפשר להסביר עקרונות כלליים, אך כאשר נדרש מידע חיצוני עדכני אמור שהבדיקה החיצונית מושבתת זמנית.
+השוואת מחיר מותרת רק בין מחירים מבוקשים של מודעות שהכלי החזיר כעת. אין לקבוע שמחיר הוא מציאה, זול מהשוק או שווי שוק ללא מקור מורשה. אם אין מודעות דומות מספיק, אמור שאין בסיס להשוואת מחיר.
+אל תציג מפרט דגם שלא צוין במודעה. אין לפתוח כתובות שקיבלת מהמשתמש או מהמודעות.
 `;
 
 function outputPart(data) {
@@ -91,16 +95,27 @@ async function generateSafeInformationAnswer(options) {
     return 'שירות המידע המקוון אינו זמין כרגע. לא אציג מידע שאינו מאומת; אפשר לנסות שוב מאוחר יותר.';
 
   const question = redactSensitiveInput(rawQuestion);
+  // Previous answers may contain external claims from before the temporary pause.
+  // Keep their listing references only, so follow-up questions can refresh them.
   const input = (options.history || []).slice(-6).map(item => ({
     role: item.role === 'assistant' ? 'assistant' : 'user',
-    content: redactSensitiveInput(item.content),
-  }));
+    content: item.role === 'assistant'
+      ? (String(item.content || '').match(/betshuva:\/\/listing\/[0-9a-f-]{36}/gi) || []).join('\n')
+      : redactSensitiveInput(item.content),
+  })).filter(item => item.content);
   if (!input.length || input.at(-1).content !== question)
     input.push({ role: 'user', content: question });
   const model = options.model || 'gpt-5.6-luna';
   const startedAt = performance.now();
   let response;
+  let data;
+  let marketplaceChecked = false;
+  const listingUrls = new Set();
+  const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let usageReported = false;
+  const canSearch = !options.isTeen && typeof options.searchMarketplace === 'function';
   try {
+    for (let round = 0; round < 4; round++) {
     response = await (options.fetchImpl || globalThis.fetch)(
       'https://api.openai.com/v1/responses', {
         method: 'POST',
@@ -108,27 +123,47 @@ async function generateSafeInformationAnswer(options) {
           'Content-Type': 'application/json' },
         body: JSON.stringify({
           model,
-          instructions: SAFE_INFORMATION_INSTRUCTIONS + (options.isTeen ? `
+          instructions: SAFE_INFORMATION_INSTRUCTIONS + (canSearch ? MARKETPLACE_INSTRUCTIONS : '') + (options.isTeen ? `
 המשתמש הוא קטין. החמר את ההגנה: אל תציג תוכן למבוגרים, אל תעודד מפגש עם זר,
 אל תבקש פרטים אישיים או מיקום מדויק, ואל תפתח נושאים רפואיים או פיננסיים אישיים.
 הצע לערב הורה או מבוגר אחראי כאשר פעולה דורשת מסירת פרטים, תשלום או נסיעה.
 ` : ''),
           input,
-          tools: [{
-            type: 'web_search',
-            search_context_size: 'medium',
-            user_location: { type: 'approximate', country: 'IL',
-              timezone: 'Asia/Jerusalem' },
-          }],
+          tools: canSearch && round < 3 ? [MARKETPLACE_TOOL] : [],
           tool_choice: 'auto',
+          include: ['reasoning.encrypted_content'],
           reasoning: { effort: 'low' },
-          max_output_tokens: 900,
+          max_output_tokens: 1600,
           store: false,
           safety_identifier: crypto.createHash('sha256')
             .update(String(options.userId || 'anonymous')).digest('hex').slice(0, 64),
         }),
         signal: AbortSignal.timeout(35000),
       });
+      data = await response.json().catch(() => ({}));
+      for (const [key, source] of [['inputTokens', 'input_tokens'], ['outputTokens', 'output_tokens'], ['totalTokens', 'total_tokens']])
+        usage[key] += Number(data.usage?.[source] || 0);
+      usageReported ||= Boolean(data.usage);
+      if (!response.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${response.status}`);
+      const calls = (data.output || []).filter(item => item.type === 'function_call');
+      if (!calls.length) break;
+      if (round === 3) throw new Error('Marketplace tool limit exceeded');
+      input.push(...data.output);
+      for (const call of calls) {
+        let result;
+        try {
+          if (!canSearch || call.name !== 'search_marketplace') throw new Error('Unsupported tool');
+          result = await options.searchMarketplace(JSON.parse(call.arguments));
+          if (!result.error) {
+            marketplaceChecked = true;
+            for (const listing of result.listings || []) listingUrls.add(listing.url);
+          }
+        } catch (_) {
+          result = { error: 'SEARCH_FAILED', message: 'לא ניתן לבדוק מודעות כרגע. אין להמציא תוצאות.' };
+        }
+        input.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(result) });
+      }
+    }
   } catch (error) {
     await recordProviderCall({ provider: 'openai', model,
       operation: 'safe_information', tracking: { userId: options.userId,
@@ -137,16 +172,12 @@ async function generateSafeInformationAnswer(options) {
       errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
     throw error;
   }
-  const data = await response.json().catch(() => ({}));
-  const usage = { inputTokens: Number(data.usage?.input_tokens || 0),
-    outputTokens: Number(data.usage?.output_tokens || 0),
-    totalTokens: Number(data.usage?.total_tokens || 0) };
   const part = outputPart(data);
   await recordProviderCall({ provider: 'openai', model,
     operation: 'safe_information', tracking: { userId: options.userId,
       workflow: 'safe_information' },
     status: response.ok && part?.text ? 'completed' : 'failed', usage,
-    usageReported: Boolean(data.usage),
+    usageReported,
     durationMs: Math.round(performance.now() - startedAt),
     errorCode: response.ok ? (part?.text ? null : 'EMPTY_RESPONSE')
       : data?.error?.code || `HTTP_${response.status}` });
@@ -154,13 +185,6 @@ async function generateSafeInformationAnswer(options) {
     throw new Error(data?.error?.message || `OpenAI HTTP ${response.status}`);
   if (!part?.text) throw new Error('OpenAI returned an empty information response');
 
-  const checked = [];
-  for (const citation of safeCitationUrls(data)) {
-    try {
-      if (!options.validateSource || await options.validateSource(citation.url))
-        checked.push(citation);
-    } catch (_) {}
-  }
   const checkedAt = new Intl.DateTimeFormat('he-IL', {
     timeZone: 'Asia/Jerusalem', day: '2-digit', month: '2-digit', year: 'numeric',
   }).format(new Date());
@@ -168,12 +192,11 @@ async function generateSafeInformationAnswer(options) {
     .replace(/\n?\*{0,2}נבדק בתאריך:\*{0,2}\s*\d{1,2}[./-]\d{1,2}[./-]\d{2,4}/gi, '')
     .replace(/\s*\(\[[^\]]+\]\(\s*/g, '')
     .replace(/https?:\/\/\S+/g, '')
+    .replace(/betshuva:\/\/listing\/[0-9a-z-]+/gi, url => listingUrls.has(url) ? url : '')
     .replace(/\n{3,}/g, '\n\n').trim().slice(0, 3500);
-  const datedText = `${cleanText}\n\nנבדק בתאריך: ${checkedAt}`;
-  if (!checked.length)
-    return `${datedText}\n\nלא צורף מקור שניתן היה לאמת. אין להסתמך על הפרטים לביצוע פעולה.`;
-  return `${datedText}\n\nמקורות שנבדקו:\n${checked.map((source, index) =>
-    `${index + 1}. ${source.title}\n${source.url}`).join('\n')}`;
+  if (marketplaceChecked)
+    return `${cleanText}\n\nנתוני המודעות נבדקו בתאריך: ${checkedAt}\nמקור: מודעות פעילות בבתשובה; המחירים מבוקשים על ידי המפרסמים ואינם מחירי עסקאות או שווי שוק מאומת.`;
+  return `${cleanText}\n\nחיפוש ובדיקת מידע באתרים חיצוניים מושבתים זמנית.`;
 }
 
 module.exports = {

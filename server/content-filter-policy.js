@@ -26,13 +26,14 @@ function normalizeContentFilter(value, fallback = DEFAULT_CONTENT_FILTER) {
   ]));
 }
 
-// A friend- or group-specific filter replaces the general filter in both
-// directions: it may be stricter or more permissive.
+// General settings are inherited by default. Optional enforcement makes them
+// an upper bound: a scoped override may tighten, but cannot permit blocked types.
 function resolveScopedContentFilter(generalFilter, scopedFilter) {
   const general = normalizeContentFilter(generalFilter);
-  return scopedFilter == null
-    ? general
-    : normalizeContentFilter(scopedFilter, general);
+  const scoped = normalizeContentFilter(scopedFilter, general);
+  if (generalFilter?.enforceGeneralFilter !== true) return scoped;
+  return Object.fromEntries(Object.keys(DEFAULT_CONTENT_FILTER).map(key =>
+    [key, general[key] && scoped[key]]));
 }
 
 function imageAllowedByFilter(filter, classification) {

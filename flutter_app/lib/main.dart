@@ -16,7 +16,6 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -38,6 +37,9 @@ import 'web_capture_picker.dart';
 import 'clipboard_image_paste.dart';
 import 'web_otp.dart';
 import 'app_screenshot.dart';
+import 'incoming_share.dart';
+import 'read_notifications.dart';
+import 'message_reactions.dart';
 import 'document_scanner.dart';
 import 'image_clipboard.dart';
 
@@ -874,7 +876,7 @@ Future<void> _confirmAndOpenExternalLink(
             ]),
             content: Column(mainAxisSize: MainAxisSize.min, children: [
               const Text(
-                'אתה עומד לצאת מבתשובה ולעבור לאתר חיצוני. הקישור עבר בדיקות אוטומטיות, אך אין אפשרות להבטיח שאתר חיצוני בטוח לחלוטין. הלחיצה והמשך השימוש באתר הם באחריותך.',
+                'אתה עומד לצאת מבתשובה ולעבור לאתר חיצוני. אין אפשרות להבטיח שאתר חיצוני בטוח לחלוטין. הלחיצה והמשך השימוש באתר הם באחריותך.',
                 textAlign: TextAlign.right,
                 style: TextStyle(height: 1.45),
               ),
@@ -2284,7 +2286,7 @@ Future<void> _clearGroupMessagesCache(Object? userId, Object? groupId) async {
 
 Future<void> _forwardChatMessage(BuildContext context, String token,
         io.Socket? socket, Map<String, dynamic> message) =>
-    _forwardChatMessages(context, token, socket, [message]);
+    forwardChatMessages(context, token, socket, [message]);
 
 Future<void> _requestImageReclassification(
     BuildContext context, String token, Map<String, dynamic> image) async {
@@ -2331,8 +2333,9 @@ Future<void> _requestImageReclassification(
   }
 }
 
-Future<void> _forwardChatMessages(BuildContext context, String token,
-    io.Socket? socket, List<Map<String, dynamic>> messages) async {
+Future<void> forwardChatMessages(BuildContext context, String token,
+    io.Socket? socket, List<Map<String, dynamic>> messages,
+    {String? initialRecipientId, http.Client? client}) async {
   if (messages.isEmpty) return;
   if (messages.any((message) {
     final status = message['status'] as String?;
@@ -2344,10 +2347,11 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
             'לא ניתן להעביר קובץ שנכשל בבדיקת הבטיחות או שעדיין נמצא בסריקה')));
     return;
   }
+  final transport = client ?? http.Client();
   try {
     Future<http.Response> loadTargets(String path) async {
       try {
-        return await http.get(Uri.parse('$kApi/$path'), headers: {
+        return await transport.get(Uri.parse('$kApi/$path'), headers: {
           'Authorization': 'Bearer $token',
         }).timeout(const Duration(seconds: 15));
       } catch (_) {
@@ -2383,13 +2387,30 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
     final groups = responseList(responses[1]);
     final targetLoadFailed =
         responses.every((response) => response.statusCode != 200);
+    final directUser =
+        initialRecipientId == null ? null : usersById[initialRecipientId];
+    if (initialRecipientId != null && directUser == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('איש הקשר אינו זמין לשיתוף. בחרו יעד מתוך בתשובה.'),
+      ));
+      return;
+    }
+    final initialSelection = <String, Map<String, dynamic>>{
+      if (directUser != null)
+        'user:$initialRecipientId': {
+          'kind': 'user',
+          'id': initialRecipientId,
+          'name': directUser['name'],
+        },
+    };
     final targets = await showModalBottomSheet<List<Map<String, dynamic>>>(
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (sheetContext) {
-        final selected = <String, Map<String, dynamic>>{};
+        final selected =
+            Map<String, Map<String, dynamic>>.from(initialSelection);
         return StatefulBuilder(builder: (context, setSheetState) {
           Widget targetTile(Map<String, dynamic> item, String kind) {
             final key = '$kind:${item['id']}';
@@ -2422,10 +2443,22 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
                 Padding(
                   padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
                   child: Column(children: [
-                    const Text('העבר אל',
+                    Text(
+                        directUser == null
+                            ? 'העבר אל'
+                            : 'שליחה אל ${directUser['name']}',
                         style: TextStyle(
                             fontSize: 18, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
+                    if (messages.any((m) => m['localPath'] != null))
+                      Text(
+                          messages
+                              .where((m) => m['localPath'] != null)
+                              .map((m) => m['fileName'])
+                              .take(3)
+                              .join(' • '),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis),
                     Text('${messages.length} פריטים • ${selected.length} יעדים',
                         style: const TextStyle(color: kSubtext)),
                   ]),
@@ -2447,10 +2480,13 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
                       : ListView(children: [
                           if (users.isNotEmpty)
                             const _SectionHeader(title: 'משתמשים'),
-                          ...users.map((user) => targetTile(user, 'user')),
-                          if (groups.isNotEmpty)
+                          ...(directUser == null ? users : [directUser])
+                              .map((user) => targetTile(user, 'user')),
+                          if (directUser == null && groups.isNotEmpty)
                             const _SectionHeader(title: 'קבוצות'),
-                          ...groups.map((group) => targetTile(group, 'group')),
+                          if (directUser == null)
+                            ...groups
+                                .map((group) => targetTile(group, 'group')),
                         ]),
                 ),
                 Padding(
@@ -2477,6 +2513,7 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
     );
     if (targets == null || targets.isEmpty || !context.mounted) return;
     var sentCount = 0;
+    var pendingCount = 0;
     final forwardingErrors = <String>[];
     String responseError(http.Response response) {
       try {
@@ -2490,112 +2527,110 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
 
     for (final target in targets) {
       for (final message in messages) {
-        var fileUrl = message['fileUrl'] as String?;
-        var fileName = message['fileName'] as String?;
-        var fileType = message['fileType'] as String?;
-        final localPath = message['localPath'] as String?;
-        final localBytes = message['localBytes'] as Uint8List?;
-        // A server-hosted, already approved file is forwarded by reference. The
-        // server reuses its immutable moderation result and applies only the new
-        // destination filter. Local files still require a normal upload/scan.
-        if (localPath != null || localBytes != null) {
-          final request =
-              http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
-                ..headers['Authorization'] = 'Bearer $token'
-                ..fields[target['kind'] == 'group' ? 'groupId' : 'toUserId'] =
-                    target['id'].toString();
-          if (localBytes != null) {
-            request.files.add(http.MultipartFile.fromBytes('file', localBytes,
-                filename: fileName ?? 'screenshot.png',
-                contentType: MediaType('image', 'png')));
+        try {
+          var fileUrl = message['fileUrl'] as String?;
+          var fileName = message['fileName'] as String?;
+          var fileType = message['fileType'] as String?;
+          final localPath = message['localPath'] as String?;
+          final localBytes = message['localBytes'] as Uint8List?;
+          // A server-hosted, already approved file is forwarded by reference. The
+          // server reuses its immutable moderation result and applies only the new
+          // destination filter. Local files still require a normal upload/scan.
+          if (localPath != null || localBytes != null) {
+            final request =
+                http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+                  ..headers['Authorization'] = 'Bearer $token'
+                  ..fields[target['kind'] == 'group' ? 'groupId' : 'toUserId'] =
+                      target['id'].toString();
+            if (localBytes != null) {
+              request.files.add(http.MultipartFile.fromBytes('file', localBytes,
+                  filename: fileName ?? 'screenshot.png',
+                  contentType: MediaType('image', 'png')));
+            } else {
+              request.files.add(await http.MultipartFile.fromPath(
+                  'file', localPath!,
+                  filename: fileName,
+                  contentType: message['mimeType'] is String
+                      ? MediaType.parse(message['mimeType'] as String)
+                      : _mimeFromFileName(fileName ?? localPath)));
+            }
+            final upload = await transport
+                .send(request)
+                .timeout(const Duration(seconds: 60));
+            final uploadBody = await upload.stream.bytesToString();
+            if (upload.statusCode != 200) {
+              forwardingErrors.add(
+                  '${fileName ?? 'קובץ'}: ${responseError(http.Response(uploadBody, upload.statusCode))}');
+              continue;
+            }
+            final uploaded = jsonDecode(uploadBody) as Map<String, dynamic>;
+            if (uploaded['status'] == 'rejected') {
+              forwardingErrors.add(
+                  '${fileName ?? 'קובץ'}: ${uploaded['reason'] ?? 'נחסם לפי הגדרות הסינון'}');
+              continue;
+            }
+            if (uploaded['status'] == 'pending') {
+              pendingCount++;
+              continue;
+            }
+            fileUrl = uploaded['url'] as String?;
+            fileName = uploaded['fileName'] as String? ?? fileName;
+            fileType = uploaded['fileType'] as String? ?? fileType ?? 'file';
+          }
+          final payload = <String, dynamic>{
+            'text': fileUrl == null ? (message['text'] as String? ?? '') : null,
+            if (fileUrl != null) 'fileUrl': fileUrl,
+            if (fileUrl != null) 'fileName': fileName,
+            if (fileUrl != null) 'fileType': fileType,
+          };
+          var sent = false;
+          if (target['kind'] == 'user') {
+            final response = await transport.post(Uri.parse('$kApi/messages'),
+                headers: {
+                  'Authorization': 'Bearer $token',
+                  'Content-Type': 'application/json'
+                },
+                body: jsonEncode({...payload, 'toUserId': target['id']}));
+            sent = response.statusCode == 200;
+            if (!sent) forwardingErrors.add(responseError(response));
           } else {
-            request.files.add(await http.MultipartFile.fromPath(
-                'file', localPath!,
-                filename: fileName,
-                contentType: _mimeFromFileName(fileName ?? localPath)));
-          }
-          final upload =
-              await request.send().timeout(const Duration(seconds: 60));
-          final uploadBody = await upload.stream.bytesToString();
-          if (upload.statusCode != 200) {
-            var uploadError = 'העלאת התמונה נכשלה';
-            try {
-              uploadError =
-                  (jsonDecode(uploadBody) as Map)['error']?.toString() ??
-                      uploadError;
-            } catch (_) {}
-            if (context.mounted) {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(uploadError)));
-            }
-            return;
-          }
-          final uploaded = jsonDecode(uploadBody) as Map<String, dynamic>;
-          if (uploaded['status'] == 'rejected') {
-            final reason = uploaded['reason']?.toString() ??
-                'התמונה נחסמה לפי הגדרות הסינון';
-            if (context.mounted) {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(reason)));
-            }
-            return;
-          }
-          if (uploaded['status'] == 'pending') {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                  content: Text('התמונה נשלחה לסריקה ותועבר לאחר אישור')));
-            }
-            return;
-          }
-          fileUrl = uploaded['url'] as String?;
-          fileName = uploaded['fileName'] as String? ?? fileName;
-          fileType = uploaded['fileType'] as String? ?? 'image';
-        }
-        final payload = <String, dynamic>{
-          'text': fileUrl == null ? (message['text'] as String? ?? '') : null,
-          if (fileUrl != null) 'fileUrl': fileUrl,
-          if (fileUrl != null) 'fileName': fileName,
-          if (fileUrl != null) 'fileType': fileType,
-        };
-        var sent = false;
-        if (target['kind'] == 'user') {
-          final response = await http.post(Uri.parse('$kApi/messages'),
+            final response = await transport.post(
+              Uri.parse('$kApi/groups/${target['id']}/messages'),
               headers: {
                 'Authorization': 'Bearer $token',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
               },
-              body: jsonEncode({...payload, 'toUserId': target['id']}));
-          sent = response.statusCode == 200;
-          if (!sent) forwardingErrors.add(responseError(response));
-        } else {
-          final response = await http.post(
-            Uri.parse('$kApi/groups/${target['id']}/messages'),
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode(payload),
-          );
-          sent = response.statusCode == 200;
-          if (!sent) forwardingErrors.add(responseError(response));
+              body: jsonEncode(payload),
+            );
+            sent = response.statusCode == 200;
+            if (!sent) forwardingErrors.add(responseError(response));
+          }
+          if (sent) sentCount++;
+        } catch (error) {
+          debugPrint('Forward item failed: $error');
+          forwardingErrors.add(
+              '${message['fileName'] ?? 'הודעה'}: ההעברה נכשלה, יש לנסות שוב');
         }
-        if (sent) sentCount++;
       }
     }
     if (context.mounted) {
       final totalDeliveries = messages.length * targets.length;
       final allSent = sentCount == totalDeliveries;
       final uniqueErrors = forwardingErrors.toSet().join(' • ');
+      final pendingNotice = pendingCount == 0
+          ? ''
+          : ' • $pendingCount קבצים ממתינים לסריקה ולאישור';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(forwardingErrors.isNotEmpty
-            ? (sentCount == 0
-                ? uniqueErrors
-                : '$uniqueErrors (הושלמו $sentCount מתוך $totalDeliveries שליחות)')
-            : allSent
-                ? (messages.length == 1 && targets.length == 1
-                    ? 'ההודעה הועברה'
-                    : '${messages.length} פריטים הועברו ל־${targets.length} יעדים')
-                : 'הושלמו $sentCount מתוך $totalDeliveries שליחות'),
+        content: Text((forwardingErrors.isNotEmpty
+                ? (sentCount == 0
+                    ? uniqueErrors
+                    : '$uniqueErrors (הושלמו $sentCount מתוך $totalDeliveries שליחות)')
+                : allSent
+                    ? (messages.length == 1 && targets.length == 1
+                        ? 'ההודעה הועברה'
+                        : '${messages.length} פריטים הועברו ל־${targets.length} יעדים')
+                    : 'הושלמו $sentCount מתוך $totalDeliveries שליחות') +
+            pendingNotice),
       ));
     }
   } catch (error) {
@@ -2604,6 +2639,8 @@ Future<void> _forwardChatMessages(BuildContext context, String token,
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('שגיאת תקשורת בהעברת ההודעה')));
     }
+  } finally {
+    if (client == null) transport.close();
   }
 }
 
@@ -2997,6 +3034,29 @@ Map<String, bool> _newAccountFilter() => {
       'children': false,
     };
 
+class _GeneralFilterEnforcementCard extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  const _GeneralFilterEnforcementCard(
+      {required this.value, required this.onChanged});
+  @override
+  Widget build(BuildContext context) => Card(
+        margin: const EdgeInsets.only(bottom: 14),
+        child: SwitchListTile.adaptive(
+          value: value,
+          onChanged: onChanged,
+          title: const Text('אכיפת הסינון הכללי בכל המערכת',
+              style: TextStyle(fontWeight: FontWeight.w700)),
+          subtitle: const Text(
+              'הסינון הכללי משמש כברירת המחדל בשיחות עם חברים ובקבוצות. '
+              'כשהאפשרות פעילה, אפשר להחמיר בסינון של חבר או קבוצה, אך לא להתיר תוכן שחסום בסינון הכללי. '
+              'כשהאפשרות כבויה, ניתן להתאים את הסינון בנפרד לכל חבר או קבוצה.'),
+          secondary: const Icon(Icons.shield_outlined, color: kPrimary),
+          isThreeLine: true,
+        ),
+      );
+}
+
 class _RegistrationFilterSelector extends StatelessWidget {
   final Map<String, bool> filter;
   final bool confirmed;
@@ -3021,7 +3081,8 @@ class _RegistrationFilterSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selectedCount = filter.values.where((value) => value).length;
+    final selectedCount =
+        _items.keys.where((key) => filter[key] == true).length;
     final safeDefault = filter['text'] == true &&
         _items.keys
             .where((key) => key != 'text')
@@ -3043,6 +3104,11 @@ class _RegistrationFilterSelector extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          _GeneralFilterEnforcementCard(
+            value: filter['enforceGeneralFilter'] == true,
+            onChanged: (value) =>
+                onChanged({...filter, 'enforceGeneralFilter': value}),
+          ),
           Row(children: [
             Container(
               width: 38,
@@ -3082,7 +3148,10 @@ class _RegistrationFilterSelector extends StatelessWidget {
           const SizedBox(height: 14),
           InkWell(
             borderRadius: BorderRadius.circular(12),
-            onTap: () => onChanged(_newAccountFilter()),
+            onTap: () => onChanged({
+              ..._newAccountFilter(),
+              'enforceGeneralFilter': filter['enforceGeneralFilter'] == true
+            }),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 180),
               width: double.infinity,
@@ -4720,13 +4789,25 @@ class _AuthScreenState extends State<AuthScreen> {
           ],
         ]);
       case 3:
-        const filterItems = <String, (String, IconData)>{
-          'text': ('טקסט', Icons.chat_bubble_outline),
-          'nonHumanImages': ('תמונות נוף או חפצים', Icons.landscape_outlined),
-          'men': ('גברים', Icons.man),
-          'women': ('נשים', Icons.woman),
-          'children': ('ילדים', Icons.child_care),
-          'video': ('וידאו', Icons.videocam_outlined),
+        const filterItems = <String, (String, String, IconData)>{
+          'text': ('טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
+          'nonHumanImages': (
+            'תמונות נוף או חפצים',
+            'חפצים, נוף, צמחים ובעלי חיים',
+            Icons.landscape_outlined
+          ),
+          'men': ('גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
+          'women': ('נשים', 'תמונות שסווגו כתמונות נשים', Icons.woman),
+          'children': (
+            'ילדים',
+            'תמונות שסווגו כתמונות ילדים',
+            Icons.child_care
+          ),
+          'video': (
+            'וידאו',
+            'סרטונים שעברו סריקה וסיווג',
+            Icons.videocam_outlined
+          ),
         };
         return Column(children: [
           const Text('בחירת סינון',
@@ -4735,46 +4816,130 @@ class _AuthScreenState extends State<AuthScreen> {
           const Text('בחר אילו סוגי תוכן תרצה לקבל',
               style: TextStyle(color: kSubtext, fontSize: 12.5)),
           const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
-            children: filterItems.entries.map((entry) {
-              final selected = _registrationFilter[entry.key] == true;
-              return InkWell(
-                onTap: () => setState(() {
-                  _registrationFilter = {
-                    ..._registrationFilter,
-                    entry.key: !selected
-                  };
-                  _filterConfirmed = true;
-                }),
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  padding: const EdgeInsetsDirectional.only(end: 10),
-                  decoration: BoxDecoration(
-                    color: selected ? const Color(0xFFE7F3FC) : Colors.white,
-                    border: Border.all(color: selected ? kPrimary : kBorder),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Checkbox(
-                      value: selected,
-                      onChanged: (value) => setState(() {
-                        _registrationFilter = {
-                          ..._registrationFilter,
-                          entry.key: value == true
-                        };
-                        _filterConfirmed = true;
-                      }),
+          _GeneralFilterEnforcementCard(
+            value: _registrationFilter['enforceGeneralFilter'] == true,
+            onChanged: (value) => setState(() {
+              _registrationFilter = {
+                ..._registrationFilter,
+                'enforceGeneralFilter': value
+              };
+            }),
+          ),
+          ...filterItems.entries.map((entry) {
+            final selected = _registrationFilter[entry.key] == true;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Semantics(
+                label: '${entry.value.$1}, ${entry.value.$2}',
+                checked: selected,
+                child: Material(
+                  color: selected ? kCard : Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  child: InkWell(
+                    onTap: () => setState(() {
+                      _registrationFilter = {
+                        ..._registrationFilter,
+                        entry.key: !selected,
+                      };
+                      _filterConfirmed = true;
+                    }),
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 11),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: selected
+                              ? kPrimary.withValues(alpha: 0.32)
+                              : kBorder,
+                        ),
+                      ),
+                      child: Row(children: [
+                        Container(
+                          width: 38,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: selected
+                                ? kPrimary.withValues(alpha: 0.12)
+                                : const Color(0xFFF0F3F6),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(entry.value.$3,
+                              color: selected ? kPrimary : kSubtext, size: 23),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(entry.value.$1,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14)),
+                              const SizedBox(height: 2),
+                              Text(entry.value.$2,
+                                  style: const TextStyle(
+                                      color: kSubtext, fontSize: 12)),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: selected
+                                ? kPrimary.withValues(alpha: 0.10)
+                                : const Color(0xFFF0F3F6),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(selected ? 'מותר' : 'חסום',
+                              style: TextStyle(
+                                  color: selected ? kPrimary : kSubtext,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700)),
+                        ),
+                        const SizedBox(width: 6),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          width: 32,
+                          height: 32,
+                          decoration: BoxDecoration(
+                            color: selected ? kPrimary : Colors.white,
+                            borderRadius: BorderRadius.circular(9),
+                            border: Border.all(
+                                color: selected
+                                    ? kPrimary
+                                    : const Color(0xFFABC3D5),
+                                width: 2),
+                            boxShadow: selected
+                                ? const [
+                                    BoxShadow(
+                                        color: Color(0x351B6CA8),
+                                        blurRadius: 8,
+                                        offset: Offset(0, 3))
+                                  ]
+                                : null,
+                          ),
+                          child: selected
+                              ? const Icon(Icons.check_rounded,
+                                  color: Colors.white, size: 23)
+                              : null,
+                        ),
+                      ]),
                     ),
-                    Icon(entry.value.$2, size: 18, color: kPrimary),
-                    const SizedBox(width: 5),
-                    Text(entry.value.$1),
-                  ]),
+                  ),
                 ),
-              );
-            }).toList(),
+              ),
+            );
+          }),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+            child: Text(
+              'כל התמונות עוברות בדיקת תוכן לא ראוי תמיד, ללא קשר לבחירות כאן.',
+              style: TextStyle(color: kSubtext, fontSize: 12),
+            ),
           ),
         ]);
       default:
@@ -5915,6 +6080,38 @@ class UserAvatar extends StatelessWidget {
         child: Text(emoji, style: TextStyle(fontSize: radius * 0.9)),
       );
     }
+    // Frame the guide's original portrait around his face in small avatars.
+    // The expanded view continues to show the complete original image.
+    if (picUrl != null &&
+        Uri.tryParse(picUrl!)?.path.endsWith('/israel-profile-20260907.png') ==
+            true) {
+      final diameter = radius * 2;
+      return GestureDetector(
+        onTap: () => _showExpandedImage(context),
+        child: ClipOval(
+          child: SizedBox.square(
+            dimension: diameter,
+            child: Stack(
+              children: [
+                Positioned(
+                  left: -diameter * 0.4,
+                  top: -diameter * 0.08,
+                  width: diameter * 1.8,
+                  height: diameter * 2.7,
+                  child: Image.network(
+                    _absoluteMediaUrl(picUrl!),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Center(
+                      child: Icon(Icons.person, color: kPrimary),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return GestureDetector(
       onTap: picUrl != null && !_isEmojiAvatar(picUrl)
           ? () => _showExpandedImage(context)
@@ -6951,6 +7148,13 @@ class _MainShellContentState extends State<_MainShellContent> {
       _accountId == null ? null : 'cache_users_$_accountId';
 
   Future<void> _clearLocalAccountState() async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        await _shareChannel
+            .invokeMethod('updateShareTargets', {'contacts': []});
+      } catch (_) {}
+      _publishedShareTargets = null;
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('token');
     await prefs.remove('cache_users'); // Legacy, unscoped cache.
@@ -7020,35 +7224,111 @@ class _MainShellContentState extends State<_MainShellContent> {
     );
     _initNotificationOpenHandlers();
     _initAndroidSharing();
+    reconcileReadNotifications(kApi, widget.token);
   }
+
+  bool _drainingShares = false;
+  bool _shareDrainRequested = false;
+  String? _publishedShareTargets;
 
   Future<void> _initAndroidSharing() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     _shareChannel.setMethodCallHandler((call) async {
-      if (call.method == 'sharedContent' && call.arguments is Map) {
-        _handleSharedContent(Map<String, dynamic>.from(call.arguments as Map));
-      }
+      if (call.method == 'sharesAvailable') await _drainAndroidShares();
     });
-    try {
-      final initial = await _shareChannel
-          .invokeMapMethod<String, dynamic>('getInitialShare');
-      if (initial != null) _handleSharedContent(initial);
-    } catch (_) {}
+    await _drainAndroidShares();
   }
 
-  void _handleSharedContent(Map<String, dynamic> shared) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final text = shared['text'] as String?;
-      final path = shared['path'] as String?;
-      if ((text == null || text.trim().isEmpty) && path == null) return;
-      _forwardChatMessage(context, widget.token, _socket, {
-        if (text != null) 'text': text,
-        if (path != null) 'localPath': path,
-        if (path != null) 'fileName': shared['name'] ?? 'shared_image.jpg',
-        if (path != null) 'fileType': 'image',
-      });
-    });
+  Future<void> _drainAndroidShares() async {
+    _shareDrainRequested = true;
+    if (_drainingShares) return;
+    _drainingShares = true;
+    try {
+      do {
+        _shareDrainRequested = false;
+        while (mounted) {
+          final shared = await _shareChannel
+              .invokeMapMethod<String, dynamic>('takePendingShare');
+          if (shared == null || !mounted) break;
+          final messages = incomingShareMessages(shared);
+          try {
+            final errors = shared['errors'];
+            if (errors is List && errors.isNotEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(errors.join('\n'))),
+              );
+            }
+            final shortcut = shared['targetShortcutId'];
+            final recipient = incomingShareRecipient(shortcut, _accountId);
+            if (shortcut != null && recipient == null) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content:
+                    Text('יעד השיתוף שייך לחשבון אחר. שתף מחדש ובחר בתשובה.'),
+              ));
+              continue;
+            }
+            if (messages.isNotEmpty) {
+              await forwardChatMessages(
+                  context, widget.token, _socket, messages,
+                  initialRecipientId: recipient);
+            } else if (recipient != null) {
+              final response = await http.get(Uri.parse('$kApi/users'),
+                  headers: {'Authorization': 'Bearer ${widget.token}'});
+              if (!mounted || response.statusCode != 200) continue;
+              final users =
+                  (jsonDecode(response.body) as List).whereType<Map>();
+              final matches = users.where((u) => u['id'] == recipient);
+              if (matches.isNotEmpty) {
+                await Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => ChatScreen(
+                      token: widget.token,
+                      me: _me,
+                      recipient: Map<String, dynamic>.from(matches.first),
+                      socket: _socket),
+                ));
+              }
+            }
+          } finally {
+            await _shareChannel.invokeMethod(
+                'releaseShare',
+                messages
+                    .map((m) => m['localPath'])
+                    .whereType<String>()
+                    .toList());
+          }
+        }
+      } while (_shareDrainRequested && mounted);
+    } catch (error) {
+      debugPrint('Incoming share failed: $error');
+    } finally {
+      _drainingShares = false;
+    }
+  }
+
+  Future<void> _updateAndroidShareTargets() async {
+    if (!mounted || kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    final cutoff = DateTime.now().subtract(const Duration(days: 30));
+    final contacts = _users
+        .where((user) {
+          final last =
+              DateTime.tryParse(user['last_message_at']?.toString() ?? '');
+          return user['id'] != kSystemGuideId &&
+              user['id'] != kScanBotId &&
+              last != null &&
+              last.isAfter(cutoff);
+        })
+        .take(4)
+        .map((user) => {'id': user['id'], 'name': user['name']})
+        .toList();
+    final payload = {'accountId': _accountId, 'contacts': contacts};
+    final signature = jsonEncode(payload);
+    if (_publishedShareTargets == signature) return;
+    try {
+      await _shareChannel.invokeMethod('updateShareTargets', payload);
+      _publishedShareTargets = signature;
+    } catch (_) {}
   }
 
   // Firebase is optional on web. Accessing FirebaseMessaging.instance when
@@ -7123,8 +7403,9 @@ class _MainShellContentState extends State<_MainShellContent> {
           (user) => user?['id']?.toString() == kSystemGuideId,
           orElse: () => <String, dynamic>{
             'id': kSystemGuideId,
-            'name': 'מדריך בתשובה',
-            'profile_pic_url': '/betshuva-app/assets/icon_source.png',
+            'name': 'ישראל מדריך בתשובה',
+            'profile_pic_url':
+                '/betshuva-app/assets/assets/guide/israel-profile-20260907.png',
           },
         )!;
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
@@ -7180,7 +7461,10 @@ class _MainShellContentState extends State<_MainShellContent> {
     Map<String, bool> readFilter(dynamic raw) => raw is Map
         ? raw.map((key, value) => MapEntry(key.toString(), value == true))
         : <String, bool>{};
-    var selectedFilter = _newAccountFilter();
+    var selectedFilter = {
+      ..._newAccountFilter(),
+      ...readFilter(request['my_filter'])
+    };
     final counterpartFilter = readFilter(request['expected_filter']);
     Map<String, dynamic>? decision;
     try {
@@ -7380,6 +7664,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       _loadGroupUnreadCounts(),
       _loadMessageRequests(),
     ]);
+    if (mounted) await reconcileReadNotifications(kApi, widget.token);
   }
 
   void _handleAppResume() {
@@ -7520,6 +7805,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         final prefs = await SharedPreferences.getInstance();
         final cacheKey = _usersCacheKey;
         if (cacheKey != null) await prefs.setString(cacheKey, res.body);
+        await _updateAndroidShareTargets();
       } else if (res.statusCode == 403) {
         _requirePhoneSetup();
       } else if (res.statusCode == 401) {
@@ -13160,6 +13446,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
                         itemBuilder: (_, i) => _ListingCard(
                             item: _items[i],
                             selected: _selectedItem?['id'] == _items[i]['id'],
+                            onAskAi: () => _openListingAi(context, _items[i],
+                                widget.token, widget.me, widget.socket),
                             onTap: () => _openDetail(_items[i])),
                       ),
                     ),
@@ -13604,12 +13892,40 @@ class _DesktopListingWelcome extends StatelessWidget {
       );
 }
 
+void _openListingAi(BuildContext context, Map<String, dynamic> item,
+    String token, Map<String, dynamic>? me, io.Socket? socket) {
+  Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => ChatScreen(
+                token: token,
+                me: me,
+                socket: socket,
+                recipient: const {
+                  'id': kSafeInformationAiId,
+                  'name': 'מידע בטוח · AI',
+                  'profile_pic_url':
+                      '/betshuva-app/assets/assets/guide/safe-information-ai.png',
+                },
+                autoSendInitialMessage: true,
+                initialText:
+                    'אשמח לחוות דעת על המודעה הזו: האם המחיר כדאי ומה חשוב לבדוק?\nbetshuva://listing/${item['id']}',
+              )));
+}
+
+const _listingAiTooltip =
+    'התייעצות עם עוזר AI על המודעה, המחיר והשוואה להצעות נוספות';
+
 class _ListingCard extends StatelessWidget {
   final Map<String, dynamic> item;
   final VoidCallback onTap;
   final bool selected;
+  final VoidCallback onAskAi;
   const _ListingCard(
-      {required this.item, required this.onTap, this.selected = false});
+      {required this.item,
+      required this.onTap,
+      required this.onAskAi,
+      this.selected = false});
 
   @override
   Widget build(BuildContext context) {
@@ -13689,11 +14005,20 @@ class _ListingCard extends StatelessWidget {
                         ]),
                     ]),
                     const SizedBox(height: 6),
-                    Text(item['title'] ?? '',
-                        style: const TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w600),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis),
+                    Row(children: [
+                      Expanded(
+                          child: Text(item['title'] ?? '',
+                              style: const TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w600),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis)),
+                      IconButton(
+                        tooltip: _listingAiTooltip,
+                        onPressed: onAskAi,
+                        icon: const Icon(Icons.auto_awesome,
+                            color: kPrimary, size: 21),
+                      ),
+                    ]),
                     const SizedBox(height: 4),
                     if (item['city'] != null)
                       Row(children: [
@@ -13934,6 +14259,8 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
                     itemCount: _items.length,
                     itemBuilder: (_, i) => _MyListingCard(
                       item: _items[i],
+                      onAskAi: () => _openListingAi(
+                          context, _items[i], widget.token, null, null),
                       onPause: () => _setStatus(_items[i]['id'], 'paused'),
                       onResume: () => _setStatus(_items[i]['id'], 'active'),
                       onComplete: () => _setStatus(_items[i]['id'],
@@ -13954,13 +14281,15 @@ class _MyListingCard extends StatelessWidget {
   final VoidCallback onComplete;
   final VoidCallback onDelete;
   final VoidCallback onEdit;
+  final VoidCallback onAskAi;
   const _MyListingCard(
       {required this.item,
       required this.onPause,
       required this.onResume,
       required this.onComplete,
       required this.onDelete,
-      required this.onEdit});
+      required this.onEdit,
+      required this.onAskAi});
 
   @override
   Widget build(BuildContext context) {
@@ -14028,6 +14357,11 @@ class _MyListingCard extends StatelessWidget {
                             : const Color(0xFF6B7280)),
                   ]),
                 ])),
+            IconButton(
+              tooltip: _listingAiTooltip,
+              onPressed: onAskAi,
+              icon: const Icon(Icons.auto_awesome, color: kPrimary),
+            ),
           ]),
           const SizedBox(height: 10),
           Row(children: [
@@ -17521,9 +17855,24 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                   ]),
               ]),
               const SizedBox(height: 12),
-              Text(widget.item['title'] ?? '',
-                  style: const TextStyle(
-                      fontSize: 20, fontWeight: FontWeight.bold)),
+              Row(children: [
+                Flexible(
+                  child: Text(widget.item['title'] ?? '',
+                      style: const TextStyle(
+                          fontSize: 20, fontWeight: FontWeight.bold)),
+                ),
+                const SizedBox(width: 8),
+                Tooltip(
+                  message: _listingAiTooltip,
+                  child: TextButton.icon(
+                    onPressed: () => _openListingAi(context, widget.item,
+                        widget.token, widget.me, widget.socket),
+                    icon: const Icon(Icons.auto_awesome, size: 21),
+                    label: const Text('AI'),
+                    style: TextButton.styleFrom(foregroundColor: kPrimary),
+                  ),
+                ),
+              ]),
               if (widget.item['description'] != null &&
                   widget.item['description'].toString().isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -18036,6 +18385,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   bool _saving = false;
   bool _announcementsOnly = false;
   bool _filterConfirmed = false;
+  bool _loadingGeneralFilter = true;
+  Map<String, dynamic> _generalFilter = {};
   String _sendPermission = 'all';
   String _filterLevel = 'standard';
   final Map<String, bool> _contentFilter = _newAccountFilter();
@@ -18044,6 +18395,31 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   void initState() {
     super.initState();
     _loadUsers();
+    _loadGeneralFilter();
+  }
+
+  Future<void> _loadGeneralFilter() async {
+    try {
+      final response = await http.get(Uri.parse('$kApi/filter-settings'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (response.statusCode != 200) throw StateError('filter unavailable');
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() {
+        _generalFilter = data;
+        for (final key in _contentFilter.keys) {
+          _contentFilter[key] = data[key] == true;
+        }
+        _loadingGeneralFilter = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: const Text('לא ניתן לטעון את הסינון הכללי. נסה שוב.'),
+            action: SnackBarAction(
+                label: 'נסה שוב', onPressed: _loadGeneralFilter)));
+      }
+    }
   }
 
   @override
@@ -18117,7 +18493,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
           const SnackBar(content: Text('שם הקבוצה חייב להכיל 2 עד 80 תווים')));
       return;
     }
-    if (!_filterConfirmed) {
+    if (_loadingGeneralFilter || !_filterConfirmed) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('יש להגדיר ולאשר את סינון הקבוצה לפני השמירה')));
       return;
@@ -18445,7 +18821,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                       secondary: Icon(entry.value.$2, color: kPrimary),
                       title: Text(entry.value.$1),
                       value: _contentFilter[entry.key] == true,
-                      onChanged: _saving
+                      onChanged: _saving ||
+                              _loadingGeneralFilter ||
+                              (_generalFilter['enforceGeneralFilter'] == true &&
+                                  _generalFilter[entry.key] == false)
                           ? null
                           : (value) => setState(() {
                                 _contentFilter[entry.key] = value;
@@ -19306,7 +19685,15 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: DefaultTextStyle.merge(
+          textAlign: TextAlign.right,
+          child: _buildConversations(context),
+        ),
+      );
+
+  Widget _buildConversations(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF0F6FC),
       appBar: AppBar(
@@ -19707,7 +20094,9 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                               a['isGroup'] != true && aData['id'] == kScanBotId;
                           final bScanBot =
                               b['isGroup'] != true && bData['id'] == kScanBotId;
-                          if (aScanBot != bScanBot) return aScanBot ? -1 : 1;
+                          if (aScanBot != bScanBot) {
+                            return aScanBot ? -1 : 1;
+                          }
                           return _lastMessageTime(bData)
                               .compareTo(_lastMessageTime(aData));
                         });
@@ -20633,6 +21022,7 @@ class ChatScreen extends StatefulWidget {
   final Map<String, dynamic> recipient;
   final io.Socket? socket;
   final String? initialText;
+  final bool autoSendInitialMessage;
   final String? listingId;
   final VoidCallback? onMessageSent;
   final bool embedded;
@@ -20650,6 +21040,7 @@ class ChatScreen extends StatefulWidget {
     required this.recipient,
     required this.socket,
     this.initialText,
+    this.autoSendInitialMessage = false,
     this.listingId,
     this.onMessageSent,
     this.embedded = false,
@@ -20693,6 +21084,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<String, bool>? _outgoingFilter;
   bool _counterpartFilterAvailable = false;
   bool? _requiresFirstMessageFilterChoice;
+  bool _initialMessageHandled = false;
   Future<void>? _initialMessagesFuture;
   Future<void>? _initialOutgoingFilterFuture;
 
@@ -20715,7 +21107,7 @@ class _ChatScreenState extends State<ChatScreen> {
             (message) => _selectedMessageKeys.contains(_selectionKey(message)))
         .toList();
     if (selected.isEmpty) return;
-    await _forwardChatMessages(context, widget.token, widget.socket, selected);
+    await forwardChatMessages(context, widget.token, widget.socket, selected);
     if (mounted) setState(_selectedMessageKeys.clear);
   }
 
@@ -20779,9 +21171,27 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
     _initialMessagesFuture = _loadMessages();
-    _loadRecipientReceivingFilter();
+    final receivingFilterReady = _loadRecipientReceivingFilter();
     _initialOutgoingFilterFuture = _loadOutgoingFilter();
     _setupSocket();
+    if (widget.autoSendInitialMessage &&
+        widget.recipient['id'] == kSafeInformationAiId &&
+        prefill.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await Future.wait([
+          _initialMessagesFuture!,
+          _initialOutgoingFilterFuture!,
+          receivingFilterReady,
+        ]);
+        if (!mounted ||
+            _initialMessageHandled ||
+            _msgCtrl.text.trim() != prefill) {
+          return;
+        }
+        _initialMessageHandled = true;
+        await _send();
+      });
+    }
     if (widget.openScreenshotMenuOnStart) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _showAttachMenu();
@@ -21203,7 +21613,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _markAsRead() async {
     try {
-      await http.put(
+      final response = await http.put(
         Uri.parse('$kApi/messages/read'),
         headers: {
           'Authorization': 'Bearer ${widget.token}',
@@ -21211,6 +21621,9 @@ class _ChatScreenState extends State<ChatScreen> {
         },
         body: jsonEncode({'senderId': widget.recipient['id']}),
       );
+      if (response.statusCode == 200) {
+        await reconcileReadNotifications(kApi, widget.token);
+      }
     } catch (_) {}
   }
 
@@ -21340,6 +21753,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final sticker = _avielStickerById(stickerId);
     final text = sticker?.id ?? _msgCtrl.text.trim();
     if (text.isEmpty) return;
+    if (text == (widget.initialText ?? '').trim()) {
+      _initialMessageHandled = true;
+    }
     if (sticker == null) _msgHistory.record(text);
 
     // Edit mode
@@ -22849,12 +23265,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!await _ensureFirstMessageFilterChoice()) return;
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
+    final isLibrarySticker = extraFields['builtinExpression'] == 'true';
     final showInlineProgress = (fileType == 'image' ||
             fileType == 'document' ||
             fileType == 'video' ||
             fileType == 'audio') &&
-        !isClipboardPaste;
-    final showProgress = !showInlineProgress;
+        !isClipboardPaste && !isLibrarySticker;
+    final showProgress = !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_');
     final uploadStartedAt = DateTime.now();
     if (showInlineProgress) {
@@ -22903,7 +23320,7 @@ class _ChatScreenState extends State<ChatScreen> {
       token: widget.token,
       fields: {
         'toUserId': widget.recipient['id'].toString(),
-        if (kIsWeb) 'scanReport': 'true',
+        if (kIsWeb && !isLibrarySticker) 'scanReport': 'true',
         ...extraFields,
       },
     );
@@ -23703,8 +24120,6 @@ class _ChatScreenState extends State<ChatScreen> {
                                           recipientName: widget
                                               .recipient['name']
                                               ?.toString(),
-                                          forceRightAlignment:
-                                              isSystemGuideChat,
                                           hideReply: isSystemGuideChat,
                                           onMessageOptions: (message) =>
                                               _showMessageOptions(
@@ -23713,7 +24128,6 @@ class _ChatScreenState extends State<ChatScreen> {
                                                       widget.me?['id']),
                                           onDocumentOpen: widget.onDocumentOpen,
                                         );
-                                        if (!isSystemGuideChat) return bubble;
                                         return Row(
                                           textDirection: TextDirection.ltr,
                                           mainAxisAlignment:
@@ -23799,10 +24213,14 @@ class _ChatScreenState extends State<ChatScreen> {
             SizedBox(
               height: 43,
               child: ListView(
-                reverse: true,
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 children: const [
+                  (
+                    'מודעות בתשובה',
+                    Icons.storefront_outlined,
+                    'אילו מקררים מוצעים למכירה או למסירה בבתשובה?'
+                  ),
                   ('מוצרים', Icons.compare_arrows, 'עזור לי להשוות בין מוצרים'),
                   (
                     'תחבורה',
@@ -23830,6 +24248,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     'עזור לי למצוא מידע על טיול'
                   ),
                 ]
+                    .reversed
                     .map((item) => Padding(
                           padding: const EdgeInsetsDirectional.only(start: 6),
                           child: ActionChip(
@@ -24138,7 +24557,7 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
       final selected = await _chooseGroupInvitationFilter(
         context,
         groupFilter: readFilter(previewData['groupFilter']),
-        initialFilter: _newAccountFilter(),
+        initialFilter: readFilter(previewData['myFilter']),
         counterpart: _meta['groupName']?.toString() ?? 'הקבוצה',
         groupName: _meta['groupName']?.toString(),
       );
@@ -25903,7 +26322,7 @@ class _ConsecutiveImageGrid extends StatelessWidget {
                 ),
               ),
       child: Align(
-        alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+        alignment: Alignment.centerRight,
         child: Container(
           width: gridWidth,
           margin: const EdgeInsets.symmetric(vertical: 2),
@@ -26217,131 +26636,41 @@ String? _firstHttpUrl(String text) {
   return match.group(0)?.replaceFirst(RegExp(r'[.,!?)\]}]+$'), '');
 }
 
-class _WebsiteLinkPreview extends StatefulWidget {
+class _WebsiteLinkPreview extends StatelessWidget {
   final String url;
   final String token;
   const _WebsiteLinkPreview(this.url, this.token);
 
   @override
-  State<_WebsiteLinkPreview> createState() => _WebsiteLinkPreviewState();
-}
-
-class _WebsiteLinkPreviewState extends State<_WebsiteLinkPreview> {
-  static final Map<String, Map<String, dynamic>> _cache = {};
-  static final Map<String, DateTime> _cacheExpiresAt = {};
-  Map<String, dynamic>? _data;
-  bool _failed = false;
-
-  bool get _isBetshuva {
-    final host = Uri.tryParse(widget.url)?.host.toLowerCase() ?? '';
-    return host == 'betshuva.com' || host.endsWith('.betshuva.com');
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    if (!_isBetshuva) _load();
-  }
-
-  Future<void> _load() async {
-    final cached = _cache[widget.url];
-    final cacheExpiresAt = _cacheExpiresAt[widget.url];
-    if (cached != null &&
-        cacheExpiresAt != null &&
-        cacheExpiresAt.isAfter(DateTime.now())) {
-      setState(() => _data = cached);
-      return;
-    }
-    try {
-      final response = await http.get(
-        Uri.parse('$kApi/link-preview')
-            .replace(queryParameters: {'url': widget.url}),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      ).timeout(const Duration(seconds: 10));
-      if (response.statusCode != 200) throw Exception();
-      final decoded = jsonDecode(response.body);
-      if (decoded is! Map) throw Exception();
-      final data = Map<String, dynamic>.from(decoded);
-      _cache[widget.url] = data;
-      final hasImage = data['image']?.toString().trim().isNotEmpty == true;
-      _cacheExpiresAt[widget.url] = DateTime.now().add(
-        hasImage ? const Duration(hours: 6) : const Duration(minutes: 1),
-      );
-      if (mounted) setState(() => _data = data);
-    } catch (_) {
-      if (mounted) setState(() => _failed = true);
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (_isBetshuva) return _BetshuvaInvitePreview(widget.url);
-    final uri = Uri.tryParse(widget.url);
-    final domain = _data?['domain']?.toString() ?? uri?.host ?? widget.url;
-    final title = _data?['title']?.toString().trim() ?? '';
-    final description = _data?['description']?.toString().trim() ?? '';
-    final image = _data?['image']?.toString().trim() ?? '';
-    return InkWell(
-      onTap: _data == null
-          ? null
-          : () => _confirmAndOpenExternalLink(context, widget.url),
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        width: 330,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: kBorder),
-        ),
-        child:
-            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (image.isNotEmpty)
-            _PersistentMediaImage(
-              url: image,
-              width: 330,
-              height: 150,
-              fit: BoxFit.cover,
-              errorBuilder: (_) => const SizedBox.shrink(),
-            )
-          else if (_data == null && !_failed)
-            const SizedBox(
-              height: 64,
-              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            )
-          else
-            Container(
-              height: 72,
-              color: const Color(0xFFE8F4FD),
-              child: const Icon(Icons.link, size: 34, color: kPrimary),
-            ),
-          Padding(
-            padding: const EdgeInsets.all(11),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                if (title.isNotEmpty)
-                  Text(title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontWeight: FontWeight.bold)),
-                if (description.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(description,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontSize: 13, color: kSubtext)),
-                ],
-                const SizedBox(height: 4),
-                Text(domain,
-                    textDirection: TextDirection.ltr,
-                    style: const TextStyle(fontSize: 12, color: kSubtext)),
-              ],
-            ),
+    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    if (host == 'betshuva.com' || host.endsWith('.betshuva.com')) {
+      return _BetshuvaInvitePreview(url);
+    }
+    // Keep manual navigation, without requesting or displaying third-party metadata.
+    return Tooltip(
+      message: 'פתיחת אתר חיצוני לאחר אישור',
+      child: InkWell(
+        onTap: () => _confirmAndOpenExternalLink(context, url),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: 330,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: kBorder),
           ),
-        ]),
+          child: Row(children: [
+            const Icon(Icons.open_in_new, color: kPrimary, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+                child: Text(host,
+                    textDirection: TextDirection.ltr,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: kPrimary))),
+          ]),
+        ),
       ),
     );
   }
@@ -26461,7 +26790,6 @@ class _MessageBubble extends StatelessWidget {
   final String? senderAvatarUrl;
   final String senderName;
   final String? recipientName;
-  final bool forceRightAlignment;
   final bool hideReply;
   final void Function(Map<String, dynamic>)? onMessageOptions;
   final void Function(String fileUrl, String? fileName, bool isPdf)?
@@ -26476,17 +26804,12 @@ class _MessageBubble extends StatelessWidget {
     this.senderAvatarUrl,
     required this.senderName,
     this.recipientName,
-    this.forceRightAlignment = false,
     this.hideReply = false,
     this.onMessageOptions,
     this.onDocumentOpen,
   });
 
-  Alignment get _messageAlignment => forceRightAlignment
-      ? Alignment.centerRight
-      : isMe
-          ? Alignment.centerLeft
-          : Alignment.centerRight;
+  Alignment get _messageAlignment => Alignment.centerRight;
 
   Widget _statusIcon() {
     if (!isMe) return const SizedBox.shrink();
@@ -26676,8 +26999,14 @@ class _MessageBubble extends StatelessWidget {
             .toList()
         : const <String>[];
     final linkRegex = RegExp(r'betshuva://listing/([\w\-]+)');
-    final linkMatch = !isFile ? linkRegex.firstMatch(rawText) : null;
-    final listingId = linkMatch?.group(1);
+    final listingIds = !isFile
+        ? linkRegex
+            .allMatches(rawText)
+            .map((match) => match.group(1)!)
+            .toSet()
+            .take(20)
+            .toList()
+        : const <String>[];
     final guideAppLinkRegex = RegExp(
         r'betshuva://app/(content-filter|profile|personal-media|screenshot|my-issues)(?:/([0-9a-fA-F-]{36}))?');
     final guideAppLinkMatch = !isFile && message['from'] == kSystemGuideId
@@ -26691,14 +27020,8 @@ class _MessageBubble extends StatelessWidget {
         : null;
     final issueDraft = _decodeGuideIssueDraft(issueDraftMatch?.group(1));
     // טקסט נקי ללא שורת הקישור
-    final displayTextWithInternalLink = sharedContact != null
-        ? ''
-        : linkMatch != null
-            ? rawText
-                .replaceAll('\nbetshuva://listing/$listingId', '')
-                .replaceAll('betshuva://listing/$listingId', '')
-                .trim()
-            : rawText;
+    final displayTextWithInternalLink =
+        sharedContact != null ? '' : rawText.replaceAll(linkRegex, '').trim();
     final displayText = displayTextWithInternalLink
         .replaceAll(guideAppLinkRegex, '')
         .replaceAll(issueDraftRegex, '')
@@ -26716,8 +27039,8 @@ class _MessageBubble extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Column(
-              crossAxisAlignment:
-                  isMe ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+              textDirection: TextDirection.rtl,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Semantics(
                   image: true,
@@ -26756,10 +27079,8 @@ class _MessageBubble extends StatelessWidget {
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(14),
             topRight: const Radius.circular(14),
-            bottomLeft:
-                isMe ? const Radius.circular(3) : const Radius.circular(14),
-            bottomRight:
-                isMe ? const Radius.circular(14) : const Radius.circular(3),
+            bottomLeft: const Radius.circular(14),
+            bottomRight: const Radius.circular(3),
           ),
           border: isMe ? null : Border.all(color: kBorder, width: 1),
           boxShadow: [
@@ -26771,7 +27092,8 @@ class _MessageBubble extends StatelessWidget {
           ],
         ),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
+          textDirection: TextDirection.rtl,
+          crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
             if (!hideReply && message['replyTo'] != null)
@@ -26804,18 +27126,21 @@ class _MessageBubble extends StatelessWidget {
                 const SizedBox(height: 8),
               ],
             ] else if (isAudioFile)
-              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                VoiceMessagePlayer(
-                  url: fileUrl,
-                  isMe: isMe,
-                  senderAvatarUrl: senderAvatarUrl,
-                  senderName: senderName,
-                  initialDurationSeconds:
-                      (message['audioDurationSeconds'] as num?)?.toDouble(),
-                ),
-                _AudioScanBadge(
-                    transcript: message['audioTranscript']?.toString()),
-              ])
+              Column(
+                  textDirection: TextDirection.rtl,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    VoiceMessagePlayer(
+                      url: fileUrl,
+                      isMe: isMe,
+                      senderAvatarUrl: senderAvatarUrl,
+                      senderName: senderName,
+                      initialDurationSeconds:
+                          (message['audioDurationSeconds'] as num?)?.toDouble(),
+                    ),
+                    _AudioScanBadge(
+                        transcript: message['audioTranscript']?.toString()),
+                  ])
             else if (isVideoFile)
               Stack(children: [
                 if (kIsWeb)
@@ -26841,7 +27166,8 @@ class _MessageBubble extends StatelessWidget {
               ])
             else if (isImageFile)
               Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+                textDirection: TextDirection.rtl,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   GestureDetector(
                     onTap: () => Navigator.push(
@@ -26946,7 +27272,8 @@ class _MessageBubble extends StatelessWidget {
                   child: SizedBox(
                     width: 220,
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
+                      textDirection: TextDirection.rtl,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (isPdfFile) ...[
@@ -27057,9 +27384,9 @@ class _MessageBubble extends StatelessWidget {
                 alignment: WrapAlignment.end,
                 children: guideExternalUrls.indexed
                     .map((entry) => OutlinedButton.icon(
-                          onPressed: () => launchUrl(Uri.parse(entry.$2),
-                              mode: LaunchMode.externalApplication),
-                          icon: const Icon(Icons.verified_outlined, size: 16),
+                          onPressed: () =>
+                              _confirmAndOpenExternalLink(context, entry.$2),
+                          icon: const Icon(Icons.open_in_new, size: 16),
                           label: Text('מקור ${entry.$1 + 1}'),
                         ))
                     .toList(),
@@ -27117,7 +27444,7 @@ class _MessageBubble extends StatelessWidget {
             ],
 
             // כרטיסיית קישור למודעה
-            if (listingId != null) ...[
+            for (final listingId in listingIds) ...[
               const SizedBox(height: 6),
               _ListingMessageCard(
                 listingId: listingId,
@@ -27126,6 +27453,16 @@ class _MessageBubble extends StatelessWidget {
               ),
             ],
 
+            if (RegExp(r'^[0-9a-fA-F-]{36}$')
+                    .hasMatch(message['id']?.toString() ?? '') &&
+                !['pending_scan', 'rejected_scan', 'failed', 'blocked_content']
+                    .contains(message['status']) &&
+                message['isDeleted'] != true)
+              MessageReactions(
+                  key: ValueKey('reactions:${message['id']}'),
+                  api: kApi,
+                  token: token,
+                  messageId: message['id'].toString()),
             const SizedBox(height: 3),
             Row(
               mainAxisSize: MainAxisSize.min,
@@ -27555,31 +27892,6 @@ const _emojiCategories = <String, List<String>>{
     '🇮🇱'
   ],
 };
-const _messageStickers = [
-  '👍',
-  '❤️',
-  '🙏',
-  '😂',
-  '🥳',
-  '🎉',
-  '🔥',
-  '💯',
-  '👏',
-  '🤝',
-  '💪',
-  '🌹',
-  '⭐',
-  '☀️',
-  '🕊️',
-  '🇮🇱',
-  'בוקר טוב ☀️',
-  'תודה רבה 🙏',
-  'כל הכבוד 👏',
-  'מזל טוב 🎉',
-  'שבת שלום 🕯️',
-  'בהצלחה 💪',
-];
-
 Future<String?> _showExpressionPicker(BuildContext context, String token) {
   return showModalBottomSheet<String>(
     context: context,
@@ -27653,522 +27965,118 @@ class _ExpressionPickerSheet extends StatefulWidget {
 }
 
 class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
-  final _gifSearch = TextEditingController();
-  List<String> _recent = [];
-  List<Map<String, dynamic>> _gifs = [];
-  List<Map<String, dynamic>>? _remoteExpressionCategories;
-  bool _loadingExpressionCatalog = true;
-  bool _searchingGifs = false;
-  String? _gifError;
-  List<Map<String, dynamic>> _twemojiItems = [];
-  String _twemojiCategory = 'פנים ורגשות';
-  String _twemojiQuery = '';
+  List<Map<String, dynamic>> _items = [];
+  bool _loading = true;
+  String _query = '';
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    SharedPreferences.getInstance().then((prefs) {
-      if (!mounted) return;
-      setState(() => _recent = prefs.getStringList('recent_emojis') ?? []);
-    });
     _loadExpressionCatalog();
-    _loadTwemojiAllowlist();
-  }
-
-  Future<void> _loadTwemojiAllowlist() async {
-    try {
-      final raw = await rootBundle.loadString(
-        'assets/twemoji/emoji_allowlist.json',
-      );
-      final items = (jsonDecode(raw) as List)
-          .whereType<Map>()
-          .map((item) => Map<String, dynamic>.from(item))
-          .where((item) =>
-              item['emoji'] is String && item['twemoji_code'] is String)
-          .toList();
-      if (mounted) setState(() => _twemojiItems = items);
-    } catch (_) {}
   }
 
   Future<void> _loadExpressionCatalog() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
-      final response = await http.get(
-        Uri.parse('$kApi/expressions/catalog'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
-      if (response.statusCode != 200) return;
-      final payload = jsonDecode(response.body) as Map<String, dynamic>;
-      final categories = (payload['categories'] as List? ?? const [])
+      Map<String, dynamic> payload;
+      try {
+        final response = await http.get(
+          Uri.parse('$kApi/expressions/catalog'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        ).timeout(const Duration(seconds: 12));
+        if (response.statusCode != 200) throw Exception('catalog unavailable');
+        payload = jsonDecode(response.body) as Map<String, dynamic>;
+        if ((payload['version'] as num? ?? 0) < 3) {
+          throw Exception('old catalog');
+        }
+      } catch (_) {
+        final bundled = jsonDecode(await rootBundle.loadString(
+          'assets/stickers/user-catalog.json',
+        )) as Map<String, dynamic>;
+        payload = {
+          'categories': (bundled['categories'] as List).map((raw) {
+            final category = raw as Map;
+            final labels = category['labels'] as List;
+            return {
+              'id': category['id'],
+              'items': List.generate(
+                  labels.length,
+                  (index) => {
+                        'label': labels[index],
+                        'url':
+                            '/betshuva-app/expression-library/${category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
+                      }),
+            };
+          }).toList(),
+        };
+      }
+      final items = (payload['categories'] as List? ?? const [])
           .whereType<Map>()
-          .map((category) => Map<String, dynamic>.from(category))
-          .where(
-              (category) => (category['items'] as List? ?? const []).isNotEmpty)
+          .where((category) => category['id'] == 'user-stickers')
+          .expand((category) =>
+              (category['items'] as List? ?? const []).whereType<Map>())
+          .map((item) => Map<String, dynamic>.from(item))
           .toList();
-      if (mounted && categories.isNotEmpty) {
+      if (mounted) {
         setState(() {
-          _remoteExpressionCategories = categories;
-          _loadingExpressionCatalog = false;
+          _items = items;
         });
       }
     } catch (_) {
-      // The bundled collection remains available as an offline fallback.
+      if (mounted) setState(() => _error = 'לא ניתן לטעון את המדבקות כרגע');
     } finally {
-      if (mounted && _remoteExpressionCategories == null) {
-        setState(() => _loadingExpressionCatalog = false);
-      }
+      if (mounted) setState(() => _loading = false);
     }
   }
-
-  @override
-  void dispose() {
-    _gifSearch.dispose();
-    super.dispose();
-  }
-
-  Future<void> _chooseEmoji(String emoji) async {
-    final updated =
-        [emoji, ..._recent.where((item) => item != emoji)].take(24).toList();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('recent_emojis', updated);
-    if (mounted) Navigator.pop(context, emoji);
-  }
-
-  Future<void> _searchOnlineGifs() async {
-    final query = _gifSearch.text.trim();
-    if (query.isEmpty) return;
-    setState(() {
-      _searchingGifs = true;
-      _gifError = null;
-    });
-    try {
-      final response = await http.get(
-        Uri.parse('$kApi/gifs/search?q=${Uri.encodeQueryComponent(query)}'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
-      final payload = jsonDecode(response.body) as Map<String, dynamic>;
-      if (response.statusCode != 200) {
-        throw Exception(payload['error'] ?? 'החיפוש נכשל');
-      }
-      if (!mounted) return;
-      setState(() => _gifs =
-          (payload['results'] as List? ?? []).cast<Map<String, dynamic>>());
-    } catch (error) {
-      if (mounted) {
-        setState(
-            () => _gifError = error.toString().replaceFirst('Exception: ', ''));
-      }
-    } finally {
-      if (mounted) setState(() => _searchingGifs = false);
-    }
-  }
-
-  IconData _expressionCategoryIcon(String id) {
-    switch (id) {
-      case 'family':
-        return Icons.family_restroom;
-      case 'stickers':
-        return Icons.auto_awesome;
-      case 'animated':
-        return Icons.animation;
-      default:
-        return Icons.sentiment_satisfied_alt;
-    }
-  }
-
-  Widget _buildTwemojiPicker() {
-    final categories = _twemojiItems
-        .map((item) => item['category']?.toString() ?? '')
-        .where((category) => category.isNotEmpty)
-        .toSet()
-        .toList();
-    final query = _twemojiQuery.trim().toLowerCase();
-    final visible = _twemojiItems.where((item) {
-      if (query.isNotEmpty) {
-        return (item['label_he']?.toString().toLowerCase() ?? '')
-                .contains(query) ||
-            (item['emoji']?.toString() ?? '').contains(query) ||
-            (item['category']?.toString().toLowerCase() ?? '').contains(query);
-      }
-      return item['category'] == _twemojiCategory;
-    }).toList();
-    return Column(children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-        child: TextField(
-          decoration: const InputDecoration(
-            hintText: 'חיפוש אימוג׳י מאושר…',
-            prefixIcon: Icon(Icons.search),
-            isDense: true,
-          ),
-          onChanged: (value) => setState(() => _twemojiQuery = value),
-        ),
-      ),
-      ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 88),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 6,
-            runSpacing: 6,
-            children: categories
-                .map((category) => ChoiceChip(
-                      label: Text(category),
-                      selected: _twemojiCategory == category,
-                      onSelected: (_) => setState(() {
-                        _twemojiCategory = category;
-                        _twemojiQuery = '';
-                      }),
-                    ))
-                .toList(),
-          ),
-        ),
-      ),
-      Expanded(
-        child: _twemojiItems.isEmpty
-            ? const Center(child: CircularProgressIndicator(color: kPrimary))
-            : GridView.builder(
-                padding: const EdgeInsets.all(12),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 8,
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
-                ),
-                itemCount: visible.length,
-                itemBuilder: (_, index) {
-                  final item = visible[index];
-                  final emoji = item['emoji'].toString();
-                  final label = item['label_he']?.toString() ?? emoji;
-                  final code = item['twemoji_code'].toString();
-                  return Tooltip(
-                    message: label,
-                    child: Semantics(
-                      button: true,
-                      label: label,
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: () => _chooseEmoji(emoji),
-                        child: Padding(
-                          padding: const EdgeInsets.all(5),
-                          child: SvgPicture.asset(
-                            'assets/twemoji/svg/$code.svg',
-                            semanticsLabel: label,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-      ),
-      const Padding(
-        padding: EdgeInsets.fromLTRB(12, 0, 12, 8),
-        child: Text(
-          'Twemoji • רשימה מסוננת ומאושרת לבתשובה',
-          style: TextStyle(fontSize: 10, color: kSubtext),
-        ),
-      ),
-    ]);
-  }
-
-  Widget _buildRemoteExpressionPicker(List<Map<String, dynamic>> categories) {
-    return SafeArea(
-      child: DefaultTabController(
-        length: categories.length + 2,
-        child: SizedBox(
-          height: MediaQuery.of(context).size.height * 0.68,
-          child: Column(children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Row(children: [
-                Icon(Icons.cloud_done_outlined, color: kPrimary),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text('הביטויים של בתשובה — מתעדכנים אוטומטית',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                ),
-              ]),
-            ),
-            TabBar(
-              isScrollable: categories.length > 4,
-              labelColor: kPrimary,
-              tabs: [
-                const Tab(
-                    icon: Icon(Icons.emoji_emotions_outlined), text: 'אימוג׳י'),
-                const Tab(icon: Icon(Icons.light_mode_outlined), text: 'AI'),
-                ...categories.map((category) => Tab(
-                      icon: Icon(_expressionCategoryIcon(
-                          category['id']?.toString() ?? '')),
-                      text: category['title']?.toString() ?? '',
-                    )),
-              ],
-            ),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  _buildTwemojiPicker(),
-                  _buildAvielStickerPicker(),
-                  ...categories.map((category) => _RemoteExpressionGrid(
-                        items: (category['items'] as List? ?? const [])
-                            .whereType<Map>()
-                            .map((item) => Map<String, dynamic>.from(item))
-                            .toList(),
-                      )),
-                ],
-              ),
-            ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(12, 4, 12, 10),
-              child: Text(
-                'הספרייה נטענת מהשרת ונשמרת במטמון — תכנים חדשים יופיעו ללא עדכון אפליקציה',
-                style: TextStyle(fontSize: 11, color: kSubtext),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ]),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAvielStickerPicker() => const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'מדבקות המדריך הוסרו. אפשר להשתמש באימוג׳י ובמדבקות האחרות.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: kSubtext),
-          ),
-        ),
-      );
 
   @override
   Widget build(BuildContext context) {
-    final remoteCategories = _remoteExpressionCategories;
-    if (remoteCategories != null && remoteCategories.isNotEmpty) {
-      return _buildRemoteExpressionPicker(remoteCategories);
-    }
-    if (_loadingExpressionCatalog) {
-      return const SafeArea(
-        child: SizedBox(
-          height: 260,
-          child: Center(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              CircularProgressIndicator(color: kPrimary),
-              SizedBox(height: 14),
-              Text('טוען את ספריית הביטויים…'),
-            ]),
-          ),
-        ),
-      );
-    }
-    return _legacyBuild(context);
-    /* Offline legacy fallback retained below for reference.
+    final visible = _items
+        .where(
+            (item) => (item['label']?.toString() ?? '').contains(_query.trim()))
+        .toList();
     return SafeArea(
-      child: DefaultTabController(
-        length: 3,
+      child: Directionality(
+        textDirection: TextDirection.rtl,
         child: SizedBox(
           height: MediaQuery.of(context).size.height * 0.68,
           child: Column(children: [
             const Padding(
-              padding: EdgeInsets.fromLTRB(16, 14, 16, 6),
+              padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
               child: Row(children: [
                 Icon(Icons.auto_awesome, color: kPrimary),
                 SizedBox(width: 8),
-                Text('הביטויים המקוריים של בתשובה',
+                Text('המדבקות של בתשובה',
                     style:
                         TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ]),
             ),
-            const TabBar(labelColor: kPrimary, tabs: [
-              Tab(icon: Icon(Icons.sentiment_satisfied_alt), text: 'סמיילים'),
-              Tab(icon: Icon(Icons.auto_awesome), text: 'מדבקות'),
-              Tab(icon: Icon(Icons.animation), text: 'מונפשים'),
-            ]),
-            Expanded(
-              child: TabBarView(children: [
-                _OriginalExpressionGrid(
-                    assets: _originalSmileAssets,
-                    labels: _originalSmileLabels,
-                    columns: 4),
-                _OriginalExpressionGrid(
-                    assets: _originalStickerAssets,
-                    labels: _originalStickerLabels,
-                    columns: 4),
-                _OriginalExpressionGrid(
-                    assets: _originalGifAssets,
-                    labels: _originalGifLabels,
-                    columns: 4),
-              ]),
-            ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(12, 4, 12, 10),
-              child: Text(
-                'איורים מקוריים ונקיים שנוצרו במיוחד עבור קהילת בתשובה',
-                style: TextStyle(fontSize: 11, color: kSubtext),
-                textAlign: TextAlign.center,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: TextField(
+                onChanged: (value) => setState(() => _query = value),
+                decoration: const InputDecoration(
+                    hintText: 'חיפוש מדבקה…', prefixIcon: Icon(Icons.search)),
               ),
             ),
-          ]),
-        ),
-      ),
-    ); */
-  }
-
-  Widget _legacyBuild(BuildContext context) {
-    return SafeArea(
-      child: DefaultTabController(
-        length: 3,
-        child: SizedBox(
-          height: MediaQuery.of(context).size.height * 0.68,
-          child: Column(children: [
-            const TabBar(labelColor: kPrimary, tabs: [
-              Tab(icon: Icon(Icons.emoji_emotions_outlined), text: 'אימוג׳י'),
-              Tab(icon: Icon(Icons.auto_awesome), text: 'מדבקות'),
-              Tab(icon: Icon(Icons.gif_box_outlined), text: 'GIF'),
-            ]),
             Expanded(
-                child: TabBarView(children: [
-              _buildTwemojiPicker(),
-              Column(children: [
-                SizedBox(height: 250, child: _buildAvielStickerPicker()),
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: () =>
-                            Navigator.pop(context, _personalStickerAction),
-                        icon: const Icon(Icons.add_photo_alternate_outlined),
-                        label: const Text('יצירת מדבקה מתמונה — לאחר סריקה'),
-                      )),
-                ),
-                Expanded(
-                    child: GridView.builder(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      mainAxisSpacing: 10,
-                      crossAxisSpacing: 10),
-                  itemCount: _messageStickers.length,
-                  itemBuilder: (_, index) => InkWell(
-                    onTap: () => Navigator.pop(
-                        context, '$_stickerPrefix${_messageStickers[index]}'),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                          color: const Color(0xFFF0F6FC),
-                          borderRadius: BorderRadius.circular(16)),
-                      child: Center(
-                          child: Padding(
-                        padding: const EdgeInsets.all(6),
-                        child: Text(_messageStickers[index],
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                                fontSize:
-                                    _messageStickers[index].runes.length <= 3
-                                        ? 42
-                                        : 18,
-                                fontWeight: FontWeight.w600)),
-                      )),
-                    ),
-                  ),
-                )),
-              ]),
-              Column(children: [
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(children: [
-                    Expanded(
-                        child: TextField(
-                            controller: _gifSearch,
-                            onSubmitted: (_) => _searchOnlineGifs(),
-                            decoration: const InputDecoration(
-                                hintText: 'חיפוש GIF בטוח...',
-                                prefixIcon: Icon(Icons.search)))),
-                    const SizedBox(width: 8),
-                    IconButton(
-                        onPressed: _searchingGifs ? null : _searchOnlineGifs,
-                        icon: _searchingGifs
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.search)),
-                  ]),
-                ),
-                if (_gifError != null)
-                  Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Text(_gifError!,
-                          style: const TextStyle(color: Colors.red))),
-                Expanded(
-                    child: _gifs.isEmpty
+                child: _loading
+                    ? const Center(
+                        child: CircularProgressIndicator(color: kPrimary))
+                    : _error != null
                         ? Center(
-                            child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                const Text('חפשו GIF או בחרו קובץ מהמכשיר'),
-                                const SizedBox(height: 12),
-                                OutlinedButton.icon(
-                                    onPressed: () => Navigator.pop(
-                                        context, _gifPickerAction),
-                                    icon: const Icon(Icons.folder_open),
-                                    label: const Text('בחירה מהמכשיר')),
-                                const SizedBox(height: 8),
-                                ElevatedButton.icon(
-                                    onPressed: () => Navigator.pop(
-                                        context, _sharedGifUploadAction),
-                                    icon: const Icon(Icons.public),
-                                    label: const Text('הוספה לספרייה המשותפת')),
-                              ]))
-                        : GridView.builder(
-                            padding: const EdgeInsets.all(10),
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: 3,
-                                    mainAxisSpacing: 6,
-                                    crossAxisSpacing: 6),
-                            itemCount: _gifs.length,
-                            itemBuilder: (_, index) {
-                              final gif = _gifs[index];
-                              return InkWell(
-                                onTap: () {
-                                  final encoded = base64Url
-                                      .encode(utf8.encode(jsonEncode(gif)));
-                                  Navigator.pop(
-                                      context, '$_sharedGifPrefix$encoded');
-                                },
-                                child: Image.network(
-                                    _absoluteMediaUrl(
-                                        gif['preview_url'] as String),
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) =>
-                                        const ColoredBox(
-                                            color: kBorder,
-                                            child: Icon(Icons.broken_image))),
-                              );
-                            },
-                          )),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      TextButton.icon(
-                        onPressed: () =>
-                            Navigator.pop(context, _sharedGifUploadAction),
-                        icon: const Icon(Icons.add, size: 17),
-                        label: const Text('הוספה לספרייה'),
-                      ),
-                      const Text('• כל GIF נסרק לפני הפרסום',
-                          style: TextStyle(fontSize: 11, color: kSubtext)),
-                    ],
-                  ),
-                ),
-              ]),
-            ])),
+                            child: TextButton(
+                                onPressed: _loadExpressionCatalog,
+                                child: Text('$_error — נסו שוב')))
+                        : visible.isEmpty
+                            ? const Center(child: Text('לא נמצאו מדבקות'))
+                            : _RemoteExpressionGrid(items: visible)),
           ]),
         ),
       ),
@@ -28190,7 +28098,7 @@ class _RemoteExpressionGrid extends StatelessWidget {
       builder: (context, constraints) => GridView.builder(
             padding: const EdgeInsets.all(12),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: constraints.maxWidth < 360 ? 4 : 5,
+              crossAxisCount: constraints.maxWidth < 500 ? 3 : 4,
               mainAxisSpacing: 8,
               crossAxisSpacing: 8,
               childAspectRatio: 0.9,
@@ -28215,7 +28123,7 @@ class _RemoteExpressionGrid extends StatelessWidget {
                         child: Center(
                           child: ConstrainedBox(
                             constraints: const BoxConstraints(
-                                maxWidth: 66, maxHeight: 66),
+                                maxWidth: 150, maxHeight: 150),
                             child: Image.network(
                               url,
                               fit: BoxFit.contain,
@@ -28840,7 +28748,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             (message) => _selectedMessageKeys.contains(_selectionKey(message)))
         .toList();
     if (selected.isEmpty) return;
-    await _forwardChatMessages(context, widget.token, widget.socket, selected);
+    await forwardChatMessages(context, widget.token, widget.socket, selected);
     if (mounted) setState(_selectedMessageKeys.clear);
   }
 
@@ -29074,7 +28982,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           : <String, bool>{};
       setState(() {
         _groupReceivingFilter = readFilter(data['groupFilter']);
-        _invitationPersonalFilter = _newAccountFilter();
+        _invitationPersonalFilter = readFilter(data['myFilter']);
       });
       return true;
     } catch (_) {
@@ -29851,7 +29759,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         http.put(
           Uri.parse('$kApi/groups/$_groupId/read'),
           headers: {'Authorization': 'Bearer ${widget.token}'},
-        ).ignore();
+        ).then((response) {
+          if (response.statusCode == 200) {
+            reconcileReadNotifications(kApi, widget.token);
+          }
+        }).catchError((_) {});
         _scrollToBottom();
         // Save to cache
         final prefs = await SharedPreferences.getInstance();
@@ -30530,6 +30442,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (!mounted) return;
     final choice = await _showExpressionPicker(context, widget.token);
     if (choice == null || !mounted) return;
+    if (choice.startsWith(_remoteExpressionPrefix)) {
+      final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
+      try {
+        final response = await http.get(Uri.parse(remoteUrl), headers: {
+          'Authorization': 'Bearer ${widget.token}',
+        });
+        if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+          throw Exception('הקובץ אינו זמין כרגע');
+        }
+        final extension =
+            Uri.parse(remoteUrl).path.toLowerCase().endsWith('.gif')
+                ? 'gif'
+                : 'png';
+        final fileName = 'betshuva_${Uri.parse(remoteUrl).pathSegments.last}';
+        final file = XFile.fromData(response.bodyBytes,
+            name: fileName, mimeType: 'image/$extension');
+        await _uploadGroupFile(file, fileName, 'image', extraFields: const {
+          'builtinExpression': 'true',
+        });
+      } catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('לא ניתן לשלוח את המדבקה: $error')));
+        }
+      }
+      return;
+    }
     if (choice.startsWith(_originalExpressionPrefix)) {
       final assetPath = choice.substring(_originalExpressionPrefix.length);
       final data = await rootBundle.load(assetPath);
@@ -31041,12 +30980,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (!await _groupAllowsFileType(fileType)) return;
     if (!mounted) return;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
+    final isLibrarySticker = extraFields['builtinExpression'] == 'true';
     final showInlineProgress = (fileType == 'image' ||
             fileType == 'document' ||
             fileType == 'video' ||
             fileType == 'audio') &&
-        !isClipboardPaste;
-    final showProgress = !showInlineProgress;
+        !isClipboardPaste && !isLibrarySticker;
+    final showProgress = !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_group_');
     final uploadStartedAt = DateTime.now();
     if (showInlineProgress) {
@@ -32761,9 +32701,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 !_sameMessageDay(
                                     msg, _messages[messageIndex - 1]);
                             return Column(
-                              crossAxisAlignment: isMe
-                                  ? CrossAxisAlignment.end
-                                  : CrossAxisAlignment.start,
+                              textDirection: TextDirection.rtl,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 if (showDate)
                                   _DateDivider(label: _messageDateLabel(msg)),
@@ -32957,8 +32896,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                             ),
                                             child: Column(
                                               mainAxisSize: MainAxisSize.min,
+                                              textDirection: TextDirection.rtl,
                                               crossAxisAlignment:
-                                                  CrossAxisAlignment.end,
+                                                  CrossAxisAlignment.start,
                                               children: [
                                                 if (uploadStatus ==
                                                         'blocked_content' &&
@@ -33804,6 +33744,8 @@ class _ContentFilterSettingsScreenState
   bool _saving = false;
   bool _saved = false;
   bool _inherit = true;
+  bool _enforceGeneralFilter = false;
+  Map<String, dynamic> _generalFilter = {};
   late String _groupName = widget.groupName ?? 'קבוצה';
   final Map<String, bool> _filter = {
     'text': true,
@@ -33904,6 +33846,9 @@ class _ContentFilterSettingsScreenState
       if (!mounted) return;
       setState(() {
         _inherit = (_isContact || _isGroup) && data['inherited'] == true;
+        _enforceGeneralFilter = data['enforceGeneralFilter'] == true;
+        _generalFilter =
+            Map<String, dynamic>.from(data['generalFilter'] as Map? ?? {});
         for (final key in _filter.keys) {
           _filter[key] = raw[key] == true;
         }
@@ -33930,7 +33875,7 @@ class _ContentFilterSettingsScreenState
           ? (_inherit ? {'inherit': true} : {'filter': _filter})
           : _isContact
               ? (_inherit ? {'inherit': true} : {'filter': _filter})
-              : _filter;
+              : {..._filter, 'enforceGeneralFilter': _enforceGeneralFilter};
       final response = await http.put(Uri.parse('$kApi$path'),
           headers: {
             'Authorization': 'Bearer ${widget.token}',
@@ -34012,7 +33957,10 @@ class _ContentFilterSettingsScreenState
 
   Widget _option(String key, String title, String subtitle, IconData icon) {
     final enabled = _filter[key] == true;
-    final canChange = !_inherit;
+    final canChange = !(_enforceGeneralFilter &&
+            (_isContact || _isGroup) &&
+            _generalFilter[key] == false) &&
+        !_inherit;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
       child: Material(
@@ -34293,6 +34241,21 @@ class _ContentFilterSettingsScreenState
                 child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 760),
                 child: ListView(children: [
+                  if (!_isContact && !_isGroup)
+                    Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: _GeneralFilterEnforcementCard(
+                          value: _enforceGeneralFilter,
+                          onChanged: _saving
+                              ? null
+                              : (value) =>
+                                  setState(() => _enforceGeneralFilter = value),
+                        )),
+                  if ((_isContact || _isGroup) && _enforceGeneralFilter)
+                    const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text(
+                            'אכיפת הסינון הכללי פעילה. סוגי תוכן שחסומים בו יישארו חסומים גם כאן.')),
                   if (_isGroup) _groupOverview(),
                   if (_isContact || _isGroup) ...[
                     Padding(

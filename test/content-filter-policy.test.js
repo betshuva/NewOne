@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  DEFAULT_CONTENT_FILTER,
   contentAllowedByFilter,
   resolveScopedContentFilter,
 } = require('../server/content-filter-policy');
@@ -72,10 +73,21 @@ test('forwarding UI displays the exact server rejection reason', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
   const forwarding = source.slice(
-    source.indexOf('Future<void> _forwardChatMessages'),
+    source.indexOf('Future<void> forwardChatMessages'),
     source.indexOf('// Google Web Client ID'));
   assert.match(forwarding, /body\['error'\]\.toString\(\)/);
   assert.match(forwarding, /forwardingErrors\.add\(responseError\(response\)\)/);
   assert.match(forwarding, /for \(final target in targets\)/);
   assert.match(forwarding, /for \(final message in messages\)/);
+});
+
+test('enforced general filter caps every scoped permission, including existing permissive overrides', () => {
+  const general = { ...DEFAULT_CONTENT_FILTER, women: false, video: false, enforceGeneralFilter: true };
+  const result = resolveScopedContentFilter(general, DEFAULT_CONTENT_FILTER);
+  assert.equal(result.women, false);
+  assert.equal(result.video, false);
+  assert.equal(result.text, true);
+  assert.equal(resolveScopedContentFilter(general, {text:false}).text, false);
+  assert.equal(resolveScopedContentFilter({...general,enforceGeneralFilter:false}, DEFAULT_CONTENT_FILTER).women, true);
+  assert.equal(resolveScopedContentFilter(general,null).women, false);
 });

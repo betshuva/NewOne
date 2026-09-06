@@ -42,17 +42,18 @@ test('only unique HTTPS citation annotations are retained', () => {
   assert.deepEqual(citations, [{ title: 'משרד ממשלתי', url: 'https://www.gov.il/test' }]);
 });
 
-test('web search answer includes only links accepted by the application validator', async () => {
+test('temporary pause removes web tools, historical external claims and citation fetching', async () => {
+  let validations = 0;
   const answer = await generateSafeInformationAnswer({
     apiKey: 'test-key', model: 'gpt-5.6-luna', userId: 'user-1',
     question: 'מה המידע הרשמי?',
-    history: [{ role: 'user', content: 'מה המידע הרשמי?' }],
-    validateSource: async url => url.includes('gov.il'),
+    history: [{ role: 'assistant', content: 'OLD_EXTERNAL_PRICE 500 https://example.com' }, { role: 'user', content: 'מה המידע הרשמי?' }],
+    validateSource: async () => { validations++; return true; },
     fetchImpl: async (url, options) => {
       assert.equal(url, 'https://api.openai.com/v1/responses');
       const body = JSON.parse(options.body);
-      assert.equal(body.tools[0].type, 'web_search');
-      assert.equal(body.tools[0].user_location.country, 'IL');
+      assert.deepEqual(body.tools, []);
+      assert.ok(body.input.every(item => !item.content.includes('OLD_EXTERNAL_PRICE')));
       assert.equal(body.store, false);
       return { ok: true, json: async () => ({
         usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
@@ -65,6 +66,8 @@ test('web search answer includes only links accepted by the application validato
       }) };
     },
   });
-  assert.match(answer, /https:\/\/www\.gov\.il\/test/);
+  assert.doesNotMatch(answer, /https:\/\/www\.gov\.il\/test/);
+  assert.match(answer, /מושבתים זמנית/);
+  assert.equal(validations, 0);
   assert.doesNotMatch(answer, /bad\.example/);
 });

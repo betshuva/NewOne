@@ -19,7 +19,7 @@ test('every image stores a local-versus-Google classification comparison', () =>
   assert.match(server,
     /const finalCommon = \{[\s\S]*?classificationStats,/);
   assert.match(server,
-    /MODERATION_CACHE_VERSION = '2026-09-03-video-frame-image-pipeline-12'/);
+    /MODERATION_CACHE_VERSION = '2026-09-06-classification-verification-13'/);
 });
 
 test('administrators can view classification reliability by time range', () => {

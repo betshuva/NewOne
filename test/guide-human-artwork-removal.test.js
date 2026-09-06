@@ -11,7 +11,7 @@ test('built-in guide screens no longer reference child artwork', () => {
   assert.doesNotMatch(client, /assets\/guide\/aviel-guide\.jpg/);
   assert.doesNotMatch(client, /assets\/stickers\/aviel-guide\//);
   assert.doesNotMatch(pubspec, /assets\/stickers\/aviel-guide\//);
-  assert.match(client, /מדבקות המדריך הוסרו/);
+  assert.doesNotMatch(client, /_buildAvielStickerPicker/);
 });
 
 test('child guide artwork is absent from the application source bundle', () => {

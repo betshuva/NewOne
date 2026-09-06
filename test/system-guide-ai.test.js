@@ -269,14 +269,21 @@ test('Israel conversation keeps both participants on the right with avatars and 
     server.indexOf('// ── Activity logger'));
 
   assert.match(client, /const kSystemGuideId = '00000000-0000-4000-8000-000000000002'/);
-  assert.match(client, /forceRightAlignment:\s*isSystemGuideChat/);
+  assert.match(client, /Alignment get _messageAlignment => Alignment.centerRight/);
   assert.match(client, /hideReply: isSystemGuideChat/);
   assert.match(client,
-    /if \(!isSystemGuideChat\) return bubble;[\s\S]*?textDirection: TextDirection\.ltr[\s\S]*?UserAvatar\(/);
+    /final bubble = _MessageBubble\([\s\S]*?textDirection: TextDirection\.ltr[\s\S]*?UserAvatar\(/);
   assert.match(client,
-    /if \(!isSystemGuideChat\) return bubble;[\s\S]*?Alignment\.centerRight[\s\S]*?BoxConstraints\([\s\S]*?maxWidth: 760[\s\S]*?child: bubble/);
+    /final bubble = _MessageBubble\([\s\S]*?Alignment\.centerRight[\s\S]*?BoxConstraints\([\s\S]*?maxWidth: 760[\s\S]*?child: bubble/);
   assert.doesNotMatch(client, /Flexible\(child: bubble\)/);
   assert.match(client, /if \(!hideReply && message\['replyTo'\] != null\)/);
   assert.doesNotMatch(exchange, /reply_to_id/);
   assert.doesNotMatch(server, /replyToId: exchange\.sent\.id/);
+});
+
+test('a screenshot failure on the first question drafts a bug instead of screenshot instructions', () => {
+  const answer = localGuideAnswer('צילום מסך נחסם בפעם הראשונה ובשנייה מתקבל');
+  assert.match(answer, /תקלה/);
+  assert.doesNotMatch(answer, /כדי לצלם/);
+  assert.match(localGuideAnswer('איך עושים צילום מסך?'), /כדי לצלם/);
 });

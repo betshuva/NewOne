@@ -27,23 +27,10 @@ test('the approved Twemoji allowlist and every referenced SVG are bundled', () =
   }
 });
 
-test('the expression picker renders Twemoji while messages keep Unicode', () => {
-  assert.match(source, /SvgPicture\.asset/);
-  assert.match(source, /_chooseEmoji\(emoji\)/);
-  assert.match(source, /emoji_allowlist\.json/);
+test('the replacement picker exposes only the user-provided sticker catalog', () => {
+  const picker = source.slice(source.indexOf('class _ExpressionPickerSheetState'), source.indexOf('class _RemoteExpressionGrid'));
+  assert.doesNotMatch(picker, /TabBar|_buildTwemojiPicker|_legacyBuild|_buildAvielStickerPicker/);
+  assert.match(picker, /user-stickers/);
+  assert.match(picker, /assets\/stickers\/user-catalog\.json/);
   assert.match(source, /LicenseRegistry\.addLicense/);
-  assert.match(source, /ATTRIBUTION\.txt/);
-});
-
-test('Twemoji categories wrap instead of being clipped horizontally', () => {
-  const pickerStart = source.indexOf('Widget _buildTwemojiPicker()');
-  const pickerEnd = source.indexOf(
-    'Widget _buildRemoteExpressionPicker',
-    pickerStart,
-  );
-  const picker = source.slice(pickerStart, pickerEnd);
-
-  assert.match(picker, /Wrap\(/);
-  assert.match(picker, /runSpacing: 6/);
-  assert.doesNotMatch(picker, /scrollDirection: Axis\.horizontal/);
 });

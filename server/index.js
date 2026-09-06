@@ -61,8 +61,12 @@ const {
   normalizeContentFilter,
   resolveScopedContentFilter,
 } = require('./content-filter-policy');
+const { registerMessageReactions } = require('./message-reactions');
+const { resolveAssistantInput } = require('./assistant-input');
+const { imageClassificationOutcome } = require('./image-classification-outcome');
 const { generateGuideAnswer, localGuideAnswer } = require('./system-guide-ai');
 const { generateSafeInformationAnswer } = require('./safe-information-ai');
+const { searchMarketplace } = require('./ai-marketplace');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
@@ -145,9 +149,9 @@ function normalizeBuiltinStickerId(value) {
   return BUILTIN_STICKER_IDS.has(id) ? id : null;
 }
 const SYSTEM_USER_EMAIL = 'welcome@betshuva.system';
-const SYSTEM_USER_NAME = 'מדריך בתשובה';
+const SYSTEM_USER_NAME = 'ישראל מדריך בתשובה';
 const SYSTEM_USER_PROFILE_PIC =
-  '/betshuva-app/assets/icon_source.png';
+  '/betshuva-app/assets/assets/guide/israel-profile-20260907.png';
 const SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI';
 const SAFE_INFORMATION_USER_EMAIL = 'safe-information@betshuva.system';
 const SAFE_INFORMATION_PROFILE_PIC =
@@ -159,7 +163,6 @@ const SAFE_INFORMATION_WELCOME_MESSAGE =
   'שלום 🌿 זהו מידע בטוח · AI — שירות אוטומטי ולא אדם.\n\nאפשר לשאול על השוואת מוצרים ומחירים, תחבורה ציבורית, טיולים, שירותי ממשלה, בתי חולים, בנקים ומשכנתאות.\n\nהמידע מובא בסביבה מסוננת, עם עדיפות למקורות רשמיים וקישורים שנבדקו. השירות אינו רב, רופא או יועץ פיננסי. לשאלה הלכתית יש לשאול רב.\n\nלעולם אין לשלוח כאן סיסמה, קוד אימות או מספר כרטיס מלא.';
 
 const BUILTIN_EXPRESSION_ROOT = path.join(__dirname, '..', 'expression-library');
-const linkPreviewCache = new Map();
 const linkSafetyCache = new Map();
 const LINK_BLOCKED_MESSAGE =
   'הקישור לא פורסם: בדיקת האבטחה או בדיקת התוכן לא הושלמה בהצלחה';
@@ -513,6 +516,16 @@ async function isTrustedBuiltinExpression(file) {
   return (await getBuiltinExpressionHashes()).has(hash);
 }
 
+function builtinExpressionResult() {
+  return {
+    blocked: false, pending: false, source: 'builtin-expression',
+    scanSkipped: true, faces: [],
+    labels: [{ name: 'Betshuva library sticker — no content scan' }],
+    classification: { category: 'nonHumanImages',
+      detectedCategories: ['nonHumanImages'], uncertain: false },
+  };
+}
+
 // ── Firebase Cloud Messaging (HTTP v1 via Admin SDK) ──────────────
 let firebaseMessaging = null;
 function getFirebaseMessaging() {
@@ -526,6 +539,7 @@ function getFirebaseMessaging() {
 
 async function sendPush(userId, title, body, data = {}) {
   try {
+    if (data.type === 'chat' && String(data.fromUserId) === String(userId)) return;
     const pool   = await getPool();
     const result = await pool.query(
       `SELECT f.token FROM fcm_tokens f
@@ -540,7 +554,10 @@ async function sendPush(userId, title, body, data = {}) {
         [key, String(value)])),
       android: {
         priority: 'high',
-        notification: { sound: 'default', channelId: 'betshuva_messages' },
+        notification: { sound: 'default', channelId: 'betshuva_messages',
+          ...(data.type === 'chat' && data.fromUserId ? { tag: `chat:${data.fromUserId}` }
+            : data.type === 'group' && data.groupId ? { tag: `group:${data.groupId}` } : {}),
+        },
       },
       webpush: {
         notification: { icon: '/betshuva-app/icons/Icon-192.png' },
@@ -1098,9 +1115,11 @@ function requestedRegistrationFilter(body) {
   if (body?.contentFilterConfirmed !== true) return null;
   const value = body?.contentFilter;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value.enforceGeneralFilter !== undefined && typeof value.enforceGeneralFilter !== 'boolean') return null;
   if (!Object.keys(NEW_ACCOUNT_CONTENT_FILTER)
     .every(key => typeof value[key] === 'boolean')) return null;
-  return normalizeContentFilter(value, NEW_ACCOUNT_CONTENT_FILTER);
+  return { ...normalizeContentFilter(value, NEW_ACCOUNT_CONTENT_FILTER),
+    enforceGeneralFilter: value.enforceGeneralFilter === true };
 }
 
 async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
@@ -1110,22 +1129,20 @@ async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
      LEFT JOIN user_contacts c ON c.owner_id=u.id AND c.contact_id=$2
      WHERE u.id=$1`, [recipientId, senderId]);
   if (!result.rows.length) return null;
-  const general = normalizeContentFilter(result.rows[0].content_filter);
   return {
-    isContact: !!result.rows[0].filter_override || (await pool.query(
+    isContact: String(recipientId) === String(senderId) || !!result.rows[0].filter_override || (await pool.query(
       'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
       [recipientId, senderId])).rows.length > 0,
     filter: resolveScopedContentFilter(
-      general, result.rows[0].filter_override),
+      result.rows[0].content_filter, result.rows[0].filter_override),
   };
 }
 
 async function buildGroupDeliveryPlan(pool, groupId, senderId, type, classification) {
   const members = await pool.query(
     `SELECT gm.user_id, u.name,
-            COALESCE(gm.filter_override,
-              CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END,
-              u.content_filter) AS content_filter
+            betshuva_effective_filter(u.content_filter, COALESCE(gm.filter_override,
+              CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END)) AS content_filter
      FROM group_members gm
      JOIN groups g ON g.id=gm.group_id
      JOIN users u ON u.id=gm.user_id
@@ -1153,7 +1170,7 @@ async function buildGroupDeliveryPlan(pool, groupId, senderId, type, classificat
 
 async function getGroupContentFilter(pool, groupId) {
   const result = await pool.query(
-    `SELECT COALESCE(g.content_filter, creator.content_filter) AS content_filter
+    `SELECT betshuva_effective_filter(creator.content_filter, g.content_filter) AS content_filter
      FROM groups g JOIN users creator ON creator.id=g.creator_id
      WHERE g.id=$1`, [groupId]);
   return result.rows.length
@@ -1872,7 +1889,8 @@ async function scanStaticImage(buffer, options = {}) {
     (!modestyVerification.available || !geminiModestyVerification.available ||
       modestyVerification.decision !== 'modest' ||
       geminiModestyVerification.decision !== 'modest');
-  if (modestyReviewsDisagree && safetyConsensusClean) {
+  if (modestyReviewsDisagree && safetyConsensusClean &&
+      classification?.category && classification.uncertain !== true) {
     classificationStats.modestyDisagreement = true;
     return {
       ...finalCommon,
@@ -1944,14 +1962,16 @@ async function scanStaticImage(buffer, options = {}) {
     };
   }
 
-  return { ...finalCommon, blocked: false, blockedBy: null };
+  return imageClassificationOutcome(finalCommon);
 }
 
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
-const MODERATION_CACHE_VERSION = '2026-09-03-video-frame-image-pipeline-12';
+const MODERATION_CACHE_VERSION = '2026-09-06-classification-verification-13';
 
 async function scanImage(buffer, options = {}) {
+  // Recognize exact library bytes before invoking any content-analysis provider.
+  if (await isTrustedBuiltinExpression({ buffer })) return builtinExpressionResult();
   if (!isPotentiallyAnimatedImage(buffer))
     return scanStaticImage(buffer, options);
 
@@ -2162,6 +2182,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS filter_level TEXT NOT NULL DEFAULT 'standard'`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS read_receipts_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    await pool.query(await fs.readFile(path.join(__dirname, 'scoped-content-filter.sql'), 'utf8'));
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS content_filter JSONB NOT NULL DEFAULT '{"text":true,"video":false,"nonHumanImages":true,"men":false,"women":false,"children":false}'::jsonb`);
     await pool.query(`ALTER TABLE users ALTER COLUMN content_filter SET DEFAULT '{"text":true,"video":false,"nonHumanImages":true,"men":false,"women":false,"children":false}'::jsonb`);
 
@@ -2626,6 +2647,13 @@ async function migrateDatabase() {
       ON support_issues(user_id, created_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS support_issues_status_created_idx
       ON support_issues(status, created_at DESC)`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS message_reactions (
+      message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      emoji TEXT NOT NULL CHECK (emoji IN ('👍','❤️','😂','🙏','😮','😢')),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY(message_id,user_id)
+    )`);
     // ── Audit Log ──────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS audit_log (
@@ -3107,11 +3135,8 @@ async function generateSafeInformationSystemAnswer(pool, userId, question) {
       userId,
       question,
       history: messages,
-      isTeen: audience.rows[0]?.is_teen === true,
-      validateSource: async url => {
-        const result = await inspectExternalLink(url);
-        return result?.safe === true;
-      },
+      isTeen: audience.rows[0]?.is_teen !== false,
+      searchMarketplace: args => searchMarketplace(pool, userId, args),
     });
   } catch (error) {
     console.error('safe information AI:', error.message);
@@ -3293,6 +3318,18 @@ async function handleMessageBrowsing(pool, userId, question) {
       [userId]);
   }
   return page.answer;
+}
+
+async function resolveSystemInput(pool, userId, assistantId, input) {
+  return resolveAssistantInput(input, {
+    loadApprovedFile: async url => {
+      if (!await validateApprovedFile(pool, userId, url, 'chat', assistantId)) return null;
+      const rows = await pool.query(`SELECT file_type,original_name,moderation_details
+        FROM stored_files WHERE public_url=$1 AND moderation_status='approved'`, [url]);
+      return rows.rows[0] || null;
+    },
+    decryptTranscript: decryptAudioTranscript,
+  });
 }
 
 async function createSystemExchange(pool, userId, question, file = null,
@@ -3617,6 +3654,7 @@ async function youthPolicy(pool, ...userIds) {
 }
 
 async function teenContactAllowed(pool, firstId, secondId) {
+  if (String(firstId) === String(secondId)) return true;
   if ([firstId, secondId].some(id =>
       [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(id))) return true;
   const policies = await youthPolicy(pool, firstId, secondId);
@@ -4075,12 +4113,6 @@ io.on('connection', async (socket) => {
     }
     if (normalizedStickerId) text = normalizedStickerId;
     if (!toUserId || (!text && !fileUrl)) return;
-    if (String(toUserId) === String(socket.user.id)) {
-      socket.emit('message:rejected', { toUserId,
-        reason: 'אי אפשר לשלוח בקשת חברות לעצמך',
-        code: 'SELF_MESSAGE_NOT_ALLOWED' });
-      return;
-    }
     if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
     if (![SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId) &&
         !normalizedStickerId && text &&
@@ -4090,6 +4122,10 @@ io.on('connection', async (socket) => {
       socket.emit('message:rejected', { toUserId,
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
         code: 'CHAT_CONTENT_BLOCKED' });
+      return;
+    }
+    if (toUserId === SAFE_INFORMATION_USER_ID && extractMessageUrls(text).length) {
+      socket.emit('message:rejected', { toUserId, reason: 'בדיקת קישורים חיצוניים בעוזר מושבתת זמנית. אפשר לשאול על מודעות בתשובה.' });
       return;
     }
     if (text && !normalizedStickerId) {
@@ -4102,13 +4138,12 @@ io.on('connection', async (socket) => {
     try {
       const pool = await getPool();
       if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
-        if (fileUrl || !text) {
-          socket.emit('message:rejected', { toUserId,
-            reason: 'העוזר מקבל כעת שאלות טקסט בלבד' });
-          return;
-        }
+        let input;
+        try { input = await resolveSystemInput(pool, socket.user.id, toUserId,
+          { text, fileUrl, fileName }); }
+        catch (error) { socket.emit('message:rejected', { toUserId, reason: error.message }); return; }
         const exchange = await createSystemExchange(
-          pool, socket.user.id, String(text).slice(0, 2000), null, toUserId);
+          pool, socket.user.id, input.question, input.file, toUserId);
         socket.emit('chat:message', {
           id: exchange.reply.id, fromUserId: toUserId,
           fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
@@ -4158,7 +4193,7 @@ io.on('connection', async (socket) => {
              OR (sender_id=$2 AND recipient_id=$1))
            AND group_id IS NULL AND deleted_for_everyone=FALSE
          LIMIT 1`, [toUserId, socket.user.id]);
-      if (!accepted.rows.length) {
+      if (String(toUserId) !== String(socket.user.id) && !accepted.rows.length) {
         if (msgType !== 'text' || fileUrl) {
           socket.emit('message:rejected', { toUserId, reason: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
           return;
@@ -4256,6 +4291,10 @@ io.on('connection', async (socket) => {
         code: 'CHAT_CONTENT_BLOCKED' });
       return;
     }
+    if (toUserId === SAFE_INFORMATION_USER_ID && extractMessageUrls(text).length) {
+      socket.emit('message:rejected', { toUserId, reason: 'בדיקת קישורים חיצוניים בעוזר מושבתת זמנית. אפשר לשאול על מודעות בתשובה.' });
+      return;
+    }
     if (text && !normalizedStickerId) {
       try { await verifyMessageLinks(text); } catch (error) {
         console.warn('Blocked group link:', error.message);
@@ -4268,7 +4307,7 @@ io.on('connection', async (socket) => {
       const pool = await getPool();
       const mem = await pool.query(
         `SELECT gm.role, g.send_permission,
-                COALESCE(g.content_filter, creator.content_filter) AS content_filter
+                betshuva_effective_filter(creator.content_filter, g.content_filter) AS content_filter
          FROM group_members gm
          JOIN groups g ON g.id = gm.group_id
          JOIN users creator ON creator.id=g.creator_id
@@ -4790,11 +4829,9 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
     const result = await pool.query(
       `SELECT u.id, u.name, u.profile_pic_url, u.city, u.phone, u.email,
               c.filter_override, c.pinned_at,
-              COALESCE((SELECT recipient_contact.filter_override
-                        FROM user_contacts recipient_contact
-                        WHERE recipient_contact.owner_id=u.id
-                          AND recipient_contact.contact_id=$1),
-                       u.content_filter) AS receiving_filter,
+              betshuva_effective_filter(u.content_filter,
+                       (SELECT recipient_contact.filter_override FROM user_contacts recipient_contact
+                        WHERE recipient_contact.owner_id=u.id AND recipient_contact.contact_id=$1)) AS receiving_filter,
               last_msg.body AS last_message,
               last_msg.type AS last_message_type,
               last_msg.created_at AS last_message_at,
@@ -4834,7 +4871,17 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
        ORDER BY c.pinned_at DESC NULLS LAST,
                 last_msg.created_at DESC NULLS LAST, u.name`,
       [req.user.id, SCAN_BOT_ID]);
-    res.json(result.rows);
+    const self = await pool.query(`SELECT u.id,u.profile_pic_url,u.content_filter AS receiving_filter,
+      last_msg.body AS last_message,last_msg.type AS last_message_type,
+      last_msg.created_at AS last_message_at,TRUE AS last_message_is_mine,'read' AS last_message_status
+      FROM users u LEFT JOIN LATERAL (
+        SELECT m.body,m.type,m.created_at FROM messages m
+        WHERE m.sender_id=u.id AND m.recipient_id=u.id AND m.group_id IS NULL
+          AND m.deleted_for_everyone=FALSE AND COALESCE(m.deleted_for_sender,FALSE)=FALSE
+          AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=u.id)
+        ORDER BY m.created_at DESC LIMIT 1
+      ) last_msg ON TRUE WHERE u.id=$1`, [req.user.id]);
+    res.json([...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...result.rows]);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4962,7 +5009,8 @@ app.get('/api/filter-settings', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
-    res.json(normalizeContentFilter(result.rows[0]?.content_filter));
+    res.json({ ...normalizeContentFilter(result.rows[0]?.content_filter),
+      enforceGeneralFilter: result.rows[0]?.content_filter?.enforceGeneralFilter === true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -4970,8 +5018,14 @@ app.put('/api/filter-settings', authWithDbCheck, async (req, res) => {
   try {
     const filter = normalizeContentFilter(req.body);
     const pool = await getPool();
-    await pool.query('UPDATE users SET content_filter=$1 WHERE id=$2', [JSON.stringify(filter), req.user.id]);
-    res.json(filter);
+    if (req.body.enforceGeneralFilter !== undefined && typeof req.body.enforceGeneralFilter !== 'boolean')
+      return res.status(400).json({ error: 'ערך אכיפת הסינון אינו תקין' });
+    const saved = await pool.query(`UPDATE users SET content_filter=$1::jsonb ||
+      jsonb_build_object('enforceGeneralFilter', COALESCE($3::boolean,
+        (content_filter->>'enforceGeneralFilter')::boolean, false))
+      WHERE id=$2 RETURNING content_filter`,
+      [JSON.stringify(filter), req.user.id, req.body.enforceGeneralFilter ?? null]);
+    res.json(saved.rows[0].content_filter);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -4994,7 +5048,9 @@ app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     const override = result.rows[0].filter_override;
     res.json({
       inherited: !override,
-      filter: normalizeContentFilter(override, inherited),
+      filter: resolveScopedContentFilter(result.rows[0].owner_filter, override),
+      generalFilter: inherited,
+      enforceGeneralFilter: result.rows[0].owner_filter?.enforceGeneralFilter === true,
       requiresChoice: result.rows[0].filter_choice_confirmed !== true &&
         result.rows[0].has_sent_message !== true,
     });
@@ -5045,12 +5101,11 @@ app.get('/api/contacts/:userId/filter-comparison', authWithDbCheck, async (req, 
       : null;
     if (counterpartFilterAvailable && !recipient)
       return res.status(404).json({ error: 'הנמען לא נמצא' });
-    const inherited = normalizeContentFilter(own.rows[0].owner_filter);
     res.json({
       counterpartFilterAvailable,
       recipientFilter: recipient?.filter || null,
-      personalFilter: normalizeContentFilter(
-        own.rows[0].filter_override, inherited),
+      personalFilter: resolveScopedContentFilter(
+        own.rows[0].owner_filter, own.rows[0].filter_override),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5089,6 +5144,8 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
         return res.status(404).json({ error: 'איש הקשר לא נמצא' });
       }
     }
+    const general = await client.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
+    filter = resolveScopedContentFilter(general.rows[0]?.content_filter, filter);
     const entry = await client.query(
       `INSERT INTO contact_filter_chat_entries(owner_id,contact_id,filter)
        VALUES($1,$2,$3)
@@ -5161,7 +5218,7 @@ app.get('/api/messages/unread', auth, async (req, res) => {
       LEFT JOIN message_status ms
         ON ms.message_id = m.id AND ms.user_id = $1
       WHERE m.recipient_id = $1
-        AND m.sender_id <> $2
+        AND m.sender_id <> $2 AND m.sender_id <> $1
         AND m.deleted_for_everyone = FALSE
         AND NOT EXISTS (
           SELECT 1 FROM message_user_deletions mud
@@ -5419,12 +5476,6 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   if (!toUserId || (!text && !fileUrl)) {
     return res.status(400).json({ error: 'חסר נמען או תוכן' });
   }
-  if (String(toUserId) === String(senderId)) {
-    return res.status(400).json({
-      error: 'אי אפשר לשלוח בקשת חברות לעצמך',
-      code: 'SELF_MESSAGE_NOT_ALLOWED',
-    });
-  }
   if (![SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId) &&
       !normalizedStickerId && text &&
       moderateChatText(text).blocked) {
@@ -5433,6 +5484,9 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       error: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
       code: 'CHAT_CONTENT_BLOCKED',
     });
+  }
+  if (toUserId === SAFE_INFORMATION_USER_ID && extractMessageUrls(text).length) {
+    return res.status(422).json({ error: 'בדיקת קישורים חיצוניים בעוזר מושבתת זמנית. אפשר לשאול על מודעות בתשובה.', code: 'AI_EXTERNAL_LOOKUP_PAUSED' });
   }
   if (text && !normalizedStickerId) {
     try { await verifyMessageLinks(text); } catch (error) {
@@ -5443,15 +5497,12 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
   try {
     const pool = await getPool();
     if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
-      if (!text && !fileUrl)
-        return res.status(400).json({ error: 'לא נשלח תוכן' });
-      const directQuestion = text || (fileType === 'image'
-        ? 'התמונה ששלחתי אושרה. הסבר לי ישירות מה נמצא בסריקה.'
-        : 'הסבר לי ישירות על הקובץ ששלחתי.');
+      let input;
+      try { input = await resolveSystemInput(pool, senderId, toUserId,
+        { text, fileUrl, fileName }); }
+      catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
       const exchange = await createSystemExchange(
-        pool, senderId, String(directQuestion).slice(0, 2000), fileUrl ? {
-          url: fileUrl, name: fileName, type: fileType || 'document',
-        } : null, toUserId);
+        pool, senderId, input.question, input.file, toUserId);
       const sid = onlineUsers.get(senderId);
       if (sid) io.to(sid).emit('chat:message', {
         id: exchange.reply.id, fromUserId: toUserId,
@@ -5509,7 +5560,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
            OR (sender_id=$2 AND recipient_id=$1))
          AND group_id IS NULL AND deleted_for_everyone=FALSE
        LIMIT 1`, [toUserId, senderId]);
-    if (!accepted.rows.length && !marketplaceInquiry.rows.length) {
+    if (String(toUserId) !== String(senderId) && !accepted.rows.length && !marketplaceInquiry.rows.length) {
       const request = await pool.query(
         `INSERT INTO message_requests
            (sender_id, recipient_id, body, type, file_url, file_name)
@@ -5596,7 +5647,7 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
     const result = await pool.query(
       `SELECT mr.id, mr.sender_id, u.name AS sender_name,
               u.profile_pic_url, mr.created_at,
-              COALESCE(sender_contact.filter_override, u.content_filter) AS expected_filter,
+              betshuva_effective_filter(u.content_filter, sender_contact.filter_override) AS expected_filter,
               recipient.content_filter AS my_filter
        FROM message_requests mr
        JOIN users u ON u.id=mr.sender_id
@@ -5627,8 +5678,17 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
     await client.query(
       `INSERT INTO user_contacts(owner_id, contact_id) VALUES($1,$2),($2,$1)
        ON CONFLICT DO NOTHING`, [req.user.id, request.sender_id]);
-    const filter = normalizeContentFilter(
-      req.body?.filter, NEW_ACCOUNT_CONTENT_FILTER);
+    const general = await client.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
+    const filter = resolveScopedContentFilter(general.rows[0]?.content_filter, req.body?.filter);
+    if (general.rows[0]?.content_filter?.enforceGeneralFilter === true) {
+      const pending = await client.query(`SELECT mr.type,sf.moderation_details->'classification' AS classification
+        FROM message_requests mr LEFT JOIN stored_files sf ON sf.public_url=mr.file_url
+        WHERE mr.sender_id=$1 AND mr.recipient_id=$2`, [request.sender_id,req.user.id]);
+      if (pending.rows.some(row => !contentAllowedByFilter(filter,row.type,row.classification))) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'הבקשה מכילה תוכן שחסום בסינון הכללי שנאכף בחשבונך' });
+      }
+    }
     await client.query(
       `UPDATE user_contacts SET filter_override=$1, filter_choice_confirmed=TRUE
        WHERE owner_id=$2 AND contact_id=$3`,
@@ -5707,6 +5767,9 @@ app.put('/api/messages/read', auth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+registerMessageReactions(app, { auth: authWithDbCheck, rateLimit: messageRateLimit,
+  getPool, contentAllowedByFilter });
 
 // ── Messages: delete ──────────────────────────────────────────────
 app.delete('/api/messages/:id', auth, async (req, res) => {
@@ -7347,18 +7410,8 @@ function listingDescriptionWithTitle(title, description) {
 }
 
 app.get('/api/link-preview', auth, async (req, res) => {
-  const rawUrl = String(req.query.url || '').trim();
-  if (!rawUrl || rawUrl.length > 2048)
-    return res.status(400).json({ error: 'קישור לא תקין' });
-  try {
-    const value = await inspectExternalLink(rawUrl);
-    linkPreviewCache.set(rawUrl, { value, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
-    if (linkPreviewCache.size > 500)
-      linkPreviewCache.delete(linkPreviewCache.keys().next().value);
-    res.json(value);
-  } catch (error) {
-    res.status(422).json({ error: 'לא ניתן להציג תצוגה מקדימה לקישור' });
-  }
+  // Temporary pause pending review of third-party content permissions.
+  return res.status(503).json({ error: 'תצוגות מקדימות של אתרים חיצוניים מושבתות זמנית', code: 'EXTERNAL_PREVIEW_PAUSED' });
 });
 
 function validPropertyEntryDate(value) {
@@ -7980,12 +8033,12 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     const pool = await getPool();
     const contentSha256 = crypto.createHash('sha256')
       .update(file.buffer).digest('hex');
-    const visualFingerprint = allowed.dbType === 'image'
+    const trustedBuiltinExpression = allowed.dbType === 'image' &&
+      await isTrustedBuiltinExpression(file);
+    const visualFingerprint = allowed.dbType === 'image' && !trustedBuiltinExpression
       ? await createVisualFingerprint(file.buffer).catch(() => null) : null;
-    const trustedBuiltinExpression = req.body.builtinExpression === 'true' &&
-      allowed.dbType === 'image' && await isTrustedBuiltinExpression(file);
     const scanBotUpload = req.body.toUserId === SCAN_BOT_ID;
-    const reportImageScan = allowed.dbType === 'image' &&
+    const reportImageScan = !trustedBuiltinExpression && allowed.dbType === 'image' &&
       (scanBotUpload || req.body.scanReport === 'true');
     let recipientPolicy = null;
     let groupFilter = null;
@@ -8003,7 +8056,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     if (req.body.groupId) {
       const groupAccess = await pool.query(
         `SELECT gm.role, g.send_permission,
-                COALESCE(g.content_filter, creator.content_filter) AS content_filter
+                betshuva_effective_filter(creator.content_filter, g.content_filter) AS content_filter
          FROM group_members gm
          JOIN groups g ON g.id=gm.group_id
          JOIN users creator ON creator.id=g.creator_id
@@ -8018,7 +8071,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       if (allowed.dbType === 'video' && groupFilter.video !== true)
         return res.status(403).json({ error: 'סרטוני וידאו חסומים בהגדרות הקבוצה' });
     }
-    const cachedScanQuery = await pool.query(
+    const cachedScanQuery = trustedBuiltinExpression ? { rows: [] } : await pool.query(
       `SELECT moderation_details FROM stored_files
        WHERE content_sha256=$1 AND file_type=$2
          AND moderation_status IN ('approved','rejected')
@@ -8063,18 +8116,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     // Content moderation scan
     let scanResult;
     if (trustedBuiltinExpression)
-      scanResult = {
-        blocked: false,
-        pending: false,
-        source: 'builtin-expression',
-        faces: [],
-        labels: [{ name: 'Betshuva original expression' }],
-        classification: {
-          category: 'nonHumanImages',
-          detectedCategories: ['nonHumanImages'],
-          uncertain: false,
-        },
-      };
+      scanResult = builtinExpressionResult();
     else if (cachedScan) {
       scanResult = { ...cachedScan, cacheHit: true, cacheMatch };
       await recordProviderCall({ provider: 'cache', model: null,
@@ -8250,7 +8292,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       }, req.ip);
       await pool.query(
         `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
-        [JSON.stringify({ reason, classification: scanResult?.classification || null,
+        [JSON.stringify({ ...scanResult, reason, classification: scanResult?.classification || null,
           safeSearch: scanResult?.safeSearch || null,
           strictModesty: scanResult?.strictModesty || null,
           localSafety: scanResult?.localSafety || null,
@@ -8475,11 +8517,10 @@ app.get('/api/groups/:id/filter-settings', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT COALESCE(g.content_filter, creator.content_filter) AS content_filter,
-              g.content_filter IS NULL AS inherited, gm.role,
-              COALESCE(gm.filter_override,
-                CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END,
-                member.content_filter) AS personal_filter
+      `SELECT betshuva_effective_filter(creator.content_filter, g.content_filter) AS content_filter,
+              g.content_filter IS NULL AS inherited, gm.role, creator.content_filter AS general_filter,
+              betshuva_effective_filter(member.content_filter, COALESCE(gm.filter_override,
+              CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END)) AS personal_filter
        FROM groups g JOIN group_members gm ON gm.group_id=g.id
        LEFT JOIN users creator ON creator.id=g.creator_id
        JOIN users member ON member.id=gm.user_id
@@ -8489,6 +8530,8 @@ app.get('/api/groups/:id/filter-settings', auth, async (req, res) => {
       return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
     const effectiveFilter = await getGroupContentFilter(pool, req.params.id);
     res.json({ filter: effectiveFilter,
+      generalFilter: normalizeContentFilter(result.rows[0].general_filter),
+      enforceGeneralFilter: result.rows[0].general_filter?.enforceGeneralFilter === true,
       personalFilter: normalizeContentFilter(result.rows[0].personal_filter),
       inherited: result.rows[0].inherited === true,
       canEdit: result.rows[0].role === 'admin' });
@@ -8547,7 +8590,7 @@ app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
        WHERE group_id=$1 AND status='member'`, [req.params.id]);
     for (const member of members.rows)
       relay(member.user_id, 'group:message', noticePayload);
-    res.json({ inherited, filter, notice: noticePayload });
+    res.json({ inherited, filter: effectiveFilter, notice: noticePayload });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8562,7 +8605,8 @@ app.put('/api/groups/:id/personal-filter', auth, async (req, res) => {
       [JSON.stringify(filter), req.params.id, req.user.id]);
     if (!updated.rows.length)
       return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
-    res.json({ filter });
+    const general = await pool.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
+    res.json({ filter: resolveScopedContentFilter(general.rows[0]?.content_filter, filter) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8592,7 +8636,7 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
     const pool = await getPool();
     const access = await pool.query(
       `SELECT gm.role, g.send_permission, g.name AS group_name,
-              COALESCE(g.content_filter, creator.content_filter) AS content_filter
+              betshuva_effective_filter(creator.content_filter, g.content_filter) AS content_filter
        FROM group_members gm JOIN groups g ON g.id=gm.group_id
        JOIN users creator ON creator.id=g.creator_id
        WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
@@ -8676,9 +8720,8 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const check = await pool.query(
-      `SELECT COALESCE(gm.filter_override,
-              CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END,
-              u.content_filter) AS content_filter FROM group_members gm
+      `SELECT betshuva_effective_filter(u.content_filter, COALESCE(gm.filter_override,
+              CASE WHEN gm.user_id=g.creator_id THEN g.content_filter END)) AS content_filter FROM group_members gm
        JOIN groups g ON g.id=gm.group_id
        JOIN users u ON u.id=gm.user_id
        WHERE gm.group_id=$1 AND gm.user_id=$2 AND gm.status='member'`,
@@ -9445,7 +9488,7 @@ app.get('/api/groups/:id/invitation-filter', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT COALESCE(g.content_filter, creator.content_filter) AS group_filter,
+      `SELECT betshuva_effective_filter(creator.content_filter, g.content_filter) AS group_filter,
               u.content_filter AS my_filter
        FROM group_members gm
        JOIN groups g ON g.id=gm.group_id
@@ -9457,7 +9500,8 @@ app.get('/api/groups/:id/invitation-filter', auth, async (req, res) => {
       return res.status(404).json({ error: 'לא קיימת הזמנה פעילה לקבוצה' });
     res.json({
       groupFilter: normalizeContentFilter(result.rows[0].group_filter),
-      myFilter: { ...NEW_ACCOUNT_CONTENT_FILTER },
+      myFilter: normalizeContentFilter(result.rows[0].my_filter),
+      enforceGeneralFilter: result.rows[0].my_filter?.enforceGeneralFilter === true,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -9483,8 +9527,8 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
       return res.status(403).json({ error: 'לא קיימת הזמנה פעילה לקבוצה' });
     }
 
-    const personalFilter = normalizeContentFilter(
-      req.body?.filter, NEW_ACCOUNT_CONTENT_FILTER);
+    const personalFilter = resolveScopedContentFilter(
+      pendingRow.rows[0].content_filter, req.body?.filter);
     // Only an existing invitation can become an active membership.
     await pool.query(
       `UPDATE group_members SET status='member', filter_override=$3
@@ -12819,7 +12863,8 @@ async function retryPendingScans() {
         // and finish delivery instead of trying to read or scan it again.
         if (row.stored_moderation_status === 'approved' &&
             row.prior_moderation_details &&
-            row.prior_moderation_details.pending !== true) {
+            row.prior_moderation_details.pending !== true &&
+            row.prior_moderation_details.classification?.uncertain !== true) {
           scanResult = row.prior_moderation_details;
           scanResult.cacheHit = true;
         } else {
@@ -12907,6 +12952,30 @@ async function retryPendingScans() {
           continue;
         }
 
+        // Re-evaluate the current policy after a delayed scan, for every media
+        // type. A setting may have changed while this file was in the queue.
+        let deliveryFilter = null;
+        let deliveryPermitted = true;
+        if (row.to_user_id && row.to_user_id !== SCAN_BOT_ID) {
+          const policy = await getEffectiveRecipientFilter(pool, row.to_user_id, row.user_id);
+          deliveryFilter = policy?.filter;
+          deliveryPermitted = policy?.isContact === true;
+        } else if (row.group_id) {
+          deliveryFilter = await getGroupContentFilter(pool, row.group_id);
+          deliveryPermitted = deliveryFilter != null;
+        }
+        if (!deliveryPermitted || (deliveryFilter &&
+            !contentAllowedByFilter(deliveryFilter, row.file_type, scanResult.classification))) {
+          const reason = 'הקובץ אינו מותר לפי הגדרות הסינון הנוכחיות של היעד';
+          await completePending(row.id, client => client.query(
+            `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+            [JSON.stringify({ ...scanResult, reason, destinationFilterRejected: true }), row.file_url]));
+          outcomePersisted = true;
+          relay(row.user_id, 'scan:rejected', { fileName: row.file_name, fileUrl: row.file_url,
+            groupId: row.group_id || null, toUserId: row.to_user_id || null, reason });
+          continue;
+        }
+
         if (row.file_type === 'image' && row.to_user_id && row.to_user_id !== SCAN_BOT_ID) {
           const policy = await getEffectiveRecipientFilter(pool, row.to_user_id, row.user_id);
           if (!policy?.isContact || !imageAllowedByFilter(policy.filter, scanResult.classification)) {
@@ -12920,7 +12989,7 @@ async function retryPendingScans() {
             await completePending(row.id, async client => {
               await client.query(
                 `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
-                [JSON.stringify({ reason, classification: scanResult.classification || null,
+                [JSON.stringify({ ...scanResult, reason, classification: scanResult.classification || null,
                   safeSearch: scanResult.safeSearch || null,
                   strictModesty: scanResult.strictModesty || null,
                   localSafety: scanResult.localSafety || null,
@@ -13004,6 +13073,37 @@ async function retryPendingScans() {
             }, row.file_url, scanResult, 'approved');
           });
           outcomePersisted = true;
+          continue;
+        }
+
+        if (row.file_type === 'audio' &&
+            [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(row.to_user_id)) {
+          const transcript = decryptAudioTranscript(scanResult);
+          const exchange = await completePending(row.id, async client => {
+            await client.query(`UPDATE stored_files SET moderation_status='approved', moderation_details=$1
+              WHERE public_url=$2`, [JSON.stringify(scanResult), row.file_url]);
+            if (!transcript?.trim()) {
+              const reply = await client.query(`INSERT INTO messages(sender_id,recipient_id,type,body)
+                VALUES($1,$2,'text',$3) RETURNING id,created_at`,
+              [row.to_user_id, row.user_id, 'לא זוהה דיבור ברור בהקלטה. נסה להקליט שוב.']);
+              return { reply: reply.rows[0], answer: 'לא זוהה דיבור ברור בהקלטה. נסה להקליט שוב.' };
+            }
+            return createSystemExchange(client, row.user_id, transcript.slice(0, 2000),
+              { type: 'audio', url: row.file_url, name: row.file_name }, row.to_user_id);
+          });
+          outcomePersisted = true;
+          if (exchange.sent) relay(row.user_id, 'chat:message', {
+            id: exchange.sent.id, fromUserId: row.user_id,
+            text: transcript.slice(0, 2000), fileUrl: row.file_url,
+            fileName: row.file_name, fileType: 'audio',
+            createdAt: exchange.sent.created_at, audioTranscript: transcript,
+            audioModerationStatus: 'approved',
+          });
+          relay(row.user_id, 'chat:message', { id: exchange.reply.id,
+            fromUserId: row.to_user_id, text: exchange.answer, fileType: 'text',
+            createdAt: exchange.reply.created_at });
+          sendPush(row.user_id, 'בתשובה', exchange.answer,
+            { type: 'chat', fromUserId: row.to_user_id });
           continue;
         }
 
