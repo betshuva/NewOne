@@ -6,6 +6,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { createApiRateLimit } = require('./api-rate-limit');
 const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const dns        = require('dns').promises;
@@ -62,11 +63,23 @@ const {
   resolveScopedContentFilter,
 } = require('./content-filter-policy');
 const { registerMessageReactions } = require('./message-reactions');
+const { CONVERSATION_SCHEMA, messageAfterConversationClear, personalMessageVisible, registerConversationHistory } = require('./conversation-history');
+const { createReceivedMediaService, personalizeReceivedMessages,
+  retainVisibleReceivedMessages, migrateReceivedMedia } = require('./received-media');
 const { resolveAssistantInput } = require('./assistant-input');
 const { imageClassificationOutcome } = require('./image-classification-outcome');
 const { generateGuideAnswer, localGuideAnswer } = require('./system-guide-ai');
+const { answerUserDataQuestion, executeGuideDataPlan } = require('./guide-user-data');
+const { registerGuideMessageSend } = require('./guide-message-send');
+const { guideFileId, loadOwnedGuideFile, readGuideFileBytes,
+  persistGuideSpreadsheetReply, registerGuideFileRoutes } = require('./guide-files');
 const { generateSafeInformationAnswer } = require('./safe-information-ai');
 const { searchMarketplace } = require('./ai-marketplace');
+const { loadMarketplaceImages } = require('./marketplace-images');
+const { initializePhonePrivacy, projectContactPhones, saveContactWithPhone,
+  getPhoneSharingStatus, applyPhoneSharingChoices, normalizePhone, phoneFingerprint,
+  rememberKnownContactPhones } = require('./contact-phone-privacy');
+const { registerContactPhoneRoutes, phoneSharingChoices, notifyPhoneSharingChange } = require('./contact-phone-routes');
 
 const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
 const UPLOAD_PUBLIC_BASE = '/betshuva-app/uploads';
@@ -74,6 +87,19 @@ const DRIVE_MEDIA_CACHE_ROOT = path.join(__dirname, '..', 'backups', 'drive-medi
 const DRIVE_MEDIA_CACHE_MAX_BYTES = Number(process.env.DRIVE_MEDIA_CACHE_MAX_BYTES) ||
   20 * 1024 * 1024 * 1024;
 const driveMediaLoads = new Map();
+
+async function recipientMediaMessage(pool, userId, message) {
+  if (!message.fileUrl && !message.file_url) return message;
+  try {
+    const personalized = await personalizeReceivedMessages(pool, userId, [message]);
+    return personalized[0] || message;
+  } catch (error) {
+    // Receipt retention is queued in the message transaction. A temporarily
+    // unavailable personal copy must not prevent delivery of its source.
+    console.error('[received-media:delivery]', error.message);
+    return message;
+  }
+}
 
 function driveMediaCacheTtl(accessCount) {
   if (accessCount >= 10) return 72 * 60 * 60 * 1000;
@@ -837,15 +863,16 @@ function createRateLimiter({ windowMs, max, message, keyGenerator,
       'RateLimit-Reset': String(Math.ceil(bucket.resetAt / 1000)),
     });
     if (bucket.count > max) {
-      res.set('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+      const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+      res.set('Retry-After', String(retryAfterSeconds));
       console.warn('[rate-limit]', JSON.stringify({
         limiter: name,
         method: req.method,
         path: req.originalUrl?.split('?')[0] || req.path,
         authenticated: Boolean(req.user?.id),
-        retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+        retryAfter: retryAfterSeconds,
       }));
-      return res.status(429).json({ error: message });
+      return res.status(429).json({ error: message, code: 'RATE_LIMITED', retryAfterSeconds });
     }
     next();
   };
@@ -867,12 +894,10 @@ function isValidIsraeliMobile(value) {
   return /^05\d{8}$/.test(normalizeIsraeliMobile(value));
 }
 
-const apiRateLimit = createRateLimiter({
-  name: 'api',
-  windowMs: 5 * 60 * 1000,
-  max: 600,
-  keyGenerator: clientIp,
-  message: 'בוצעו יותר מדי בקשות. נסה שוב בעוד מספר דקות',
+const apiRateLimit = createApiRateLimit({
+  createRateLimiter,
+  clientIp,
+  getSecret: () => JWT_SECRET,
 });
 const authRateLimit = createRateLimiter({
   windowMs: 15 * 60 * 1000,
@@ -2316,6 +2341,8 @@ async function migrateDatabase() {
         PRIMARY KEY (message_id, user_id)
       )`);
 
+    await pool.query(CONVERSATION_SCHEMA);
+
     // ── Group Members ──────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS group_members (
@@ -2601,6 +2628,7 @@ async function migrateDatabase() {
         created_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (blocker_id, blocked_id)
       )`);
+    await initializePhonePrivacy(pool);
 
     // ── User reports (Google Play UGC moderation) ─────────────────
     await pool.query(`
@@ -2620,6 +2648,13 @@ async function migrateDatabase() {
       )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS user_reports_status_created_idx
       ON user_reports(status, created_at DESC)`);
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS guide_message_sends (
+      source_message_id UUID PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      result JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
 
     // ── Open issues confirmed by users through Israel ────────────
     await pool.query(`
@@ -2751,6 +2786,7 @@ async function migrateDatabase() {
       RETURNS trigger AS $$
       BEGIN
         IF NEW.file_type='image'
+           AND NEW.context_type IS DISTINCT FROM 'received'
            AND NEW.moderation_details->'classificationStats' IS NOT NULL THEN
           INSERT INTO classification_shadow_jobs(stored_file_id)
           VALUES(NEW.id) ON CONFLICT(stored_file_id) DO NOTHING;
@@ -2765,6 +2801,7 @@ async function migrateDatabase() {
     await pool.query(`INSERT INTO classification_shadow_jobs(stored_file_id)
       SELECT id FROM stored_files
       WHERE file_type='image'
+        AND context_type IS DISTINCT FROM 'received'
         AND moderation_details->'classificationStats' IS NOT NULL
         AND content_purged_at IS NULL
       ON CONFLICT(stored_file_id) DO NOTHING`);
@@ -2979,6 +3016,7 @@ async function migrateDatabase() {
         played_at  TIMESTAMPTZ DEFAULT now()
       )`);
 
+    await migrateReceivedMedia(pool);
     console.log('Migration: all tables ready');
 
     // Load moderation lists from DB (if saved), else seed defaults
@@ -3081,20 +3119,39 @@ async function rejectedUploadContext(pool, userId, question) {
     matchingContext[0] || matchingType[0] || result.rows[0];
 }
 
-async function generateSystemAnswer(pool, userId, question) {
+async function generateSystemAnswer(pool, userId, question, currentMessageId = null) {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  // Keyword matching is an offline fallback only. With the model available,
+  // every request is interpreted with the conversation and selected fields.
+  if (!apiKey) {
+    const personalAnswer = await answerUserDataQuestion(pool, userId, question);
+    if (personalAnswer !== null) return personalAnswer;
+  }
   const uploadContext = await rejectedUploadContext(pool, userId, question);
   const contextText = uploadContext ? describeUploadDecision(uploadContext) : null;
-  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
   try {
     const history = await pool.query(
-      `SELECT sender_id,body FROM messages
-       WHERE (sender_id=$1 AND recipient_id=$2)
-          OR (sender_id=$2 AND recipient_id=$1)
+      `SELECT id,sender_id,body,created_at FROM messages m
+       WHERE ((sender_id=$1 AND recipient_id=$2)
+          OR (sender_id=$2 AND recipient_id=$1))
+         AND deleted_for_everyone=FALSE
+         AND NOT (sender_id=$1 AND deleted_for_sender=TRUE)
+         AND NOT EXISTS (SELECT 1 FROM message_user_deletions d
+           WHERE d.message_id=m.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('m', '$1')}
        ORDER BY created_at DESC LIMIT 8`, [userId, SYSTEM_USER_ID]);
     const messages = history.rows.reverse().map(row => ({
+      id: row.id,
       role: row.sender_id === SYSTEM_USER_ID ? 'assistant' : 'user',
       content: row.body || '',
+      createdAt: row.created_at,
     }));
+    if (!apiKey) {
+      const followupAnswer = await answerUserDataQuestion(pool, userId, question, {
+        history: messages.filter(message => message.id !== currentMessageId),
+      });
+      if (followupAnswer !== null) return followupAnswer;
+    }
     return await generateGuideAnswer({
       apiKey,
       model: process.env.AI_GUIDE_MODEL || process.env.OPENAI_VISION_MODEL ||
@@ -3103,10 +3160,15 @@ async function generateSystemAnswer(pool, userId, question) {
       question,
       history: messages,
       uploadContext: contextText,
+      resolveDataPlan: plan => executeGuideDataPlan(pool, userId, plan, {
+        exportTables: ({ answer, ...spreadsheet }) => ({ answer, spreadsheet }),
+      }),
+      resolveSpreadsheetRequest: table => ({ spreadsheet: { title: table.title,
+        tables: [table] } }),
     });
   } catch (error) {
     console.error('system AI:', error.message);
-    return localGuideAnswer(question, contextText);
+    return apiKey ? 'המדריך אינו זמין כרגע. נסה שוב בעוד רגע.' : localGuideAnswer(question, contextText);
   }
 }
 
@@ -3118,9 +3180,13 @@ async function generateSafeInformationSystemAnswer(pool, userId, question) {
         `SELECT (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
          FROM users WHERE id=$1`, [userId]),
       pool.query(
-        `SELECT sender_id,body FROM messages
-         WHERE (sender_id=$1 AND recipient_id=$2)
-            OR (sender_id=$2 AND recipient_id=$1)
+        `SELECT sender_id,body FROM messages m
+         WHERE ((sender_id=$1 AND recipient_id=$2)
+            OR (sender_id=$2 AND recipient_id=$1))
+           AND deleted_for_everyone=FALSE
+           AND NOT (sender_id=$1 AND deleted_for_sender=TRUE)
+           AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('m', '$1')}
          ORDER BY created_at DESC LIMIT 8`, [userId, SAFE_INFORMATION_USER_ID]),
     ]);
     const messages = history.rows.reverse().map(row => ({
@@ -3137,6 +3203,8 @@ async function generateSafeInformationSystemAnswer(pool, userId, question) {
       history: messages,
       isTeen: audience.rows[0]?.is_teen !== false,
       searchMarketplace: args => searchMarketplace(pool, userId, args),
+      loadMarketplaceImages: ids => loadMarketplaceImages(pool, userId, ids),
+      validateSource: async url => (await inspectExternalLink(url)).safe === true,
     });
   } catch (error) {
     console.error('safe information AI:', error.message);
@@ -3277,6 +3345,8 @@ async function sentMessagesPage(pool, userId, offset) {
      LEFT JOIN groups g ON g.id=m.group_id
      WHERE m.sender_id=$1 AND m.deleted_for_everyone=FALSE
        AND m.deleted_for_sender=FALSE
+       AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('m', '$1')}
        AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3,$4)
      ORDER BY m.created_at DESC OFFSET $5 LIMIT 6`,
     [userId, SYSTEM_USER_ID, SCAN_BOT_ID, SAFE_INFORMATION_USER_ID, offset]);
@@ -3340,10 +3410,26 @@ async function createSystemExchange(pool, userId, question, file = null,
      VALUES($1,$2,$3,$4,$5,$6) RETURNING id,created_at`,
     [userId, assistantId, file?.type || 'text', safeQuestion,
      file?.url || null, file?.name || null]);
-  const answer = redactHarmfulLanguageForDisplay(
-    assistantId === SAFE_INFORMATION_USER_ID
+  const generated = assistantId === SAFE_INFORMATION_USER_ID
       ? await generateSafeInformationSystemAnswer(pool, userId, question)
-      : await generateSystemAnswer(pool, userId, question));
+      : await generateSystemAnswer(pool, userId, question, sent.rows[0].id);
+  if (generated?.spreadsheet && assistantId === SYSTEM_USER_ID) {
+    try {
+      const exported = await persistGuideSpreadsheetReply({ pool, userId, assistantId,
+        sourceMessageId: sent.rows[0].id, spreadsheet: generated.spreadsheet,
+        answer: generated.answer || '', uploadRoot: UPLOAD_ROOT,
+        sanitizeText: redactHarmfulLanguageForDisplay });
+      return { sent: sent.rows[0], ...exported };
+    } catch (error) {
+      console.error('guide spreadsheet:', error.code || error.name);
+      const answer = error.name === 'SpreadsheetValidationError' ? error.message
+        : 'לא ניתן ליצור ולשמור את קובץ ה־Excel כרגע. נסה שוב בעוד רגע.';
+      const reply = await pool.query(`INSERT INTO messages(sender_id,recipient_id,type,body)
+        VALUES($1,$2,'text',$3) RETURNING id,created_at`, [assistantId, userId, answer]);
+      return { sent: sent.rows[0], reply: reply.rows[0], answer };
+    }
+  }
+  const answer = redactHarmfulLanguageForDisplay(generated);
   const reply = await pool.query(
     `INSERT INTO messages(sender_id,recipient_id,type,body)
      VALUES($1,$2,'text',$3) RETURNING id,created_at`,
@@ -3365,6 +3451,7 @@ const allowedOrigins = new Set((process.env.CORS_ORIGINS ||
   'https://betshuva.com,https://www.betshuva.com')
   .split(',').map(value => value.trim()).filter(Boolean));
 const corsOptions = {
+  exposedHeaders: ['Retry-After', 'RateLimit-Limit', 'RateLimit-Remaining', 'RateLimit-Reset'],
   origin(origin, callback) {
     if (!origin || allowedOrigins.has(origin)) return callback(null, true);
     callback(new Error('Origin is not allowed'));
@@ -3420,6 +3507,9 @@ const serveReleasedDriveMedia = async (req, res, next) => {
   if (!['GET', 'HEAD'].includes(req.method)) return next();
   try {
     const relativePath = path.normalize(decodeURIComponent(req.path)).replace(/^[/\\]+/, '');
+    // Generated personal spreadsheets are delivered only by the owner-checked
+    // guide-files endpoint, including after their bytes have moved to Drive.
+    if (relativePath.split(path.sep).includes('.guide-files')) return res.status(404).end();
     const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
     if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
       return res.status(400).end();
@@ -3697,11 +3787,20 @@ async function auth(req, res, next) {
 }
 
 // Allows a saved session to finish phone setup before entering the app.
+registerGuideFileRoutes(app, { auth, getPool, uploadRoot: UPLOAD_ROOT, secret: JWT_SECRET });
+
 app.get('/api/registration-status', async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
+  let tokenUser;
   try {
-    const tokenUser = jwt.verify(token, JWT_SECRET);
+    tokenUser = jwt.verify(token, JWT_SECRET);
+    if (!tokenUser || typeof tokenUser.id !== 'string' || tokenUser.purpose != null)
+      return res.status(401).json({ error: 'טוקן לא תקין' });
+  } catch (_) {
+    return res.status(401).json({ error: 'טוקן לא תקין' });
+  }
+  try {
     const pool = await getPool();
     const result = await pool.query(
       'SELECT name,gender,phone,email_verified,phone_verified,birth_date FROM users WHERE id=$1', [tokenUser.id]);
@@ -3716,7 +3815,8 @@ app.get('/api/registration-status', async (req, res) => {
       registrationIncomplete: user.name === 'משתמש' && user.gender == null,
     });
   } catch (_) {
-    res.status(401).json({ error: 'טוקן לא תקין' });
+    res.status(503).json({ error: 'לא ניתן לבדוק את החשבון כרגע. נסה שוב בעוד רגע',
+      code: 'REGISTRATION_STATUS_UNAVAILABLE' });
   }
 });
 
@@ -3880,9 +3980,17 @@ async function claimAppInvite(userId, inviteId = null) {
       return null;
     }
     await client.query(
-      `INSERT INTO user_contacts(owner_id,contact_id)
-       VALUES($1,$2),($2,$1) ON CONFLICT DO NOTHING`,
+      `INSERT INTO user_contacts(owner_id,contact_id,contact_source)
+       VALUES($1,$2,'in_app'),($2,$1,'in_app') ON CONFLICT DO NOTHING`,
       [invite.invited_by, userId]);
+    // The invitation itself contains a number supplied before this account
+    // joined. Record that exact knowledge only for its inviter, never grant
+    // the joining user access to the inviter's phone in the other direction.
+    if (normalizePhone(invite.phone) && normalizePhone(invite.phone) === normalizePhone(user.phone)) {
+      await client.query(`UPDATE user_contacts SET contact_source='phone_manual',known_phone_hash=$3
+        WHERE owner_id=$1 AND contact_id=$2`,
+        [invite.invited_by, userId, phoneFingerprint(invite.phone)]);
+    }
     if (!user.is_teen) {
       await client.query(
         `INSERT INTO group_members(group_id,user_id,status,added_by,pending_since)
@@ -4124,10 +4232,6 @@ io.on('connection', async (socket) => {
         code: 'CHAT_CONTENT_BLOCKED' });
       return;
     }
-    if (toUserId === SAFE_INFORMATION_USER_ID && extractMessageUrls(text).length) {
-      socket.emit('message:rejected', { toUserId, reason: 'בדיקת קישורים חיצוניים בעוזר מושבתת זמנית. אפשר לשאול על מודעות בתשובה.' });
-      return;
-    }
     if (text && !normalizedStickerId) {
       try { await verifyMessageLinks(text); } catch (error) {
         console.warn('Blocked private link:', error.message);
@@ -4148,7 +4252,9 @@ io.on('connection', async (socket) => {
           id: exchange.reply.id, fromUserId: toUserId,
           fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
             : SAFE_INFORMATION_USER_NAME, text: exchange.answer,
-          fileType: 'text',
+          fileType: exchange.file?.type || 'text',
+          fileUrl: exchange.file?.url, fileName: exchange.file?.name,
+          fileSize: exchange.file?.size,
           createdAt: exchange.reply.created_at,
         });
         return;
@@ -4242,12 +4348,12 @@ io.on('connection', async (socket) => {
            WHERE message_status.status != 'read'`, [row.id, toUserId]);
         socket.emit('message:delivered', { id: row.id });
       }
-      relay(toUserId, 'chat:message', {
+      relay(toUserId, 'chat:message', await recipientMediaMessage(pool, toUserId, {
         id: row.id, fromUserId: socket.user.id, fromName: socket.user.name,
         text, replyToId: replyToId || null, createdAt: row.created_at,
         fileUrl, fileName, fileType: msgType, stickerId: normalizedStickerId,
         classification: await getStoredImageClassification(pool, fileUrl),
-      });
+      }));
       // שליפת שם הנמען לרישום קריא בפעילות
       const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
       const toName = recip.rows[0]?.name || toUserId;
@@ -4289,10 +4395,6 @@ io.on('connection', async (socket) => {
       socket.emit('message:rejected', { groupId, clientMessageId,
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
         code: 'CHAT_CONTENT_BLOCKED' });
-      return;
-    }
-    if (toUserId === SAFE_INFORMATION_USER_ID && extractMessageUrls(text).length) {
-      socket.emit('message:rejected', { toUserId, reason: 'בדיקת קישורים חיצוניים בעוזר מושבתת זמנית. אפשר לשאול על מודעות בתשובה.' });
       return;
     }
     if (text && !normalizedStickerId) {
@@ -4368,7 +4470,8 @@ io.on('connection', async (socket) => {
       const recipientGroupMessage = { ...outgoingGroupMessage };
       delete recipientGroupMessage.deliverySummary;
       for (const recipient of deliveryPlan.delivered)
-        relay(recipient.id, 'group:message', recipientGroupMessage);
+        relay(recipient.id, 'group:message',
+          await recipientMediaMessage(pool, recipient.id, recipientGroupMessage));
       logActivity(socket.user.id, fileUrl ? 'send_file' : 'send_group_message',
         { groupId, messageId: row.id, fileName: fileName || null });
       // Push reaches backgrounded apps as well as fully offline devices.
@@ -4829,6 +4932,7 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
     const result = await pool.query(
       `SELECT u.id, u.name, u.profile_pic_url, u.city, u.phone, u.email,
               c.filter_override, c.pinned_at,
+              (COALESCE(cs.hidden,FALSE) AND last_msg.id IS NULL) AS conversation_hidden,
               betshuva_effective_filter(u.content_filter,
                        (SELECT recipient_contact.filter_override FROM user_contacts recipient_contact
                         WHERE recipient_contact.owner_id=u.id AND recipient_contact.contact_id=$1)) AS receiving_filter,
@@ -4842,8 +4946,10 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
        FROM users u
        LEFT JOIN user_contacts c
          ON c.owner_id=$1 AND c.contact_id=u.id
+       LEFT JOIN conversation_user_state cs
+         ON cs.user_id=$1 AND cs.kind='chat' AND cs.target_id=u.id
        LEFT JOIN LATERAL (
-         SELECT m.body, m.type, m.created_at, m.sender_id, ms.status
+         SELECT m.id, m.body, m.type, m.created_at, m.sender_id, ms.status
          FROM messages m
          LEFT JOIN message_status ms ON ms.message_id=m.id
            AND ms.user_id=CASE WHEN m.sender_id=$1 THEN u.id ELSE $1 END
@@ -4852,15 +4958,21 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
            AND m.group_id IS NULL
            AND m.deleted_for_everyone = FALSE
            AND NOT (m.sender_id = $1 AND m.deleted_for_sender = TRUE)
+           AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('m', '$1')}
          ORDER BY m.created_at DESC
          LIMIT 1
        ) last_msg ON TRUE
        WHERE u.id <> $1 AND u.id <> $2
        AND (
-         c.owner_id IS NOT NULL OR EXISTS (
+         c.owner_id IS NOT NULL OR cs.user_id IS NOT NULL OR EXISTS (
            SELECT 1 FROM messages conversation_message
            WHERE conversation_message.group_id IS NULL
              AND conversation_message.deleted_for_everyone=FALSE
+             AND NOT (conversation_message.sender_id=$1 AND conversation_message.deleted_for_sender=TRUE)
+             AND NOT EXISTS (SELECT 1 FROM message_user_deletions d
+               WHERE d.message_id=conversation_message.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('conversation_message', '$1')}
              AND ((conversation_message.sender_id=$1 AND conversation_message.recipient_id=u.id)
                OR (conversation_message.sender_id=u.id AND conversation_message.recipient_id=$1))
          )
@@ -4872,16 +4984,22 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
                 last_msg.created_at DESC NULLS LAST, u.name`,
       [req.user.id, SCAN_BOT_ID]);
     const self = await pool.query(`SELECT u.id,u.profile_pic_url,u.content_filter AS receiving_filter,
+      (COALESCE(cs.hidden,FALSE) AND last_msg.id IS NULL) AS conversation_hidden,
       last_msg.body AS last_message,last_msg.type AS last_message_type,
       last_msg.created_at AS last_message_at,TRUE AS last_message_is_mine,'read' AS last_message_status
-      FROM users u LEFT JOIN LATERAL (
-        SELECT m.body,m.type,m.created_at FROM messages m
+      FROM users u LEFT JOIN conversation_user_state cs
+        ON cs.user_id=u.id AND cs.kind='chat' AND cs.target_id=u.id
+      LEFT JOIN LATERAL (
+        SELECT m.id,m.body,m.type,m.created_at FROM messages m
         WHERE m.sender_id=u.id AND m.recipient_id=u.id AND m.group_id IS NULL
           AND m.deleted_for_everyone=FALSE AND COALESCE(m.deleted_for_sender,FALSE)=FALSE
           AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=u.id)
+        AND ${messageAfterConversationClear('m', 'u.id')}
         ORDER BY m.created_at DESC LIMIT 1
       ) last_msg ON TRUE WHERE u.id=$1`, [req.user.id]);
-    res.json([...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...result.rows]);
+    const contacts = await projectContactPhones(pool, req.user.id, result.rows);
+    res.set('Cache-Control', 'no-store');
+    res.json([...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...contacts]);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4912,7 +5030,8 @@ app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
         SYSTEM_USER_ID,
         GOOGLE_PLAY_REVIEWER_ID,
       ]);
-    res.json(result.rows);
+    res.set('Cache-Control', 'no-store');
+    res.json(await projectContactPhones(pool, req.user.id, result.rows));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -4921,7 +5040,9 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
   if (!q) return res.json([]);
   try {
     const pool = await getPool();
-    const digits = q.replace(/\D/g, '');
+    // A partial phone query must not disclose an otherwise hidden number one
+    // digit at a time. Exact matching only uses a number the caller supplied.
+    const digits = normalizePhone(q);
     const result = await pool.query(
       `SELECT u.id, u.name, u.email, u.phone, u.profile_pic_url, u.city,
               EXISTS(SELECT 1 FROM user_contacts c
@@ -4942,41 +5063,41 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
            u.birth_date <= CURRENT_DATE - INTERVAL '18 years'
            OR EXISTS (SELECT 1 FROM user_contacts c WHERE c.owner_id=$1 AND c.contact_id=u.id)
          )
-         AND (u.name ILIKE $2 OR u.email ILIKE $2 OR ($3 <> '' AND u.phone LIKE $4))
+         AND (u.name ILIKE $2 OR u.email ILIKE $2 OR ($3 <> '' AND u.phone = $4))
        ORDER BY u.name LIMIT 30`,
       [
         req.user.id,
         `%${q}%`,
         digits,
-        `%${digits}%`,
+        digits,
         SCAN_BOT_ID,
         SYSTEM_USER_ID,
         GOOGLE_PLAY_REVIEWER_ID,
       ]);
-    res.json(result.rows);
+    res.set('Cache-Control', 'no-store');
+    res.json(await projectContactPhones(pool, req.user.id, result.rows,
+      { knownPhones: digits ? [digits] : [] }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/contacts/save/:userId', authWithDbCheck, async (req, res) => {
+app.post('/api/contacts/save/:userId', authWithDbCheck, searchRateLimit, async (req, res) => {
   if (req.params.userId === req.user.id)
     return res.status(400).json({ error: 'לא ניתן לשמור את עצמך' });
   if (req.params.userId === SCAN_BOT_ID)
     return res.status(404).json({ error: 'משתמש לא נמצא' });
   try {
     const pool = await getPool();
-    const exists = await pool.query(
-      `SELECT 1 FROM users
-       WHERE id=$1
-         AND NOT (name = 'משתמש' AND gender IS NULL)
-         AND (email_verified=TRUE OR phone_verified=TRUE)`,
-      [req.params.userId]);
-    if (!exists.rows.length) return res.status(404).json({ error: 'משתמש לא נמצא' });
-    await pool.query(
-      `INSERT INTO user_contacts(owner_id, contact_id) VALUES($1,$2)
-       ON CONFLICT DO NOTHING`, [req.user.id, req.params.userId]);
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const contact = await saveContactWithPhone(pool, req.user.id, req.params.userId, {
+      source: req.body?.source || 'in_app', knownPhone: req.body?.knownPhone,
+    });
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, ...contact });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code }); }
 });
+
+registerContactPhoneRoutes(app, { auth: authWithDbCheck, rateLimit: searchRateLimit,
+  getPool, notify: (actorId, targetId, status) => notifyPhoneSharingChange(
+    io, onlineUsers, actorId, targetId, status) });
 
 app.put('/api/pins/:type/:targetId', authWithDbCheck, async (req, res) => {
   const pinnedAt = req.body.pinned === true ? new Date() : null;
@@ -5046,6 +5167,7 @@ app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
     const inherited = normalizeContentFilter(result.rows[0].owner_filter);
     const override = result.rows[0].filter_override;
+    res.set('Cache-Control', 'no-store');
     res.json({
       inherited: !override,
       filter: resolveScopedContentFilter(result.rows[0].owner_filter, override),
@@ -5053,6 +5175,7 @@ app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
       enforceGeneralFilter: result.rows[0].owner_filter?.enforceGeneralFilter === true,
       requiresChoice: result.rows[0].filter_choice_confirmed !== true &&
         result.rows[0].has_sent_message !== true,
+      phoneSharing: await getPhoneSharingStatus(pool, req.user.id, req.params.userId),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5101,11 +5224,13 @@ app.get('/api/contacts/:userId/filter-comparison', authWithDbCheck, async (req, 
       : null;
     if (counterpartFilterAvailable && !recipient)
       return res.status(404).json({ error: 'הנמען לא נמצא' });
+    res.set('Cache-Control', 'no-store');
     res.json({
       counterpartFilterAvailable,
       recipientFilter: recipient?.filter || null,
       personalFilter: resolveScopedContentFilter(
         own.rows[0].owner_filter, own.rows[0].filter_override),
+      phoneSharing: await getPhoneSharingStatus(pool, req.user.id, req.params.userId),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5149,14 +5274,19 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     const entry = await client.query(
       `INSERT INTO contact_filter_chat_entries(owner_id,contact_id,filter)
        VALUES($1,$2,$3)
-       ON CONFLICT(owner_id,contact_id) DO UPDATE SET filter=EXCLUDED.filter
+       ON CONFLICT(owner_id,contact_id) DO UPDATE SET filter=EXCLUDED.filter,created_at=now()
        RETURNING id,owner_id,contact_id,filter,created_at`,
       [req.user.id, req.params.userId, JSON.stringify(filter)]);
+    const phoneSharing = await applyPhoneSharingChoices(client, req.user.id,
+      req.params.userId, phoneSharingChoices(req.body));
     await client.query('COMMIT');
+    notifyPhoneSharingChange(io, onlineUsers, req.user.id, req.params.userId, phoneSharing);
     const saved = entry.rows[0];
+    res.set('Cache-Control', 'no-store');
     res.json({
       inherited,
       filter,
+      phoneSharing,
       privateEntry: {
         id: `private_filter_${saved.id}`,
         sender_id: saved.owner_id,
@@ -5169,25 +5299,20 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     });
   } catch (e) {
     if (client) await client.query('ROLLBACK').catch(() => {});
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message, code: e.code });
   } finally {
     client?.release();
   }
 });
 
 // ── Contacts: match phone numbers with registered users ───────────
-app.post('/api/contacts/match', auth, async (req, res) => {
+app.post('/api/contacts/match', authWithDbCheck, searchRateLimit, async (req, res) => {
   const phones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const emails = Array.isArray(req.body.emails) ? req.body.emails : [];
 
   // Normalize: keep digits only, handle Israeli prefix (972 → 0)
-  const normalize = (p) => {
-    let d = p.replace(/\D/g, '');
-    if (d.startsWith('972') && d.length > 10) d = '0' + d.slice(3);
-    return d;
-  };
-  const normalized = [...new Set(phones.map(normalize).filter(Boolean))];
-  const normalizedEmails = [...new Set(emails.map(e => String(e).trim().toLowerCase()).filter(e => e.includes('@')))];
+  const normalized = [...new Set(phones.slice(0, 2000).map(normalizePhone).filter(Boolean))];
+  const normalizedEmails = [...new Set(emails.slice(0, 2000).map(e => String(e).trim().toLowerCase()).filter(e => e.includes('@')))];
   if (normalized.length === 0 && normalizedEmails.length === 0) return res.json([]);
 
   try {
@@ -5204,7 +5329,12 @@ app.post('/api/contacts/match', auth, async (req, res) => {
          AND id NOT IN (SELECT blocked_id FROM blocked_users WHERE blocker_id = $1)`,
       [req.user.id, normalized, normalizedEmails]
     );
-    res.json(result.rows);
+    await rememberKnownContactPhones(pool, req.user.id, normalized, {
+      source: req.body?.source === 'phone_manual' ? 'phone_manual' : 'phone_import',
+    });
+    res.set('Cache-Control', 'no-store');
+    res.json(await projectContactPhones(pool, req.user.id, result.rows,
+      { knownPhones: normalized }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -5224,6 +5354,7 @@ app.get('/api/messages/unread', auth, async (req, res) => {
           SELECT 1 FROM message_user_deletions mud
           WHERE mud.message_id=m.id AND mud.user_id=$1
         )
+        AND ${messageAfterConversationClear('m', '$1')}
         AND (ms.status IS NULL OR ms.status != 'read')
       GROUP BY m.sender_id
     `, [req.user.id, SCAN_BOT_ID]);
@@ -5254,6 +5385,7 @@ app.get('/api/groups/unread', auth, async (req, res) => {
           SELECT 1 FROM message_user_deletions mud
           WHERE mud.message_id=m.id AND mud.user_id=$1
         )
+        AND ${messageAfterConversationClear('m', '$1')}
         AND m.created_at >= gm.joined_at
         AND (ms.status IS NULL OR ms.status != 'read')
       GROUP BY m.group_id
@@ -5299,6 +5431,8 @@ app.get('/api/messages/recent-sent', auth, async (req, res) => {
        LEFT JOIN groups g ON g.id=m.group_id
        WHERE m.sender_id=$1 AND m.deleted_for_everyone=FALSE
          AND m.deleted_for_sender=FALSE
+       AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('m', '$1')}
          AND COALESCE(m.recipient_id::text,'') NOT IN ($2,$3,$4)
        ORDER BY m.created_at DESC LIMIT $5`,
       [req.user.id, SYSTEM_USER_ID, SCAN_BOT_ID,
@@ -5341,7 +5475,9 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.moderation_status AS audio_moderation_status,
         sf.moderation_details AS _moderation_details
       FROM messages m
-      LEFT JOIN messages r  ON m.reply_to_id = r.id
+      LEFT JOIN messages r ON m.reply_to_id=r.id AND r.deleted_for_everyone=FALSE
+        AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=r.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('r', '$1')}
       LEFT JOIN users ru    ON r.sender_id = ru.id
       LEFT JOIN users receipt_user ON receipt_user.id=$2
       LEFT JOIN message_status ms ON ms.message_id = m.id
@@ -5352,6 +5488,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
           SELECT 1 FROM message_user_deletions mud
           WHERE mud.message_id=m.id AND mud.user_id=$1
         )
+        AND ${messageAfterConversationClear('m', '$1')}
         AND (
           (m.sender_id = $1 AND m.recipient_id = $2 AND m.deleted_for_sender = FALSE)
           OR
@@ -5398,6 +5535,9 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       FROM stored_files sf
       WHERE sf.user_id=$1 AND sf.context_type='chat' AND sf.context_id=$2
         AND sf.content_purged_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
+          WHERE cs.user_id=$1 AND cs.kind='chat' AND cs.target_id=$2
+            AND sf.created_at<=cs.cleared_at)
         AND (sf.moderation_status IN ('pending','rejected')
           OR (sf.moderation_status='approved'
             AND sf.moderation_details->>'destinationFilterRejected'='true'))
@@ -5421,6 +5561,9 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       FROM message_requests mr
       LEFT JOIN stored_files sf ON sf.public_url=mr.file_url
       WHERE mr.sender_id=$1 AND mr.recipient_id=$2
+        AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
+          WHERE cs.user_id=$1 AND cs.kind='chat' AND cs.target_id=$2
+            AND mr.created_at<=cs.cleared_at)
         ${before ? 'AND mr.created_at < $3' : ''}
       ORDER BY mr.created_at DESC
       LIMIT 50
@@ -5438,12 +5581,17 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         'private' AS message_status
       FROM contact_filter_chat_entries entry
       WHERE entry.owner_id=$1 AND entry.contact_id=$2
+        AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
+          WHERE cs.user_id=$1 AND cs.kind='chat' AND cs.target_id=$2
+            AND entry.created_at<=cs.cleared_at)
         ${before ? 'AND entry.created_at < $3' : ''}
       ORDER BY entry.created_at DESC
       LIMIT 50
     `, scanParams);
+    await retainVisibleReceivedMessages(pool, myId, result.rows);
+    const personalMessages = await personalizeReceivedMessages(pool, myId, result.rows);
     const combined = [
-      ...result.rows,
+      ...personalMessages,
       ...scans.rows,
       ...contactRequests.rows,
       ...privateFilters.rows,
@@ -5464,7 +5612,8 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
 // ── Messages: send (HTTP fallback / always-on path) ───────────────
 // משכפל את הלוגיקה של ה-socket handler 'chat:message', כדי שהודעות
 // יישמרו גם כש-socket לא מחובר (למשל כשפותחים צ'אט ממסך מודעה).
-app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
+async function sendPrivateHttpMessage(req, res) {
+  const effect = callback => req.messageEffects ? req.messageEffects.push(callback) : callback();
   const senderId = req.user.id;
   let { text } = req.body || {};
   const { toUserId, replyToId, fileUrl, fileName, fileType, listingId, stickerId } = req.body || {};
@@ -5485,9 +5634,6 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
       code: 'CHAT_CONTENT_BLOCKED',
     });
   }
-  if (toUserId === SAFE_INFORMATION_USER_ID && extractMessageUrls(text).length) {
-    return res.status(422).json({ error: 'בדיקת קישורים חיצוניים בעוזר מושבתת זמנית. אפשר לשאול על מודעות בתשובה.', code: 'AI_EXTERNAL_LOOKUP_PAUSED' });
-  }
   if (text && !normalizedStickerId) {
     try { await verifyMessageLinks(text); } catch (error) {
       console.warn('Blocked private HTTP link:', error.message);
@@ -5495,7 +5641,7 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
     }
   }
   try {
-    const pool = await getPool();
+    const pool = req.messagePool || await getPool();
     if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
       let input;
       try { input = await resolveSystemInput(pool, senderId, toUserId,
@@ -5508,12 +5654,16 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
         id: exchange.reply.id, fromUserId: toUserId,
         fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
           : SAFE_INFORMATION_USER_NAME, text: exchange.answer,
-        fileType: 'text',
+        fileType: exchange.file?.type || 'text',
+        fileUrl: exchange.file?.url, fileName: exchange.file?.name,
+        fileSize: exchange.file?.size,
         createdAt: exchange.reply.created_at,
       });
       return res.json({ id: exchange.sent.id,
         createdAt: exchange.sent.created_at, status: 'read',
-        systemReply: { id: exchange.reply.id, text: exchange.answer,
+        systemReply: { id: exchange.reply.id, text: exchange.answer, fromUserId: toUserId,
+          fileType: exchange.file?.type || 'text', fileUrl: exchange.file?.url,
+          fileName: exchange.file?.name, fileSize: exchange.file?.size,
           createdAt: exchange.reply.created_at } });
     }
     if (!await teenContactAllowed(pool, senderId, toUserId)) {
@@ -5569,15 +5719,15 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
         [senderId, toUserId, text || null, type, fileUrl || null, fileName || null]);
       const requestRow = request.rows[0];
       const sid = onlineUsers.get(toUserId);
-      if (sid) io.to(sid).emit('message:request', {
+      if (sid) effect(() => io.to(sid).emit('message:request', {
         id: requestRow.id, senderId, senderName: req.user.name,
         createdAt: requestRow.created_at,
-      });
-      sendPush(toUserId, 'בקשת חברות חדשה',
+      }));
+      effect(() => sendPush(toUserId, 'בקשת חברות חדשה',
         fileUrl
           ? `${req.user.name} רוצה להוסיף אותך כחבר ולשלוח לך קובץ`
           : `${req.user.name} רוצה להוסיף אותך כחבר ולשלוח לך הודעה`,
-        { type: 'message_request', senderId });
+        { type: 'message_request', senderId }));
       return res.json({ requestPending: true, id: requestRow.id });
     }
 
@@ -5616,21 +5766,22 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
          VALUES ($1, $2, 'delivered')
          ON CONFLICT (message_id, user_id) DO UPDATE SET status='delivered', updated_at=now()
          WHERE message_status.status != 'read'`, [row.id, toUserId]);
-      io.to(sid).emit('chat:message', {
+      const recipientMessage = await recipientMediaMessage(pool, toUserId, {
         id: row.id, fromUserId: senderId, fromName: req.user.name,
         text, replyToId: replyToId || null, replyBody, createdAt: row.created_at,
         fileUrl, fileName, fileType: type, stickerId: normalizedStickerId, classification,
       });
+      effect(() => io.to(sid).emit('chat:message', recipientMessage));
     }
 
     const recip = await pool.query('SELECT name FROM users WHERE id=$1', [toUserId]);
     const toName = recip.rows[0]?.name || toUserId;
-    logActivity(senderId, fileUrl ? 'send_file' : 'send_message',
-      { to: toName, toUserId, messageId: row.id, type, fileName: fileName || null });
+    effect(() => logActivity(senderId, fileUrl ? 'send_file' : 'send_message',
+      { to: toName, toUserId, messageId: row.id, type, fileName: fileName || null }));
 
     const pushBody = fileUrl ? `📎 ${fileName || 'קובץ'}` : (text || '');
-    sendPush(toUserId, req.user.name, pushBody,
-      { type: 'chat', fromUserId: senderId });
+    effect(() => sendPush(toUserId, req.user.name, pushBody,
+      { type: 'chat', fromUserId: senderId }));
 
     res.json({ id: row.id, createdAt: row.created_at,
       status: sid ? 'delivered' : 'sent', classification,
@@ -5639,7 +5790,11 @@ app.post('/api/messages', auth, messageRateLimit, async (req, res) => {
     console.error('POST /api/messages:', e.message);
     res.status(500).json({ error: e.message });
   }
-});
+}
+app.post('/api/messages', auth, messageRateLimit, sendPrivateHttpMessage);
+registerGuideMessageSend(app, { auth, rateLimit: messageRateLimit, getPool,
+  systemUserId: SYSTEM_USER_ID, safeInformationUserId: SAFE_INFORMATION_USER_ID, scanBotId: SCAN_BOT_ID,
+  sendMessage: sendPrivateHttpMessage });
 
 app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
   try {
@@ -5658,7 +5813,11 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
        WHERE mr.recipient_id=$1
          AND mr.sender_id<>mr.recipient_id
        ORDER BY mr.created_at`, [req.user.id]);
-    res.json(result.rows);
+    const sharing = await projectContactPhones(pool, req.user.id,
+      result.rows.map(row => ({ id: row.sender_id })));
+    const statuses = new Map(sharing.map(({ id, ...status }) => [id, status]));
+    res.set('Cache-Control', 'no-store');
+    res.json(result.rows.map(row => ({ ...row, phoneSharing: statuses.get(row.sender_id) })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -5676,8 +5835,12 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
     }
     const request = found.rows[0];
     await client.query(
-      `INSERT INTO user_contacts(owner_id, contact_id) VALUES($1,$2),($2,$1)
-       ON CONFLICT DO NOTHING`, [req.user.id, request.sender_id]);
+      `INSERT INTO user_contacts(owner_id, contact_id, contact_source)
+       VALUES($1,$2,'in_app'),($2,$1,'in_app')
+       ON CONFLICT(owner_id,contact_id) DO UPDATE SET
+         contact_source=CASE WHEN user_contacts.contact_source='unknown'
+           THEN EXCLUDED.contact_source ELSE user_contacts.contact_source END`,
+      [req.user.id, request.sender_id]);
     const general = await client.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
     const filter = resolveScopedContentFilter(general.rows[0]?.content_filter, req.body?.filter);
     if (general.rows[0]?.content_filter?.enforceGeneralFilter === true) {
@@ -5693,6 +5856,8 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
       `UPDATE user_contacts SET filter_override=$1, filter_choice_confirmed=TRUE
        WHERE owner_id=$2 AND contact_id=$3`,
       [JSON.stringify(filter), req.user.id, request.sender_id]);
+    const phoneSharing = await applyPhoneSharingChoices(client, req.user.id,
+      request.sender_id, phoneSharingChoices(req.body));
     const saved = await client.query(
       `INSERT INTO messages(sender_id, recipient_id, body, type, file_url, file_name)
        SELECT sender_id,recipient_id,body,type,file_url,file_name
@@ -5705,21 +5870,26 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
       'DELETE FROM message_requests WHERE sender_id=$1 AND recipient_id=$2',
       [request.sender_id, req.user.id]);
     await client.query('COMMIT');
+    notifyPhoneSharingChange(io, onlineUsers, req.user.id, request.sender_id, phoneSharing);
     const recipientSid = onlineUsers.get(req.user.id);
-    if (recipientSid) saved.rows.forEach(row => io.to(recipientSid).emit('chat:message', {
-      id: row.id, fromUserId: row.sender_id,
-      text: row.body, createdAt: row.created_at,
-      fileUrl: row.file_url, fileName: row.file_name,
-      fileType: row.type,
-    }));
+    if (recipientSid) {
+      for (const row of saved.rows) io.to(recipientSid).emit('chat:message',
+        await recipientMediaMessage(pool, req.user.id, {
+          id: row.id, fromUserId: row.sender_id,
+          text: row.body, createdAt: row.created_at,
+          fileUrl: row.file_url, fileName: row.file_name,
+          fileType: row.type,
+        }));
+    }
     const senderSid = onlineUsers.get(request.sender_id);
     if (senderSid) io.to(senderSid).emit('message:request-accepted', {
       byUserId: req.user.id, messageIds: saved.rows.map(row => row.id),
     });
-    res.json({ ok: true, messageIds: saved.rows.map(row => row.id) });
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, messageIds: saved.rows.map(row => row.id), phoneSharing });
   } catch (e) {
     await client.query('ROLLBACK');
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message, code: e.code });
   } finally { client.release(); }
 });
 
@@ -5974,6 +6144,46 @@ app.get('/api/profile', auth, async (req, res) => {
 // ── Personal media library ───────────────────────────────────────
 // Every row is scoped by stored_files.user_id. References are computed on the
 // server so a client can never decide that a shared file is safe to remove.
+app.get('/api/media-library/catalog', auth, async (req, res) => {
+  try {
+    const pool = await getPool();
+    const result = await pool.query(`
+      WITH owned AS (${mediaLibraryOwnedSql()}),
+      library AS (SELECT *,${mediaLibraryReferenceSql()} AS reference_count FROM owned),
+      by_type AS (SELECT file_type,COUNT(*)::int AS count,COALESCE(SUM(file_size),0) AS bytes
+        FROM library GROUP BY file_type),
+      file_destinations AS (
+        SELECT DISTINCT sf.id AS file_id,sf.file_size,
+          CASE WHEN destination->>'kind'='chat' THEN 'chat' ELSE 'group' END AS kind,
+          destination->>'targetId' AS id,destination->>'label' AS label
+        FROM library sf CROSS JOIN LATERAL jsonb_array_elements(sf.destinations) destination
+        WHERE destination->>'kind' IN ('chat','group_chat','group_profile')
+          AND destination->>'targetId' IS NOT NULL
+      ), destinations AS (
+        SELECT kind,id,MAX(label) AS label,COUNT(*)::int AS count,
+          COALESCE(SUM(file_size),0) AS bytes
+        FROM file_destinations GROUP BY kind,id
+      )
+      SELECT jsonb_build_object(
+          'totalCount',COUNT(*)::int,'totalBytes',COALESCE(SUM(file_size),0),
+          'deletableCount',COUNT(*) FILTER (WHERE reference_count=0 AND backup_status IS DISTINCT FROM 'uploading')::int,
+          'deletableBytes',COALESCE(SUM(file_size) FILTER (WHERE reference_count=0 AND backup_status IS DISTINCT FROM 'uploading'),0),
+          'backedUpCount',COUNT(*) FILTER (WHERE backup_status='verified')::int,
+          'releasedCount',COUNT(*) FILTER (WHERE released_at IS NOT NULL)::int,
+          'byType', '{"image":{"count":0,"bytes":0},"video":{"count":0,"bytes":0},"audio":{"count":0,"bytes":0},"document":{"count":0,"bytes":0}}'::jsonb ||
+            COALESCE((SELECT jsonb_object_agg(file_type,jsonb_build_object('count',count,'bytes',bytes))
+              FROM by_type WHERE file_type IS NOT NULL),'{}'::jsonb)) AS summary,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',kind,'id',id,'label',label,'count',count,'bytes',bytes)
+          ORDER BY kind,label,id) FROM destinations),'[]'::jsonb) AS destinations
+      FROM library`, [req.user.id]);
+    res.set('Cache-Control', 'no-store');
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('media library catalog:', error.message);
+    res.status(500).json({ error: 'לא ניתן היה לטעון את סיכום המדיה' });
+  }
+});
+
 app.get('/api/media-library', auth, async (req, res) => {
   const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 40, 1), 100);
   const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
@@ -5983,6 +6193,9 @@ app.get('/api/media-library', auth, async (req, res) => {
   const search = String(req.query.search || '').trim().slice(0, 120);
   const moderation = String(req.query.moderation || 'all');
   const backup = String(req.query.backup || 'all');
+  const destinationKind = String(req.query.destinationKind || '');
+  const destinationId = String(req.query.destinationId || '');
+  const deletable = req.query.deletable === undefined ? null : String(req.query.deletable);
   const classification = String(req.query.classification || 'all');
   const dateFrom = req.query.dateFrom ? new Date(String(req.query.dateFrom)) : null;
   const dateTo = req.query.dateTo ? new Date(String(req.query.dateTo)) : null;
@@ -5995,9 +6208,15 @@ app.get('/api/media-library', auth, async (req, res) => {
   const allowedClassifications = new Set(['all', 'men', 'women', 'children',
     'nonHumanImages', 'people', 'uncertain', 'video']);
   const sortSql = {
-    date_desc: 'created_at DESC', date_asc: 'created_at ASC',
-    size_desc: 'file_size DESC,created_at DESC', size_asc: 'file_size ASC,created_at DESC',
+    date_desc: 'created_at DESC,id DESC', date_asc: 'created_at ASC,id ASC',
+    size_desc: 'file_size DESC,created_at DESC,id DESC', size_asc: 'file_size ASC,created_at DESC,id DESC',
   }[sort];
+  if ((destinationKind || destinationId) &&
+      (!['chat', 'group'].includes(destinationKind) ||
+       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(destinationId)))
+    return res.status(400).json({ error: 'המשתמש או הקבוצה שנבחרו אינם תקינים' });
+  if (deletable !== null && !['true', 'false'].includes(deletable))
+    return res.status(400).json({ error: 'מסנן המחיקה אינו תקין' });
   if (!allowedTypes.has(type)) return res.status(400).json({ error: 'סוג הקובץ אינו תקין' });
   if (!allowedScopes.has(scope) || !sortSql)
     return res.status(400).json({ error: 'הסינון או המיון אינם תקינים' });
@@ -6005,6 +6224,7 @@ app.get('/api/media-library', auth, async (req, res) => {
       !allowedClassifications.has(classification) ||
       (dateFrom && Number.isNaN(dateFrom.getTime())) ||
       (dateTo && Number.isNaN(dateTo.getTime())) ||
+      (dateFrom && dateTo && dateFrom > dateTo) ||
       (minSize !== null && (!Number.isSafeInteger(minSize) || minSize < 0)) ||
       (maxSize !== null && (!Number.isSafeInteger(maxSize) || maxSize < 0)) ||
       (minSize !== null && maxSize !== null && minSize > maxSize))
@@ -6013,12 +6233,96 @@ app.get('/api/media-library', auth, async (req, res) => {
     const pool = await getPool();
     const params = [req.user.id, type, scope, limit, offset, search,
       moderation, backup, dateFrom?.toISOString() || null,
-      dateTo?.toISOString() || null, minSize, maxSize, classification];
+      dateTo?.toISOString() || null, minSize, maxSize, classification,
+      destinationKind, destinationId || null, deletable === null ? null : deletable === 'true'];
     const result = await pool.query(`
-      WITH owned AS (
-        SELECT sf.*,
-          (SELECT COUNT(*)::int FROM messages m
-           WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE) AS message_refs,
+      WITH owned AS (${mediaLibraryOwnedSql()}),
+      library AS (SELECT *,${mediaLibraryReferenceSql()} AS reference_count FROM owned),
+      filtered AS MATERIALIZED (
+        SELECT * FROM library sf WHERE ($2='all' OR sf.file_type=$2)
+          AND ($6='' OR sf.original_name ILIKE '%' || $6 || '%')
+          AND ($7='all' OR sf.moderation_status=$7)
+          AND ($9::timestamptz IS NULL OR sf.created_at >= $9::timestamptz)
+          AND ($10::timestamptz IS NULL OR sf.created_at < $10::timestamptz + INTERVAL '1 day')
+          AND ($11::bigint IS NULL OR sf.file_size >= $11::bigint)
+          AND ($12::bigint IS NULL OR sf.file_size <= $12::bigint)
+          AND ($13='all' OR
+            ($13='uncertain' AND COALESCE((sf.moderation_details->'classification'->>'uncertain')::boolean,FALSE)) OR
+            sf.moderation_details->'classification'->>'category'=$13 OR
+            sf.moderation_details->'classification'->'detectedCategories' ? $13)
+          AND ($3='all' OR ($3='chats' AND message_refs>0) OR
+            ($3='groups' AND (group_refs>0 OR destinations @> '[{"kind":"group_chat"}]'::jsonb)) OR
+            ($3='profile' AND profile_refs>0) OR
+            ($3='listings' AND listing_refs>0) OR ($3='forms' AND form_refs>0) OR
+            ($3='gifs' AND gif_refs>0) OR ($3='unassigned' AND reference_count=0))
+          AND ($8='all' OR ($8='local' AND released_at IS NULL) OR
+            ($8='backed_up' AND backup_status='verified') OR
+            ($8='released' AND released_at IS NOT NULL))
+          AND ($14='' OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(destinations) destination
+            WHERE destination->>'targetId'=($15::uuid)::text AND
+              (($14='chat' AND destination->>'kind'='chat') OR
+               ($14='group' AND destination->>'kind' IN ('group_chat','group_profile')))))
+          AND ($16::boolean IS NULL OR
+            (reference_count=0 AND backup_status IS DISTINCT FROM 'uploading')=$16::boolean)
+      ), page AS (SELECT * FROM filtered ORDER BY ${sortSql} LIMIT $4 OFFSET $5)
+      SELECT page.*,totals.total_count,totals.total_bytes
+      FROM (SELECT COUNT(*)::int AS total_count,COALESCE(SUM(file_size),0) AS total_bytes
+        FROM filtered) totals LEFT JOIN page ON TRUE
+      ORDER BY ${sortSql}`, params);
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      total: result.rows[0]?.total_count || 0,
+      totalBytes: Number(result.rows[0]?.total_bytes || 0),
+      items: result.rows.filter(row => row.id).map(mediaLibraryItem),
+    });
+  } catch (e) {
+    console.error('media library:', e.message);
+    res.status(500).json({ error: 'לא ניתן היה לטעון את ספריית המדיה' });
+  }
+});
+
+// One owner-scoped inventory powers the page and catalog. Message destinations
+// only include conversations the owner can currently open; counts count files,
+// so repeated receipt of the same personal copy never inflates a destination.
+function mediaLibraryOwnedSql() {
+  return `
+        WITH files AS MATERIALIZED (
+          SELECT * FROM stored_files WHERE user_id=$1
+        ), message_links AS MATERIALIZED (
+          SELECT sf.id AS file_id,m.id AS message_id FROM files sf
+          JOIN messages m ON m.file_url=sf.public_url
+          WHERE m.deleted_for_everyone=FALSE
+            AND NOT (m.sender_id=$1 AND m.recipient_id=$1 AND m.group_id IS NULL
+              AND (m.deleted_for_sender=TRUE OR EXISTS (
+                SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$1)
+                OR NOT (${messageAfterConversationClear('m', '$1')})))
+          UNION
+          SELECT sf.id,m.id FROM files sf
+          JOIN received_message_media received ON received.stored_file_id=sf.id
+            AND received.user_id=$1 AND received.status='ready'
+          JOIN messages m ON m.id=received.message_id
+          WHERE ${personalMessageVisible('m', '$1')}
+        ), message_uses AS MATERIALIZED (
+          SELECT links.file_id,COUNT(*)::int AS message_refs,
+            COALESCE(jsonb_agg(jsonb_build_object(
+              'kind',CASE WHEN m.group_id IS NULL THEN 'chat' ELSE 'group_chat' END,
+              'label',CASE WHEN m.group_id IS NULL THEN COALESCE(other_user.name,'שיחה פרטית')
+                           ELSE COALESCE(message_group.name,'קבוצה') END,
+              'targetId',CASE WHEN m.group_id IS NULL THEN other_user.id ELSE m.group_id END,
+              'messageId',m.id,'date',m.created_at))
+              FILTER (WHERE ${personalMessageVisible('m', '$1')}),'[]'::jsonb) AS destinations
+          FROM message_links links JOIN messages m ON m.id=links.message_id
+          LEFT JOIN users other_user ON other_user.id=CASE
+            WHEN m.sender_id=$1 THEN m.recipient_id ELSE m.sender_id END
+          LEFT JOIN groups message_group ON message_group.id=m.group_id
+          GROUP BY links.file_id
+        )
+        SELECT sf.*,COALESCE(message_uses.message_refs,0) AS message_refs,
+          ((SELECT COUNT(*) FROM message_requests WHERE file_url=sf.public_url) +
+           (SELECT COUNT(*) FROM pending_scans WHERE file_url=sf.public_url) +
+           (SELECT COUNT(*) FROM received_message_media received
+            WHERE received.source_file_id=sf.id AND received.status='queued'))::int AS pending_refs,
           (SELECT COUNT(*)::int FROM users u WHERE u.profile_pic_url=sf.public_url) AS profile_refs,
           (SELECT COUNT(*)::int FROM groups g WHERE g.profile_pic_url=sf.public_url) AS group_refs,
           ((SELECT COUNT(*) FROM listings l WHERE l.image_url=sf.public_url) +
@@ -6026,21 +6330,7 @@ app.get('/api/media-library', auth, async (req, res) => {
           (SELECT COUNT(*)::int FROM education_forms ef WHERE ef.file_url=sf.public_url) AS form_refs,
           (SELECT COUNT(*)::int FROM shared_gifs sg
            WHERE sg.stored_file_id=sf.id AND sg.status='active') AS gif_refs,
-          COALESCE((SELECT jsonb_agg(jsonb_build_object(
-              'kind',CASE WHEN m.group_id IS NULL THEN 'chat' ELSE 'group_chat' END,
-              'label',CASE WHEN m.group_id IS NULL THEN COALESCE(other_user.name,'שיחה פרטית')
-                           ELSE COALESCE(message_group.name,'קבוצה') END,
-              'targetId',CASE WHEN m.group_id IS NULL THEN other_user.id ELSE m.group_id END,
-              'messageId',m.id,
-              'date',m.created_at))
-            FROM messages m
-            LEFT JOIN users other_user ON other_user.id=CASE
-              WHEN m.sender_id=$1 THEN m.recipient_id ELSE m.sender_id END
-            LEFT JOIN groups message_group ON message_group.id=m.group_id
-            WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE
-              AND (m.sender_id=$1 OR m.recipient_id=$1 OR EXISTS (
-                SELECT 1 FROM group_members gm WHERE gm.group_id=m.group_id
-                  AND gm.user_id=$1 AND gm.status='member'))), '[]'::jsonb)
+          COALESCE(message_uses.destinations,'[]'::jsonb)
           || COALESCE((SELECT jsonb_agg(jsonb_build_object(
               'kind','profile','targetId',u.id,
               'label','תמונת הפרופיל שלי','date',u.created_at))
@@ -6070,60 +6360,37 @@ app.get('/api/media-library', auth, async (req, res) => {
           (SELECT mca.status FROM media_classification_appeals mca
            WHERE mca.stored_file_id=sf.id AND mca.user_id=$1
            ORDER BY mca.created_at DESC LIMIT 1) AS appeal_status
-        FROM stored_files sf
+        FROM files sf
+        LEFT JOIN message_uses ON message_uses.file_id=sf.id
         LEFT JOIN media_backup_items mbi
           ON mbi.stored_file_id=sf.id AND mbi.user_id=$1 AND mbi.provider='google_drive'
-        WHERE sf.user_id=$1 AND ($2='all' OR sf.file_type=$2)
-          AND ($6='' OR sf.original_name ILIKE '%' || $6 || '%')
-          AND ($7='all' OR sf.moderation_status=$7)
-          AND ($9::timestamptz IS NULL OR sf.created_at >= $9::timestamptz)
-          AND ($10::timestamptz IS NULL OR sf.created_at < $10::timestamptz + INTERVAL '1 day')
-          AND ($11::bigint IS NULL OR sf.file_size >= $11::bigint)
-          AND ($12::bigint IS NULL OR sf.file_size <= $12::bigint)
-          AND ($13='all' OR
-            ($13='uncertain' AND COALESCE((sf.moderation_details->'classification'->>'uncertain')::boolean,FALSE)) OR
-            sf.moderation_details->'classification'->>'category'=$13 OR
-            sf.moderation_details->'classification'->'detectedCategories' ? $13)
-      )
-      SELECT *,COUNT(*) OVER()::int AS total_count,
-        (message_refs+profile_refs+group_refs+listing_refs+form_refs+gif_refs)::int AS reference_count
-      FROM owned WHERE (
-        $3='all' OR ($3='chats' AND message_refs>0) OR
-        ($3='groups' AND group_refs>0) OR ($3='profile' AND profile_refs>0) OR
-        ($3='listings' AND listing_refs>0) OR ($3='forms' AND form_refs>0) OR
-        ($3='gifs' AND gif_refs>0) OR ($3='unassigned' AND
-          message_refs+profile_refs+group_refs+listing_refs+form_refs+gif_refs=0))
-        AND ($8='all' OR ($8='local' AND released_at IS NULL) OR
-          ($8='backed_up' AND backup_status IS NOT NULL) OR
-          ($8='released' AND released_at IS NOT NULL))
-      ORDER BY ${sortSql} LIMIT $4 OFFSET $5`, params);
-    res.set('Cache-Control', 'no-store');
-    res.json({
-      total: result.rows[0]?.total_count || 0,
-      items: result.rows.map(row => ({
-        id: row.id, name: row.original_name, url: row.public_url,
-        mimeType: row.mime_type, fileType: row.file_type,
-        size: Number(row.file_size || 0), createdAt: row.created_at,
-        moderationStatus: row.moderation_status,
-        classification: row.moderation_details?.classification || null,
-        releasedAt: row.released_at, backupStatus: row.backup_status || null,
-        restoreVerified: Boolean(row.restore_verified_at),
-        appealStatus: row.appeal_status || null,
-        referenceCount: row.reference_count,
-        destinations: row.destinations || [],
-        usages: {
-          messages: row.message_refs, profile: row.profile_refs,
-          groups: row.group_refs, listings: row.listing_refs,
-          forms: row.form_refs, sharedGifs: row.gif_refs,
-        },
-        canDelete: row.reference_count === 0,
-      })),
-    });
-  } catch (e) {
-    console.error('media library:', e.message);
-    res.status(500).json({ error: 'לא ניתן היה לטעון את ספריית המדיה' });
-  }
-});
+        WHERE sf.user_id=$1`;
+}
+
+function mediaLibraryReferenceSql() {
+  return '(message_refs+pending_refs+profile_refs+group_refs+listing_refs+form_refs+gif_refs)::int';
+}
+
+function mediaLibraryItem(row) {
+  return {
+    id: row.id, name: row.original_name, url: row.public_url,
+    mimeType: row.mime_type, fileType: row.file_type,
+    size: Number(row.file_size || 0), createdAt: row.created_at,
+    moderationStatus: row.moderation_status,
+    classification: row.moderation_details?.classification || null,
+    releasedAt: row.released_at, backupStatus: row.backup_status || null,
+    restoreVerified: Boolean(row.restore_verified_at),
+    appealStatus: row.appeal_status || null,
+    referenceCount: row.reference_count,
+    destinations: row.destinations || [],
+    usages: {
+      messages: row.message_refs, pending: row.pending_refs, profile: row.profile_refs,
+      groups: row.group_refs, listings: row.listing_refs,
+      forms: row.form_refs, sharedGifs: row.gif_refs,
+    },
+    canDelete: row.reference_count === 0 && row.backup_status !== 'uploading',
+  };
+}
 
 async function loadStoredFileBytes(file) {
   const localPath = path.resolve(UPLOAD_ROOT, file.storage_path);
@@ -6302,10 +6569,19 @@ app.get('/api/blocked-media/:id', auth, messageRateLimit, async (req, res) => {
 
 app.post('/api/document-preview', auth, messageRateLimit, async (req, res) => {
   const fileUrl = String(req.body?.fileUrl || '');
-  if (!fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`))
+  const generatedFileId = guideFileId(fileUrl);
+  if (!generatedFileId && !fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`))
     return res.status(400).json({ error: 'כתובת המסמך אינה תקינה' });
   try {
     const pool = await getPool();
+    if (generatedFileId) {
+      const file = await loadOwnedGuideFile(pool, req.user.id, generatedFileId);
+      if (!file) return res.status(404).json({ error: 'המסמך אינו זמין לצפייה' });
+      const bytes = await readGuideFileBytes(pool, UPLOAD_ROOT, file);
+      const preview = await createDocumentPreview(bytes, file.original_name, file.mime_type);
+      res.set('Cache-Control', 'private, no-store');
+      return res.json({ ...preview, fileName: file.original_name });
+    }
     const found = await pool.query(
       `SELECT sf.id,sf.user_id,sf.original_name,sf.storage_path,sf.public_url,
               sf.mime_type,sf.file_type,sf.file_size,sf.moderation_status
@@ -6423,77 +6699,122 @@ app.post('/api/media-library/:id/classification-appeal', auth, messageRateLimit,
   }
 });
 
-app.delete('/api/media-library/:id', auth, async (req, res) => {
-  const pool = await getPool();
+async function deleteOwnMedia(pool, userId, fileId) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+      [`personal-media-owner:${userId}`]);
     const found = await client.query(
-      `SELECT sf.*,mbi.remote_file_id,mbi.encryption_metadata,c.encrypted_refresh_token
+      `SELECT sf.*
        FROM stored_files sf
-       LEFT JOIN media_backup_items mbi ON mbi.stored_file_id=sf.id AND mbi.provider='google_drive'
-       LEFT JOIN cloud_backup_accounts c ON c.user_id=sf.user_id AND c.status='connected'
-       WHERE sf.id=$1 AND sf.user_id=$2 FOR UPDATE OF sf`, [req.params.id, req.user.id]);
+       WHERE sf.id=$1 AND sf.user_id=$2 FOR UPDATE OF sf`, [fileId, userId]);
     if (!found.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'הקובץ לא נמצא' });
+      throw Object.assign(new Error('הקובץ לא נמצא'), { status: 404 });
     }
     const file = found.rows[0];
+    // The worker locks sf before claiming a backup. Read/lock the backup in a
+    // fresh statement after acquiring sf, so a claim that just committed while
+    // we waited cannot be missed through an older joined-query snapshot.
+    const backup = await client.query(`SELECT mbi.remote_file_id,mbi.status AS backup_status,
+        mbi.encryption_metadata,c.encrypted_refresh_token
+      FROM media_backup_items mbi
+      LEFT JOIN cloud_backup_accounts c ON c.user_id=$2 AND c.status='connected'
+      WHERE mbi.stored_file_id=$1 AND mbi.provider='google_drive'
+      FOR UPDATE OF mbi`, [file.id, userId]);
+    Object.assign(file, backup.rows[0]);
+    if (file.backup_status === 'uploading') {
+      throw Object.assign(new Error('גיבוי הקובץ נמצא בתהליך. נסה שוב לאחר סיומו.'), {
+        status: 409, code: 'BACKUP_IN_PROGRESS',
+      });
+    }
     const refs = await client.query(`SELECT
-      (SELECT COUNT(*) FROM messages WHERE file_url=$1 AND deleted_for_everyone=FALSE) +
+      (SELECT COUNT(*) FROM messages m WHERE m.file_url=$1 AND m.deleted_for_everyone=FALSE
+        AND NOT (m.sender_id=$3 AND m.recipient_id=$3 AND m.group_id IS NULL
+          AND (m.deleted_for_sender=TRUE OR EXISTS (
+            SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$3)
+            OR NOT (${messageAfterConversationClear('m', '$3')})))) +
+      (SELECT COUNT(*) FROM message_requests WHERE file_url=$1) +
+      (SELECT COUNT(*) FROM pending_scans WHERE file_url=$1) +
+      (SELECT COUNT(*) FROM received_message_media received
+        WHERE received.source_file_id=$2 AND received.status='queued') +
+      (SELECT COUNT(*) FROM received_message_media received
+        JOIN messages m ON m.id=received.message_id
+        WHERE received.stored_file_id=$2 AND received.user_id=$3 AND received.status='ready'
+          AND ${personalMessageVisible('m', '$3')}) +
       (SELECT COUNT(*) FROM users WHERE profile_pic_url=$1) +
       (SELECT COUNT(*) FROM groups WHERE profile_pic_url=$1) +
       (SELECT COUNT(*) FROM listings WHERE image_url=$1) +
       (SELECT COUNT(*) FROM listing_images WHERE url=$1) +
       (SELECT COUNT(*) FROM education_forms WHERE file_url=$1) +
       (SELECT COUNT(*) FROM shared_gifs WHERE stored_file_id=$2 AND status='active') AS count`,
-      [file.public_url, file.id]);
+      [file.public_url, file.id, userId]);
     const referenceCount = Number(refs.rows[0].count);
     if (referenceCount > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'הקובץ עדיין נמצא בשימוש. יש להסיר אותו מהמקומות המקושרים לפני מחיקה.',
-        code: 'MEDIA_IN_USE', referenceCount,
+      throw Object.assign(new Error('הקובץ עדיין נמצא בשימוש. יש להסיר אותו מהמקומות המקושרים לפני מחיקה.'), {
+        status: 409, code: 'MEDIA_IN_USE', referenceCount,
       });
     }
+    const absolutePath = path.resolve(UPLOAD_ROOT, file.storage_path);
+    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
+      throw new Error('invalid stored media path');
+    // Only an invisible self-message has no other reader. Detach its file
+    // reference in this transaction; private/group recipient copies stay intact.
+    await client.query(`UPDATE messages m SET file_url=NULL,file_name=NULL,file_size=NULL
+      WHERE m.file_url=$1 AND m.sender_id=$2 AND m.recipient_id=$2 AND m.group_id IS NULL
+        AND (m.deleted_for_everyone=TRUE OR m.deleted_for_sender=TRUE OR EXISTS (
+          SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$2)
+          OR NOT (${messageAfterConversationClear('m', '$2')}))`, [file.public_url, userId]);
+    // A deliberate personal deletion must not make a later recovery pass copy
+    // these old attachments again. New deliveries can create a fresh copy.
+    await client.query(`UPDATE received_message_media SET status='skipped',stored_file_id=NULL
+      WHERE stored_file_id=$1 AND user_id=$2`, [file.id, userId]);
     // A permanent delete also removes the encrypted personal-cloud copy. If
     // cloud access is unavailable we keep both records so the user can retry.
     if (file.remote_file_id) {
       if (!file.encrypted_refresh_token) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          error: 'יש לחבר מחדש את Google Drive לפני מחיקה מלאה של הגיבוי.',
-          code: 'BACKUP_RECONNECT_REQUIRED',
+        throw Object.assign(new Error('יש לחבר מחדש את Google Drive לפני מחיקה מלאה של הגיבוי.'), {
+          status: 409, code: 'BACKUP_RECONNECT_REQUIRED',
         });
       }
       const refreshToken = personalDrive.decryptRefreshToken(
-        file.encrypted_refresh_token, req.user.id);
+        file.encrypted_refresh_token, userId);
       const manifestId = file.encryption_metadata?.manifestRemoteId;
       for (const remoteId of [file.remote_file_id, manifestId]) {
         if (remoteId) await personalDrive.deleteAppDataFile(refreshToken, remoteId);
       }
     }
-    const absolutePath = path.resolve(UPLOAD_ROOT, file.storage_path);
-    if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
-      throw new Error('invalid stored media path');
     await fs.unlink(absolutePath).catch(error => {
       if (error.code !== 'ENOENT') throw error;
     });
     await client.query('DELETE FROM stored_files WHERE id=$1', [file.id]);
     await client.query('COMMIT');
-    logActivity(req.user.id, 'delete_own_media', {
+    return { ok: true, deletedBytes: Number(file.file_size || 0),
       storedFileId: file.id, fileName: file.original_name,
-      bytes: Number(file.file_size || 0), cloudDeleted: Boolean(file.remote_file_id),
-    }, clientIp(req));
-    res.json({ ok: true, deletedBytes: Number(file.file_size || 0) });
-  } catch (e) {
+      cloudDeleted: Boolean(file.remote_file_id) };
+  } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('delete own media:', e.message);
-    res.status(500).json({ error: 'מחיקת הקובץ נכשלה ולא בוצע שינוי' });
-  } finally {
-    client.release();
+    throw error;
+  } finally { client.release(); }
+}
+
+app.delete('/api/media-library/:id', auth, async (req, res) => {
+  try {
+    const result = await deleteOwnMedia(await getPool(), req.user.id, req.params.id);
+    logActivity(req.user.id, 'delete_own_media', result, clientIp(req));
+    res.json(result);
+  } catch (error) {
+    console.error('delete own media:', error.message);
+    res.status(error.status || 500).json({
+      error: error.status ? error.message : 'מחיקת הקובץ נכשלה. אפשר לנסות שוב.',
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.referenceCount ? { referenceCount: error.referenceCount } : {}),
+    });
   }
 });
+
+registerConversationHistory(app, { auth: authWithDbCheck, rateLimit: messageRateLimit,
+  getPool, deleteOwnMedia, notifyUser: (userId, event, payload) => relay(userId, event, payload) });
 
 // Phase 1: provider-neutral backup settings and read-only storage accounting.
 app.get('/api/backup', auth, async (req, res) => {
@@ -6536,6 +6857,12 @@ app.get('/api/backup', auth, async (req, res) => {
              FALSE AS grace_waiting,
              (EXISTS (SELECT 1 FROM messages m
                        WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
+               OR EXISTS (SELECT 1 FROM received_message_media received
+                 JOIN messages m ON m.id=received.message_id
+                 WHERE received.stored_file_id=sf.id AND received.user_id=sf.user_id
+                   AND received.status='ready' AND ${personalMessageVisible('m', 'sf.user_id')})
+               OR EXISTS (SELECT 1 FROM received_message_media received
+                 WHERE received.source_file_id=sf.id AND received.status='queued')
                OR EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)
                OR EXISTS (SELECT 1 FROM groups g WHERE g.profile_pic_url=sf.public_url)
                OR EXISTS (SELECT 1 FROM listings l WHERE l.image_url=sf.public_url)
@@ -8402,6 +8729,7 @@ app.get('/api/groups', auth, async (req, res) => {
       SELECT g.id, g.name, g.description, g.profile_pic_url, g.is_broadcast, g.is_self, g.send_permission, g.filter_level,
              g.content_filter,
              gm.role, gm.status, gm.pinned_at,
+             (COALESCE(cs.hidden,FALSE) AND last_msg.id IS NULL) AS conversation_hidden,
              inviter.name AS invited_by_name,
              group_admin.id AS admin_id, group_admin.name AS admin_name,
              (SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND status='member') AS member_count,
@@ -8412,6 +8740,8 @@ app.get('/api/groups', auth, async (req, res) => {
              (last_msg.sender_id = $1) AS last_message_is_mine
       FROM groups g
       JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $1
+      LEFT JOIN conversation_user_state cs
+        ON cs.user_id=$1 AND cs.kind='group' AND cs.target_id=g.id
       LEFT JOIN users inviter ON inviter.id=gm.added_by
       LEFT JOIN LATERAL (
         SELECT u.id, u.name
@@ -8424,10 +8754,13 @@ app.get('/api/groups', auth, async (req, res) => {
         LIMIT 1
       ) group_admin ON TRUE
       LEFT JOIN LATERAL (
-        SELECT m.body, m.type, m.created_at, m.sender_id, u.name AS sender_name
+        SELECT m.id, m.body, m.type, m.created_at, m.sender_id, u.name AS sender_name
         FROM messages m
         JOIN users u ON u.id=m.sender_id
         WHERE m.group_id = g.id AND m.deleted_for_everyone = FALSE
+          AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$1)
+        AND ${messageAfterConversationClear('m', '$1')}
+          AND NOT (m.sender_id=$1 AND m.deleted_for_sender=TRUE)
           AND gm.status='member'
           AND m.created_at >= gm.joined_at
         ORDER BY m.created_at DESC
@@ -8698,7 +9031,8 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
     // preview and timestamp immediately after an HTTP file send.
     relay(senderId, 'group:message', payload);
     for (const recipient of deliveryPlan.delivered) {
-        relay(recipient.id, 'group:message', recipientPayload);
+        relay(recipient.id, 'group:message',
+          await recipientMediaMessage(pool, recipient.id, recipientPayload));
         sendPush(recipient.id, `${member.group_name} • ${req.user.name}`,
           pushBody, { type: 'group', groupId });
     }
@@ -8744,7 +9078,9 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         sf.moderation_details AS _moderation_details
       FROM messages m
       JOIN users u ON m.sender_id = u.id
-      LEFT JOIN messages r ON m.reply_to_id = r.id
+      LEFT JOIN messages r ON m.reply_to_id=r.id AND r.deleted_for_everyone=FALSE
+        AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=r.id AND d.user_id=$2)
+        AND ${messageAfterConversationClear('r', '$2')}
       LEFT JOIN message_status ms ON ms.message_id=m.id AND ms.user_id=$2
       LEFT JOIN stored_files sf ON sf.public_url=m.file_url
       LEFT JOIN education_form_responses education_response
@@ -8755,6 +9091,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
           SELECT 1 FROM message_user_deletions mud
           WHERE mud.message_id=m.id AND mud.user_id=$2
         )
+        AND ${messageAfterConversationClear('m', '$2')}
         AND m.created_at >= (
           SELECT gm.joined_at FROM group_members gm
           WHERE gm.group_id=$1 AND gm.user_id=$2
@@ -8801,6 +9138,9 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
       WHERE sf.context_type='group' AND sf.context_id=$1
         AND sf.user_id=$2
         AND sf.content_purged_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
+          WHERE cs.user_id=$2 AND cs.kind='group' AND cs.target_id=$1
+            AND sf.created_at<=cs.cleared_at)
         AND (sf.moderation_status IN ('pending','rejected')
           OR (sf.moderation_status='approved'
             AND sf.moderation_details->>'destinationFilterRejected'='true'))
@@ -8816,7 +9156,9 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
     const visibleMessages = result.rows.filter(row =>
       row.sender_id === req.user.id || contentAllowedByFilter(
         personalFilter, row.type, row.image_classification));
-    const combined = [...visibleMessages, ...scans.rows]
+    await retainVisibleReceivedMessages(pool, req.user.id, visibleMessages);
+    const personalMessages = await personalizeReceivedMessages(pool, req.user.id, visibleMessages);
+    const combined = [...personalMessages, ...scans.rows]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .slice(-50)
       .map(row => {
@@ -9556,6 +9898,8 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
          ORDER BY m.created_at ASC`, [req.params.id, new Date(pendingSince), req.user.id]);
       missedMessages = missedRes.rows.filter(row => contentAllowedByFilter(
         personalFilter, row.type, row.image_classification));
+      await retainVisibleReceivedMessages(pool, req.user.id, missedMessages);
+      missedMessages = await personalizeReceivedMessages(pool, req.user.id, missedMessages);
     }
 
     // Emit group:member_joined to the group room
@@ -10060,12 +10404,16 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
               sf.moderation_details->'classificationShadow' AS shadow
        FROM stored_files sf
        WHERE sf.file_type='image'
+         AND sf.context_type IS DISTINCT FROM 'received'
          AND sf.moderation_details->'classificationStats' IS NOT NULL
          ${dateClause}
        ORDER BY sf.created_at DESC`, params);
     const queueResult = await pool.query(`
-      SELECT status,COUNT(*)::int AS count
-      FROM classification_shadow_jobs GROUP BY status`);
+      SELECT j.status,COUNT(*)::int AS count
+      FROM classification_shadow_jobs j
+      JOIN stored_files sf ON sf.id=j.stored_file_id
+      WHERE sf.context_type IS DISTINCT FROM 'received'
+      GROUP BY j.status`);
     const recentResult = await pool.query(`
       SELECT j.id,j.status,j.attempt_count,j.last_error,j.created_at,
              j.started_at,j.completed_at,sf.original_name,sf.moderation_status,
@@ -10073,12 +10421,13 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
              sf.moderation_details->'classificationShadow' AS shadow
       FROM classification_shadow_jobs j
       JOIN stored_files sf ON sf.id=j.stored_file_id
+      WHERE sf.context_type IS DISTINCT FROM 'received'
       ORDER BY COALESCE(j.completed_at,j.started_at,j.created_at) DESC
       LIMIT 30`);
     const decisionSummaryResult = await pool.query(`
       SELECT sf.moderation_status,COUNT(*)::int AS count
       FROM stored_files sf
-      WHERE sf.file_type='image' ${dateClause}
+      WHERE sf.file_type='image' AND sf.context_type IS DISTINCT FROM 'received' ${dateClause}
       GROUP BY sf.moderation_status`, params);
     const decisionResult = await pool.query(`
       SELECT sf.id,sf.original_name,sf.public_url,sf.content_purged_at,
@@ -10094,14 +10443,14 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
       LEFT JOIN pending_scans ps ON ps.file_url=sf.public_url
       LEFT JOIN classification_shadow_jobs j ON j.stored_file_id=sf.id
       LEFT JOIN moderation_ground_truth gt ON gt.stored_file_id=sf.id
-      WHERE sf.file_type='image' ${dateClause}
+      WHERE sf.file_type='image' AND sf.context_type IS DISTINCT FROM 'received' ${dateClause}
       ORDER BY sf.created_at DESC LIMIT 100`, params);
     const analysisResult = await pool.query(`
       SELECT sf.id,sf.moderation_status,sf.moderation_details,
              gt.expected_decision,gt.expected_category,gt.reason_class
       FROM stored_files sf
       LEFT JOIN moderation_ground_truth gt ON gt.stored_file_id=sf.id
-      WHERE sf.file_type='image' ${dateClause}`, params);
+      WHERE sf.file_type='image' AND sf.context_type IS DISTINCT FROM 'received' ${dateClause}`, params);
     const videoFrameResult = await pool.query(`
       SELECT sf.id,sf.original_name,sf.public_url,sf.content_purged_at,
              sf.created_at,sf.moderation_status,
@@ -10110,7 +10459,7 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
       CROSS JOIN LATERAL jsonb_array_elements(
         COALESCE(sf.moderation_details->'frameResults','[]'::jsonb)
       ) WITH ORDINALITY AS frame(value,ordinality)
-      WHERE sf.file_type='video' ${dateClause}
+      WHERE sf.file_type='video' AND sf.context_type IS DISTINCT FROM 'received' ${dateClause}
       ORDER BY sf.created_at DESC,frame.ordinality DESC
       LIMIT 500`, params);
     const journalDateClause = range === 'all' ? '' :
@@ -11497,11 +11846,13 @@ async function deleteStoredFile(url) {
   try {
     const marker = `${UPLOAD_PUBLIC_BASE}/`;
     const pos = url.indexOf(marker);
-    if (pos < 0) {
+    const generatedFileId = guideFileId(url);
+    if (pos < 0 && !generatedFileId) {
       console.error('deleteStoredFile: unsupported storage URL:', url);
       return false;
     }
-    const relativePath = url.slice(pos + marker.length).split('/').map(decodeURIComponent).join(path.sep);
+    const relativePath = generatedFileId ? `.guide-files/${generatedFileId}.xlsx`
+      : url.slice(pos + marker.length).split('/').map(decodeURIComponent).join(path.sep);
     const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
     if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) {
       console.error('deleteStoredFile: rejected path outside upload root:', url);
@@ -11697,6 +12048,10 @@ app.delete('/api/account', auth, async (req, res) => {
   let fileUrls = [];
   try {
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+      [`personal-media-owner:${uid}`]);
+    await client.query(`UPDATE received_message_media SET status='skipped'
+      WHERE user_id=$1 AND status='queued'`, [uid]);
     const files = await client.query(
       'SELECT public_url FROM stored_files WHERE user_id=$1', [uid]);
     fileUrls = files.rows.map(row => row.public_url).filter(Boolean);
@@ -11797,6 +12152,10 @@ app.delete('/api/account/data', auth, async (req, res) => {
   let fileUrls = [];
   try {
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+      [`personal-media-owner:${uid}`]);
+    await client.query(`UPDATE received_message_media SET status='skipped'
+      WHERE user_id=$1 AND status='queued'`, [uid]);
     const files = await client.query(
       'SELECT public_url FROM stored_files WHERE user_id=$1', [uid]);
     fileUrls = files.rows.map(row => row.public_url).filter(Boolean);
@@ -13130,7 +13489,8 @@ async function retryPendingScans() {
           const senderSid    = onlineUsers.get(row.user_id);
           const recipientSid = onlineUsers.get(row.to_user_id);
           if (senderSid)    io.to(senderSid).emit('chat:message', payload);
-          if (recipientSid) io.to(recipientSid).emit('chat:message', payload);
+          if (recipientSid) io.to(recipientSid).emit('chat:message',
+            await recipientMediaMessage(pool, row.to_user_id, payload));
           if (!recipientSid)
             sendPush(row.to_user_id, '', `📎 ${row.file_name}`, { type: 'chat', fromUserId: row.user_id });
           logActivity(row.user_id, 'send_file_delayed',
@@ -13186,7 +13546,8 @@ async function retryPendingScans() {
           const recipientPayload = { ...payload };
           delete recipientPayload.deliverySummary;
           for (const recipient of deliveryPlan.delivered) {
-              relay(recipient.id, 'group:message', recipientPayload);
+              relay(recipient.id, 'group:message',
+                await recipientMediaMessage(pool, recipient.id, recipientPayload));
               sendPush(recipient.id,
                 `${pendingGroup.group_name} • ${pendingGroup.sender_name}`,
                 `📎 ${row.file_name}`,
@@ -13444,16 +13805,20 @@ async function runAutomaticBackupWorker(workerIndex) {
     const candidate = await lockClient.query(
       `SELECT sf.id,sf.user_id,sf.storage_path,sf.file_size,sf.mime_type,sf.content_sha256,
               s.encrypted_data_key,s.data_key_version,c.encrypted_refresh_token,
+              (mbi.encryption_metadata->>'guideRequested'='true') AS guide_requested,
               COALESCE(mbi.attempt_count,0)::int AS attempt_count
        FROM stored_files sf
        JOIN user_backup_settings s ON s.user_id=sf.user_id
        JOIN cloud_backup_accounts c ON c.user_id=sf.user_id
        LEFT JOIN media_backup_items mbi
          ON mbi.stored_file_id=sf.id AND mbi.provider='google_drive'
-       WHERE s.enabled=TRUE AND s.encrypted_data_key IS NOT NULL
+       WHERE (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true')
+         AND s.encrypted_data_key IS NOT NULL
          AND c.provider='google_drive' AND c.status='connected'
          AND sf.moderation_status='approved'
+         AND sf.content_purged_at IS NULL AND sf.released_at IS NULL
          AND (mbi.id IS NULL OR
+           mbi.status='queued' OR
            (mbi.status='failed' AND mbi.attempt_count<5
              AND mbi.updated_at < now()-INTERVAL '10 minutes') OR
            (mbi.status='uploading' AND mbi.updated_at < now()-INTERVAL '30 minutes'))
@@ -13531,7 +13896,8 @@ async function runAutomaticBackupWorker(workerIndex) {
          verified_at=now(),last_error=NULL,updated_at=now()
        WHERE stored_file_id=$5 AND provider='google_drive'`,
       [remoteDataId, plainHash, encryptedHash,
-       JSON.stringify({ ...manifest.encryption, manifestRemoteId: remoteManifestId, backupId }),
+       JSON.stringify({ ...manifest.encryption, manifestRemoteId: remoteManifestId, backupId,
+         ...(claimed.guide_requested ? { guideRequested: true } : {}) }),
        claimed.id]);
     logActivity(claimed.user_id, 'automatic_encrypted_backup',
       { storedFileId: claimed.id, bytes: plain.length }, null);
@@ -13567,7 +13933,8 @@ async function runAutomaticRestoreQueue() {
               sf.file_size,s.encrypted_data_key,c.encrypted_refresh_token
        FROM media_backup_items mbi
        JOIN stored_files sf ON sf.id=mbi.stored_file_id
-       JOIN user_backup_settings s ON s.user_id=mbi.user_id AND s.enabled=TRUE
+       JOIN user_backup_settings s ON s.user_id=mbi.user_id
+         AND (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true')
        JOIN cloud_backup_accounts c ON c.user_id=mbi.user_id AND c.status='connected'
        WHERE mbi.status='verified' AND mbi.restore_verified_at IS NULL
          AND mbi.encryption_metadata->>'keySource'='server_vault'
@@ -13631,6 +13998,12 @@ async function runSafeReleaseQueue() {
          AND sf.release_scheduled_at IS NOT NULL
          AND NOT EXISTS (SELECT 1 FROM messages m
                          WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
+         AND NOT EXISTS (SELECT 1 FROM received_message_media received
+           JOIN messages m ON m.id=received.message_id
+           WHERE received.stored_file_id=sf.id AND received.user_id=sf.user_id
+             AND received.status='ready' AND ${personalMessageVisible('m', 'sf.user_id')})
+         AND NOT EXISTS (SELECT 1 FROM received_message_media received
+           WHERE received.source_file_id=sf.id AND received.status='queued')
          AND NOT EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)
          AND NOT EXISTS (SELECT 1 FROM groups g WHERE g.profile_pic_url=sf.public_url)
          AND NOT EXISTS (SELECT 1 FROM listings l WHERE l.image_url=sf.public_url)
@@ -13684,6 +14057,18 @@ async function startServer() {
     'SELECT COUNT(*)::int AS count FROM israel_streets WHERE active=TRUE');
   if (!streetCount.rows[0].count) await syncGovernmentStreets();
   scheduleGovernmentLocalitiesSync();
+  const receivedMedia = createReceivedMediaService({
+    getPool, uploadRoot: UPLOAD_ROOT, publicBase: UPLOAD_PUBLIC_BASE,
+  });
+  const retainReceivedMedia = async () => {
+    try {
+      // Drain a large group/history import in bounded batches while yielding
+      // between them. The periodic tick also retries temporarily missing media.
+      if (await receivedMedia.runOnce() === 8) setTimeout(retainReceivedMedia, 200);
+    } catch (error) { console.error('[received-media:worker]', error.message); }
+  };
+  setTimeout(retainReceivedMedia, 1500);
+  setInterval(retainReceivedMedia, 10 * 1000);
   setTimeout(retryPendingScans, 1000); // process queued files after startup
   setInterval(retryPendingScans, 2 * 60 * 1000); // every 2 minutes
   setInterval(() => recoverOrphanedPendingScans(pool).catch(error =>

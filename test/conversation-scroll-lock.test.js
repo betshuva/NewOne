@@ -140,7 +140,8 @@ test('contact filter status uses the full dynamic comparison table', () => {
   assert.match(dialogSource, /counterpartKind: 'החבר'/);
   assert.match(dialogSource, /groupName: recipientName/);
   assert.match(dialogSource, /onPersonalFilterChanged:/);
-  assert.match(dialogSource, /filter-settings'[\s\S]*?Text\('שמור'\)/);
+  assert.match(dialogSource, /filter-settings'[\s\S]*?phoneChoice\.confirmationPayload/);
+  assert.match(dialogSource, /phoneChoice\.confirmationLabel\(saveLabel: 'שמור'\)/);
   assert.match(dialogSource, /await _loadContactFilterComparison\(\)/);
   assert.match(dialogSource, /לא ניתן לטעון כעת את נתוני הסינון/);
 });
@@ -218,7 +219,8 @@ test('the first outgoing message to a saved contact requires a receiving-filter 
   assert.match(guardSource, /showCounterpartFilter: false/);
   assert.match(guardSource, /groupName: recipientName/);
   assert.match(guardSource, /contacts\/\$\{widget\.recipient\['id'\]\}\/filter-settings/);
-  assert.match(guardSource, /Text\('שמור והמשך'\)/);
+  assert.match(guardSource, /phoneChoice\.confirmationLabel\(saveLabel: 'שמור והמשך'\)/);
+  assert.match(guardSource, /phoneChoice\.confirmationPayload/);
   assert.match(guardSource, /payload\['privateEntry'\]/);
   assert.match(guardSource, /_messages\.add\(normalized\)/);
   assert.match(source, /class _PrivateContactFilterEntry/);

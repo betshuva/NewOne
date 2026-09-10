@@ -1,4 +1,5 @@
 'use strict';
+const { messageAfterConversationClear } = require('./conversation-history');
 const REACTIONS = Object.freeze(['👍', '❤️', '😂', '🙏', '😮', '😢']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 async function visibleMessage(pool, id, userId, contentAllowedByFilter) {
@@ -14,6 +15,7 @@ async function visibleMessage(pool, id, userId, contentAllowedByFilter) {
     WHERE m.id=$1 AND m.deleted_for_everyone=FALSE
       AND NOT (m.sender_id=$2 AND COALESCE(m.deleted_for_sender,FALSE))
       AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=m.id AND d.user_id=$2)
+      AND ${messageAfterConversationClear('m', '$2')}
       AND ((m.group_id IS NULL AND (m.sender_id=$2 OR m.recipient_id=$2))
         OR (m.group_id IS NOT NULL AND gm.user_id IS NOT NULL))
       AND NOT EXISTS (SELECT 1 FROM blocked_users b WHERE

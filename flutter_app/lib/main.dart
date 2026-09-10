@@ -1,3 +1,11 @@
+import 'conversation_cleanup.dart';
+import 'guide_message_draft.dart';
+import 'guide_file.dart';
+import 'guide_table_text.dart';
+import 'safe_information_text.dart';
+import 'phone_sharing.dart';
+import 'phone_sharing_privacy.dart';
+import 'inline_emoji_picker.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -40,12 +48,17 @@ import 'app_screenshot.dart';
 import 'incoming_share.dart';
 import 'read_notifications.dart';
 import 'message_reactions.dart';
+import 'message_hover.dart';
 import 'document_scanner.dart';
 import 'image_clipboard.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 const _sharedContactPrefix = 'betshuva://contact/';
 const _maxVideoDuration = Duration(seconds: 30);
+
+bool _isPersonalPhoneContact(String? id, String? myId) =>
+    id != null && id.isNotEmpty && id != myId &&
+    !{kScanBotId, kSystemGuideId, kSafeInformationAiId}.contains(id);
 
 Future<bool> _videoWithinDurationLimit(
     BuildContext context, XFile video) async {
@@ -90,6 +103,12 @@ class _MessageInputHistory {
   final List<String> _entries = [];
   int _index = 0;
   String _draft = '';
+
+  void clear() {
+    _entries.clear();
+    _index = 0;
+    _draft = '';
+  }
 
   void record(String text) {
     if (text.isEmpty) return;
@@ -800,9 +819,7 @@ Future<Map<String, String>?> _pickGroupSharedContact(BuildContext context,
       itemBuilder: (_, index) => ListTile(
         leading: const CircleAvatar(child: Icon(Icons.person_outline)),
         title: Text(members[index]['name']?.toString() ?? 'חבר בקבוצה'),
-        subtitle: Text(members[index]['phone']?.toString() ??
-            members[index]['email']?.toString() ??
-            ''),
+        subtitle: const Text('שיתוף שם, תמונה וקישור לצ׳אט'),
         onTap: () => Navigator.pop(sheetContext, members[index]),
       ),
     )),
@@ -810,8 +827,9 @@ Future<Map<String, String>?> _pickGroupSharedContact(BuildContext context,
   if (member == null) return null;
   return {
     'name': member['name']?.toString() ?? 'חבר בקבוצה',
-    'phone': member['phone']?.toString() ?? '',
-    'email': member['email']?.toString() ?? '',
+    'appUserId': member['id']?.toString() ?? '',
+    if (member['profile_pic_url'] != null)
+      'profilePicUrl': member['profile_pic_url'].toString(),
   };
 }
 
@@ -1087,14 +1105,26 @@ Future<void> _copyChatImage(BuildContext context, String fileUrl) async {
 }
 
 Future<void> _downloadChatFile(
-    BuildContext context, String fileUrl, String? originalFileName) async {
+    BuildContext context, String fileUrl, String? originalFileName,
+    {String? token}) async {
   final uri = Uri.parse(_absoluteMediaUrl(fileUrl));
   var opened = false;
   try {
-    final fileName = (originalFileName ?? '').trim().isNotEmpty
+    var fileName = (originalFileName ?? '').trim().isNotEmpty
         ? originalFileName!.trim()
         : Uri.decodeComponent(uri.pathSegments.last);
-    opened = await triggerFileDownload(uri.toString(), fileName);
+    var downloadUri = uri;
+    final guideFileId = guideFileIdFromUrl(fileUrl, kApi);
+    if (guideFileId != null) {
+      final activeToken = token ??
+          (await SharedPreferences.getInstance()).getString('token') ??
+          '';
+      final file =
+          await loadGuideFile(api: kApi, token: activeToken, id: guideFileId);
+      downloadUri = file.downloadUrl;
+      fileName = file.fileName;
+    }
+    opened = await triggerFileDownload(downloadUri.toString(), fileName);
   } catch (_) {
     opened = false;
   }
@@ -1481,7 +1511,8 @@ class _OfficeDocumentScreenState extends State<_OfficeDocumentScreen> {
                   tooltip: 'הורדה',
                   icon: const Icon(Icons.download_outlined),
                   onPressed: () => _downloadChatFile(
-                      context, widget.fileUrl, widget.fileName)),
+                      context, widget.fileUrl, widget.fileName,
+                      token: widget.token)),
             ]),
         body: FutureBuilder<Map<String, dynamic>>(
           future: _preview,
@@ -1507,7 +1538,8 @@ class _OfficeDocumentScreenState extends State<_OfficeDocumentScreen> {
                             icon: const Icon(Icons.download_outlined),
                             label: const Text('הורדת הקובץ'),
                             onPressed: () => _downloadChatFile(
-                                context, widget.fileUrl, widget.fileName)),
+                                context, widget.fileUrl, widget.fileName,
+                                token: widget.token)),
                       ])));
             }
             final data = snapshot.data!;
@@ -1763,7 +1795,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.14';
+const kVersion = '1.3.24';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -1822,11 +1854,25 @@ SnackBar _contentWarningSnackBar(String message) => SnackBar(
       ]),
     );
 
-bool _looksLikeSticker(String text) {
-  final value = text.trim();
-  return value.isNotEmpty &&
-      value.runes.length <= 5 &&
-      !RegExp(r'[A-Za-z0-9א-ת]').hasMatch(value);
+void _insertExpressionText(
+  TextEditingController controller,
+  String text,
+  TextEditingValue beforePicker,
+) {
+  final current = controller.value;
+  // Opening a modal moves focus away from the composer. Keep its original
+  // cursor unless the draft itself changed while the picker was open.
+  final selection = current.text == beforePicker.text
+      ? beforePicker.selection
+      : current.selection;
+  final valid = selection.isValid && selection.end <= current.text.length;
+  final start = valid ? selection.start : current.text.length;
+  final end = valid ? selection.end : start;
+  controller.value = current.copyWith(
+    text: current.text.replaceRange(start, end, text),
+    selection: TextSelection.collapsed(offset: start + text.length),
+    composing: TextRange.empty,
+  );
 }
 
 enum _FileUploadOutcome { approved, rejected, pending, scanBot, failed }
@@ -2077,6 +2123,7 @@ class _PersistentMediaImage extends StatefulWidget {
   final WidgetBuilder? errorBuilder;
 
   const _PersistentMediaImage({
+    super.key,
     required this.url,
     this.width,
     this.height,
@@ -2129,6 +2176,8 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<Uint8List?>(
+      // A reused row must not retain the previous URL's image while loading.
+      key: ValueKey(widget.url),
       future: _bytes,
       builder: (context, snapshot) {
         final bytes = snapshot.data;
@@ -5457,7 +5506,12 @@ class _AuthScreenState extends State<AuthScreen> {
 // ── Phone Setup Screen (after Google Sign-In) ────────────────────
 class GoogleDriveBackupOfferScreen extends StatefulWidget {
   final String token;
-  const GoogleDriveBackupOfferScreen({super.key, required this.token});
+  final bool returnToPrevious;
+  const GoogleDriveBackupOfferScreen({
+    super.key,
+    required this.token,
+    this.returnToPrevious = false,
+  });
 
   @override
   State<GoogleDriveBackupOfferScreen> createState() =>
@@ -5509,6 +5563,10 @@ class _GoogleDriveBackupOfferScreenState
   }
 
   Future<void> _continue() async {
+    if (widget.returnToPrevious) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('token', widget.token);
     if (!mounted) return;
@@ -6901,6 +6959,82 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 }
 
 // ── Mandatory age completion for legacy beta accounts ────────────
+Map<String, dynamic> _birthDateResponseData(http.Response response) {
+  try {
+    final data = jsonDecode(response.body);
+    return data is Map<String, dynamic> ? data : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+int _birthDateRetryAfter(http.Response response) {
+  if (response.statusCode != 429) return 0;
+  final header = response.headers['retry-after'];
+  final seconds = int.tryParse(header ?? '');
+  if (seconds != null) return math.max(0, seconds);
+  if (header != null) {
+    try {
+      return math.max(
+        0,
+        (parseHttpDate(header).difference(DateTime.now()).inMilliseconds / 1000)
+            .ceil(),
+      );
+    } catch (_) {}
+  }
+  final bodySeconds = _birthDateResponseData(response)['retryAfterSeconds'];
+  return bodySeconds is num ? math.max(0, bodySeconds.ceil()) : 60;
+}
+
+class _BirthDateCheckFailure implements Exception {
+  final String message;
+  final int retryAfterSeconds;
+  final bool requiresLogin;
+
+  const _BirthDateCheckFailure(
+    this.message, {
+    this.retryAfterSeconds = 0,
+    this.requiresLogin = false,
+  });
+}
+
+mixin _BirthDateRetryCooldown<T extends StatefulWidget> on State<T> {
+  Timer? _retryTimer;
+  DateTime? _retryDeadline;
+  int _remainingRetrySeconds = 0;
+
+  int get _retrySeconds => _retryDeadline == null
+      ? 0
+      : math.min(
+          _remainingRetrySeconds,
+          math.max(
+            0,
+            (_retryDeadline!.difference(DateTime.now()).inMilliseconds / 1000)
+                .ceil(),
+          ),
+        );
+
+  void _startRetryCooldown(int seconds) {
+    _retryTimer?.cancel();
+    _remainingRetrySeconds = seconds;
+    _retryDeadline = DateTime.now().add(Duration(seconds: seconds));
+    if (seconds <= 0) return;
+    _retryTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return timer.cancel();
+      setState(
+        () => _remainingRetrySeconds = math.max(0, seconds - timer.tick),
+      );
+      if (_retrySeconds == 0) timer.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
+}
+
 class MainShell extends StatefulWidget {
   final String token;
   const MainShell({super.key, required this.token});
@@ -6918,18 +7052,60 @@ class _MainShellState extends State<MainShell> {
     _birthDateReady = _checkBirthDate();
   }
 
+  @override
+  void didUpdateWidget(covariant MainShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.token != widget.token) {
+      _birthDateReady = _checkBirthDate();
+    }
+  }
+
   Future<bool> _checkBirthDate() async {
     try {
-      final response = await http.get(
-        Uri.parse('$kApi/registration-status'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
-      ).timeout(const Duration(seconds: 15));
-      if (response.statusCode != 200) return false;
-      final status = jsonDecode(response.body) as Map<String, dynamic>;
-      return status['birthDateMissing'] != true;
+      final response = await http
+          .get(
+            Uri.parse('$kApi/registration-status'),
+            headers: {'Authorization': 'Bearer ${widget.token}'},
+          )
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode == 401) {
+        throw const _BirthDateCheckFailure(
+          'יש להתחבר מחדש כדי להמשיך.',
+          requiresLogin: true,
+        );
+      }
+      if (response.statusCode == 429) {
+        throw _BirthDateCheckFailure(
+          'בוצעו יותר מדי בקשות. אפשר לנסות שוב לאחר ההמתנה.',
+          retryAfterSeconds: _birthDateRetryAfter(response),
+        );
+      }
+      final status = _birthDateResponseData(response);
+      if (response.statusCode == 200 && status['birthDateMissing'] is bool) {
+        return status['birthDateMissing'] == false;
+      }
+      throw const _BirthDateCheckFailure(
+        'לא ניתן לבדוק כרגע את פרטי החשבון. נסה שוב.',
+      );
+    } on _BirthDateCheckFailure {
+      rethrow;
     } catch (_) {
-      return false;
+      throw const _BirthDateCheckFailure(
+        'לא ניתן להתחבר לשרת. בדוק את החיבור ונסה שוב.',
+      );
     }
+  }
+
+  Future<void> _signInAgain() async {
+    final token = widget.token;
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted || widget.token != token) return;
+    if (prefs.getString('token') == token) await prefs.remove('token');
+    if (!mounted || widget.token != token) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const AuthScreen()),
+    );
   }
 
   Future<void> _confirmExit() async {
@@ -6958,30 +7134,128 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) => PopScope(
-        canPop: kIsWeb,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop && !kIsWeb) _confirmExit();
-        },
-        child: FutureBuilder<bool>(
-          future: _birthDateReady,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState != ConnectionState.done) {
-              return const Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              );
-            }
-            if (snapshot.data != true) {
-              return _CompleteBirthDateScreen(
-                token: widget.token,
-                onCompleted: () => setState(() {
+    canPop: kIsWeb,
+    onPopInvokedWithResult: (didPop, _) {
+      if (!didPop && !kIsWeb) _confirmExit();
+    },
+    child: KeyedSubtree(
+      key: ValueKey(widget.token),
+      child: FutureBuilder<bool>(
+        future: _birthDateReady,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (snapshot.hasError) {
+            return _BirthDateStatusErrorScreen(
+              key: ValueKey(snapshot.error),
+              failure: snapshot.error is _BirthDateCheckFailure
+                  ? snapshot.error! as _BirthDateCheckFailure
+                  : const _BirthDateCheckFailure(
+                      'לא ניתן לבדוק כרגע את פרטי החשבון. נסה שוב.',
+                    ),
+              onRetry: () => setState(() {
+                _birthDateReady = _checkBirthDate();
+              }),
+              onSignIn: _signInAgain,
+            );
+          }
+          if (snapshot.data == false) {
+            final token = widget.token;
+            return _CompleteBirthDateScreen(
+              token: token,
+              onCompleted: () {
+                if (!mounted || widget.token != token) return;
+                setState(() {
                   _birthDateReady = Future.value(true);
-                }),
-              );
-            }
-            return _MainShellContent(token: widget.token);
-          },
+                });
+              },
+            );
+          }
+          return _MainShellContent(token: widget.token);
+        },
+      ),
+    ),
+  );
+}
+
+class _BirthDateStatusErrorScreen extends StatefulWidget {
+  final _BirthDateCheckFailure failure;
+  final VoidCallback onRetry;
+  final VoidCallback onSignIn;
+
+  const _BirthDateStatusErrorScreen({
+    super.key,
+    required this.failure,
+    required this.onRetry,
+    required this.onSignIn,
+  });
+
+  @override
+  State<_BirthDateStatusErrorScreen> createState() =>
+      _BirthDateStatusErrorScreenState();
+}
+
+class _BirthDateStatusErrorScreenState
+    extends State<_BirthDateStatusErrorScreen>
+    with _BirthDateRetryCooldown {
+  @override
+  void initState() {
+    super.initState();
+    _startRetryCooldown(widget.failure.retryAfterSeconds);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: kBg,
+    body: SafeArea(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_off_outlined, size: 64, color: kPrimary),
+                const SizedBox(height: 20),
+                const Text(
+                  'בדיקת פרטי החשבון',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                Text(widget.failure.message, textAlign: TextAlign.center),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _retrySeconds > 0 ? null : widget.onRetry,
+                    child: Text(
+                      _retrySeconds > 0
+                          ? 'ניסיון נוסף בעוד $_retrySeconds שניות'
+                          : 'נסה שוב',
+                    ),
+                  ),
+                ),
+                if (widget.failure.requiresLogin)
+                  TextButton(
+                    onPressed: widget.onSignIn,
+                    child: const Text('כניסה מחדש'),
+                  ),
+                const SizedBox(height: 12),
+                const Text(
+                  'לסיוע: support@betshuva.com',
+                  style: TextStyle(color: kSubtext),
+                ),
+              ],
+            ),
+          ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _CompleteBirthDateScreen extends StatefulWidget {
@@ -6998,12 +7272,14 @@ class _CompleteBirthDateScreen extends StatefulWidget {
       _CompleteBirthDateScreenState();
 }
 
-class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen> {
+class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen>
+    with _BirthDateRetryCooldown {
   DateTime? _birthDate;
   bool _loading = false;
   String? _error;
 
   Future<void> _save() async {
+    if (_loading || _retrySeconds > 0) return;
     if (_birthDate == null) {
       setState(() => _error = 'יש לבחור תאריך לידה');
       return;
@@ -7023,19 +7299,18 @@ class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen> {
             body: jsonEncode({'birthDate': _formatBirthDate(_birthDate!)}),
           )
           .timeout(const Duration(seconds: 20));
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final data = _birthDateResponseData(response);
       if (!mounted) return;
       if (response.statusCode == 200) {
         widget.onCompleted();
       } else if (response.statusCode == 409 &&
           data['code'] == 'BIRTH_DATE_ALREADY_SET') {
-        // The initial status request may have failed during a brief restart.
-        // A 409 here is an authenticated confirmation that this account
-        // already has an immutable birth date, so do not trap it in the
-        // legacy completion screen.
+        // Another session may have completed this account's immutable birth
+        // date while this form was open. The authenticated server confirms it.
         widget.onCompleted();
       } else {
         setState(() {
+          _startRetryCooldown(_birthDateRetryAfter(response));
           _error = data['error'] as String? ?? 'שמירת תאריך הלידה נכשלה';
           _loading = false;
         });
@@ -7052,59 +7327,75 @@ class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        backgroundColor: kBg,
-        body: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(28),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 440),
-                child: Column(children: [
-                  const Icon(Icons.shield_outlined, size: 72, color: kPrimary),
-                  const SizedBox(height: 20),
-                  const Text('השלמת הגנת גיל',
-                      style:
-                          TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'כדי להמשיך יש להזין תאריך לידה אמיתי. לא ניתן לשנות אותו באפליקציה לאחר השמירה. בגיל 13–17 יופעל אוטומטית חשבון נוער מוגן.',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 24),
-                  _BirthDateField(
+    backgroundColor: kBg,
+    body: SafeArea(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Column(
+              children: [
+                const Icon(Icons.shield_outlined, size: 72, color: kPrimary),
+                const SizedBox(height: 20),
+                const Text(
+                  'השלמת הגנת גיל',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'כדי להמשיך יש להזין תאריך לידה אמיתי. לא ניתן לשנות אותו באפליקציה לאחר השמירה. בגיל 13–17 יופעל אוטומטית חשבון נוער מוגן.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                IgnorePointer(
+                  ignoring: _loading,
+                  child: _BirthDateField(
                     value: _birthDate,
                     onChanged: (value) => setState(() => _birthDate = value),
                   ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    Text(_error!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.red)),
-                  ],
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _loading ? null : _save,
-                      child: _loading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
-                            )
-                          : const Text('שמירה והמשך'),
-                    ),
-                  ),
+                ),
+                if (_error != null) ...[
                   const SizedBox(height: 12),
-                  const Text('לסיוע: support@betshuva.com',
-                      style: TextStyle(color: kSubtext)),
-                ]),
-              ),
+                  Text(
+                    _error!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _loading || _retrySeconds > 0 ? null : _save,
+                    child: _loading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Text(
+                            _retrySeconds > 0
+                                ? 'שמירה אפשרית בעוד $_retrySeconds שניות'
+                                : 'שמירה והמשך',
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'לסיוע: support@betshuva.com',
+                  style: TextStyle(color: kSubtext),
+                ),
+              ],
             ),
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 // ── Main Shell (Bottom Nav) ───────────────────────────────────────
@@ -7117,9 +7408,12 @@ class _MainShellContent extends StatefulWidget {
 
 class _MainShellContentState extends State<_MainShellContent> {
   int _idx = 0;
+  final _desktopContentNavigatorKey = GlobalKey<NavigatorState>();
   int _conversationFilterIndex = 0;
   final GlobalKey<_ConversationsScreenState> _conversationsKey =
       GlobalKey<_ConversationsScreenState>();
+  final GlobalKey<_GroupsScreenState> _groupsKey =
+      GlobalKey<_GroupsScreenState>();
   Map<String, dynamic>? _desktopRecipient;
   Map<String, dynamic>? _desktopGroup;
   Map<String, dynamic>? _desktopListing;
@@ -7141,7 +7435,41 @@ class _MainShellContentState extends State<_MainShellContent> {
   final Map<String, Timer> _userTypingTimers = {};
   final List<Map<String, dynamic>> _messageRequests = [];
   bool _showingMessageRequest = false;
+  final List<Map<String, dynamic>> _phoneRequests = [];
+  final Set<String> _deferredPhoneRequests = {};
+  bool _showingPhoneRequest = false;
   bool _directAdminScreenOpened = false;
+  int _usersLoadGeneration = 0;
+  late final StreamSubscription<ConversationChange>
+      _conversationChangesSubscription;
+
+  Future<void> _conversationListChanged(ConversationChange change) async {
+    if (!mounted || change.accountId != _accountId) return;
+    _usersLoadGeneration++;
+    setState(() {
+      if (change.kind == 'chat') {
+        _users = _users
+            .map((user) => user['id'] == change.targetId
+                ? conversationListAfter(user, change.result)
+                : user)
+            .toList();
+        _unreadCounts.remove(change.targetId);
+      } else {
+        _groupUnreadCounts.remove(change.targetId);
+      }
+    });
+    _conversationsKey.currentState?._conversationChanged(change);
+    _groupsKey.currentState?._conversationChanged(change);
+    final prefs = await SharedPreferences.getInstance();
+    if (change.result.clearedAt != null) {
+      await prefs.remove(change.kind == 'group'
+          ? _groupMessagesCacheKey(_accountId, change.targetId)
+          : 'cache_msgs_${_accountId}_${change.targetId}');
+    }
+    final cacheKey = _usersCacheKey;
+    if (cacheKey != null) await prefs.setString(cacheKey, jsonEncode(_users));
+    if (mounted) await _refreshConversationState();
+  }
 
   String? get _accountId => _me?['id']?.toString();
   String? get _usersCacheKey =>
@@ -7164,7 +7492,8 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   List<Map<String, dynamic>> _withoutScanBot(List<Map<String, dynamic>> users) {
     final sorted =
-        users.where((user) => user['id']?.toString() != kScanBotId).toList();
+        users.where((user) => user['id']?.toString() != kScanBotId)
+          .map(sanitizedPhoneContact).toList();
     sorted.sort((a, b) {
       final aTime = DateTime.tryParse(a['last_message_at']?.toString() ?? '');
       final bTime = DateTime.tryParse(b['last_message_at']?.toString() ?? '');
@@ -7181,6 +7510,8 @@ class _MainShellContentState extends State<_MainShellContent> {
   @override
   void initState() {
     super.initState();
+    _conversationChangesSubscription =
+        conversationChanges.stream.listen(_conversationListChanged);
     registerAppScreenshotMenu(this, _openScreenshotThroughIsrael);
     appScreenshotToken.value = widget.token;
     appScreenshotDestination.value =
@@ -7216,6 +7547,7 @@ class _MainShellContentState extends State<_MainShellContent> {
     _registerFcmToken();
     _loadAdminPerm();
     _loadMessageRequests();
+    _loadPhoneRequests();
     WidgetsBinding.instance.addObserver(_lifecycleObserver);
     // Reconcile badges periodically in case a browser tab missed a socket event.
     _usersRefreshTimer = Timer.periodic(
@@ -7349,6 +7681,7 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   @override
   void dispose() {
+    _conversationChangesSubscription.cancel();
     unregisterAppScreenshotMenu(this);
     appScreenshotIssueOpened = null;
     appScreenshotTargetSender = null;
@@ -7399,6 +7732,7 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   void _openScreenshotThroughIsrael() {
+    _closeDesktopContentRoutes();
     final guide = _users.cast<Map<String, dynamic>?>().firstWhere(
           (user) => user?['id']?.toString() == kSystemGuideId,
           orElse: () => <String, dynamic>{
@@ -7453,7 +7787,8 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _showNextMessageRequest() async {
-    if (!mounted || _showingMessageRequest || _messageRequests.isEmpty) return;
+    if (!mounted || _showingMessageRequest || _showingPhoneRequest) return;
+    if (_messageRequests.isEmpty) { _showNextPhoneRequest(); return; }
     _showingMessageRequest = true;
     final request = _messageRequests.first;
     final senderName =
@@ -7466,6 +7801,8 @@ class _MainShellContentState extends State<_MainShellContent> {
       ...readFilter(request['my_filter'])
     };
     final counterpartFilter = readFilter(request['expected_filter']);
+    final phoneChoice = PhoneSharingController();
+    final senderId = (request['sender_id'] ?? request['senderId'])?.toString();
     Map<String, dynamic>? decision;
     try {
       decision = await showDialog<Map<String, dynamic>>(
@@ -7502,6 +7839,13 @@ class _MainShellContentState extends State<_MainShellContent> {
                       onPersonalFilterChanged: (updated) =>
                           setDialogState(() => selectedFilter = updated),
                     ),
+                    if (_isPersonalPhoneContact(senderId, _accountId))
+                      PhoneSharingPanel(
+                        api: kApi, token: widget.token, contactId: senderId!,
+                        contactName: senderName.toString(), compact: true,
+                        controller: phoneChoice, initialChoice: true,
+                        onChanged: () => setDialogState(() {}),
+                      ),
                   ],
                 ),
               ),
@@ -7511,9 +7855,10 @@ class _MainShellContentState extends State<_MainShellContent> {
                 onPressed: () => Navigator.pop(dialogContext, {
                   'accepted': true,
                   'filter': selectedFilter,
+                  'phoneChoice': phoneChoice.confirmationPayload,
                 }),
                 icon: const Icon(Icons.person_add_outlined),
-                label: const Text('אשר והוסף כחבר'),
+                label: Text(phoneChoice.confirmationLabel(saveLabel: 'אשר והוסף כחבר')),
               ),
               TextButton(
                 onPressed: () =>
@@ -7544,7 +7889,9 @@ class _MainShellContentState extends State<_MainShellContent> {
                   'Authorization': 'Bearer ${widget.token}',
                   'Content-Type': 'application/json',
                 },
-                body: jsonEncode({'filter': chosenFilter}));
+                body: jsonEncode({'filter': chosenFilter,
+                  ...Map<String, dynamic>.from(decision?['phoneChoice'] as Map? ?? {}),
+                }));
         if (response.statusCode != 200) throw Exception('accept failed');
         await _refreshConversationState();
       } else {
@@ -7570,6 +7917,62 @@ class _MainShellContentState extends State<_MainShellContent> {
     }
     _showingMessageRequest = false;
     _showNextMessageRequest();
+  }
+
+  Future<void> _loadPhoneRequests() async {
+    try {
+      final response = await http.get(Uri.parse('$kApi/phone-sharing/requests'),
+        headers: {'Authorization': 'Bearer ${widget.token}', 'Cache-Control': 'no-store'});
+      if (!mounted || response.statusCode != 200) return;
+      final raw = jsonDecode(response.body);
+      final rows = raw is List ? raw : raw is Map ? raw['requests'] : null;
+      if (rows is! List) return;
+      _phoneRequests..clear()..addAll(rows.whereType<Map>().map((row) => Map<String, dynamic>.from(row)));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _showNextPhoneRequest();
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _showNextPhoneRequest() async {
+    if (!mounted || _showingPhoneRequest || _showingMessageRequest || _messageRequests.isNotEmpty) return;
+    final pending = _phoneRequests.where((item) => !_deferredPhoneRequests.contains(
+        '${item['user_id']}:${item['requested_at']}')).toList();
+    if (pending.isEmpty) return;
+    final request = pending.first;
+    final id = request['user_id']?.toString();
+    if (id == null || id == _accountId) return;
+    _showingPhoneRequest = true;
+    try {
+      final decision = await showDialog<String>(context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('בקשה למספר הטלפון שלך'),
+          content: Text('${request['name'] ?? 'החבר'} מבקש לקבל את מספר הטלפון שלך. שיתוף יתבצע רק אם תאשר.'),
+          actions: [
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, 'approve'),
+              child: const Text('אשר ושתף את הטלפון שלי')),
+            TextButton(onPressed: () => Navigator.pop(dialogContext, 'decline'),
+              child: const Text('דחה')),
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('מאוחר יותר')),
+          ],
+        ));
+      if (decision != null) {
+        await updatePhoneSharing(kApi, widget.token, id, {'phone_response': decision});
+        await _loadUsers();
+        await _loadPhoneRequests();
+      } else {
+        _deferredPhoneRequests.add('$id:${request['requested_at']}');
+      }
+    } catch (_) {
+      _deferredPhoneRequests.add('$id:${request['requested_at']}');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('לא ניתן לעדכן כעת את שיתוף הטלפון')));
+      }
+    } finally {
+      _showingPhoneRequest = false;
+    }
+    if (mounted) _showNextMessageRequest();
   }
 
   Future<void> _registerFcmToken() async {
@@ -7658,13 +8061,27 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _refreshConversationState() async {
+    final conversations = _conversationsKey.currentState;
+    final groups = _groupsKey.currentState;
     await Future.wait([
       _loadUsers(),
       _loadUnreadCounts(),
       _loadGroupUnreadCounts(),
       _loadMessageRequests(),
+      _loadPhoneRequests(),
+      if (conversations != null) conversations._loadGroups(force: true),
+      if (groups != null) groups._loadGroups(),
     ]);
     if (mounted) await reconcileReadNotifications(kApi, widget.token);
+  }
+
+  void _updateGroupMemberCount(String? groupId, int count) {
+    if (!mounted || groupId == null) return;
+    _conversationsKey.currentState?.updateGroupMemberCount(groupId, count);
+    _groupsKey.currentState?.updateGroupMemberCount(groupId, count);
+    if (_desktopGroup?['id']?.toString() == groupId) {
+      setState(() => _desktopGroup!['member_count'] = count);
+    }
   }
 
   void _handleAppResume() {
@@ -7674,8 +8091,10 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   void _openGroup(Map<String, dynamic> group, bool openMembers) {
+    _closeDesktopContentRoutes();
     final groupId = group['id'] as String;
     setState(() {
+      if (_idx >= 3) _idx = 0;
       _desktopRecipient = null;
       _desktopGroup = group;
       _desktopListing = null;
@@ -7708,10 +8127,10 @@ class _MainShellContentState extends State<_MainShellContent> {
     });
   }
 
-  Future<void> _openMarketplaceConversation(
-      Map<String, dynamic> recipient) async {
+  Future<void> _openContactConversation(Map<String, dynamic> recipient) async {
     await _loadUsers();
     if (!mounted) return;
+    _closeDesktopContentRoutes();
     final recipientId = recipient['id']?.toString();
     final refreshed = _users.where(
       (user) => user['id']?.toString() == recipientId,
@@ -7724,8 +8143,12 @@ class _MainShellContentState extends State<_MainShellContent> {
       _desktopGroup = null;
       _desktopListing = null;
       _desktopDocument = null;
+      _desktopIssueId = null;
       _openGroupMembersOnSelect = false;
+      _conversationFilterIndex = 0;
+      _unreadCounts.remove(recipientId);
     });
+    _conversationsKey.currentState?.selectFilter(0);
     if (MediaQuery.sizeOf(context).width < 900) {
       final selectedRecipient = _desktopRecipient!;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -7778,9 +8201,11 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _loadUsers() async {
+    final generation = _usersLoadGeneration;
     // Load from cache first for instant offline display
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (!mounted || generation != _usersLoadGeneration) return;
       // Never reuse the old global cache: it may belong to a deleted account.
       await prefs.remove('cache_users');
       final cacheKey = _usersCacheKey;
@@ -7796,15 +8221,24 @@ class _MainShellContentState extends State<_MainShellContent> {
         Uri.parse('$kApi/users'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
+      if (!mounted || generation != _usersLoadGeneration) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         if (mounted) {
-          setState(() =>
-              _users = _withoutScanBot(data.cast<Map<String, dynamic>>()));
+          setState(() {
+            _users = _withoutScanBot(data.cast<Map<String, dynamic>>());
+            final selectedId = _desktopRecipient?['id'];
+            if (selectedId != null) {
+              final fresh = _users.where((user) => user['id'] == selectedId);
+              _desktopRecipient = fresh.isNotEmpty ? fresh.first
+                : {..._desktopRecipient!, 'phone': null, 'phone_visibility': 'hidden'};
+            }
+          });
         }
         final prefs = await SharedPreferences.getInstance();
+        if (!mounted || generation != _usersLoadGeneration) return;
         final cacheKey = _usersCacheKey;
-        if (cacheKey != null) await prefs.setString(cacheKey, res.body);
+        if (cacheKey != null) await prefs.setString(cacheKey, jsonEncode(_users));
         await _updateAndroidShareTargets();
       } else if (res.statusCode == 403) {
         _requirePhoneSetup();
@@ -7850,6 +8284,14 @@ class _MainShellContentState extends State<_MainShellContent> {
     });
 
     // אדמין מחק את המשתמש בזמן שהוא מחובר
+    _socket!.on('conversation:changed', (data) {
+      if (data is! Map || _accountId == null) return;
+      _conversationListChanged(ConversationChange(
+          _accountId!,
+          data['kind']?.toString() ?? '',
+          data['targetId']?.toString() ?? '',
+          ConversationCleanupResult.fromJson(Map<String, dynamic>.from(data))));
+    });
     _socket!.on('force_logout', (data) {
       final reason = data is Map ? data['reason']?.toString() ?? '' : '';
       _forceLogout(showRegistration: reason.contains('נמחק'));
@@ -7860,6 +8302,13 @@ class _MainShellContentState extends State<_MainShellContent> {
       // so the approval screen always has both filter columns, exactly like a
       // group invitation, instead of silently defaulting missing values.
       _loadMessageRequests();
+    });
+    _socket!.on('contact:phone-sharing', (data) {
+      if (!mounted) return;
+      final id = data is Map ? data['userId']?.toString() : null;
+      if (id != null) phoneSharingChanges.add(id);
+      _loadUsers();
+      _loadPhoneRequests();
     });
 
     // הודעה חדשה בזמן שהאפליקציה פתוחה — עדכן badge
@@ -7902,6 +8351,16 @@ class _MainShellContentState extends State<_MainShellContent> {
         if (mounted) setState(() => _groupTypingNames.remove(groupId));
       });
     });
+  }
+
+  void _closeDesktopContentRoutes() {
+    _desktopContentNavigatorKey.currentState
+        ?.popUntil((route) => route.isFirst);
+  }
+
+  void _selectMainNavigation(int index) {
+    _closeDesktopContentRoutes();
+    setState(() => _idx = index);
   }
 
   Future<void> _logout() async {
@@ -7965,6 +8424,8 @@ class _MainShellContentState extends State<_MainShellContent> {
     final totalUnreadGroups = _groupUnreadCounts.values
         .where((count) => count > 0)
         .fold<int>(0, (total, count) => total + count);
+    final isDesktop = MediaQuery.sizeOf(context).width >= 900;
+    final mainNavigationIndex = _idx >= 3 ? 0 : _idx.clamp(0, 2);
 
     Widget navigationIcon(IconData icon, int unreadCount) => Stack(
           clipBehavior: Clip.none,
@@ -8013,7 +8474,9 @@ class _MainShellContentState extends State<_MainShellContent> {
       groupTypingNames: _groupTypingNames,
       typingUserIds: _typingUserIds,
       onLogout: _logout,
-      onSettings: () => setState(() => _idx = 3),
+      onSettings: () => _selectMainNavigation(3),
+      onPersonalMedia: () => _selectMainNavigation(4),
+      personalMediaSelected: _idx == 4,
       onContactsChanged: _loadUsers,
       onVoiceCall: (user) {
         _voiceCalls?.startCall(
@@ -8021,17 +8484,19 @@ class _MainShellContentState extends State<_MainShellContent> {
           user['name']?.toString() ?? 'משתמש',
         );
       },
-      currentMainNavigationIndex: _idx.clamp(0, 2),
-      onMainNavigationSelected: (index) => setState(() => _idx = index),
+      currentMainNavigationIndex: mainNavigationIndex,
+      onMainNavigationSelected: _selectMainNavigation,
       onFilterChanged: (index) =>
           setState(() => _conversationFilterIndex = index),
-      selectedUserId: _desktopRecipient?['id'] as String?,
+      selectedUserId: _idx == 4 ? null : _desktopRecipient?['id'] as String?,
       onUserSelected: (user) {
+        _closeDesktopContentRoutes();
         final userId = user['id'] as String;
         if (_unreadCounts.containsKey(userId)) {
           setState(() => _unreadCounts.remove(userId));
         }
         setState(() {
+          _idx = 0;
           _desktopRecipient = user;
           _desktopGroup = null;
           _desktopListing = null;
@@ -8040,7 +8505,7 @@ class _MainShellContentState extends State<_MainShellContent> {
           _openGroupMembersOnSelect = false;
         });
       },
-      selectedGroupId: _desktopGroup?['id'] as String?,
+      selectedGroupId: _idx == 4 ? null : _desktopGroup?['id'] as String?,
       onGroupSelected: _openGroup,
       onChatOpened: (userId) {
         if (_unreadCounts.containsKey(userId)) {
@@ -8049,14 +8514,15 @@ class _MainShellContentState extends State<_MainShellContent> {
       },
     );
     final groups = GroupsScreen(
+      key: _groupsKey,
       token: widget.token,
       me: _me,
       socket: _socket,
       groupTypingNames: _groupTypingNames,
       selectedGroupId: _desktopGroup?['id'] as String?,
       onGroupSelected: _openGroup,
-      currentMainNavigationIndex: _idx.clamp(0, 2),
-      onMainNavigationSelected: (index) => setState(() => _idx = index),
+      currentMainNavigationIndex: mainNavigationIndex,
+      onMainNavigationSelected: _selectMainNavigation,
     );
     final screens = [
       conversations,
@@ -8065,9 +8531,9 @@ class _MainShellContentState extends State<_MainShellContent> {
         token: widget.token,
         me: _me,
         socket: _socket,
-        onConversationStarted: _openMarketplaceConversation,
-        currentMainNavigationIndex: _idx.clamp(0, 2),
-        onMainNavigationSelected: (index) => setState(() => _idx = index),
+        onConversationStarted: _openContactConversation,
+        currentMainNavigationIndex: mainNavigationIndex,
+        onMainNavigationSelected: _selectMainNavigation,
       ),
       SettingsScreen(
           me: _me,
@@ -8077,125 +8543,164 @@ class _MainShellContentState extends State<_MainShellContent> {
           onAccountDeleted: _logoutAfterAccountDeletion,
           onProfileChanged: _loadMyProfile,
           adminPerm: _adminPerm),
+      PersonalMediaScreen(
+        token: widget.token,
+        embedded: isDesktop,
+        onClose: () => _selectMainNavigation(0),
+      ),
     ];
 
-    final isDesktop = MediaQuery.sizeOf(context).width >= 900;
-    final body = isDesktop && (_idx == 0 || _idx == 1)
+    final body = isDesktop && (_idx == 0 || _idx == 1 || _idx >= 3)
         ? Row(
             children: [
-              SizedBox(width: 410, child: _idx == 0 ? conversations : groups),
+              SizedBox(width: 410, child: _idx == 1 ? groups : conversations),
               const VerticalDivider(
                   width: 1, thickness: 1, color: Color(0xFFD9DEE1)),
               Expanded(
-                child: _desktopIssueId != null
-                    ? OpenIssuesScreen(
-                        key: ValueKey('desktop-issue:$_desktopIssueId'),
-                        token: widget.token,
-                        initialIssueId: _desktopIssueId,
-                        embedded: true,
-                        onClose: () => setState(() => _desktopIssueId = null),
-                      )
-                    : _desktopDocument != null
-                        ? _desktopDocument!
-                        : _desktopListing != null
-                            ? ListingDetailScreen(
-                                key: ValueKey(
-                                    'chat-listing:${_desktopListing!['id']}'),
-                                item: _desktopListing!,
-                                token: widget.token,
-                                me: _me,
-                                socket: _socket,
-                                embedded: true,
-                                onClose: () =>
-                                    setState(() => _desktopListing = null),
-                                onConversationStarted:
-                                    _openMarketplaceConversation,
-                              )
-                            : _idx == 0
-                                ? (_desktopGroup != null
-                                    ? GroupChatScreen(
-                                        key: ValueKey(
-                                            'chat-tab:${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
-                                        group: _desktopGroup!,
-                                        me: _me,
-                                        token: widget.token,
-                                        socket: _socket,
-                                        embedded: true,
-                                        onDocumentOpen: _openDesktopDocument,
-                                        openAddMembersOnStart:
-                                            _openGroupMembersOnSelect,
-                                        onMembersChanged: (count) =>
-                                            setState(() {
-                                          _desktopGroup?['member_count'] =
-                                              count;
-                                        }),
-                                        onClose: () => setState(() {
-                                          _desktopGroup = null;
-                                          _desktopDocument = null;
-                                          _openGroupMembersOnSelect = false;
-                                        }),
-                                      )
-                                    : _desktopRecipient == null
-                                        ? const _DesktopChatWelcome()
-                                        : ChatScreen(
-                                            key: ValueKey(
-                                                _desktopRecipient!['id']),
-                                            token: widget.token,
-                                            me: _me,
-                                            recipient: _desktopRecipient!,
-                                            socket: _socket,
-                                            onVoiceCall: () =>
-                                                _voiceCalls?.startCall(
-                                              _desktopRecipient!['id']
-                                                  as String,
-                                              _desktopRecipient!['name']
-                                                      ?.toString() ??
-                                                  'משתמש',
-                                            ),
-                                            embedded: true,
-                                            onDocumentOpen:
-                                                _openDesktopDocument,
-                                            onBlocked: () {
-                                              final blockedId =
-                                                  _desktopRecipient!['id']
-                                                      ?.toString();
-                                              setState(() {
-                                                _users.removeWhere((user) =>
-                                                    user['id']?.toString() ==
-                                                    blockedId);
-                                                _unreadCounts.remove(blockedId);
-                                              });
-                                              _loadUsers();
-                                            },
-                                            onClose: () => setState(() {
-                                              _desktopRecipient = null;
-                                              _desktopDocument = null;
-                                            }),
-                                          ))
-                                : (_desktopGroup == null
-                                    ? const _DesktopGroupWelcome()
-                                    : GroupChatScreen(
-                                        key: ValueKey(
-                                            '${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
-                                        group: _desktopGroup!,
-                                        me: _me,
-                                        token: widget.token,
-                                        socket: _socket,
-                                        embedded: true,
-                                        onDocumentOpen: _openDesktopDocument,
-                                        openAddMembersOnStart:
-                                            _openGroupMembersOnSelect,
-                                        onMembersChanged: (count) =>
-                                            setState(() {
-                                          _desktopGroup?['member_count'] =
-                                              count;
-                                        }),
-                                        onClose: () => setState(() {
-                                          _desktopGroup = null;
-                                          _desktopDocument = null;
-                                          _openGroupMembersOnSelect = false;
-                                        }),
-                                      )),
+                child: _DesktopContentPane(
+                  navigatorKey: _desktopContentNavigatorKey,
+                  child: _idx == 4
+                      ? screens[4]
+                      : _idx == 3
+                          ? Navigator(
+                              key:
+                                  const ValueKey('desktop-settings-navigation'),
+                              pages: [
+                                MaterialPage<void>(
+                                  key: const ValueKey('desktop-settings-home'),
+                                  child: screens[3],
+                                ),
+                              ],
+                              onDidRemovePage: (_) => setState(() => _idx = 0),
+                            )
+                          : _desktopIssueId != null
+                              ? OpenIssuesScreen(
+                                  key: ValueKey(
+                                      'desktop-issue:$_desktopIssueId'),
+                                  token: widget.token,
+                                  initialIssueId: _desktopIssueId,
+                                  embedded: true,
+                                  onClose: () =>
+                                      setState(() => _desktopIssueId = null),
+                                )
+                              : _desktopDocument != null
+                                  ? _desktopDocument!
+                                  : _desktopListing != null
+                                      ? ListingDetailScreen(
+                                          key: ValueKey(
+                                              'chat-listing:${_desktopListing!['id']}'),
+                                          item: _desktopListing!,
+                                          token: widget.token,
+                                          me: _me,
+                                          socket: _socket,
+                                          embedded: true,
+                                          onClose: () => setState(
+                                              () => _desktopListing = null),
+                                          onConversationStarted:
+                                              _openContactConversation,
+                                        )
+                                      : _idx == 0
+                                          ? (_desktopGroup != null
+                                              ? GroupChatScreen(
+                                                  key: ValueKey(
+                                                      'chat-tab:${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
+                                                  group: _desktopGroup!,
+                                                  me: _me,
+                                                  token: widget.token,
+                                                  socket: _socket,
+                                                  embedded: true,
+                                                  onDocumentOpen:
+                                                      _openDesktopDocument,
+                                                  openAddMembersOnStart:
+                                                      _openGroupMembersOnSelect,
+                                                  onMembersChanged: (count) =>
+                                                      _updateGroupMemberCount(
+                                                    _desktopGroup?['id']
+                                                        ?.toString(),
+                                                    count,
+                                                  ),
+                                                  onClose: () => setState(() {
+                                                    _desktopGroup = null;
+                                                    _desktopDocument = null;
+                                                    _openGroupMembersOnSelect =
+                                                        false;
+                                                  }),
+                                                )
+                                              : _desktopRecipient == null
+                                                  ? const _DesktopChatWelcome()
+                                                  : ChatScreen(
+                                                      key: ValueKey(
+                                                          _desktopRecipient![
+                                                              'id']),
+                                                      token: widget.token,
+                                                      me: _me,
+                                                      recipient:
+                                                          _desktopRecipient!,
+                                                      socket: _socket,
+                                                      onVoiceCall: () =>
+                                                          _voiceCalls
+                                                              ?.startCall(
+                                                        _desktopRecipient!['id']
+                                                            as String,
+                                                        _desktopRecipient![
+                                                                    'name']
+                                                                ?.toString() ??
+                                                            'משתמש',
+                                                      ),
+                                                      embedded: true,
+                                                      onDocumentOpen:
+                                                          _openDesktopDocument,
+                                                      onBlocked: () {
+                                                        final blockedId =
+                                                            _desktopRecipient![
+                                                                    'id']
+                                                                ?.toString();
+                                                        setState(() {
+                                                          _users.removeWhere(
+                                                              (user) =>
+                                                                  user['id']
+                                                                      ?.toString() ==
+                                                                  blockedId);
+                                                          _unreadCounts.remove(
+                                                              blockedId);
+                                                        });
+                                                        _loadUsers();
+                                                      },
+                                                      onClose: () =>
+                                                          setState(() {
+                                                        _desktopRecipient =
+                                                            null;
+                                                        _desktopDocument = null;
+                                                      }),
+                                                    ))
+                                          : (_desktopGroup == null
+                                              ? const _DesktopGroupWelcome()
+                                              : GroupChatScreen(
+                                                  key: ValueKey(
+                                                      '${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
+                                                  group: _desktopGroup!,
+                                                  me: _me,
+                                                  token: widget.token,
+                                                  socket: _socket,
+                                                  embedded: true,
+                                                  onDocumentOpen:
+                                                      _openDesktopDocument,
+                                                  openAddMembersOnStart:
+                                                      _openGroupMembersOnSelect,
+                                                  onMembersChanged: (count) =>
+                                                      _updateGroupMemberCount(
+                                                    _desktopGroup?['id']
+                                                        ?.toString(),
+                                                    count,
+                                                  ),
+                                                  onClose: () => setState(() {
+                                                    _desktopGroup = null;
+                                                    _desktopDocument = null;
+                                                    _openGroupMembersOnSelect =
+                                                        false;
+                                                  }),
+                                                )),
+                ),
               ),
             ],
           )
@@ -8204,6 +8709,7 @@ class _MainShellContentState extends State<_MainShellContent> {
     final navigationBar = BottomNavigationBar(
       currentIndex: _conversationFilterIndex,
       onTap: (i) {
+        _closeDesktopContentRoutes();
         setState(() {
           _idx = 0;
           _conversationFilterIndex = i;
@@ -8237,49 +8743,79 @@ class _MainShellContentState extends State<_MainShellContent> {
     );
 
     return Scaffold(
-      body: NotificationListener<_OpenIssuesNotification>(
+      body: NotificationListener<_OpenListingAiNotification>(
         onNotification: (notification) {
           if (!isDesktop) return false;
-          notification.handledInDesktopPane = true;
-          setState(() {
-            _idx = 0;
-            _desktopIssueId = notification.issueId;
-            _desktopDocument = null;
-            _desktopListing = null;
-          });
+          final navigator = _desktopContentNavigatorKey.currentState;
+          if (navigator == null) return false;
+          notification.openIn(navigator);
           return true;
         },
-        child: NotificationListener<_OpenListingNotification>(
+        child: NotificationListener<_OpenIssuesNotification>(
           onNotification: (notification) {
-            if (!isDesktop || (_idx != 0 && _idx != 1)) return false;
+            if (!isDesktop) return false;
             notification.handledInDesktopPane = true;
-            setState(() => _desktopListing = notification.listing);
+            _closeDesktopContentRoutes();
+            setState(() {
+              _idx = 0;
+              _desktopIssueId = notification.issueId;
+              _desktopDocument = null;
+              _desktopListing = null;
+            });
             return true;
           },
-          child: NotificationListener<_OpenSharedContactChatNotification>(
+          child: NotificationListener<_OpenListingNotification>(
             onNotification: (notification) {
-              if (!isDesktop) return false;
+              if (!isDesktop || (_idx != 0 && _idx != 1)) return false;
               notification.handledInDesktopPane = true;
-              final recipient = notification.recipient;
-              final recipientId = recipient['id']?.toString();
-              setState(() {
-                _idx = 0;
-                _desktopGroup = null;
-                _desktopListing = null;
-                _openGroupMembersOnSelect = false;
-                _desktopRecipient = _users.firstWhere(
-                  (user) => user['id']?.toString() == recipientId,
-                  orElse: () => recipient,
-                );
-                if (recipientId != null) _unreadCounts.remove(recipientId);
-              });
+              final navigator = _desktopContentNavigatorKey.currentState;
+              if (navigator?.canPop() == true) {
+                navigator!.push(MaterialPageRoute<void>(
+                  builder: (_) => ListingDetailScreen(
+                    item: notification.listing,
+                    token: widget.token,
+                    me: _me,
+                    socket: _socket,
+                    embedded: true,
+                    onClose: () => navigator.pop(),
+                    onConversationStarted: _openContactConversation,
+                  ),
+                ));
+                return true;
+              }
+              setState(() => _desktopListing = notification.listing);
               return true;
             },
-            child: body,
+            child: NotificationListener<_OpenSharedContactChatNotification>(
+              onNotification: (notification) {
+                if (!isDesktop) return false;
+                notification.handledInDesktopPane = true;
+                _closeDesktopContentRoutes();
+                final recipient = notification.recipient;
+                if (notification.contactSaved) {
+                  _openContactConversation(recipient);
+                  return true;
+                }
+                final recipientId = recipient['id']?.toString();
+                setState(() {
+                  _idx = 0;
+                  _desktopGroup = null;
+                  _desktopListing = null;
+                  _openGroupMembersOnSelect = false;
+                  _desktopRecipient = _users.firstWhere(
+                    (user) => user['id']?.toString() == recipientId,
+                    orElse: () => recipient,
+                  );
+                  if (recipientId != null) _unreadCounts.remove(recipientId);
+                });
+                return true;
+              },
+              child: body,
+            ),
           ),
         ),
       ),
-      bottomNavigationBar: _idx == 3
+      bottomNavigationBar: _idx >= 3 && !isDesktop
           ? null
           : isDesktop
               ? Align(
@@ -13164,6 +13700,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   Map<String, dynamic>? _selectedItem;
   bool _showPostForm = false;
   bool _showMyListings = false;
+  final _desktopContentNavigatorKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
@@ -13261,7 +13798,23 @@ class _ListingsScreenState extends State<ListingsScreen> {
     }
   }
 
+  void _closeDesktopContentRoutes() {
+    _desktopContentNavigatorKey.currentState
+        ?.popUntil((route) => route.isFirst);
+  }
+
+  void _askListingAi(Map<String, dynamic> item) {
+    final navigator = _desktopContentNavigatorKey.currentState;
+    if (MediaQuery.sizeOf(context).width >= 900 && navigator != null) {
+      _OpenListingAiNotification(item, widget.token, widget.me, widget.socket)
+          .openIn(navigator);
+      return;
+    }
+    _openListingAi(context, item, widget.token, widget.me, widget.socket);
+  }
+
   void _openPost() async {
+    _closeDesktopContentRoutes();
     if (MediaQuery.sizeOf(context).width >= 900) {
       setState(() {
         _selectedItem = null;
@@ -13286,6 +13839,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   }
 
   Future<void> _openDetail(Map<String, dynamic> item) async {
+    _closeDesktopContentRoutes();
     if (MediaQuery.sizeOf(context).width >= 900) {
       setState(() {
         _selectedItem = item;
@@ -13327,6 +13881,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
                   _selectedItem = null;
                   _showPostForm = false;
                   _showMyListings = true;
+                  _closeDesktopContentRoutes();
                 });
               } else {
                 Navigator.push(
@@ -13446,8 +14001,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
                         itemBuilder: (_, i) => _ListingCard(
                             item: _items[i],
                             selected: _selectedItem?['id'] == _items[i]['id'],
-                            onAskAi: () => _openListingAi(context, _items[i],
-                                widget.token, widget.me, widget.socket),
+                            onAskAi: () => _askListingAi(_items[i]),
                             onTap: () => _openDetail(_items[i])),
                       ),
                     ),
@@ -13461,47 +14015,80 @@ class _ListingsScreenState extends State<ListingsScreen> {
       ),
     );
     if (MediaQuery.sizeOf(context).width < 900) return listPane;
-    return Row(children: [
-      SizedBox(width: 410, child: listPane),
-      const VerticalDivider(width: 1, thickness: 1, color: Color(0xFFD9DEE1)),
-      Expanded(
-        child: _showMyListings
-            ? MyListingsScreen(
-                token: widget.token,
-                embedded: true,
-                onClose: () => setState(() => _showMyListings = false),
-              )
-            : _showPostForm
-                ? PostListingScreen(
-                    token: widget.token,
-                    me: widget.me,
-                    embedded: true,
-                    onClose: () => setState(() => _showPostForm = false),
-                    onPublished: () async {
-                      setState(() => _showPostForm = false);
-                      await _load();
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text('המודעה פורסמה בהצלחה')));
-                      }
-                    },
-                  )
-                : _selectedItem == null
-                    ? const _DesktopListingWelcome()
-                    : ListingDetailScreen(
-                        key: ValueKey(_selectedItem!['id']),
-                        item: _selectedItem!,
-                        token: widget.token,
-                        me: widget.me,
-                        socket: widget.socket,
-                        embedded: true,
-                        onClose: () => setState(() => _selectedItem = null),
-                        onUpdated: _load,
-                        onConversationStarted: widget.onConversationStarted,
-                      ),
+    return NotificationListener<_OpenListingAiNotification>(
+      onNotification: (notification) {
+        final navigator = _desktopContentNavigatorKey.currentState;
+        if (navigator == null) return false;
+        notification.openIn(navigator);
+        return true;
+      },
+      child: NotificationListener<_OpenListingNotification>(
+        onNotification: (notification) {
+          final navigator = _desktopContentNavigatorKey.currentState;
+          if (navigator == null) return false;
+          notification.handledInDesktopPane = true;
+          navigator.push(MaterialPageRoute<void>(
+            builder: (_) => ListingDetailScreen(
+              item: notification.listing,
+              token: widget.token,
+              me: widget.me,
+              socket: widget.socket,
+              embedded: true,
+              onClose: () => navigator.pop(),
+              onConversationStarted: widget.onConversationStarted,
+            ),
+          ));
+          return true;
+        },
+        child: Row(children: [
+          SizedBox(width: 410, child: listPane),
+          const VerticalDivider(
+              width: 1, thickness: 1, color: Color(0xFFD9DEE1)),
+          Expanded(
+            child: _DesktopContentPane(
+              navigatorKey: _desktopContentNavigatorKey,
+              child: _showMyListings
+                  ? MyListingsScreen(
+                      token: widget.token,
+                      embedded: true,
+                      onClose: () => setState(() => _showMyListings = false),
+                    )
+                  : _showPostForm
+                      ? PostListingScreen(
+                          token: widget.token,
+                          me: widget.me,
+                          embedded: true,
+                          onClose: () => setState(() => _showPostForm = false),
+                          onPublished: () async {
+                            setState(() => _showPostForm = false);
+                            await _load();
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content: Text('המודעה פורסמה בהצלחה')));
+                            }
+                          },
+                        )
+                      : _selectedItem == null
+                          ? const _DesktopListingWelcome()
+                          : ListingDetailScreen(
+                              key: ValueKey(_selectedItem!['id']),
+                              item: _selectedItem!,
+                              token: widget.token,
+                              me: widget.me,
+                              socket: widget.socket,
+                              embedded: true,
+                              onClose: () =>
+                                  setState(() => _selectedItem = null),
+                              onUpdated: _load,
+                              onConversationStarted:
+                                  widget.onConversationStarted,
+                            ),
+            ),
+          ),
+        ]),
       ),
-    ]);
+    );
   }
 
   bool get _hasAdvancedFilters =>
@@ -13894,23 +14481,67 @@ class _DesktopListingWelcome extends StatelessWidget {
 
 void _openListingAi(BuildContext context, Map<String, dynamic> item,
     String token, Map<String, dynamic>? me, io.Socket? socket) {
+  final notification = _OpenListingAiNotification(item, token, me, socket);
+  notification.dispatch(context);
+  if (notification.handledInDesktopPane) return;
   Navigator.push(
       context,
       MaterialPageRoute(
-          builder: (_) => ChatScreen(
-                token: token,
-                me: me,
-                socket: socket,
-                recipient: const {
-                  'id': kSafeInformationAiId,
-                  'name': 'מידע בטוח · AI',
-                  'profile_pic_url':
-                      '/betshuva-app/assets/assets/guide/safe-information-ai.png',
-                },
-                autoSendInitialMessage: true,
-                initialText:
-                    'אשמח לחוות דעת על המודעה הזו: האם המחיר כדאי ומה חשוב לבדוק?\nbetshuva://listing/${item['id']}',
-              )));
+          builder: (_) => _listingAiChat(item, token, me, socket)));
+}
+
+ChatScreen _listingAiChat(Map<String, dynamic> item, String token,
+        Map<String, dynamic>? me, io.Socket? socket,
+        {bool embedded = false, VoidCallback? onClose}) =>
+    ChatScreen(
+      token: token,
+      me: me,
+      socket: socket,
+      embedded: embedded,
+      onClose: onClose,
+      recipient: const {
+        'id': kSafeInformationAiId,
+        'name': 'מידע בטוח · AI',
+        'profile_pic_url':
+            '/betshuva-app/assets/assets/guide/safe-information-ai.png',
+      },
+      autoSendInitialMessage: true,
+      initialText:
+          'אשמח לחוות דעת על המודעה הזו: האם המחיר כדאי ומה חשוב לבדוק?\nbetshuva://listing/${item['id']}',
+    );
+
+class _OpenListingAiNotification extends Notification {
+  final Map<String, dynamic> item;
+  final String token;
+  final Map<String, dynamic>? me;
+  final io.Socket? socket;
+  bool handledInDesktopPane = false;
+
+  _OpenListingAiNotification(this.item, this.token, this.me, this.socket);
+
+  void openIn(NavigatorState navigator) {
+    handledInDesktopPane = true;
+    navigator.push(MaterialPageRoute<void>(
+      builder: (_) => _listingAiChat(item, token, me, socket,
+          embedded: true, onClose: () => navigator.pop()),
+    ));
+  }
+}
+
+// Routes opened from desktop details stay inside the left content area.
+// The root page updates without recreating an open conversation above it.
+class _DesktopContentPane extends StatelessWidget {
+  final GlobalKey<NavigatorState> navigatorKey;
+  final Widget child;
+
+  const _DesktopContentPane({required this.navigatorKey, required this.child});
+
+  @override
+  Widget build(BuildContext context) => Navigator(
+        key: navigatorKey,
+        pages: [MaterialPage<void>(child: child)],
+        onDidRemovePage: (_) {},
+      );
 }
 
 const _listingAiTooltip =
@@ -18556,7 +19187,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
             },
             body: jsonEncode({'userId': userId}),
           )));
-      group['member_count'] = _selectedIds.length + 1;
+      // Invitations stay pending until accepted; keep the server's active count.
       if (mounted) Navigator.pop(context, group);
     } catch (error) {
       if (mounted) {
@@ -19012,6 +19643,8 @@ class ConversationsScreen extends StatefulWidget {
       onGroupSelected;
   final Future<void> Function() onLogout;
   final VoidCallback onSettings;
+  final VoidCallback? onPersonalMedia;
+  final bool personalMediaSelected;
   final Future<void> Function() onContactsChanged;
   final void Function(Map<String, dynamic> user) onVoiceCall;
   final int currentMainNavigationIndex;
@@ -19031,6 +19664,8 @@ class ConversationsScreen extends StatefulWidget {
     required this.onChatOpened,
     required this.onLogout,
     required this.onSettings,
+    this.onPersonalMedia,
+    this.personalMediaSelected = false,
     required this.onContactsChanged,
     required this.onVoiceCall,
     required this.currentMainNavigationIndex,
@@ -19049,6 +19684,18 @@ class ConversationsScreen extends StatefulWidget {
 class _ConversationsScreenState extends State<ConversationsScreen> {
   int _tab = 0;
   List<Map<String, dynamic>> _groups = [];
+  int _groupsLoadGeneration = 0;
+
+  void _conversationChanged(ConversationChange change) {
+    if (!mounted || change.kind != 'group') return;
+    _groupsLoadGeneration++;
+    setState(() => _groups = _groups
+        .map((group) => group['id'] == change.targetId
+            ? conversationListAfter(group, change.result)
+            : group)
+        .toList());
+  }
+
   bool _groupsLoaded = false;
   bool _openingPendingGroupInvitation = false;
   final Set<String> _openedPendingGroupInvitations = {};
@@ -19203,7 +19850,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 'Authorization': 'Bearer ${widget.token}',
                 'Content-Type': 'application/json',
               },
-              body: jsonEncode({'phones': phones, 'emails': emails}),
+              body: jsonEncode({'phones': phones, 'emails': emails, 'source': 'phone_import'}),
             );
             if (response.statusCode == 200) {
               matched = (jsonDecode(response.body) as List)
@@ -19235,6 +19882,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             }
             if (appUser != null) {
               appUser['device_name'] = local['name'];
+              final knownPhone = local['phone']?.toString() ?? '';
+              if (knownPhone.isNotEmpty &&
+                  normalizeContactPhone(appUser['phone']?.toString() ?? '') == knownPhone) {
+                appUser['_known_phone'] = knownPhone;
+                appUser['_contact_save_source'] = 'phone_import';
+              } else {
+                appUser['_contact_save_source'] = 'email_import';
+              }
               if (!deviceResults.any((u) => u['id'] == appUser!['id'])) {
                 deviceResults.add(appUser);
               }
@@ -19351,6 +20006,32 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                   ? (jsonDecode(response.body) as List)
                       .cast<Map<String, dynamic>>()
                   : <Map<String, dynamic>>[];
+              final manualPhone = normalizeContactPhone(query);
+              if (RegExp(r'^[+\d ()-]+$').hasMatch(query) &&
+                  manualPhone.length >= 9 && manualPhone.length <= 15) {
+                // The proof is the number the user entered, not a number
+                // obtained from a directory response. POST also updates an
+                // already-saved contact whose exact number is known locally.
+                try {
+                  final matched = await http.post(Uri.parse('$kApi/contacts/match'),
+                    headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+                    body: jsonEncode({'phones': [manualPhone], 'source': 'phone_manual'}));
+                  if (matched.statusCode == 200) {
+                    for (final user in (jsonDecode(matched.body) as List).cast<Map<String, dynamic>>()) {
+                      final index = serverResults.indexWhere((item) => item['id'] == user['id']);
+                      if (index < 0) { serverResults.add(user); } else { serverResults[index] = user; }
+                    }
+                    await widget.onContactsChanged();
+                  }
+                } catch (_) {}
+                if (!dialogContext.mounted) return;
+                for (final user in serverResults) {
+                  if (normalizeContactPhone(visibleContactPhone(user)) == manualPhone) {
+                    user['_known_phone'] = query;
+                    user['_contact_save_source'] = 'phone_manual';
+                  }
+                }
+              }
               final lowerQuery = query.toLowerCase();
               final localMatches = deviceResults.where((item) {
                 final haystack = [
@@ -19380,7 +20061,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           Future<void> save(Map<String, dynamic> user) async {
             final response = await http.post(
               Uri.parse('$kApi/contacts/save/${user['id']}'),
-              headers: {'Authorization': 'Bearer ${widget.token}'},
+              headers: {'Authorization': 'Bearer ${widget.token}',
+                'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'source': user['_contact_save_source'] ?? 'in_app',
+                if (user['_known_phone'] != null) 'knownPhone': user['_known_phone'],
+              }),
             );
             if (response.statusCode == 200) {
               await widget.onContactsChanged();
@@ -19576,8 +20262,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                               title: Text((user['device_name'] ?? user['name'])
                                   .toString()),
                               subtitle: Text(
-                                '${deviceOnly ? 'איש קשר מהטלפון' : 'משתמש בתשובה'}  •  '
-                                '${(user['phone'] as String?)?.isNotEmpty == true ? user['phone'] as String : user['email'] as String? ?? ''}',
+                                '${deviceOnly ? 'מהטלפון שלי' : contactSourceLabel(user)}  •  '
+                                '${deviceOnly ? user['phone'] ?? '' : visibleContactPhone(user).isNotEmpty ? visibleContactPhone(user) : 'הטלפון לא שותף'}',
                               ),
                               trailing: deviceOnly
                                   ? TextButton(
@@ -19607,12 +20293,29 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
     searchController.dispose();
   }
 
+  void updateGroupMemberCount(String groupId, int count) {
+    if (!mounted) return;
+    final index =
+        _groups.indexWhere((group) => group['id']?.toString() == groupId);
+    if (index == -1 ||
+        _groups[index]['member_count']?.toString() == count.toString()) {
+      return;
+    }
+    setState(() => _groups[index] = {
+          ..._groups[index],
+          'member_count': count,
+        });
+  }
+
   Future<void> _loadGroups({bool force = false}) async {
+    final generation = _groupsLoadGeneration;
     if (_groupsLoaded && !force) return;
     try {
       final res = await http.get(Uri.parse('$kApi/groups'),
           headers: {'Authorization': 'Bearer ${widget.token}'});
-      if (res.statusCode == 200 && mounted) {
+      if (res.statusCode == 200 &&
+          mounted &&
+          generation == _groupsLoadGeneration) {
         setState(() {
           _groups = (jsonDecode(res.body) as List).cast();
           _groupsLoaded = true;
@@ -19864,6 +20567,23 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     setState(() => _searchQuery = value.trim().toLowerCase()),
               ),
             ),
+          if (_tab == 0 && 'המדיה שלי'.contains(_searchQuery))
+            _PersonalMediaConversationTile(
+              selected: widget.personalMediaSelected,
+              onTap: () {
+                if (widget.onPersonalMedia != null &&
+                    MediaQuery.sizeOf(context).width >= 900) {
+                  widget.onPersonalMedia!();
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => PersonalMediaScreen(token: widget.token),
+                    ),
+                  );
+                }
+              },
+            ),
           // List
           if (_tab == 2) ...[
             // ── קבוצות tab ──
@@ -20044,18 +20764,25 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                               .toList()
                           : widget.users;
                       final searchedUsers = visibleUsers
+                          .where((u) => (u['conversation_hidden'] != true ||
+                              _searchQuery.isNotEmpty))
                           .where((u) => (u['name'] as String? ?? '')
                               .toLowerCase()
                               .contains(_searchQuery))
                           .toList();
                       final showGroups = _tab == 0
                           ? _groups
+                              .where((g) => (g['conversation_hidden'] != true ||
+                                  _searchQuery.isNotEmpty))
                               .where((g) => (g['name'] as String? ?? '')
                                   .toLowerCase()
                                   .contains(_searchQuery))
                               .toList()
                           : _tab == 1
                               ? _groups
+                                  .where((g) =>
+                                      (g['conversation_hidden'] != true ||
+                                          _searchQuery.isNotEmpty))
                                   .where((g) =>
                                       (widget.groupUnreadCounts[g['id']] ?? 0) >
                                           0 &&
@@ -20101,8 +20828,13 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                               .compareTo(_lastMessageTime(aData));
                         });
                       if (searchedUsers.isEmpty && showGroups.isEmpty) {
+                        if (_tab == 0 &&
+                            _searchQuery.isNotEmpty &&
+                            'המדיה שלי'.contains(_searchQuery)) {
+                          return const SizedBox.shrink();
+                        }
                         return const Center(
-                          child: Text('אין הודעות שלא נקראו',
+                          child: Text('אין שיחות להצגה',
                               style: TextStyle(color: kSubtext, fontSize: 15)),
                         );
                       }
@@ -20330,6 +21062,93 @@ IconData? _conversationPreviewIcon(Map<String, dynamic> item) {
   }
 }
 
+// A personal library shortcut, deliberately separate from user/group rows.
+// It never participates in recipients, unread counts, pinning or message APIs.
+class _PersonalMediaConversationTile extends StatelessWidget {
+  final VoidCallback onTap;
+  final bool selected;
+
+  const _PersonalMediaConversationTile({
+    required this.onTap,
+    required this.selected,
+  });
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        selected: selected,
+        label: 'המדיה שלי, ספרייה אישית',
+        child: Material(
+          color: selected ? const Color(0xFFDCEFFC) : const Color(0xFFF4FAFE),
+          child: InkWell(
+            key: const ValueKey('personal-media-conversation-entry'),
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: Color(0xFFD4E9F7))),
+              ),
+              child: Row(children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      begin: Alignment.topRight,
+                      end: Alignment.bottomLeft,
+                      colors: [kPrimaryMid, kHeader],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: kPrimary.withValues(alpha: .15),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.photo_library_outlined,
+                      color: Colors.white, size: 26),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('המדיה שלי',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              color: kHeader,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700)),
+                      SizedBox(height: 4),
+                      Text('תמונות, סרטונים וקבצים במקום אחד',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: kSubtext, fontSize: 12)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Tooltip(
+                  message: 'הספרייה האישית שלך',
+                  child: Icon(Icons.lock_outline_rounded,
+                      color: kPrimaryMid, size: 15),
+                ),
+                const SizedBox(width: 8),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  color: kPrimary,
+                  size: 22,
+                ),
+              ]),
+            ),
+          ),
+        ),
+      );
+}
+
 class _ConversationTile extends StatelessWidget {
   final Map<String, dynamic> user;
   final VoidCallback onTap;
@@ -20453,6 +21272,13 @@ class _ConversationTile extends StatelessWidget {
                       ),
                     ),
                   ]),
+                  if (user['phone_visibility'] != null &&
+                      user['phone_visibility'] != 'self' &&
+                      _isPersonalPhoneContact(user['id']?.toString(), null))
+                    Padding(padding: const EdgeInsets.only(top: 3),
+                      child: Text('${contactSourceLabel(user)}${visibleContactPhone(user).isEmpty ? ' • הטלפון לא שותף' : ''}',
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 10, color: kSubtext))),
                 ],
               ),
             ),
@@ -21067,12 +21893,95 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<String, dynamic>? _editingMsg;
   bool _loading = true;
   bool _isTyping = false;
+  late final void Function(dynamic) _chatMessageHandler;
+  late final void Function(dynamic) _messagesReadHandler;
+  late final void Function(dynamic) _messagesDeliveredHandler;
+  late final void Function(dynamic) _messageDeliveredHandler;
+  late final void Function(dynamic) _messageDeletedHandler;
+  late final void Function(dynamic) _messageEditedHandler;
   late final void Function(dynamic) _chatTypingHandler;
   late final void Function(dynamic) _scanRejectedSocketHandler;
   late final void Function(dynamic) _scanCancelledSocketHandler;
   late final void Function(dynamic) _messageRejectedSocketHandler;
   Timer? _messageRefreshTimer;
   String? _serverMessagesFingerprint;
+  int _historyGeneration = 0;
+  DateTime? _clearedAt;
+  late final StreamSubscription<ConversationChange> _cleanupSubscription;
+  late final void Function(dynamic) _conversationChangedHandler;
+
+  void _listenForConversationChanges() {
+    _cleanupSubscription = conversationChanges.stream.listen((change) {
+      if (change.accountId == widget.me?['id']?.toString() &&
+          change.kind == 'chat' &&
+          change.targetId == widget.recipient['id'].toString()) {
+        _applyConversationCleanup(change.result);
+      }
+    });
+    _conversationChangedHandler = (data) {
+      if (data is Map &&
+          data['kind'] == 'chat' &&
+          data['targetId'] == widget.recipient['id'].toString()) {
+        _applyConversationCleanup(ConversationCleanupResult.fromJson(
+            Map<String, dynamic>.from(data)));
+      }
+    };
+    widget.socket?.on('conversation:changed', _conversationChangedHandler);
+  }
+
+  Future<void> _applyConversationCleanup(
+      ConversationCleanupResult result) async {
+    final cutoff = result.clearedAt;
+    if (!mounted ||
+        cutoff == null ||
+        (_clearedAt != null && !cutoff.isAfter(_clearedAt!))) {
+      return;
+    }
+    _historyGeneration++;
+    _clearedAt = cutoff;
+    _serverMessagesFingerprint = null;
+    setState(() {
+      _messages
+          .removeWhere((message) => !conversationMessageAfter(message, cutoff));
+      _selectedMessageKeys.clear();
+      _replyTo = null;
+      if (_editingMsg != null) _msgCtrl.clear();
+      _editingMsg = null;
+      _msgHistory.clear();
+      _loading = false;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs
+        .remove('cache_msgs_${widget.me?['id']}_${widget.recipient['id']}');
+    if (mounted) _loadMessages(silent: true);
+  }
+
+  Future<void> _cleanupConversation({required bool deleteConversation}) async {
+    final result = await showConversationCleanupDialog(context,
+        api: kApi,
+        token: widget.token,
+        kind: 'chat',
+        targetId: widget.recipient['id'].toString(),
+        name: widget.recipient['name']?.toString() ?? 'החבר',
+        deleteConversation: deleteConversation);
+    if (result == null) return;
+    conversationChanges.add(ConversationChange(
+        widget.me?['id']?.toString() ?? '',
+        'chat',
+        widget.recipient['id'].toString(),
+        result));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(result.summary)));
+    if (result.hidden) {
+      if (widget.onClose != null) {
+        widget.onClose!();
+      } else {
+        Navigator.of(context).pop();
+      }
+    }
+  }
+
   final AudioRecorder _audioRecorder = AudioRecorder();
   bool _isRecording = false;
   bool _voiceSubmissionInProgress = false;
@@ -21151,6 +22060,16 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _listenForConversationChanges();
+    if (widget.recipient['conversation_hidden'] == true) {
+      reopenConversation(
+          api: kApi,
+          token: widget.token,
+          accountId: widget.me?['id']?.toString() ?? '',
+          kind: 'chat',
+          targetId: widget.recipient['id'].toString());
+    }
+
     registerAppScreenshotMenu(this, _showAttachMenu);
     appScreenshotDestination.value = AppScreenshotDestination.user(
         widget.recipient['id']?.toString() ?? kSystemGuideId);
@@ -21277,13 +22196,18 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadMessages({bool silent = false}) async {
+    final generation = _historyGeneration;
     final cacheKey = 'cache_msgs_${widget.me?['id']}_${widget.recipient['id']}';
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (!mounted || generation != _historyGeneration) return;
       final cached = prefs.getString(cacheKey);
       if (!silent && cached != null && mounted) {
-        final list = (jsonDecode(cached) as List).cast<Map<String, dynamic>>();
+        final list = (jsonDecode(cached) as List)
+            .cast<Map<String, dynamic>>()
+            .where((message) => conversationMessageAfter(message, _clearedAt))
+            .toList();
         setState(() {
           _messages
             ..clear()
@@ -21299,10 +22223,13 @@ class _ChatScreenState extends State<ChatScreen> {
         Uri.parse('$kApi/messages/${widget.recipient['id']}'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (!mounted) return;
+      if (!mounted || generation != _historyGeneration) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
-        final normalized = data.map(_normalizeDbMessage).toList();
+        final normalized = data
+            .map(_normalizeDbMessage)
+            .where((message) => conversationMessageAfter(message, _clearedAt))
+            .toList();
         _persistRecentImageUrls(normalized).ignore();
         final fingerprint = jsonEncode(normalized);
         if (silent && fingerprint == _serverMessagesFingerprint) return;
@@ -21327,6 +22254,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _markAsRead();
         // Save to cache (last 50 messages)
         final prefs = await SharedPreferences.getInstance();
+        if (!mounted || generation != _historyGeneration) return;
         final toCache = normalized.length > 50
             ? normalized.sublist(normalized.length - 50)
             : normalized;
@@ -21335,7 +22263,9 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _loading = false);
       }
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _historyGeneration) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -21420,7 +22350,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _setupSocket() {
-    widget.socket?.on('chat:message', (data) {
+    _chatMessageHandler = (data) {
       if (!mounted || data is! Map) return;
       final fileUrl = data['fileUrl'] as String?;
       final fileName = data['fileName'] as String?;
@@ -21478,6 +22408,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (data['replyToId'] != null)
           'replyTo': {'id': data['replyToId'], 'text': data['replyBody'] ?? ''},
       };
+      if (!conversationMessageAfter(incoming, _clearedAt)) return;
       setState(() {
         if (pendingIndex != -1) {
           _messages[pendingIndex] = incoming;
@@ -21497,7 +22428,8 @@ class _ChatScreenState extends State<ChatScreen> {
         ));
       }
       if (isIncoming) _markAsRead();
-    });
+    };
+    widget.socket?.on('chat:message', _chatMessageHandler);
 
     _scanRejectedSocketHandler = (data) {
       if (!mounted || data is! Map) return;
@@ -21555,16 +22487,17 @@ class _ChatScreenState extends State<ChatScreen> {
     };
     widget.socket?.on('chat:typing', _chatTypingHandler);
 
-    widget.socket?.on('messages:read', (_) {
+    _messagesReadHandler = (_) {
       if (!mounted) return;
       setState(() {
         for (final msg in _messages) {
           if (msg['from'] == widget.me?['id']) msg['status'] = 'read';
         }
       });
-    });
+    };
+    widget.socket?.on('messages:read', _messagesReadHandler);
 
-    widget.socket?.on('messages:delivered', (_) {
+    _messagesDeliveredHandler = (_) {
       if (!mounted) return;
       setState(() {
         for (final msg in _messages) {
@@ -21573,9 +22506,10 @@ class _ChatScreenState extends State<ChatScreen> {
           }
         }
       });
-    });
+    };
+    widget.socket?.on('messages:delivered', _messagesDeliveredHandler);
 
-    widget.socket?.on('message:delivered', (data) {
+    _messageDeliveredHandler = (data) {
       if (!mounted) return;
       setState(() {
         final index = _messages.indexWhere((m) => m['id'] == data['id']);
@@ -21583,9 +22517,10 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages[index]['status'] = 'delivered';
         }
       });
-    });
+    };
+    widget.socket?.on('message:delivered', _messageDeliveredHandler);
 
-    widget.socket?.on('message:deleted', (data) {
+    _messageDeletedHandler = (data) {
       if (!mounted) return;
       setState(() {
         final idx = _messages.indexWhere((m) => m['id'] == data['id']);
@@ -21597,9 +22532,10 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages[idx]['fileType'] = 'text';
         }
       });
-    });
+    };
+    widget.socket?.on('message:deleted', _messageDeletedHandler);
 
-    widget.socket?.on('message:edited', (data) {
+    _messageEditedHandler = (data) {
       if (!mounted) return;
       setState(() {
         final idx = _messages.indexWhere((m) => m['id'] == data['id']);
@@ -21608,7 +22544,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages[idx]['isEdited'] = true;
         }
       });
-    });
+    };
+    widget.socket?.on('message:edited', _messageEditedHandler);
   }
 
   Future<void> _markAsRead() async {
@@ -21629,6 +22566,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _cleanupSubscription.cancel();
+    widget.socket?.off('conversation:changed', _conversationChangedHandler);
     unregisterAppScreenshotMenu(this);
     final screenshotDestination = AppScreenshotDestination.user(
         widget.recipient['id']?.toString() ?? kSystemGuideId);
@@ -21640,16 +22579,16 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageRefreshTimer?.cancel();
     _recordTimer?.cancel();
     _audioRecorder.dispose();
-    widget.socket?.off('chat:message');
+    widget.socket?.off('chat:message', _chatMessageHandler);
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
     widget.socket?.off('scan:cancelled', _scanCancelledSocketHandler);
     widget.socket?.off('message:rejected', _messageRejectedSocketHandler);
     widget.socket?.off('chat:typing', _chatTypingHandler);
-    widget.socket?.off('messages:read');
-    widget.socket?.off('messages:delivered');
-    widget.socket?.off('message:delivered');
-    widget.socket?.off('message:deleted');
-    widget.socket?.off('message:edited');
+    widget.socket?.off('messages:read', _messagesReadHandler);
+    widget.socket?.off('messages:delivered', _messagesDeliveredHandler);
+    widget.socket?.off('message:delivered', _messageDeliveredHandler);
+    widget.socket?.off('message:deleted', _messageDeletedHandler);
+    widget.socket?.off('message:edited', _messageEditedHandler);
     _msgCtrl.dispose();
     _msgFocusNode.dispose();
     _scrollCtrl.dispose();
@@ -21851,7 +22790,26 @@ class _ChatScreenState extends State<ChatScreen> {
               _messages[idx]['id'] = data['id'];
               _messages[idx]['status'] = data['status'] ?? 'sent';
             }
+            final reply = data['systemReply'];
+            if (reply is Map &&
+                reply['id'] != null &&
+                !_messages.any((message) => message['id'] == reply['id'])) {
+              _messages.add(_normalizeDbMessage({
+                ...Map<String, dynamic>.from(reply),
+                'sender_id': reply['sender_id'] ??
+                    reply['fromUserId'] ??
+                    widget.recipient['id'],
+                'body': reply['body'] ?? reply['text'],
+                'type': reply['type'] ?? reply['fileType'] ?? 'text',
+                'file_url': reply['file_url'] ?? reply['fileUrl'],
+                'file_name': reply['file_name'] ?? reply['fileName'],
+                'created_at': reply['created_at'] ??
+                    reply['createdAt'] ??
+                    DateTime.now().toIso8601String(),
+              }));
+            }
           });
+          _scrollToBottom();
           if (widget.listingId != null && widget.onMessageSent != null) {
             widget.onMessageSent!.call();
             return;
@@ -21915,7 +22873,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ? widget.recipient['name'].toString().trim()
             : 'החבר';
     var selected = Map<String, bool>.from(_outgoingFilter!);
-    final choice = await showDialog<Map<String, bool>>(
+    final phoneChoice = PhoneSharingController();
+    final choice = await showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) => StatefulBuilder(
@@ -21939,7 +22898,8 @@ class _ChatScreenState extends State<ChatScreen> {
           content: SizedBox(
             width: 760,
             child: SingleChildScrollView(
-              child: _InvitationFilterComparisonTable(
+              child: Column(children: [
+                _InvitationFilterComparisonTable(
                 groupName: recipientName,
                 groupFilter: _recipientReceivingFilter,
                 personalFilter: selected,
@@ -21949,6 +22909,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 onPersonalFilterChanged: (updated) =>
                     setDialogState(() => selected = updated),
               ),
+                if (_isPersonalPhoneContact(widget.recipient['id']?.toString(), widget.me?['id']?.toString()))
+                  PhoneSharingPanel(api: kApi, token: widget.token,
+                    contactId: widget.recipient['id'].toString(),
+                    contactName: recipientName, compact: true,
+                    controller: phoneChoice, initialChoice: true,
+                    onChanged: () => setDialogState(() {})),
+              ]),
             ),
           ),
           actions: [
@@ -21957,9 +22924,10 @@ class _ChatScreenState extends State<ChatScreen> {
               child: const Text('ביטול'),
             ),
             FilledButton.icon(
-              onPressed: () => Navigator.pop(dialogContext, selected),
+              onPressed: () => Navigator.pop(dialogContext,
+                {'filter': selected, ...phoneChoice.confirmationPayload}),
               icon: const Icon(Icons.send_outlined),
-              label: const Text('שמור והמשך'),
+              label: Text(phoneChoice.confirmationLabel(saveLabel: 'שמור והמשך')),
             ),
           ],
         ),
@@ -21974,14 +22942,14 @@ class _ChatScreenState extends State<ChatScreen> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'filter': choice}),
+        body: jsonEncode(choice),
       );
       if (!mounted) return false;
       if (response.statusCode != 200) throw Exception();
       final payload = jsonDecode(response.body);
       final privateEntry = payload is Map ? payload['privateEntry'] : null;
       setState(() {
-        _outgoingFilter = Map<String, bool>.from(choice);
+        _outgoingFilter = Map<String, bool>.from(choice['filter'] as Map);
         _requiresFirstMessageFilterChoice = false;
         if (privateEntry is Map) {
           final normalized = _normalizeDbMessage(privateEntry);
@@ -22271,7 +23239,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _showContactDetails() async {
     final name = widget.recipient['name']?.toString() ?? 'איש קשר';
     final imageUrl = widget.recipient['profile_pic_url']?.toString();
-    final phone = widget.recipient['phone']?.toString().trim() ?? '';
+    final phoneChoice = PhoneSharingController();
     final email = widget.recipient['email']?.toString().trim() ?? '';
     final city = widget.recipient['city']?.toString().trim() ?? '';
     const filterItems = <String, (String, IconData)>{
@@ -22332,15 +23300,27 @@ class _ChatScreenState extends State<ChatScreen> {
                       style: const TextStyle(color: kSubtext, fontSize: 13)),
                 ],
                 const SizedBox(height: 16),
-                if (phone.isNotEmpty)
-                  ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.phone_outlined, color: kPrimary),
-                    title: const Text('טלפון'),
-                    subtitle: Text(phone, textDirection: TextDirection.ltr),
-                    trailing: const Icon(Icons.call_outlined, color: kPrimary),
-                    onTap: () => launchUrl(Uri.parse('tel:$phone')),
-                  ),
+                if (_isPersonalPhoneContact(widget.recipient['id']?.toString(), widget.me?['id']?.toString())) ...[
+                  PhoneSharingPanel(api: kApi, token: widget.token,
+                    contactName: name,
+                    contactId: widget.recipient['id'].toString(), controller: phoneChoice),
+                  AnimatedBuilder(animation: phoneChoice, builder: (context, _) =>
+                    !phoneChoice.canShare ? const SizedBox.shrink() : FilledButton(
+                      onPressed: () async {
+                        try {
+                          final data = await updatePhoneSharing(kApi, widget.token,
+                            widget.recipient['id'].toString(), phoneChoice.confirmationPayload);
+                          if (dialogContext.mounted) phoneChoice.apply(data);
+                        } catch (_) {
+                          if (dialogContext.mounted) {
+                            ScaffoldMessenger.of(dialogContext).showSnackBar(
+                              const SnackBar(content: Text('עדכון שיתוף הטלפון נכשל')));
+                          }
+                        }
+                      },
+                      child: Text(phoneChoice.selectedShare ? 'אשר ושתף את הטלפון שלי' : 'אשר ללא שיתוף טלפון'),
+                    )),
+                ],
                 if (email.isNotEmpty)
                   ListTile(
                     dense: true,
@@ -22517,6 +23497,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _handleChatMenuAction(String action) async {
     switch (action) {
+      case 'clear_conversation':
+        await _cleanupConversation(deleteConversation: false);
+        break;
+      case 'delete_conversation':
+        await _cleanupConversation(deleteConversation: true);
+        break;
       case 'info':
         if (!mounted) return;
         await _showContactDetails();
@@ -22938,6 +23924,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _showExpressions() async {
+    final beforePicker = _msgCtrl.value;
     final choice = await _showExpressionPicker(context, widget.token);
     if (choice == null || !mounted) return;
     if (choice.startsWith(_remoteExpressionPrefix)) {
@@ -23042,14 +24029,8 @@ class _ChatScreenState extends State<ChatScreen> {
       await _send(stickerId: choice.substring(_avielStickerPrefix.length));
       return;
     }
-    final selection = _msgCtrl.selection;
-    final start = selection.isValid ? selection.start : _msgCtrl.text.length;
-    final end = selection.isValid ? selection.end : _msgCtrl.text.length;
-    final next = _msgCtrl.text.replaceRange(start, end, choice);
-    _msgCtrl.value = TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: start + choice.length),
-    );
+    _insertExpressionText(_msgCtrl, choice, beforePicker);
+    _msgFocusNode.requestFocus();
   }
 
   Future<void> _pickFile(ImageSource source) async {
@@ -23270,7 +24251,8 @@ class _ChatScreenState extends State<ChatScreen> {
             fileType == 'document' ||
             fileType == 'video' ||
             fileType == 'audio') &&
-        !isClipboardPaste && !isLibrarySticker;
+        !isClipboardPaste &&
+        !isLibrarySticker;
     final showProgress = !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_');
     final uploadStartedAt = DateTime.now();
@@ -23640,6 +24622,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     var personalDraft = Map<String, bool>.from(_outgoingFilter!);
+    final phoneChoice = PhoneSharingController();
     var dirty = false;
     var saving = false;
     await showDialog<void>(
@@ -23669,20 +24652,29 @@ class _ChatScreenState extends State<ChatScreen> {
             child: SizedBox(
               width: 760,
               child: SingleChildScrollView(
-                child: _InvitationFilterComparisonTable(
+                child: Column(children: [
+                  _InvitationFilterComparisonTable(
                   groupName: recipientName,
                   groupFilter: _recipientReceivingFilter,
                   personalFilter: personalDraft,
                   counterpartKind: 'החבר',
                   showCounterpartFilter: _counterpartFilterAvailable,
                   hiddenCounterpartExplanation:
-                      'בחרו איזה תוכן תהיו מוכנים לקבל מ$recipientName. לאחר שהחבר יאשר את הקשר, תוכלו לראות מה הוא מתיר לשלוח אליו.',
+                      'בחרו איזה תוכן תהיו מוכנים לקבל מ$recipientName. לאחר אישור הקשר על ידי $recipientName, תוכלו לראות מה מותר לשלוח בשיחה.',
                   counterpartIcon: Icons.person_outline,
                   onPersonalFilterChanged: (updated) => setDialogState(() {
                     personalDraft = updated;
                     dirty = true;
                   }),
                 ),
+                  if (_isPersonalPhoneContact(widget.recipient['id']?.toString(), widget.me?['id']?.toString()))
+                    PhoneSharingPanel(api: kApi, token: widget.token,
+                      contactId: widget.recipient['id'].toString(),
+                      contactName: recipientName, compact: true,
+                      controller: phoneChoice,
+                      initialChoice: _requiresFirstMessageFilterChoice == true,
+                      onChanged: () => setDialogState(() => dirty = true)),
+                ]),
               ),
             ),
           ),
@@ -23700,7 +24692,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             'Authorization': 'Bearer ${widget.token}',
                             'Content-Type': 'application/json',
                           },
-                          body: jsonEncode({'filter': personalDraft}),
+                          body: jsonEncode({'filter': personalDraft,
+                            ...phoneChoice.confirmationPayload}),
                         );
                         if (!mounted) return;
                         if (response.statusCode != 200) throw Exception();
@@ -23735,7 +24728,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           strokeWidth: 2, color: Colors.white),
                     )
                   : const Icon(Icons.save_outlined, size: 18),
-              label: const Text('שמור'),
+              label: Text(phoneChoice.confirmationLabel(saveLabel: 'שמור')),
             ),
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
@@ -23825,36 +24818,39 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                   const SizedBox(width: 10),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(recipientName,
-                              style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.white)),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          const Icon(Icons.verified_user_outlined,
-                              size: 10, color: Colors.white60),
-                          const SizedBox(width: 3),
-                          Text(
-                              widget.recipient['id'] == kSafeInformationAiId
-                                  ? 'AI אוטומטי · מסונן'
-                                  : 'מסונן · מקוון',
-                              style: const TextStyle(
-                                  fontSize: 11, color: Colors.white70)),
-                          const SizedBox(width: 5),
-                          _contactFilterStatusButton(),
-                        ],
-                      ),
-                    ],
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(recipientName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white)),
+                        Row(
+                          children: [
+                            const Icon(Icons.verified_user_outlined,
+                                size: 10, color: Colors.white60),
+                            const SizedBox(width: 3),
+                            Flexible(
+                              child: Text(
+                                  widget.recipient['id'] == kSafeInformationAiId
+                                      ? 'AI אוטומטי · מסונן'
+                                      : 'מסונן · מקוון',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 11, color: Colors.white70)),
+                            ),
+                            const SizedBox(width: 5),
+                            _contactFilterStatusButton(),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -23909,6 +24905,16 @@ class _ChatScreenState extends State<ChatScreen> {
                     height: 40,
                     child: _CompactMenuItem(
                         Icons.notifications_off_outlined, 'השתקת התראות')),
+                PopupMenuItem(
+                    value: 'clear_conversation',
+                    height: 40,
+                    child: _CompactMenuItem(
+                        Icons.cleaning_services_outlined, 'ניקוי שיחה')),
+                PopupMenuItem(
+                    value: 'delete_conversation',
+                    height: 40,
+                    child: _CompactMenuItem(Icons.delete_outline, 'מחיקת שיחה',
+                        color: Colors.red)),
                 PopupMenuDivider(height: 8),
                 PopupMenuItem(
                     value: 'report',
@@ -24133,7 +25139,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                           mainAxisAlignment:
                                               MainAxisAlignment.end,
                                           crossAxisAlignment:
-                                              CrossAxisAlignment.end,
+                                              CrossAxisAlignment.center,
                                           children: [
                                             Flexible(
                                               child: Align(
@@ -24144,14 +25150,15 @@ class _ChatScreenState extends State<ChatScreen> {
                                                       const BoxConstraints(
                                                     maxWidth: 760,
                                                   ),
-                                                  child: bubble,
+                                                  child: MessageHover(
+                                                      child: bubble),
                                                 ),
                                               ),
                                             ),
                                             const SizedBox(width: 7),
                                             Padding(
                                               padding: const EdgeInsets.only(
-                                                  bottom: 3),
+                                                  bottom: 0),
                                               child: UserAvatar(
                                                 picUrl: senderAvatarUrl,
                                                 name: senderName,
@@ -24315,7 +25322,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 size: 16, color: kPrimary),
                             const SizedBox(width: 6),
                             IconButton(
-                              tooltip: 'סמיילים ומדבקות של בתשובה',
+                              tooltip: 'אימוג׳י ומדבקות',
                               icon: const Icon(Icons.emoji_emotions_outlined,
                                   size: 19, color: kPrimary),
                               onPressed: _recipientAllowsText
@@ -24698,11 +25705,13 @@ Future<void> _openListingLink(BuildContext context, String listingId,
   } catch (_) {}
 }
 
-final Map<String, Future<Map<String, dynamic>?>> _listingPreviewCache = {};
+final Map<(String, String), Future<Map<String, dynamic>?>>
+    _listingPreviewCache = {};
 
 Future<Map<String, dynamic>?> _loadListingMessagePreview(
     String listingId, String token) {
-  return _listingPreviewCache.putIfAbsent(listingId, () async {
+  final cacheKey = (token, listingId);
+  return _listingPreviewCache.putIfAbsent(cacheKey, () async {
     try {
       final response = await http.get(
         Uri.parse('$kApi/listings/$listingId/preview'),
@@ -24712,7 +25721,7 @@ Future<Map<String, dynamic>?> _loadListingMessagePreview(
       final decoded = jsonDecode(response.body);
       return decoded is Map<String, dynamic> ? decoded : null;
     } catch (_) {
-      _listingPreviewCache.remove(listingId);
+      _listingPreviewCache.remove(cacheKey);
       return null;
     }
   });
@@ -24724,6 +25733,7 @@ class _ListingMessageCard extends StatelessWidget {
   final Map<String, dynamic>? me;
 
   const _ListingMessageCard({
+    super.key,
     required this.listingId,
     required this.token,
     required this.me,
@@ -24731,9 +25741,11 @@ class _ListingMessageCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => FutureBuilder<Map<String, dynamic>?>(
+        key: ValueKey((token, listingId)),
         future: _loadListingMessagePreview(listingId, token),
         builder: (context, snapshot) {
           final preview = snapshot.data;
+          final title = preview?['title']?.toString().trim() ?? '';
           final imageUrl = preview?['image_url']?.toString();
           return InkWell(
             borderRadius: BorderRadius.circular(8),
@@ -24753,6 +25765,20 @@ class _ListingMessageCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (title.isNotEmpty) ...[
+                    Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textDirection: TextDirection.rtl,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: kTextDark,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                  ],
                   if (imageUrl != null && imageUrl.isNotEmpty) ...[
                     ClipRRect(
                       borderRadius: BorderRadius.circular(6),
@@ -24804,6 +25830,21 @@ class _ListingMessageCard extends StatelessWidget {
 Future<void> _openGuideAppLink(BuildContext context, String destination,
     String token, Map<String, dynamic>? me,
     {String? issueId}) async {
+  if (destination == 'guide-file' && issueId != null) {
+    try {
+      final file = await loadGuideFile(api: kApi, token: token, id: issueId);
+      if (context.mounted) {
+        _openOfficeInsideApp(context, file.fileUrl, file.fileName, token);
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('הקובץ אינו זמין או שאין הרשאה לצפות בו'),
+        ));
+      }
+    }
+    return;
+  }
   if (destination == 'screenshot') {
     await openAppScreenshot(
       context,
@@ -24821,6 +25862,8 @@ Future<void> _openGuideAppLink(BuildContext context, String destination,
     'content-filter' => ContentFilterSettingsScreen(token: token),
     'profile' => me == null ? null : ProfileScreen(me: me, token: token),
     'personal-media' => PersonalMediaScreen(token: token),
+    'backup-settings' =>
+      GoogleDriveBackupOfferScreen(token: token, returnToPrevious: true),
     'my-issues' => OpenIssuesScreen(token: token, initialIssueId: issueId),
     _ => null,
   };
@@ -24836,6 +25879,8 @@ String _guideAppLinkLabel(String destination, {String? issueId}) =>
       'content-filter' => 'פתח הגדרות סינון',
       'profile' => 'פתח עריכת פרופיל',
       'personal-media' => 'פתח את המדיה שלי',
+      'backup-settings' => 'חיבור וגיבוי ב־Google Drive',
+      'guide-file' => 'פתח קובץ Excel',
       'screenshot' => 'פתח צילום מסך',
       'my-issues' => issueId == null ? 'פתח את הפניות שלי' : 'פתח את הפנייה',
       _ => 'פתח באפליקציה',
@@ -24846,6 +25891,8 @@ IconData _guideAppLinkIcon(String destination) => switch (destination) {
       'profile' => Icons.manage_accounts_outlined,
       'screenshot' => Icons.screenshot_monitor_outlined,
       'personal-media' => Icons.perm_media_outlined,
+      'backup-settings' => Icons.cloud_sync_outlined,
+      'guide-file' => Icons.table_chart_outlined,
       'my-issues' => Icons.pending_actions_outlined,
       _ => Icons.open_in_new,
     };
@@ -25535,59 +26582,52 @@ class _ImageStatusBadge extends StatelessWidget {
     }
     late final String label;
     late final IconData icon;
-    late final Color color;
     switch (status) {
       case 'pending_scan':
         label = 'נסרק';
         icon = Icons.document_scanner_outlined;
-        color = Colors.orange;
         break;
       case 'awaiting_contact_approval':
         label = 'ממתין לאישור חברות';
         icon = Icons.person_add_alt_1;
-        color = Colors.orange;
         break;
       case 'failed':
         label = 'השליחה נכשלה';
         icon = Icons.error_outline;
-        color = Colors.red;
         break;
       case 'rejected_scan':
         label = 'נחסם';
         icon = Icons.block;
-        color = Colors.red;
         break;
       case 'scan_approved':
         label = 'עבר סריקה';
         icon = Icons.verified_outlined;
-        color = Colors.green.shade700;
         break;
       case 'received':
       case 'delivered':
       case 'read':
         label = 'התקבל';
         icon = Icons.done_all;
-        color = kReadTick;
         break;
       default:
         label = isMe ? 'נשלח' : 'התקבל';
         icon = isMe ? Icons.done : Icons.done_all;
-        color = kPrimary;
     }
     return Tooltip(
       message: label,
       child: Container(
-        width: 27,
-        height: 27,
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.92),
-          shape: BoxShape.circle,
-          boxShadow: const [
-            BoxShadow(color: Colors.black26, blurRadius: 3),
-          ],
+          color: Colors.black.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(6),
         ),
-        alignment: Alignment.center,
-        child: Icon(icon, size: 17, color: color),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(message['time']?.toString() ?? '',
+              style: const TextStyle(fontSize: 10, color: Colors.white)),
+          const SizedBox(width: 3),
+          Icon(icon,
+              size: 14, color: status == 'read' ? kReadTick : Colors.white),
+        ]),
       ),
     );
   }
@@ -25608,7 +26648,11 @@ class _GroupDeliverySummary extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessageHover.detailsVisible(context)
+      ? _buildDetails(context)
+      : const SizedBox.shrink();
+
+  Widget _buildDetails(BuildContext context) {
     final deliveredCount = summary['deliveredCount'] as int? ?? 0;
     final blockedCount = summary['blockedCount'] as int? ?? 0;
     final deliveredNames = _names('deliveredTo');
@@ -25837,7 +26881,11 @@ class _SmallImageOptionsButton extends StatelessWidget {
   const _SmallImageOptionsButton({required this.onPressed});
 
   @override
-  Widget build(BuildContext context) => IconButton(
+  Widget build(BuildContext context) => MessageHover.detailsVisible(context)
+      ? _buildDetails(context)
+      : const SizedBox.shrink();
+
+  Widget _buildDetails(BuildContext context) => IconButton(
         tooltip: 'אפשרויות תמונה',
         onPressed: onPressed,
         padding: EdgeInsets.zero,
@@ -25854,7 +26902,11 @@ class _AudioScanBadge extends StatelessWidget {
   const _AudioScanBadge({this.transcript});
 
   @override
-  Widget build(BuildContext context) => Padding(
+  Widget build(BuildContext context) => MessageHover.detailsVisible(context)
+      ? _buildDetails(context)
+      : const SizedBox.shrink();
+
+  Widget _buildDetails(BuildContext context) => Padding(
         padding: const EdgeInsets.only(top: 4),
         child: Wrap(
             spacing: 6,
@@ -26110,7 +27162,11 @@ class _ImageClassificationBadges extends StatelessWidget {
   };
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessageHover.detailsVisible(context)
+      ? _buildDetails(context)
+      : const SizedBox.shrink();
+
+  Widget _buildDetails(BuildContext context) {
     final raw = message['classification'];
     if (raw is! Map) return const SizedBox.shrink();
     final detected = raw['detectedCategories'];
@@ -26169,7 +27225,11 @@ class _DocumentClassificationSummary extends StatelessWidget {
   };
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessageHover.detailsVisible(context)
+      ? _buildDetails(context)
+      : const SizedBox.shrink();
+
+  Widget _buildDetails(BuildContext context) {
     final raw = message['classification'];
     if (raw is! Map) return const SizedBox.shrink();
     final detected = raw['detectedCategories'];
@@ -26444,9 +27504,11 @@ class _ConsecutiveImageGrid extends StatelessWidget {
 
 class _OpenSharedContactChatNotification extends Notification {
   final Map<String, dynamic> recipient;
+  final bool contactSaved;
   bool handledInDesktopPane = false;
 
-  _OpenSharedContactChatNotification(this.recipient);
+  _OpenSharedContactChatNotification(this.recipient,
+      {this.contactSaved = false});
 }
 
 class _SharedContactCard extends StatelessWidget {
@@ -26518,7 +27580,8 @@ class _SharedContactCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = contact['name']?.toString() ?? 'איש קשר';
-    final phone = contact['phone']?.toString() ?? '';
+    final phone = (contact['appUserId']?.toString() ?? '').isNotEmpty
+        ? '' : contact['phone']?.toString() ?? '';
     final email = contact['email']?.toString() ?? '';
     final city = contact['city']?.toString() ?? '';
     final address = contact['address']?.toString() ?? '';
@@ -27008,23 +28071,33 @@ class _MessageBubble extends StatelessWidget {
             .toList()
         : const <String>[];
     final guideAppLinkRegex = RegExp(
-        r'betshuva://app/(content-filter|profile|personal-media|screenshot|my-issues)(?:/([0-9a-fA-F-]{36}))?');
-    final guideAppLinkMatch = !isFile && message['from'] == kSystemGuideId
-        ? guideAppLinkRegex.firstMatch(rawText)
-        : null;
-    final guideAppDestination = guideAppLinkMatch?.group(1);
-    final guideIssueId = guideAppLinkMatch?.group(2);
+        r'betshuva://app/(content-filter|profile|personal-media|backup-settings|guide-file|screenshot|my-issues)(?:/([0-9a-fA-F-]{36}))?');
+    final guideAppLinks = message['from'] == kSystemGuideId
+        ? guideAppLinkRegex
+            .allMatches(rawText)
+            .map((match) => (match.group(1)!, match.group(2)))
+            .toSet()
+            .take(5)
+            .toList()
+        : const <(String, String?)>[];
     final issueDraftRegex = RegExp(r'betshuva://issue-draft/([A-Za-z0-9_-]+)');
     final issueDraftMatch = !isFile && message['from'] == kSystemGuideId
         ? issueDraftRegex.firstMatch(rawText)
         : null;
     final issueDraft = _decodeGuideIssueDraft(issueDraftMatch?.group(1));
+    final messageDraftRegex =
+        RegExp(r'betshuva://message-draft/([A-Za-z0-9_-]+)');
+    final messageDraft = kIsWeb && !isFile && message['from'] == kSystemGuideId
+        ? decodeGuideMessageDraft(
+            messageDraftRegex.firstMatch(rawText)?.group(1))
+        : null;
     // טקסט נקי ללא שורת הקישור
     final displayTextWithInternalLink =
         sharedContact != null ? '' : rawText.replaceAll(linkRegex, '').trim();
     final displayText = displayTextWithInternalLink
         .replaceAll(guideAppLinkRegex, '')
         .replaceAll(issueDraftRegex, '')
+        .replaceAll(messageDraftRegex, '')
         .replaceAll(RegExp(r'\n{3,}'), '\n\n')
         .trim();
     final avielSticker = _avielStickerById(
@@ -27061,6 +28134,7 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
+    final bareObject = isFile;
     const textColor = kTextDark;
     const timeColor = kSubtext;
     final replyBg = kPrimary.withValues(alpha: 0.08);
@@ -27070,27 +28144,30 @@ class _MessageBubble extends StatelessWidget {
       alignment: _messageAlignment,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: bareObject
+            ? EdgeInsets.zero
+            : const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.72,
         ),
-        decoration: BoxDecoration(
-          color: isMe ? kOutgoing : kIncoming,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(14),
-            topRight: const Radius.circular(14),
-            bottomLeft: const Radius.circular(14),
-            bottomRight: const Radius.circular(3),
-          ),
-          border: isMe ? null : Border.all(color: kBorder, width: 1),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.06),
-              blurRadius: 4,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
+        decoration: bareObject
+            ? null
+            : BoxDecoration(
+                color: kIncoming,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(6),
+                  topRight: const Radius.circular(6),
+                  bottomLeft: const Radius.circular(6),
+                  bottomRight: const Radius.circular(3),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
         child: Column(
           textDirection: TextDirection.rtl,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -27160,7 +28237,7 @@ class _MessageBubble extends StatelessWidget {
                 ),
                 Positioned(
                   left: 7,
-                  top: 7,
+                  bottom: 7,
                   child: _ImageStatusBadge(message: message, isMe: isMe),
                 ),
               ])
@@ -27264,8 +28341,9 @@ class _MessageBubble extends StatelessWidget {
                                 ? onDocumentOpen!(fileUrl, fileName, false)
                                 : _openOfficeInsideApp(
                                     context, fileUrl, fileName, token)
-                            : () =>
-                                _downloadChatFile(context, fileUrl, fileName),
+                            : () => _downloadChatFile(
+                                context, fileUrl, fileName,
+                                token: token),
                 borderRadius: BorderRadius.circular(8),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
@@ -27286,64 +28364,69 @@ class _MessageBubble extends StatelessWidget {
                               token: token),
                           const SizedBox(height: 7),
                         ],
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                                isPdfFile
-                                    ? Icons.picture_as_pdf_outlined
-                                    : isOfficeFile
-                                        ? (fileName
-                                                    ?.toLowerCase()
-                                                    .endsWith('.xlsx') ==
-                                                true
-                                            ? Icons.table_chart_outlined
-                                            : Icons.description_outlined)
-                                        : isVideoFile
-                                            ? Icons.videocam_outlined
-                                            : Icons.insert_drive_file,
-                                size: 20,
-                                color: isPdfFile ? Colors.red : kPrimary),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Tooltip(
-                                message: fileName ??
-                                    message['text'] as String? ??
-                                    (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
-                                child: Text(
-                                  fileName ??
-                                      message['text'] as String? ??
-                                      (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style:
-                                      TextStyle(fontSize: 14, color: textColor),
-                                  textDirection: TextDirection.rtl,
+                        MessageDetails(
+                            enabled: isPdfFile || isOfficeFile,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                    isPdfFile
+                                        ? Icons.picture_as_pdf_outlined
+                                        : isOfficeFile
+                                            ? (fileName
+                                                        ?.toLowerCase()
+                                                        .endsWith('.xlsx') ==
+                                                    true
+                                                ? Icons.table_chart_outlined
+                                                : Icons.description_outlined)
+                                            : isVideoFile
+                                                ? Icons.videocam_outlined
+                                                : Icons.insert_drive_file,
+                                    size: 20,
+                                    color: isPdfFile ? Colors.red : kPrimary),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Tooltip(
+                                    message: fileName ??
+                                        message['text'] as String? ??
+                                        (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
+                                    child: Text(
+                                      fileName ??
+                                          message['text'] as String? ??
+                                          (isVideoFile
+                                              ? 'סרטון וידאו'
+                                              : 'מסמך'),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                          fontSize: 14, color: textColor),
+                                      textDirection: TextDirection.rtl,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            if (isPdfFile || isOfficeFile)
-                              IconButton(
-                                visualDensity: VisualDensity.compact,
-                                tooltip: 'הורדה',
-                                onPressed: () => _downloadChatFile(
-                                    context, fileUrl, fileName),
-                                icon: const Icon(Icons.download_outlined,
-                                    size: 20, color: kPrimary),
-                              )
-                            else ...[
-                              const Icon(Icons.download,
-                                  size: 20, color: kPrimary),
-                              const SizedBox(width: 3),
-                              const Text('הורדה',
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      color: kPrimary,
-                                      fontWeight: FontWeight.w600)),
-                            ],
-                          ],
-                        ),
+                                const SizedBox(width: 10),
+                                if (isPdfFile || isOfficeFile)
+                                  IconButton(
+                                    visualDensity: VisualDensity.compact,
+                                    tooltip: 'הורדה',
+                                    onPressed: () => _downloadChatFile(
+                                        context, fileUrl, fileName,
+                                        token: token),
+                                    icon: const Icon(Icons.download_outlined,
+                                        size: 20, color: kPrimary),
+                                  )
+                                else ...[
+                                  const Icon(Icons.download,
+                                      size: 20, color: kPrimary),
+                                  const SizedBox(width: 3),
+                                  const Text('הורדה',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          color: kPrimary,
+                                          fontWeight: FontWeight.w600)),
+                                ],
+                              ],
+                            )),
                       ],
                     ),
                   ),
@@ -27355,16 +28438,42 @@ class _MessageBubble extends StatelessWidget {
                 token: token,
                 me: me,
               )
+            else if (message['from'] == kSystemGuideId)
+              GuideTableText(
+                displayText,
+                style: const TextStyle(
+                    fontSize: 14, height: 1.45, color: textColor),
+              )
+            else if (message['from'] == kSafeInformationAiId)
+              SafeInformationText(
+                displayText,
+                style: const TextStyle(
+                    fontSize: 14, height: 1.45, color: textColor),
+                onOpenUrl: (url) => _confirmAndOpenExternalLink(context, url),
+              )
             else
               Text(
                 displayText,
                 style: TextStyle(
-                    fontSize: _looksLikeSticker(displayText) ? 44 : 14,
+                    fontSize: 14,
                     height: 1.45,
                     color: textColor),
                 textDirection: TextDirection.rtl,
                 textAlign: TextAlign.right,
               ),
+
+            if (isFile &&
+                fileType == 'document' &&
+                message['from'] == kSystemGuideId &&
+                displayText.isNotEmpty &&
+                displayText != (fileName ?? '').trim()) ...[
+              const SizedBox(height: 8),
+              GuideTableText(
+                displayText,
+                style: const TextStyle(
+                    fontSize: 14, height: 1.45, color: textColor),
+              ),
+            ],
 
             if (isFile && fileType == 'document') ...[
               const SizedBox(height: 6),
@@ -27393,7 +28502,8 @@ class _MessageBubble extends StatelessWidget {
               ),
             ],
 
-            if (guideAppDestination != null) ...[
+            for (final (guideAppDestination, guideIssueId)
+                in guideAppLinks) ...[
               const SizedBox(height: 8),
               Semantics(
                 button: true,
@@ -27434,6 +28544,16 @@ class _MessageBubble extends StatelessWidget {
               ),
             ],
 
+            if (messageDraft != null) ...[
+              const SizedBox(height: 8),
+              GuideMessageDraftCard(
+                api: kApi,
+                key: ValueKey('guide-message:${message['id']}'),
+                draft: messageDraft,
+                token: token,
+                messageId: message['id']?.toString() ?? '',
+              ),
+            ],
             if (issueDraft != null) ...[
               const SizedBox(height: 8),
               _GuideIssueDraftCard(
@@ -27447,6 +28567,7 @@ class _MessageBubble extends StatelessWidget {
             for (final listingId in listingIds) ...[
               const SizedBox(height: 6),
               _ListingMessageCard(
+                key: ValueKey('listing-preview:${message['id']}:$listingId'),
                 listingId: listingId,
                 token: token,
                 me: me,
@@ -27462,27 +28583,33 @@ class _MessageBubble extends StatelessWidget {
                   key: ValueKey('reactions:${message['id']}'),
                   api: kApi,
                   token: token,
-                  messageId: message['id'].toString()),
-            const SizedBox(height: 3),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (message['isEdited'] == true)
-                  Text('נערך · ',
-                      style: TextStyle(
-                          fontSize: 10,
-                          color: timeColor,
-                          fontStyle: FontStyle.italic)),
-                Text(
-                  message['time'] as String? ?? '',
-                  style: TextStyle(fontSize: 10, color: timeColor),
-                ),
-                if (!isImageFile) ...[
-                  const SizedBox(width: 3),
-                  _statusIcon(),
-                ],
-              ],
-            ),
+                  messageId: message['id'].toString(),
+                  showAddButton: false),
+            if (!isImageFile && !isVideoFile) ...[
+              const SizedBox(height: 3),
+              Align(
+                  alignment: Alignment.centerLeft,
+                  widthFactor: 1,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (message['isEdited'] == true)
+                        Text('נערך · ',
+                            style: TextStyle(
+                                fontSize: 10,
+                                color: timeColor,
+                                fontStyle: FontStyle.italic)),
+                      Text(
+                        message['time'] as String? ?? '',
+                        style: TextStyle(fontSize: 10, color: timeColor),
+                      ),
+                      if (!isImageFile) ...[
+                        const SizedBox(width: 3),
+                        _statusIcon(),
+                      ],
+                    ],
+                  )),
+            ],
           ],
         ),
       ),
@@ -27899,7 +29026,12 @@ Future<String?> _showExpressionPicker(BuildContext context, String token) {
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (sheetContext) => _ExpressionPickerSheet(token: token),
+    builder: (sheetContext) => Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+      ),
+      child: _ExpressionPickerSheet(token: token),
+    ),
   );
 }
 
@@ -27964,7 +29096,10 @@ class _ExpressionPickerSheet extends StatefulWidget {
   State<_ExpressionPickerSheet> createState() => _ExpressionPickerSheetState();
 }
 
-class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
+class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabs;
+  bool _catalogRequested = false;
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
   String _query = '';
@@ -27973,10 +29108,22 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   @override
   void initState() {
     super.initState();
-    _loadExpressionCatalog();
+    _tabs = TabController(length: 2, vsync: this);
+    _tabs.addListener(_tabChanged);
+  }
+
+  void _tabChanged() {
+    if (_tabs.index == 1 && !_catalogRequested) _loadExpressionCatalog();
+  }
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
   }
 
   Future<void> _loadExpressionCatalog() async {
+    _catalogRequested = true;
     if (mounted) {
       setState(() {
         _loading = true;
@@ -27986,19 +29133,21 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     try {
       Map<String, dynamic> payload;
       try {
-        final response = await http.get(
-          Uri.parse('$kApi/expressions/catalog'),
-          headers: {'Authorization': 'Bearer ${widget.token}'},
-        ).timeout(const Duration(seconds: 12));
+        final response = await http
+            .get(
+              Uri.parse('$kApi/expressions/catalog'),
+              headers: {'Authorization': 'Bearer ${widget.token}'},
+            )
+            .timeout(const Duration(seconds: 12));
         if (response.statusCode != 200) throw Exception('catalog unavailable');
         payload = jsonDecode(response.body) as Map<String, dynamic>;
         if ((payload['version'] as num? ?? 0) < 3) {
           throw Exception('old catalog');
         }
       } catch (_) {
-        final bundled = jsonDecode(await rootBundle.loadString(
-          'assets/stickers/user-catalog.json',
-        )) as Map<String, dynamic>;
+        final bundled = jsonDecode(
+          await rootBundle.loadString('assets/stickers/user-catalog.json'),
+        ) as Map<String, dynamic>;
         payload = {
           'categories': (bundled['categories'] as List).map((raw) {
             final category = raw as Map;
@@ -28006,12 +29155,13 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
             return {
               'id': category['id'],
               'items': List.generate(
-                  labels.length,
-                  (index) => {
-                        'label': labels[index],
-                        'url':
-                            '/betshuva-app/expression-library/${category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
-                      }),
+                labels.length,
+                (index) => {
+                  'label': labels[index],
+                  'url':
+                      '/betshuva-app/expression-library/${category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
+                },
+              ),
             };
           }).toList(),
         };
@@ -28019,8 +29169,10 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
       final items = (payload['categories'] as List? ?? const [])
           .whereType<Map>()
           .where((category) => category['id'] == 'user-stickers')
-          .expand((category) =>
-              (category['items'] as List? ?? const []).whereType<Map>())
+          .expand(
+            (category) =>
+                (category['items'] as List? ?? const []).whereType<Map>(),
+          )
           .map((item) => Map<String, dynamic>.from(item))
           .toList();
       if (mounted) {
@@ -28037,47 +29189,109 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final availableHeight =
+        MediaQuery.sizeOf(context).height -
+        MediaQuery.viewInsetsOf(context).bottom;
     final visible = _items
         .where(
-            (item) => (item['label']?.toString() ?? '').contains(_query.trim()))
+          (item) => (item['label']?.toString() ?? '').contains(_query.trim()),
+        )
         .toList();
     return SafeArea(
       child: Directionality(
         textDirection: TextDirection.rtl,
         child: SizedBox(
-          height: MediaQuery.of(context).size.height * 0.68,
-          child: Column(children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 14, 16, 8),
-              child: Row(children: [
-                Icon(Icons.auto_awesome, color: kPrimary),
-                SizedBox(width: 8),
-                Text('המדבקות של בתשובה',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              ]),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: TextField(
-                onChanged: (value) => setState(() => _query = value),
-                decoration: const InputDecoration(
-                    hintText: 'חיפוש מדבקה…', prefixIcon: Icon(Icons.search)),
+          height: math.min(560.0, math.max(0.0, availableHeight - 32)),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'אימוג׳י ומדבקות',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: kPrimary,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'סגירה',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, size: 20, color: kSubtext),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            Expanded(
-                child: _loading
-                    ? const Center(
-                        child: CircularProgressIndicator(color: kPrimary))
-                    : _error != null
-                        ? Center(
-                            child: TextButton(
-                                onPressed: _loadExpressionCatalog,
-                                child: Text('$_error — נסו שוב')))
-                        : visible.isEmpty
-                            ? const Center(child: Text('לא נמצאו מדבקות'))
-                            : _RemoteExpressionGrid(items: visible)),
-          ]),
+              TabBar(
+                controller: _tabs,
+                labelColor: kPrimary,
+                unselectedLabelColor: kSubtext,
+                indicatorColor: kPrimary,
+                tabs: const [
+                  Tab(text: 'אימוג׳י'),
+                  Tab(text: 'מדבקות'),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  controller: _tabs,
+                  children: [
+                    InlineEmojiPicker(
+                      primaryColor: kPrimary,
+                      onSelected: (emoji) => Navigator.pop(context, emoji),
+                    ),
+                    Column(
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(12, 10, 12, 2),
+                          child: Text(
+                            'מדבקה נשלחת כהודעה נפרדת',
+                            style: TextStyle(fontSize: 12, color: kSubtext),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
+                          child: TextField(
+                            onChanged: (value) =>
+                                setState(() => _query = value),
+                            decoration: const InputDecoration(
+                              hintText: 'חיפוש מדבקה…',
+                              prefixIcon: Icon(Icons.search),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: _loading
+                              ? const Center(
+                                  child: CircularProgressIndicator(
+                                    color: kPrimary,
+                                  ),
+                                )
+                              : _error != null
+                              ? Center(
+                                  child: TextButton(
+                                    onPressed: _loadExpressionCatalog,
+                                    child: Text('$_error — נסו שוב'),
+                                  ),
+                                )
+                              : visible.isEmpty
+                              ? const Center(child: Text('לא נמצאו מדבקות'))
+                              : _RemoteExpressionGrid(items: visible),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -28367,21 +29581,37 @@ class GroupsScreen extends StatefulWidget {
 
 class _GroupsScreenState extends State<GroupsScreen> {
   List<Map<String, dynamic>> _groups = [];
+  int _groupsLoadGeneration = 0;
+
+  void _conversationChanged(ConversationChange change) {
+    if (!mounted || change.kind != 'group') return;
+    _groupsLoadGeneration++;
+    setState(() => _groups = _groups
+        .map((group) => group['id'] == change.targetId
+            ? conversationListAfter(group, change.result)
+            : group)
+        .toList());
+  }
+
   bool _loading = true;
+  late final void Function(dynamic) _groupMessageSocketHandler;
+  late final void Function(dynamic) _groupInvitedSocketHandler;
+  late final void Function(dynamic) _groupDeletedSocketHandler;
 
   @override
   void initState() {
     super.initState();
     _loadGroups();
-    widget.socket?.on('group:message', (data) {
+    _groupMessageSocketHandler = (data) {
       final gid = data['groupId'];
       if (!mounted) return;
       setState(() {
         final idx = _groups.indexWhere((g) => g['id'] == gid);
         if (idx != -1) _groups[idx]['lastMsg'] = data['text'] as String? ?? '';
       });
-    });
-    widget.socket?.on('group:invited', (data) {
+    };
+    widget.socket?.on('group:message', _groupMessageSocketHandler);
+    _groupInvitedSocketHandler = (data) {
       if (!mounted) return;
       _loadGroups();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -28389,32 +29619,49 @@ class _GroupsScreenState extends State<GroupsScreen> {
             content: Text(
                 '${data['addedByName']} הוסיף אותך לקבוצה "${data['groupName']}"')),
       );
-    });
-    widget.socket?.on('group:deleted', (data) {
+    };
+    widget.socket?.on('group:invited', _groupInvitedSocketHandler);
+    _groupDeletedSocketHandler = (data) {
       if (!mounted || data is! Map) return;
       final groupId = data['groupId']?.toString();
       if (groupId == null) return;
       _clearGroupMessagesCache(widget.me?['id'], groupId).ignore();
       setState(() =>
           _groups.removeWhere((group) => group['id']?.toString() == groupId));
-    });
+    };
+    widget.socket?.on('group:deleted', _groupDeletedSocketHandler);
   }
 
   @override
   void dispose() {
-    widget.socket?.off('group:message');
-    widget.socket?.off('group:invited');
-    widget.socket?.off('group:deleted');
+    widget.socket?.off('group:message', _groupMessageSocketHandler);
+    widget.socket?.off('group:invited', _groupInvitedSocketHandler);
+    widget.socket?.off('group:deleted', _groupDeletedSocketHandler);
     super.dispose();
   }
 
+  void updateGroupMemberCount(String groupId, int count) {
+    if (!mounted) return;
+    final index =
+        _groups.indexWhere((group) => group['id']?.toString() == groupId);
+    if (index == -1 ||
+        _groups[index]['member_count']?.toString() == count.toString()) {
+      return;
+    }
+    setState(() => _groups[index] = {
+          ..._groups[index],
+          'member_count': count,
+        });
+  }
+
   Future<void> _loadGroups() async {
+    final generation = _groupsLoadGeneration;
     try {
       final res = await http.get(
         Uri.parse('$kApi/groups'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (!mounted) return;
+      if (!mounted || generation != _groupsLoadGeneration) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         setState(() {
@@ -28725,7 +29972,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   late final void Function(dynamic) _educationUpdatedSocketHandler;
   late final void Function(dynamic) _messageRejectedSocketHandler;
   late final void Function(dynamic) _groupDeletedSocketHandler;
-  List<Map<String, dynamic>> _members = [];
+  late final void Function(dynamic) _groupMessageSocketHandler;
+  late final void Function(dynamic) _groupViewedSocketHandler;
+  late final void Function(dynamic) _groupMemberJoinedSocketHandler;
+  late final void Function(dynamic) _messageEditedSocketHandler;
+  late final void Function(dynamic) _messageDeletedSocketHandler;
+  final List<Map<String, dynamic>> _members = [];
+  final ValueNotifier<int> _membersChanged = ValueNotifier(0);
+  Future<void>? _membersLoad;
+  bool _membersLoaded = false;
   String _myStatus = 'member'; // 'member' or 'pending'
   Map<String, dynamic>? _editingMsg;
 
@@ -28760,6 +30015,78 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Timer? _recordTimer;
   Timer? _messageRefreshTimer;
   String? _serverMessagesFingerprint;
+  int _historyGeneration = 0;
+  DateTime? _clearedAt;
+  late final StreamSubscription<ConversationChange> _cleanupSubscription;
+  late final void Function(dynamic) _conversationChangedHandler;
+
+  void _listenForConversationChanges() {
+    _cleanupSubscription = conversationChanges.stream.listen((change) {
+      if (change.accountId == widget.me?['id']?.toString() &&
+          change.kind == 'group' &&
+          change.targetId == _groupId) {
+        _applyConversationCleanup(change.result);
+      }
+    });
+    _conversationChangedHandler = (data) {
+      if (data is Map &&
+          data['kind'] == 'group' &&
+          data['targetId'] == _groupId) {
+        _applyConversationCleanup(ConversationCleanupResult.fromJson(
+            Map<String, dynamic>.from(data)));
+      }
+    };
+    widget.socket?.on('conversation:changed', _conversationChangedHandler);
+  }
+
+  Future<void> _applyConversationCleanup(
+      ConversationCleanupResult result) async {
+    final cutoff = result.clearedAt;
+    if (!mounted ||
+        cutoff == null ||
+        (_clearedAt != null && !cutoff.isAfter(_clearedAt!))) {
+      return;
+    }
+    _historyGeneration++;
+    _clearedAt = cutoff;
+    _serverMessagesFingerprint = null;
+    setState(() {
+      _messages
+          .removeWhere((message) => !conversationMessageAfter(message, cutoff));
+      _selectedMessageKeys.clear();
+      if (_editingMsg != null) _msgCtrl.clear();
+      _editingMsg = null;
+      _msgHistory.clear();
+      _loading = false;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_groupMessagesCacheKey(widget.me?['id'], _groupId));
+    if (mounted) _loadMessages(silent: true);
+  }
+
+  Future<void> _cleanupConversation({required bool deleteConversation}) async {
+    final result = await showConversationCleanupDialog(context,
+        api: kApi,
+        token: widget.token,
+        kind: 'group',
+        targetId: _groupId,
+        name: widget.group['name']?.toString() ?? 'הקבוצה',
+        deleteConversation: deleteConversation);
+    if (result == null) return;
+    conversationChanges.add(ConversationChange(
+        widget.me?['id']?.toString() ?? '', 'group', _groupId, result));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(result.summary)));
+    if (result.hidden) {
+      if (widget.onClose != null) {
+        widget.onClose!();
+      } else {
+        Navigator.of(context).pop();
+      }
+    }
+  }
+
   String _voiceFileName = 'voice_message.webm';
   Map<String, bool>? _groupReceivingFilter;
   Map<String, bool>? _outgoingFilter;
@@ -28844,6 +30171,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
+    _listenForConversationChanges();
+    if (widget.group['conversation_hidden'] == true) {
+      reopenConversation(
+          api: kApi,
+          token: widget.token,
+          accountId: widget.me?['id']?.toString() ?? '',
+          kind: 'group',
+          targetId: _groupId);
+    }
+
     registerAppScreenshotMenu(this, _showAttachMenu);
     appScreenshotDestination.value =
         AppScreenshotDestination.group(widget.group['id'].toString());
@@ -28909,6 +30246,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final serverRole = current['role']?.toString() ?? 'member';
       final serverSendPermission =
           current['send_permission']?.toString() ?? 'all';
+      final serverMemberCount =
+          int.tryParse(current['member_count']?.toString() ?? '');
       final membershipChanged = serverStatus != _myStatus;
       final accessChanged = membershipChanged ||
           _isAdmin != (serverRole == 'admin') ||
@@ -28930,6 +30269,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _loadMembers(),
           _loadGroupReceivingFilter(),
         ]);
+      } else if (serverStatus == 'member' &&
+          serverMemberCount != null &&
+          (!_membersLoaded || serverMemberCount != _members.length)) {
+        await _loadMembers();
       }
     } catch (_) {}
   }
@@ -29051,7 +30394,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
-  Future<void> _loadMembers() async {
+  Future<void> _loadMembers() =>
+      _membersLoad ??= _fetchMembers().whenComplete(() => _membersLoad = null);
+
+  Future<void> _fetchMembers() async {
     try {
       final res = await http.get(
         Uri.parse('$kApi/groups/$_groupId'),
@@ -29061,10 +30407,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final members = (data['members'] as List).cast<Map<String, dynamic>>();
         setState(() {
-          _members = members;
+          _members
+            ..clear()
+            ..addAll(members);
+          _membersLoaded = true;
           widget.group['member_count'] = members.length;
           widget.group['profile_pic_url'] = data['profile_pic_url'];
         });
+        _membersChanged.value++;
         widget.onMembersChanged?.call(members.length);
       }
     } catch (_) {}
@@ -29639,58 +30989,178 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _inviteExternalContact(phone, email, contactName, delivery);
   }
 
-  void _showMembersDialog() {
+  Future<Map<String, dynamic>> _saveMemberAsFriend(
+      Map<String, dynamic> member) async {
+    final memberId = member['id']?.toString() ?? '';
+    if (memberId.isEmpty || memberId == widget.me?['id']?.toString()) {
+      throw Exception('יש לבחור חבר אחר בקבוצה');
+    }
+    final http.Response response;
+    try {
+      response = await http.post(
+        Uri.parse('$kApi/contacts/save/$memberId'),
+        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+        body: jsonEncode({'source': 'in_app'}),
+      ).timeout(const Duration(seconds: 15));
+    } catch (_) {
+      throw Exception('שגיאת חיבור. לחץ כדי לנסות שוב');
+    }
+    if (response.statusCode != 200) {
+      var reason = 'לא ניתן להוסיף את החבר כרגע';
+      try {
+        final body = jsonDecode(response.body);
+        if (body is Map && body['error'] != null) {
+          reason = body['error'].toString();
+        }
+      } catch (_) {}
+      throw Exception(reason);
+    }
+    return sanitizedPhoneContact({...member, 'saved': true});
+  }
+
+  Future<void> _saveAndOpenGroupMember(Map<String, dynamic> member) async {
+    final recipient = await _saveMemberAsFriend(member);
+    if (mounted) await _openMemberConversation(recipient);
+  }
+
+  Future<void> _showMembersDialog() async {
+    await _loadMembers();
+    if (!mounted) return;
     final myId = widget.me?['id'] as String?;
-    showDialog(
+    var saving = false;
+    String? selectedMemberId;
+    String? saveError;
+    final recipient = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          title: Text('חברים בקבוצה (${_members.length})'),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 400),
-            child: _members.isEmpty
-                ? const Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    shrinkWrap: true,
-                    itemCount: _members.length,
-                    itemBuilder: (_, i) {
-                      final m = _members[i];
-                      final isMe = m['id'] == myId;
-                      final isAdminMember = m['role'] == 'admin';
-                      return ListTile(
-                        leading: UserAvatar(
-                          picUrl: m['profile_pic_url'] as String?,
-                          name: m['name'] as String,
-                        ),
-                        title: Text(m['name'] as String),
-                        subtitle: Text(
-                          '${isAdminMember ? 'מנהל · ' : ''}${_lastViewedLabel(m['last_viewed_at'])}',
-                          style: TextStyle(
-                              color: isAdminMember ? kPrimary : kSubtext,
-                              fontSize: 12),
-                        ),
-                        trailing: (!isMe && !isAdminMember)
-                            ? IconButton(
-                                icon: const Icon(Icons.person_remove,
-                                    color: Colors.red),
-                                onPressed: () {
-                                  Navigator.pop(ctx);
-                                  _removeMember(
-                                      m['id'] as String, m['name'] as String);
+      builder: (ctx) => AnimatedBuilder(
+        animation: _membersChanged,
+        builder: (ctx, _) => StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: Text('חברים בקבוצה (${_members.length})'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(
+                minWidth: 320,
+                maxWidth: 320,
+                maxHeight: 400,
+              ),
+              child: _members.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _members.length,
+                      itemBuilder: (_, i) {
+                        final m = _members[i];
+                        final memberId = m['id']?.toString() ?? '';
+                        final isMe = memberId == myId;
+                        final isAdminMember = m['role'] == 'admin';
+                        final isSelected = selectedMemberId == memberId;
+                        return ListTile(
+                          onTap: isMe || memberId.isEmpty || saving
+                              ? null
+                              : () async {
+                                  if (saving) return;
+                                  setDialogState(() {
+                                    saving = true;
+                                    selectedMemberId = memberId;
+                                    saveError = null;
+                                  });
+                                  try {
+                                    final saved = await _saveMemberAsFriend(m);
+                                    if (!ctx.mounted) return;
+                                    Navigator.pop(ctx, saved);
+                                  } catch (error) {
+                                    if (!ctx.mounted) return;
+                                    setDialogState(() {
+                                      saving = false;
+                                      saveError = error.toString().replaceFirst(
+                                            'Exception: ',
+                                            '',
+                                          );
+                                    });
+                                  }
                                 },
-                              )
-                            : null,
-                      );
-                    },
-                  ),
+                          leading: IgnorePointer(
+                            child: UserAvatar(
+                              picUrl: m['profile_pic_url'] as String?,
+                              name: m['name'] as String,
+                            ),
+                          ),
+                          title: Text(m['name'] as String),
+                          subtitle: Text(
+                            isSelected && saveError != null
+                                ? saveError!
+                                : isSelected && saving
+                                    ? 'מוסיף לחברים...'
+                                    : '${isAdminMember ? 'מנהל · ' : ''}${_lastViewedLabel(m['last_viewed_at'])}',
+                            style: TextStyle(
+                              color: isSelected && saveError != null
+                                  ? Colors.red
+                                  : isAdminMember
+                                      ? kPrimary
+                                      : kSubtext,
+                              fontSize: 12,
+                            ),
+                          ),
+                          trailing: isSelected && saving
+                              ? const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : (!isMe && !isAdminMember)
+                                  ? IconButton(
+                                      icon: const Icon(
+                                        Icons.person_remove,
+                                        color: Colors.red,
+                                      ),
+                                      onPressed: saving
+                                          ? null
+                                          : () {
+                                              Navigator.pop(ctx);
+                                              _removeMember(
+                                                memberId,
+                                                m['name'] as String,
+                                              );
+                                            },
+                                    )
+                                  : null,
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: saving ? null : () => Navigator.pop(ctx),
+                child: const Text('סגור'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx), child: const Text('סגור')),
-          ],
         ),
       ),
     );
+    if (!mounted || recipient == null) return;
+    await _openMemberConversation(recipient);
+  }
+
+  Future<void> _openMemberConversation(Map<String, dynamic> recipient) async {
+    final groupRoute = ModalRoute.of(context);
+    if (groupRoute != null) {
+      Navigator.of(context).popUntil((route) => route == groupRoute);
+    }
+    final openNotification =
+        _OpenSharedContactChatNotification(recipient, contactSaved: true);
+    openNotification.dispatch(context);
+    if (openNotification.handledInDesktopPane) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ChatScreen(
+        token: widget.token,
+        me: widget.me,
+        recipient: recipient,
+        socket: widget.socket,
+      ),
+    ));
   }
 
   String _lastViewedLabel(dynamic raw) {
@@ -29710,13 +31180,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _loadMessages({bool silent = false}) async {
+    final generation = _historyGeneration;
     final cacheKey = _groupMessagesCacheKey(widget.me?['id'], _groupId);
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (!mounted || generation != _historyGeneration) return;
       final cached = prefs.getString(cacheKey);
       if (!silent && cached != null && mounted) {
-        final list = (jsonDecode(cached) as List).cast<Map<String, dynamic>>();
+        final list = (jsonDecode(cached) as List)
+            .cast<Map<String, dynamic>>()
+            .where((message) => conversationMessageAfter(message, _clearedAt))
+            .toList();
         setState(() {
           _messages
             ..clear()
@@ -29732,10 +31207,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         Uri.parse('$kApi/groups/$_groupId/messages'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (!mounted) return;
+      if (!mounted || generation != _historyGeneration) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
-        final normalized = data.map(_normalize).toList();
+        final normalized = data
+            .map(_normalize)
+            .where((message) => conversationMessageAfter(message, _clearedAt))
+            .toList();
         _persistRecentImageUrls(normalized).ignore();
         final fingerprint = jsonEncode(normalized);
         if (silent && fingerprint == _serverMessagesFingerprint) return;
@@ -29767,6 +31245,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _scrollToBottom();
         // Save to cache
         final prefs = await SharedPreferences.getInstance();
+        if (!mounted || generation != _historyGeneration) return;
         final toCache = normalized.length > 50
             ? normalized.sublist(normalized.length - 50)
             : normalized;
@@ -29774,7 +31253,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       } else {
         if (res.statusCode == 403 || res.statusCode == 404) {
           await _clearGroupMessagesCache(widget.me?['id'], _groupId);
-          if (!mounted) return;
+          if (!mounted || generation != _historyGeneration) return;
           setState(() {
             _messages.clear();
             _loading = false;
@@ -29784,7 +31263,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
       }
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && generation == _historyGeneration) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -29856,7 +31337,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     };
     widget.socket?.on('group:deleted', _groupDeletedSocketHandler);
 
-    widget.socket?.on('group:message', (data) {
+    _groupMessageSocketHandler = (data) {
       if (data['groupId'] != _groupId || !mounted) return;
       final fileUrl = data['fileUrl'] as String?;
       final fileName = data['fileName'] as String?;
@@ -29894,6 +31375,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         if (data['audioModerationStatus'] != null)
           'audioModerationStatus': data['audioModerationStatus'].toString(),
       };
+      if (!conversationMessageAfter(incoming, _clearedAt)) return;
       final recoveredFailedIndex = data['fromUserId'] != widget.me?['id'] ||
               fileName == null
           ? -1
@@ -29932,7 +31414,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           backgroundColor: Colors.green,
         ));
       }
-    });
+    };
+    widget.socket?.on('group:message', _groupMessageSocketHandler);
 
     _scanRejectedSocketHandler = (data) {
       if (!mounted || data is! Map || data['groupId'] != _groupId) return;
@@ -30009,7 +31492,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     };
     widget.socket?.on('group:typing', _typingSocketHandler);
 
-    widget.socket?.on('group:viewed', (data) {
+    _groupViewedSocketHandler = (data) {
       if (!mounted || data['groupId'] != _groupId) return;
       final memberIndex =
           _members.indexWhere((member) => member['id'] == data['userId']);
@@ -30018,14 +31501,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _members[memberIndex]['last_viewed_at'] = data['viewedAt'];
         });
       }
-    });
+    };
+    widget.socket?.on('group:viewed', _groupViewedSocketHandler);
 
-    widget.socket?.on('group:member_joined', (data) {
+    _groupMemberJoinedSocketHandler = (data) {
       if (!mounted || data['groupId'] != _groupId) return;
       _loadMembers();
-    });
+    };
+    widget.socket?.on('group:member_joined', _groupMemberJoinedSocketHandler);
 
-    widget.socket?.on('message:edited', (data) {
+    _messageEditedSocketHandler = (data) {
       if (!mounted) return;
       final gid = data['groupId'] as String?;
       if (gid != null && gid != _groupId) return;
@@ -30036,9 +31521,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _messages[idx]['isEdited'] = true;
         }
       });
-    });
+    };
+    widget.socket?.on('message:edited', _messageEditedSocketHandler);
 
-    widget.socket?.on('message:deleted', (data) {
+    _messageDeletedSocketHandler = (data) {
       if (!mounted || data['groupId'] != _groupId) return;
       setState(() {
         final index = _messages.indexWhere((m) => m['id'] == data['id']);
@@ -30049,11 +31535,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _messages[index]['fileType'] = 'text';
         }
       });
-    });
+    };
+    widget.socket?.on('message:deleted', _messageDeletedSocketHandler);
   }
 
   @override
   void dispose() {
+    _cleanupSubscription.cancel();
+    widget.socket?.off('conversation:changed', _conversationChangedHandler);
     unregisterAppScreenshotMenu(this);
     final screenshotDestination =
         AppScreenshotDestination.group(widget.group['id'].toString());
@@ -30065,17 +31554,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _recordTimer?.cancel();
     _messageRefreshTimer?.cancel();
     _audioRecorder.dispose();
-    widget.socket?.off('group:message');
+    widget.socket?.off('group:message', _groupMessageSocketHandler);
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
     widget.socket?.off('scan:cancelled', _scanCancelledSocketHandler);
     widget.socket?.off('education:updated', _educationUpdatedSocketHandler);
     widget.socket?.off('message:rejected', _messageRejectedSocketHandler);
     widget.socket?.off('group:typing', _typingSocketHandler);
-    widget.socket?.off('group:viewed');
-    widget.socket?.off('group:member_joined');
-    widget.socket?.off('message:edited');
-    widget.socket?.off('message:deleted');
+    widget.socket?.off('group:viewed', _groupViewedSocketHandler);
+    widget.socket?.off('group:member_joined', _groupMemberJoinedSocketHandler);
+    widget.socket?.off('message:edited', _messageEditedSocketHandler);
+    widget.socket?.off('message:deleted', _messageDeletedSocketHandler);
     widget.socket?.off('group:deleted', _groupDeletedSocketHandler);
+    _membersChanged.dispose();
     _msgCtrl.dispose();
     _msgFocusNode.dispose();
     _scrollCtrl.dispose();
@@ -30438,6 +31928,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _showGroupExpressions() async {
+    final beforePicker = _msgCtrl.value;
     if (!await _ensureCanSendToGroup()) return;
     if (!mounted) return;
     final choice = await _showExpressionPicker(context, widget.token);
@@ -30548,14 +32039,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       await _send(stickerId: choice.substring(_avielStickerPrefix.length));
       return;
     }
-    final selection = _msgCtrl.selection;
-    final start = selection.isValid ? selection.start : _msgCtrl.text.length;
-    final end = selection.isValid ? selection.end : _msgCtrl.text.length;
-    final next = _msgCtrl.text.replaceRange(start, end, choice);
-    _msgCtrl.value = TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: start + choice.length),
-    );
+    _insertExpressionText(_msgCtrl, choice, beforePicker);
+    _msgFocusNode.requestFocus();
   }
 
   Future<void> _showAttachMenu() async {
@@ -30985,7 +32470,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             fileType == 'document' ||
             fileType == 'video' ||
             fileType == 'audio') &&
-        !isClipboardPaste && !isLibrarySticker;
+        !isClipboardPaste &&
+        !isLibrarySticker;
     final showProgress = !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_group_');
     final uploadStartedAt = DateTime.now();
@@ -31591,6 +33077,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       groupName: widget.group['name'] as String?,
                       groupPhotoUrl: widget.group['profile_pic_url'] as String?,
                       groupMembers: _members,
+                      groupMembersChanges: _membersChanged,
+                      currentUserId: widget.me?['id']?.toString(),
+                      onGroupMemberSelected: _saveAndOpenGroupMember,
                       onAddGroupMember: _isAdmin ? _showAddMemberDialog : null,
                       onManageGroupMembers: _showMembersDialog,
                       onChangeGroupPhoto: _isAdmin ? _changeGroupPhoto : null,
@@ -31684,6 +33173,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         groupPhotoUrl:
                             widget.group['profile_pic_url'] as String?,
                         groupMembers: _members,
+                        groupMembersChanges: _membersChanged,
+                        currentUserId: widget.me?['id']?.toString(),
+                        onGroupMemberSelected: _saveAndOpenGroupMember,
                         onAddGroupMember: _showAddMemberDialog,
                         onManageGroupMembers: _showMembersDialog,
                         onChangeGroupPhoto: _changeGroupPhoto,
@@ -31710,8 +33202,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _showGroupDetailsPanel() async {
+    await _loadMembers();
+    if (!mounted) return;
     await showGeneralDialog<void>(
       context: context,
+      useRootNavigator: false,
       barrierDismissible: true,
       barrierLabel: 'סגירת פרטי הקבוצה',
       barrierColor: Colors.black54,
@@ -31721,8 +33216,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         child: Align(
           alignment: Alignment.centerLeft,
           child: SizedBox(
-            width: math.min(470, MediaQuery.sizeOf(context).width * .94),
-            height: MediaQuery.sizeOf(context).height,
+            width: math.min(470, MediaQuery.sizeOf(dialogContext).width * .94),
+            height: MediaQuery.sizeOf(dialogContext).height,
             child: ClipRRect(
               borderRadius: const BorderRadius.only(
                 topRight: Radius.circular(22),
@@ -31736,6 +33231,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   groupName: widget.group['name'] as String?,
                   groupPhotoUrl: widget.group['profile_pic_url'] as String?,
                   groupMembers: _members,
+                  groupMembersChanges: _membersChanged,
+                  currentUserId: widget.me?['id']?.toString(),
+                  onGroupMemberSelected: _saveAndOpenGroupMember,
                   onAddGroupMember: _isAdmin ? _showAddMemberDialog : null,
                   onManageGroupMembers: _showMembersDialog,
                   onChangeGroupPhoto: _isAdmin ? _changeGroupPhoto : null,
@@ -31761,6 +33259,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> _handleGroupMenuAction(String action) async {
     switch (action) {
+      case 'clear_conversation':
+        await _cleanupConversation(deleteConversation: false);
+        break;
+      case 'delete_conversation':
+        await _cleanupConversation(deleteConversation: true);
+        break;
       case 'info':
         await _showGroupDetailsPanel();
         break;
@@ -31785,6 +33289,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               groupName: widget.group['name'] as String?,
               groupPhotoUrl: widget.group['profile_pic_url'] as String?,
               groupMembers: _members,
+              groupMembersChanges: _membersChanged,
+              currentUserId: widget.me?['id']?.toString(),
+              onGroupMemberSelected: _saveAndOpenGroupMember,
               onAddGroupMember: _isAdmin ? _showAddMemberDialog : null,
               onManageGroupMembers: _showMembersDialog,
               onChangeGroupPhoto: _isAdmin ? _changeGroupPhoto : null,
@@ -32375,6 +33882,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       height: 40,
                       child: _CompactMenuItem(
                           Icons.shield_outlined, 'הגדרות סינון')),
+                const PopupMenuItem(
+                    value: 'clear_conversation',
+                    height: 40,
+                    child: _CompactMenuItem(
+                        Icons.cleaning_services_outlined, 'ניקוי שיחה')),
+                const PopupMenuItem(
+                    value: 'delete_conversation',
+                    height: 40,
+                    child: _CompactMenuItem(Icons.delete_outline, 'מחיקת שיחה',
+                        color: Colors.red)),
                 const PopupMenuDivider(height: 8),
                 if (!_isAdmin)
                   const PopupMenuItem(
@@ -32708,831 +34225,916 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   _DateDivider(label: _messageDateLabel(msg)),
                                 if (firstUnreadIndex == messageIndex)
                                   const _UnreadMessagesDivider(),
-                                if (!isFilterUpdateAnnouncement)
-                                  Padding(
-                                    padding: const EdgeInsetsDirectional.only(
-                                        start: 8, end: 8, bottom: 4),
-                                    child: Row(
+                                Row(
+                                  textDirection: TextDirection.rtl,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    Tooltip(
+                                        message: senderDisplayName,
+                                        child: UserAvatar(
+                                            picUrl: senderAvatarUrl,
+                                            name: senderDisplayName,
+                                            radius: 16)),
+                                    const SizedBox(width: 7),
+                                    Flexible(
+                                        child: MessageHover(
+                                            child: Column(
                                       mainAxisSize: MainAxisSize.min,
-                                      textDirection: TextDirection.rtl,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        UserAvatar(
-                                          picUrl: senderAvatarUrl,
-                                          name: senderDisplayName,
-                                          radius: 12,
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          senderDisplayName,
-                                          style: const TextStyle(
-                                            fontSize: 12,
-                                            color: kPrimary,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                if (isVisualUploadState)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 6),
-                                    child: uploadStatus == 'uploading' ||
-                                            uploadStatus == 'pending_scan'
-                                        ? _UploadProcessingCard(
-                                            fileName: msg['fileName']
-                                                    ?.toString() ??
-                                                (uploadFileType == 'video'
-                                                    ? 'וידאו'
-                                                    : uploadFileType == 'audio'
-                                                        ? 'הקלטה'
-                                                        : 'תמונה'),
-                                            fileType: uploadFileType ?? 'image',
-                                            scanning:
-                                                uploadStatus == 'pending_scan',
-                                            startedAt: DateTime.tryParse(
-                                                    msg['uploadStartedAt']
+                                        if (isVisualUploadState)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                                bottom: 6),
+                                            child: uploadStatus ==
+                                                        'uploading' ||
+                                                    uploadStatus ==
+                                                        'pending_scan'
+                                                ? _UploadProcessingCard(
+                                                    fileName: msg['fileName']
                                                             ?.toString() ??
-                                                        msg['createdAt']
-                                                            ?.toString() ??
-                                                        '') ??
-                                                DateTime.now(),
+                                                        (uploadFileType ==
+                                                                'video'
+                                                            ? 'וידאו'
+                                                            : uploadFileType ==
+                                                                    'audio'
+                                                                ? 'הקלטה'
+                                                                : 'תמונה'),
+                                                    fileType: uploadFileType ??
+                                                        'image',
+                                                    scanning: uploadStatus ==
+                                                        'pending_scan',
+                                                    startedAt: DateTime.tryParse(
+                                                            msg['uploadStartedAt']
+                                                                    ?.toString() ??
+                                                                msg['createdAt']
+                                                                    ?.toString() ??
+                                                                '') ??
+                                                        DateTime.now(),
+                                                  )
+                                                : _UploadResultCard(
+                                                    blocked: uploadStatus ==
+                                                        'rejected_scan',
+                                                    showBlockedArtwork:
+                                                        uploadFileType !=
+                                                            'image',
+                                                    title: uploadStatus ==
+                                                            'rejected_scan'
+                                                        ? uploadFileType ==
+                                                                'audio'
+                                                            ? 'ההקלטה נחסמה ולא נשלחה'
+                                                            : uploadFileType ==
+                                                                    'video'
+                                                                ? 'הווידאו נחסם ולא נשלח'
+                                                                : _imageBlockTitle(msg[
+                                                                    'scanReason'])
+                                                        : uploadFileType ==
+                                                                'audio'
+                                                            ? 'העלאת ההקלטה נכשלה'
+                                                            : uploadFileType ==
+                                                                    'video'
+                                                                ? 'העלאת הווידאו נכשלה'
+                                                                : 'העלאת התמונה נכשלה',
+                                                    reason: uploadStatus ==
+                                                            'rejected_scan'
+                                                        ? msg['scanReason']
+                                                                ?.toString() ??
+                                                            (uploadFileType ==
+                                                                    'audio'
+                                                                ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
+                                                                : uploadFileType ==
+                                                                        'video'
+                                                                    ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
+                                                                    : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
+                                                        : msg['uploadError']
+                                                                ?.toString() ??
+                                                            (uploadFileType ==
+                                                                    'audio'
+                                                                ? 'אירעה שגיאה בזמן העלאת ההקלטה'
+                                                                : uploadFileType ==
+                                                                        'video'
+                                                                    ? 'אירעה שגיאה בזמן העלאת הווידאו'
+                                                                    : 'אירעה שגיאה בזמן העלאת התמונה'),
+                                                    transcript:
+                                                        msg['audioTranscript']
+                                                            ?.toString(),
+                                                    contentPurged:
+                                                        msg['contentPurged'] ==
+                                                            true,
+                                                    imageUrl: uploadStatus ==
+                                                            'rejected_scan'
+                                                        ? msg['fileUrl']
+                                                            as String?
+                                                        : null,
+                                                    fileName: msg['fileName']
+                                                        as String?,
+                                                    recipientName: uploadStatus ==
+                                                                'rejected_scan' &&
+                                                            msg['forwardAllowed'] ==
+                                                                true
+                                                        ? 'קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}'
+                                                        : null,
+                                                    destinationFilterRejected:
+                                                        msg['forwardAllowed'] ==
+                                                            true,
+                                                    onlyYouText:
+                                                        'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
+                                                  ),
                                           )
-                                        : _UploadResultCard(
-                                            blocked:
-                                                uploadStatus == 'rejected_scan',
-                                            showBlockedArtwork:
-                                                uploadFileType != 'image',
-                                            title: uploadStatus ==
-                                                    'rejected_scan'
-                                                ? uploadFileType == 'audio'
-                                                    ? 'ההקלטה נחסמה ולא נשלחה'
-                                                    : uploadFileType == 'video'
-                                                        ? 'הווידאו נחסם ולא נשלח'
-                                                        : _imageBlockTitle(
-                                                            msg['scanReason'])
-                                                : uploadFileType == 'audio'
-                                                    ? 'העלאת ההקלטה נכשלה'
-                                                    : uploadFileType == 'video'
-                                                        ? 'העלאת הווידאו נכשלה'
-                                                        : 'העלאת התמונה נכשלה',
-                                            reason: uploadStatus ==
-                                                    'rejected_scan'
-                                                ? msg['scanReason']
-                                                        ?.toString() ??
-                                                    (uploadFileType == 'audio'
-                                                        ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
-                                                        : uploadFileType ==
-                                                                'video'
-                                                            ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
-                                                            : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
-                                                : msg['uploadError']
-                                                        ?.toString() ??
-                                                    (uploadFileType == 'audio'
-                                                        ? 'אירעה שגיאה בזמן העלאת ההקלטה'
-                                                        : uploadFileType ==
-                                                                'video'
-                                                            ? 'אירעה שגיאה בזמן העלאת הווידאו'
-                                                            : 'אירעה שגיאה בזמן העלאת התמונה'),
-                                            transcript: msg['audioTranscript']
-                                                ?.toString(),
-                                            contentPurged:
-                                                msg['contentPurged'] == true,
-                                            imageUrl:
-                                                uploadStatus == 'rejected_scan'
-                                                    ? msg['fileUrl'] as String?
-                                                    : null,
-                                            fileName:
-                                                msg['fileName'] as String?,
-                                            recipientName: uploadStatus ==
-                                                        'rejected_scan' &&
-                                                    msg['forwardAllowed'] ==
-                                                        true
-                                                ? 'קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}'
-                                                : null,
-                                            destinationFilterRejected:
-                                                msg['forwardAllowed'] == true,
-                                            onlyYouText:
-                                                'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
-                                          ),
-                                  )
-                                else if (isDocumentModerationState)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 6),
-                                    child: _DocumentModerationCard(
-                                      fileName:
-                                          msg['fileName']?.toString() ?? 'מסמך',
-                                      blocked: uploadStatus == 'rejected_scan',
-                                      reason: msg['scanReason']?.toString(),
-                                    ),
-                                  )
-                                else
-                                  GestureDetector(
-                                    onTap: _selectedMessageKeys.isNotEmpty
-                                        ? () => _toggleMessageSelection(msg)
-                                        : isFilterUpdateAnnouncement
-                                            ? _updateMyGroupFilter
-                                            : isEducationAnnouncement
+                                        else if (isDocumentModerationState)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                                bottom: 6),
+                                            child: _DocumentModerationCard(
+                                              fileName:
+                                                  msg['fileName']?.toString() ??
+                                                      'מסמך',
+                                              blocked: uploadStatus ==
+                                                  'rejected_scan',
+                                              reason:
+                                                  msg['scanReason']?.toString(),
+                                            ),
+                                          )
+                                        else
+                                          GestureDetector(
+                                            onTap: _selectedMessageKeys
+                                                    .isNotEmpty
                                                 ? () =>
-                                                    _openEducationAnnouncement(
-                                                        msg)
-                                                : !kIsWeb &&
+                                                    _toggleMessageSelection(msg)
+                                                : isFilterUpdateAnnouncement
+                                                    ? _updateMyGroupFilter
+                                                    : isEducationAnnouncement
+                                                        ? () =>
+                                                            _openEducationAnnouncement(
+                                                                msg)
+                                                        : !kIsWeb &&
+                                                                msg['fileUrl'] ==
+                                                                    null
+                                                            ? () =>
+                                                                _copyMessageText(
+                                                                    context,
+                                                                    msg)
+                                                            : null,
+                                            onDoubleTap:
+                                                !isEducationAnnouncement &&
+                                                        kIsWeb &&
                                                         msg['fileUrl'] == null
                                                     ? () => _copyMessageText(
                                                         context, msg)
                                                     : null,
-                                    onDoubleTap: !isEducationAnnouncement &&
-                                            kIsWeb &&
-                                            msg['fileUrl'] == null
-                                        ? () => _copyMessageText(context, msg)
-                                        : null,
-                                    onLongPress: isFilterUpdateAnnouncement
-                                        ? null
-                                        : () => _selectedMessageKeys.isNotEmpty
-                                            ? _toggleMessageSelection(msg)
-                                            : _showMessageOptions(msg),
-                                    child: Stack(
-                                      children: [
-                                        IgnorePointer(
-                                          ignoring:
-                                              _selectedMessageKeys.isNotEmpty,
-                                          child: Container(
-                                            margin: const EdgeInsets.only(
-                                                bottom: 6),
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 12, vertical: 8),
-                                            constraints: BoxConstraints(
-                                              maxWidth: msg['fileUrl'] != null
-                                                  ? math.min(
-                                                      330,
-                                                      MediaQuery.of(context)
-                                                              .size
-                                                              .width *
-                                                          0.86)
-                                                  : MediaQuery.of(context)
-                                                          .size
-                                                          .width *
-                                                      0.75,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: isMe
-                                                  ? kGroupOutgoing
-                                                  : kIncoming,
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              border:
-                                                  _selectedMessageKeys.contains(
-                                                          _selectionKey(msg))
-                                                      ? Border.all(
-                                                          color: kPrimary,
-                                                          width: 3)
-                                                      : null,
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: Colors.black
-                                                      .withValues(alpha: 0.05),
-                                                  blurRadius: 3,
-                                                )
-                                              ],
-                                            ),
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              textDirection: TextDirection.rtl,
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
+                                            onLongPress:
+                                                isFilterUpdateAnnouncement
+                                                    ? null
+                                                    : () => _selectedMessageKeys
+                                                            .isNotEmpty
+                                                        ? _toggleMessageSelection(
+                                                            msg)
+                                                        : _showMessageOptions(
+                                                            msg),
+                                            child: Stack(
                                               children: [
-                                                if (uploadStatus ==
-                                                        'blocked_content' &&
-                                                    uploadFileType != 'image')
-                                                  const Center(
-                                                      child:
-                                                          _SystemContentWarningArtwork())
-                                                else if (uploadStatus ==
-                                                    'blocked_content')
-                                                  const SizedBox.shrink()
-                                                else if (avielSticker != null)
-                                                  Semantics(
-                                                    image: true,
-                                                    label:
-                                                        'מדבקת עוזר AI: ${avielSticker.label}',
-                                                    child: Image.asset(
-                                                        avielSticker.asset,
-                                                        width: 180,
-                                                        height: 180,
-                                                        fit: BoxFit.contain),
-                                                  )
-                                                else if (msg['fileUrl'] !=
-                                                        null &&
-                                                    _normalizeIncomingFileType(
-                                                            msg['fileType']
-                                                                as String?,
-                                                            fileUrl:
-                                                                msg['fileUrl']
-                                                                    as String?,
-                                                            fileName: msg[
-                                                                    'fileName']
-                                                                as String?) ==
-                                                        'audio')
-                                                  Column(
+                                                IgnorePointer(
+                                                  ignoring: _selectedMessageKeys
+                                                      .isNotEmpty,
+                                                  child: Container(
+                                                    margin:
+                                                        const EdgeInsets.only(
+                                                            bottom: 6),
+                                                    padding: msg['isFile'] ==
+                                                                true ||
+                                                            avielSticker != null
+                                                        ? EdgeInsets.zero
+                                                        : const EdgeInsets
+                                                            .symmetric(
+                                                            horizontal: 8,
+                                                            vertical: 5),
+                                                    constraints: BoxConstraints(
+                                                      maxWidth: msg[
+                                                                  'fileUrl'] !=
+                                                              null
+                                                          ? math.min(
+                                                              330,
+                                                              MediaQuery.of(
+                                                                          context)
+                                                                      .size
+                                                                      .width *
+                                                                  0.86)
+                                                          : MediaQuery.of(
+                                                                      context)
+                                                                  .size
+                                                                  .width *
+                                                              0.75,
+                                                    ),
+                                                    decoration: msg['isFile'] ==
+                                                                true ||
+                                                            avielSticker != null
+                                                        ? null
+                                                        : BoxDecoration(
+                                                            color: kIncoming,
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        6),
+                                                            border: _selectedMessageKeys
+                                                                    .contains(
+                                                                        _selectionKey(
+                                                                            msg))
+                                                                ? Border.all(
+                                                                    color:
+                                                                        kPrimary,
+                                                                    width: 3)
+                                                                : null,
+                                                            boxShadow: [
+                                                              BoxShadow(
+                                                                color: Colors
+                                                                    .black
+                                                                    .withValues(
+                                                                        alpha:
+                                                                            0.05),
+                                                                blurRadius: 3,
+                                                              )
+                                                            ],
+                                                          ),
+                                                    child: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      textDirection:
+                                                          TextDirection.rtl,
                                                       crossAxisAlignment:
                                                           CrossAxisAlignment
-                                                              .end,
+                                                              .start,
                                                       children: [
-                                                        VoiceMessagePlayer(
-                                                            url: msg['fileUrl']
-                                                                as String,
-                                                            isMe: isMe,
-                                                            senderAvatarUrl:
-                                                                _voiceMessageSender(msg,
-                                                                            isMe)?[
-                                                                        'profile_pic_url']
-                                                                    ?.toString(),
-                                                            senderName: _voiceMessageSender(
-                                                                            msg,
-                                                                            isMe)?[
-                                                                        'name']
-                                                                    ?.toString() ??
-                                                                msg['senderName']
-                                                                    ?.toString() ??
-                                                                '',
-                                                            initialDurationSeconds:
-                                                                (msg['audioDurationSeconds']
-                                                                        as num?)
-                                                                    ?.toDouble()),
-                                                        _AudioScanBadge(
-                                                            transcript: msg[
-                                                                    'audioTranscript']
-                                                                ?.toString()),
-                                                      ])
-                                                else if (msg['fileUrl'] !=
-                                                        null &&
-                                                    _normalizeIncomingFileType(
-                                                            msg['fileType']
-                                                                as String?,
-                                                            fileUrl:
-                                                                msg['fileUrl']
-                                                                    as String?,
-                                                            fileName: msg[
-                                                                    'fileName']
-                                                                as String?) ==
-                                                        'video')
-                                                  Stack(
-                                                    children: [
-                                                      if (kIsWeb)
-                                                        NativeWebVideoPlayer(
-                                                          key: ValueKey(
-                                                              'group-video-${msg['fileUrl']}'),
-                                                          url: _absoluteMediaUrl(
-                                                              msg['fileUrl']
-                                                                  as String),
-                                                          onOptions: () =>
-                                                              _showMessageOptions(
-                                                                  msg),
-                                                        )
-                                                      else
-                                                        _ChatVideoPlayer(
-                                                          url: msg['fileUrl']
-                                                              as String,
-                                                        ),
-                                                      Positioned(
-                                                        right: 7,
-                                                        top: 7,
-                                                        child:
-                                                            _ImageClassificationBadges(
-                                                          message: msg,
-                                                        ),
-                                                      ),
-                                                      Positioned(
-                                                        left: 7,
-                                                        top: 7,
-                                                        child:
-                                                            _ImageStatusBadge(
-                                                          message: msg,
-                                                          isMe: isMe,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  )
-                                                else if (msg['fileUrl'] !=
-                                                        null &&
-                                                    _normalizeIncomingFileType(
-                                                            msg['fileType']
-                                                                as String?,
-                                                            fileUrl:
-                                                                msg['fileUrl']
-                                                                    as String?,
-                                                            fileName: msg[
-                                                                    'fileName']
-                                                                as String?) ==
-                                                        'image')
-                                                  GestureDetector(
-                                                    onTap: () => Navigator.push(
-                                                        context,
-                                                        MaterialPageRoute(
-                                                            builder: (_) => ImagePreviewScreen(
-                                                                url: msg['fileUrl']
-                                                                    as String,
-                                                                filename:
-                                                                    msg['fileName']
+                                                        if (uploadStatus ==
+                                                                'blocked_content' &&
+                                                            uploadFileType !=
+                                                                'image')
+                                                          const Center(
+                                                              child:
+                                                                  _SystemContentWarningArtwork())
+                                                        else if (uploadStatus ==
+                                                            'blocked_content')
+                                                          const SizedBox
+                                                              .shrink()
+                                                        else if (avielSticker !=
+                                                            null)
+                                                          Semantics(
+                                                            image: true,
+                                                            label:
+                                                                'מדבקת עוזר AI: ${avielSticker.label}',
+                                                            child: Image.asset(
+                                                                avielSticker
+                                                                    .asset,
+                                                                width: 180,
+                                                                height: 180,
+                                                                fit: BoxFit
+                                                                    .contain),
+                                                          )
+                                                        else if (msg[
+                                                                    'fileUrl'] !=
+                                                                null &&
+                                                            _normalizeIncomingFileType(
+                                                                    msg['fileType']
                                                                         as String?,
-                                                                urls: _conversationImageMessages(_messages)
-                                                                    .map((item) =>
-                                                                        item['fileUrl']
-                                                                            as String)
-                                                                    .toList(),
-                                                                filenames: _conversationImageMessages(_messages)
-                                                                    .map((item) =>
-                                                                        item['fileName'] as String?)
-                                                                    .toList(),
-                                                                dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
-                                                                messages: _conversationImageMessages(_messages),
-                                                                onMessageOptions: _showMessageOptions,
-                                                                initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
-                                                    child: Stack(
-                                                      children: [
-                                                        ClipRRect(
-                                                          borderRadius:
-                                                              BorderRadius
-                                                                  .circular(8),
-                                                          child:
-                                                              _PersistentMediaImage(
-                                                            url: msg['fileUrl']
-                                                                as String,
-                                                            width: 200,
-                                                            height: 160,
-                                                            fit: BoxFit.contain,
-                                                            loadingBuilder: (_) => Container(
-                                                                width: 200,
-                                                                height: 160,
-                                                                color: kBorder,
-                                                                child: const Center(
-                                                                    child: CircularProgressIndicator(
-                                                                        color:
-                                                                            kPrimary,
-                                                                        strokeWidth:
-                                                                            2))),
-                                                            errorBuilder: (_) => Container(
-                                                                width: 200,
-                                                                height: 160,
-                                                                color: kBorder,
-                                                                child: const Icon(
-                                                                    Icons
-                                                                        .broken_image,
-                                                                    color:
-                                                                        kSubtext)),
-                                                          ),
-                                                        ),
-                                                        Positioned(
-                                                          left: 7,
-                                                          bottom: 7,
-                                                          child:
-                                                              _ImageStatusBadge(
-                                                                  message: msg,
-                                                                  isMe: isMe),
-                                                        ),
-                                                        Positioned(
-                                                          right: 7,
-                                                          top: 7,
-                                                          child:
-                                                              _ImageClassificationBadges(
-                                                                  message: msg),
-                                                        ),
-                                                        Positioned(
-                                                          left: 7,
-                                                          top: 7,
-                                                          child:
-                                                              _SmallImageOptionsButton(
-                                                            onPressed: () =>
-                                                                _showMessageOptions(
-                                                                    msg),
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  )
-                                                else if (msg['fileUrl'] != null)
-                                                  InkWell(
-                                                    onTap: () => isPdfFile
-                                                        ? widget.onDocumentOpen !=
-                                                                null
-                                                            ? widget.onDocumentOpen!(
-                                                                msg['fileUrl']
-                                                                    as String,
-                                                                msg['fileName']
-                                                                    as String?,
-                                                                true)
-                                                            : _openPdfInsideApp(
-                                                                context,
-                                                                msg['fileUrl']
-                                                                    as String,
-                                                                msg['fileName']
-                                                                    as String?)
-                                                        : isOfficeFile
-                                                            ? widget.onDocumentOpen !=
-                                                                    null
-                                                                ? widget.onDocumentOpen!(
-                                                                    msg['fileUrl']
+                                                                    fileUrl: msg[
+                                                                            'fileUrl']
+                                                                        as String?,
+                                                                    fileName: msg[
+                                                                            'fileName']
+                                                                        as String?) ==
+                                                                'audio')
+                                                          Column(
+                                                              crossAxisAlignment:
+                                                                  CrossAxisAlignment
+                                                                      .end,
+                                                              children: [
+                                                                VoiceMessagePlayer(
+                                                                    url: msg[
+                                                                            'fileUrl']
                                                                         as String,
-                                                                    msg['fileName']
-                                                                        as String?,
-                                                                    false)
-                                                                : _openOfficeInsideApp(
-                                                                    context,
-                                                                    msg['fileUrl']
-                                                                        as String,
-                                                                    msg['fileName']
-                                                                        as String?,
-                                                                    widget
-                                                                        .token)
-                                                            : _downloadChatFile(
-                                                                context,
-                                                                msg['fileUrl']
-                                                                    as String,
-                                                                msg['fileName']
-                                                                    as String?),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            8),
-                                                    child: Padding(
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                          vertical: 4),
-                                                      child: Column(
-                                                        mainAxisSize:
-                                                            MainAxisSize.min,
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .end,
-                                                        children: [
-                                                          if (isPdfFile) ...[
-                                                            _PdfFirstPagePreview(
-                                                                url: msg[
-                                                                        'fileUrl']
-                                                                    as String),
-                                                            const SizedBox(
-                                                                height: 6),
-                                                          ] else if (isOfficeFile) ...[
-                                                            _OfficeDocumentPreview(
-                                                                fileUrl: msg[
-                                                                        'fileUrl']
-                                                                    as String,
-                                                                fileName:
-                                                                    msg['fileName']
+                                                                    isMe: isMe,
+                                                                    senderAvatarUrl:
+                                                                        _voiceMessageSender(msg, isMe)?['profile_pic_url']
+                                                                            ?.toString(),
+                                                                    senderName: _voiceMessageSender(msg, isMe)?['name']
                                                                             ?.toString() ??
-                                                                        'מסמך',
-                                                                token: widget
-                                                                    .token),
-                                                            const SizedBox(
-                                                                height: 6),
-                                                          ],
-                                                          Row(
-                                                            mainAxisSize:
-                                                                MainAxisSize
-                                                                    .min,
+                                                                        msg['senderName']
+                                                                            ?.toString() ??
+                                                                        '',
+                                                                    initialDurationSeconds:
+                                                                        (msg['audioDurationSeconds']
+                                                                                as num?)
+                                                                            ?.toDouble()),
+                                                                _AudioScanBadge(
+                                                                    transcript:
+                                                                        msg['audioTranscript']
+                                                                            ?.toString()),
+                                                              ])
+                                                        else if (msg[
+                                                                    'fileUrl'] !=
+                                                                null &&
+                                                            _normalizeIncomingFileType(
+                                                                    msg['fileType']
+                                                                        as String?,
+                                                                    fileUrl: msg[
+                                                                            'fileUrl']
+                                                                        as String?,
+                                                                    fileName: msg[
+                                                                            'fileName']
+                                                                        as String?) ==
+                                                                'video')
+                                                          Stack(
                                                             children: [
-                                                              Icon(
-                                                                  isPdfFile
-                                                                      ? Icons
-                                                                          .picture_as_pdf_outlined
-                                                                      : isOfficeFile
-                                                                          ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true
-                                                                              ? Icons
-                                                                                  .table_chart_outlined
-                                                                              : Icons
-                                                                                  .description_outlined)
-                                                                          : Icons
-                                                                              .insert_drive_file,
-                                                                  size: 16,
-                                                                  color: isPdfFile
-                                                                      ? Colors
-                                                                          .red
-                                                                      : kSubtext),
-                                                              const SizedBox(
-                                                                  width: 4),
-                                                              Flexible(
-                                                                  child: Text(
-                                                                      msg['fileName']
-                                                                              as String? ??
-                                                                          msg['text']
-                                                                              as String? ??
-                                                                          '',
-                                                                      style: const TextStyle(
-                                                                          fontSize:
-                                                                              13))),
-                                                              const SizedBox(
-                                                                  width: 10),
-                                                              const Icon(
-                                                                  Icons
-                                                                      .download,
-                                                                  size: 19,
-                                                                  color:
-                                                                      kPrimary),
-                                                              const SizedBox(
-                                                                  width: 3),
-                                                              const Text(
-                                                                  'הורדה',
-                                                                  style: TextStyle(
-                                                                      fontSize:
-                                                                          12,
-                                                                      color:
-                                                                          kPrimary,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w600)),
-                                                            ],
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  )
-                                                else if (isFilterUpdateAnnouncement)
-                                                  InkWell(
-                                                    onTap: _updateMyGroupFilter,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            8),
-                                                    child: Padding(
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                          vertical: 4),
-                                                      child: Column(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .end,
-                                                        children: [
-                                                          const Row(
-                                                            mainAxisSize:
-                                                                MainAxisSize
-                                                                    .min,
-                                                            children: [
-                                                              Icon(
-                                                                  Icons
-                                                                      .shield_outlined,
-                                                                  color:
-                                                                      kPrimary,
-                                                                  size: 21),
-                                                              SizedBox(
-                                                                  width: 8),
-                                                              Text(
-                                                                'סינון הקבוצה עודכן',
-                                                                style:
-                                                                    TextStyle(
-                                                                  fontSize: 15,
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .w800,
+                                                              if (kIsWeb)
+                                                                NativeWebVideoPlayer(
+                                                                  key: ValueKey(
+                                                                      'group-video-${msg['fileUrl']}'),
+                                                                  url: _absoluteMediaUrl(
+                                                                      msg['fileUrl']
+                                                                          as String),
+                                                                  onOptions: () =>
+                                                                      _showMessageOptions(
+                                                                          msg),
+                                                                )
+                                                              else
+                                                                _ChatVideoPlayer(
+                                                                  url: msg[
+                                                                          'fileUrl']
+                                                                      as String,
+                                                                ),
+                                                              Positioned(
+                                                                right: 7,
+                                                                top: 7,
+                                                                child:
+                                                                    _ImageClassificationBadges(
+                                                                  message: msg,
+                                                                ),
+                                                              ),
+                                                              Positioned(
+                                                                left: 7,
+                                                                bottom: 7,
+                                                                child:
+                                                                    _ImageStatusBadge(
+                                                                  message: msg,
+                                                                  isMe: isMe,
                                                                 ),
                                                               ),
                                                             ],
-                                                          ),
-                                                          const SizedBox(
-                                                              height: 5),
-                                                          Text(
-                                                            filterUpdateDetails
-                                                                    .isEmpty
-                                                                ? 'מדיניות התוכן של הקבוצה השתנתה.'
-                                                                : filterUpdateDetails,
-                                                            textAlign:
-                                                                TextAlign.right,
-                                                            textDirection:
-                                                                TextDirection
-                                                                    .rtl,
-                                                            style:
-                                                                const TextStyle(
-                                                                    fontSize:
-                                                                        12,
-                                                                    color:
-                                                                        kTextDark,
-                                                                    height:
-                                                                        1.5),
-                                                          ),
-                                                          const SizedBox(
-                                                              height: 7),
-                                                          Row(
-                                                            mainAxisSize:
-                                                                MainAxisSize
-                                                                    .min,
-                                                            children: [
-                                                              const Icon(
-                                                                  Icons
-                                                                      .tune_rounded,
-                                                                  size: 17,
-                                                                  color:
-                                                                      kPrimary),
-                                                              const SizedBox(
-                                                                  width: 4),
-                                                              const Text(
-                                                                'עדכון הסינון האישי שלי',
-                                                                style:
-                                                                    TextStyle(
-                                                                  color:
-                                                                      kPrimary,
-                                                                  fontWeight:
-                                                                      FontWeight
-                                                                          .bold,
-                                                                  decoration:
-                                                                      TextDecoration
-                                                                          .underline,
-                                                                ),
-                                                              ),
-                                                            ],
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  )
-                                                else if (isEducationAnnouncement)
-                                                  InkWell(
-                                                    onTap: () =>
-                                                        _openEducationAnnouncement(
-                                                            msg),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            8),
-                                                    child: Padding(
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                          vertical: 4),
-                                                      child: Column(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .end,
-                                                        children: [
-                                                          Row(
-                                                            mainAxisSize:
-                                                                MainAxisSize
-                                                                    .min,
-                                                            children: [
-                                                              const Icon(
-                                                                  Icons
-                                                                      .fact_check_outlined,
-                                                                  color:
-                                                                      kPrimary),
-                                                              const SizedBox(
-                                                                  width: 8),
-                                                              Flexible(
-                                                                child: Text(
-                                                                  msg['text']
-                                                                          as String? ??
-                                                                      '',
-                                                                  style: const TextStyle(
-                                                                      fontSize:
-                                                                          15,
-                                                                      height:
-                                                                          1.4,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .w600),
-                                                                  textDirection:
-                                                                      TextDirection
-                                                                          .rtl,
-                                                                ),
-                                                              ),
-                                                            ],
-                                                          ),
-                                                          const SizedBox(
-                                                              height: 8),
-                                                          Row(
-                                                            mainAxisSize:
-                                                                MainAxisSize
-                                                                    .min,
-                                                            children: [
-                                                              const Icon(
-                                                                  Icons
-                                                                      .touch_app,
-                                                                  size: 17,
-                                                                  color:
-                                                                      kPrimary),
-                                                              const SizedBox(
-                                                                  width: 4),
-                                                              const Text(
-                                                                  'לחץ לפתיחת המסמך',
-                                                                  style: TextStyle(
-                                                                      color:
-                                                                          kPrimary,
-                                                                      fontWeight:
-                                                                          FontWeight
-                                                                              .bold)),
-                                                              const SizedBox(
-                                                                  width: 12),
-                                                              Container(
-                                                                padding: const EdgeInsets
-                                                                    .symmetric(
-                                                                    horizontal:
-                                                                        9,
-                                                                    vertical:
-                                                                        3),
-                                                                decoration:
-                                                                    BoxDecoration(
-                                                                  color: educationStatusColor
-                                                                      .withValues(
-                                                                          alpha:
-                                                                              .12),
+                                                          )
+                                                        else if (msg[
+                                                                    'fileUrl'] !=
+                                                                null &&
+                                                            _normalizeIncomingFileType(
+                                                                    msg['fileType']
+                                                                        as String?,
+                                                                    fileUrl: msg[
+                                                                            'fileUrl']
+                                                                        as String?,
+                                                                    fileName: msg[
+                                                                            'fileName']
+                                                                        as String?) ==
+                                                                'image')
+                                                          GestureDetector(
+                                                            onTap: () => Navigator.push(
+                                                                context,
+                                                                MaterialPageRoute(
+                                                                    builder: (_) => ImagePreviewScreen(
+                                                                        url: msg['fileUrl']
+                                                                            as String,
+                                                                        filename:
+                                                                            msg['fileName']
+                                                                                as String?,
+                                                                        urls: _conversationImageMessages(_messages)
+                                                                            .map((item) => item['fileUrl']
+                                                                                as String)
+                                                                            .toList(),
+                                                                        filenames: _conversationImageMessages(_messages)
+                                                                            .map((item) =>
+                                                                                item['fileName'] as String?)
+                                                                            .toList(),
+                                                                        dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
+                                                                        messages: _conversationImageMessages(_messages),
+                                                                        onMessageOptions: _showMessageOptions,
+                                                                        initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
+                                                            child: Stack(
+                                                              children: [
+                                                                ClipRRect(
                                                                   borderRadius:
                                                                       BorderRadius
                                                                           .circular(
-                                                                              14),
-                                                                ),
-                                                                child: Text(
-                                                                  educationStatusLabel,
-                                                                  style:
-                                                                      TextStyle(
-                                                                    color:
-                                                                        educationStatusColor,
-                                                                    fontWeight:
-                                                                        FontWeight
-                                                                            .bold,
-                                                                    fontSize:
-                                                                        12,
+                                                                              8),
+                                                                  child:
+                                                                      _PersistentMediaImage(
+                                                                    url: msg[
+                                                                            'fileUrl']
+                                                                        as String,
+                                                                    width: 200,
+                                                                    height: 160,
+                                                                    fit: BoxFit
+                                                                        .contain,
+                                                                    loadingBuilder: (_) => Container(
+                                                                        width:
+                                                                            200,
+                                                                        height:
+                                                                            160,
+                                                                        color:
+                                                                            kBorder,
+                                                                        child: const Center(
+                                                                            child:
+                                                                                CircularProgressIndicator(color: kPrimary, strokeWidth: 2))),
+                                                                    errorBuilder: (_) => Container(
+                                                                        width:
+                                                                            200,
+                                                                        height:
+                                                                            160,
+                                                                        color:
+                                                                            kBorder,
+                                                                        child: const Icon(
+                                                                            Icons
+                                                                                .broken_image,
+                                                                            color:
+                                                                                kSubtext)),
                                                                   ),
                                                                 ),
+                                                                Positioned(
+                                                                  left: 7,
+                                                                  bottom: 7,
+                                                                  child: _ImageStatusBadge(
+                                                                      message:
+                                                                          msg,
+                                                                      isMe:
+                                                                          isMe),
+                                                                ),
+                                                                Positioned(
+                                                                  right: 7,
+                                                                  top: 7,
+                                                                  child: _ImageClassificationBadges(
+                                                                      message:
+                                                                          msg),
+                                                                ),
+                                                                Positioned(
+                                                                  left: 7,
+                                                                  top: 7,
+                                                                  child:
+                                                                      _SmallImageOptionsButton(
+                                                                    onPressed: () =>
+                                                                        _showMessageOptions(
+                                                                            msg),
+                                                                  ),
+                                                                ),
+                                                              ],
+                                                            ),
+                                                          )
+                                                        else if (msg[
+                                                                'fileUrl'] !=
+                                                            null)
+                                                          InkWell(
+                                                            onTap: () =>
+                                                                isPdfFile
+                                                                    ? widget.onDocumentOpen !=
+                                                                            null
+                                                                        ? widget.onDocumentOpen!(
+                                                                            msg['fileUrl']
+                                                                                as String,
+                                                                            msg['fileName']
+                                                                                as String?,
+                                                                            true)
+                                                                        : _openPdfInsideApp(
+                                                                            context,
+                                                                            msg['fileUrl']
+                                                                                as String,
+                                                                            msg['fileName']
+                                                                                as String?)
+                                                                    : isOfficeFile
+                                                                        ? widget.onDocumentOpen !=
+                                                                                null
+                                                                            ? widget.onDocumentOpen!(
+                                                                                msg['fileUrl']
+                                                                                    as String,
+                                                                                msg['fileName']
+                                                                                    as String?,
+                                                                                false)
+                                                                            : _openOfficeInsideApp(
+                                                                                context,
+                                                                                msg['fileUrl']
+                                                                                    as String,
+                                                                                msg['fileName']
+                                                                                    as String?,
+                                                                                widget
+                                                                                    .token)
+                                                                        : _downloadChatFile(
+                                                                            context,
+                                                                            msg['fileUrl']
+                                                                                as String,
+                                                                            msg['fileName']
+                                                                                as String?),
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        8),
+                                                            child: Padding(
+                                                              padding:
+                                                                  const EdgeInsets
+                                                                      .symmetric(
+                                                                      vertical:
+                                                                          4),
+                                                              child: Column(
+                                                                mainAxisSize:
+                                                                    MainAxisSize
+                                                                        .min,
+                                                                crossAxisAlignment:
+                                                                    CrossAxisAlignment
+                                                                        .end,
+                                                                children: [
+                                                                  if (isPdfFile) ...[
+                                                                    _PdfFirstPagePreview(
+                                                                        url: msg['fileUrl']
+                                                                            as String),
+                                                                    const SizedBox(
+                                                                        height:
+                                                                            6),
+                                                                  ] else if (isOfficeFile) ...[
+                                                                    _OfficeDocumentPreview(
+                                                                        fileUrl:
+                                                                            msg['fileUrl']
+                                                                                as String,
+                                                                        fileName:
+                                                                            msg['fileName']?.toString() ??
+                                                                                'מסמך',
+                                                                        token: widget
+                                                                            .token),
+                                                                    const SizedBox(
+                                                                        height:
+                                                                            6),
+                                                                  ],
+                                                                  MessageDetails(
+                                                                      enabled:
+                                                                          isPdfFile ||
+                                                                              isOfficeFile,
+                                                                      child:
+                                                                          Row(
+                                                                        mainAxisSize:
+                                                                            MainAxisSize.min,
+                                                                        children: [
+                                                                          Icon(
+                                                                              isPdfFile
+                                                                                  ? Icons.picture_as_pdf_outlined
+                                                                                  : isOfficeFile
+                                                                                      ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true ? Icons.table_chart_outlined : Icons.description_outlined)
+                                                                                      : Icons.insert_drive_file,
+                                                                              size: 16,
+                                                                              color: isPdfFile ? Colors.red : kSubtext),
+                                                                          const SizedBox(
+                                                                              width: 4),
+                                                                          Flexible(
+                                                                              child: Text(msg['fileName'] as String? ?? msg['text'] as String? ?? '', style: const TextStyle(fontSize: 13))),
+                                                                          const SizedBox(
+                                                                              width: 10),
+                                                                          const Icon(
+                                                                              Icons.download,
+                                                                              size: 19,
+                                                                              color: kPrimary),
+                                                                          const SizedBox(
+                                                                              width: 3),
+                                                                          const Text(
+                                                                              'הורדה',
+                                                                              style: TextStyle(fontSize: 12, color: kPrimary, fontWeight: FontWeight.w600)),
+                                                                        ],
+                                                                      )),
+                                                                ],
                                                               ),
-                                                            ],
+                                                            ),
+                                                          )
+                                                        else if (isFilterUpdateAnnouncement)
+                                                          InkWell(
+                                                            onTap:
+                                                                _updateMyGroupFilter,
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        8),
+                                                            child: Padding(
+                                                              padding:
+                                                                  const EdgeInsets
+                                                                      .symmetric(
+                                                                      vertical:
+                                                                          4),
+                                                              child: Column(
+                                                                crossAxisAlignment:
+                                                                    CrossAxisAlignment
+                                                                        .end,
+                                                                children: [
+                                                                  const Row(
+                                                                    mainAxisSize:
+                                                                        MainAxisSize
+                                                                            .min,
+                                                                    children: [
+                                                                      Icon(
+                                                                          Icons
+                                                                              .shield_outlined,
+                                                                          color:
+                                                                              kPrimary,
+                                                                          size:
+                                                                              21),
+                                                                      SizedBox(
+                                                                          width:
+                                                                              8),
+                                                                      Text(
+                                                                        'סינון הקבוצה עודכן',
+                                                                        style:
+                                                                            TextStyle(
+                                                                          fontSize:
+                                                                              15,
+                                                                          fontWeight:
+                                                                              FontWeight.w800,
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                  const SizedBox(
+                                                                      height:
+                                                                          5),
+                                                                  Text(
+                                                                    filterUpdateDetails
+                                                                            .isEmpty
+                                                                        ? 'מדיניות התוכן של הקבוצה השתנתה.'
+                                                                        : filterUpdateDetails,
+                                                                    textAlign:
+                                                                        TextAlign
+                                                                            .right,
+                                                                    textDirection:
+                                                                        TextDirection
+                                                                            .rtl,
+                                                                    style: const TextStyle(
+                                                                        fontSize:
+                                                                            12,
+                                                                        color:
+                                                                            kTextDark,
+                                                                        height:
+                                                                            1.5),
+                                                                  ),
+                                                                  const SizedBox(
+                                                                      height:
+                                                                          7),
+                                                                  Row(
+                                                                    mainAxisSize:
+                                                                        MainAxisSize
+                                                                            .min,
+                                                                    children: [
+                                                                      const Icon(
+                                                                          Icons
+                                                                              .tune_rounded,
+                                                                          size:
+                                                                              17,
+                                                                          color:
+                                                                              kPrimary),
+                                                                      const SizedBox(
+                                                                          width:
+                                                                              4),
+                                                                      const Text(
+                                                                        'עדכון הסינון האישי שלי',
+                                                                        style:
+                                                                            TextStyle(
+                                                                          color:
+                                                                              kPrimary,
+                                                                          fontWeight:
+                                                                              FontWeight.bold,
+                                                                          decoration:
+                                                                              TextDecoration.underline,
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          )
+                                                        else if (isEducationAnnouncement)
+                                                          InkWell(
+                                                            onTap: () =>
+                                                                _openEducationAnnouncement(
+                                                                    msg),
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        8),
+                                                            child: Padding(
+                                                              padding:
+                                                                  const EdgeInsets
+                                                                      .symmetric(
+                                                                      vertical:
+                                                                          4),
+                                                              child: Column(
+                                                                crossAxisAlignment:
+                                                                    CrossAxisAlignment
+                                                                        .end,
+                                                                children: [
+                                                                  Row(
+                                                                    mainAxisSize:
+                                                                        MainAxisSize
+                                                                            .min,
+                                                                    children: [
+                                                                      const Icon(
+                                                                          Icons
+                                                                              .fact_check_outlined,
+                                                                          color:
+                                                                              kPrimary),
+                                                                      const SizedBox(
+                                                                          width:
+                                                                              8),
+                                                                      Flexible(
+                                                                        child:
+                                                                            Text(
+                                                                          msg['text'] as String? ??
+                                                                              '',
+                                                                          style: const TextStyle(
+                                                                              fontSize: 15,
+                                                                              height: 1.4,
+                                                                              fontWeight: FontWeight.w600),
+                                                                          textDirection:
+                                                                              TextDirection.rtl,
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                  const SizedBox(
+                                                                      height:
+                                                                          8),
+                                                                  Row(
+                                                                    mainAxisSize:
+                                                                        MainAxisSize
+                                                                            .min,
+                                                                    children: [
+                                                                      const Icon(
+                                                                          Icons
+                                                                              .touch_app,
+                                                                          size:
+                                                                              17,
+                                                                          color:
+                                                                              kPrimary),
+                                                                      const SizedBox(
+                                                                          width:
+                                                                              4),
+                                                                      const Text(
+                                                                          'לחץ לפתיחת המסמך',
+                                                                          style: TextStyle(
+                                                                              color: kPrimary,
+                                                                              fontWeight: FontWeight.bold)),
+                                                                      const SizedBox(
+                                                                          width:
+                                                                              12),
+                                                                      Container(
+                                                                        padding: const EdgeInsets
+                                                                            .symmetric(
+                                                                            horizontal:
+                                                                                9,
+                                                                            vertical:
+                                                                                3),
+                                                                        decoration:
+                                                                            BoxDecoration(
+                                                                          color:
+                                                                              educationStatusColor.withValues(alpha: .12),
+                                                                          borderRadius:
+                                                                              BorderRadius.circular(14),
+                                                                        ),
+                                                                        child:
+                                                                            Text(
+                                                                          educationStatusLabel,
+                                                                          style:
+                                                                              TextStyle(
+                                                                            color:
+                                                                                educationStatusColor,
+                                                                            fontWeight:
+                                                                                FontWeight.bold,
+                                                                            fontSize:
+                                                                                12,
+                                                                          ),
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                            ),
+                                                          )
+                                                        else if (sharedContact !=
+                                                            null)
+                                                          _SharedContactCard(
+                                                            sharedContact,
+                                                            token: widget.token,
+                                                            me: widget.me,
+                                                          )
+                                                        else
+                                                          Text(
+                                                            msg['text']
+                                                                    as String? ??
+                                                                '',
+                                                            style: const TextStyle(
+                                                                fontSize: 15,
+                                                                height: 1.4),
+                                                            textDirection:
+                                                                TextDirection
+                                                                    .rtl,
                                                           ),
+                                                        if (sharedUrl !=
+                                                            null) ...[
+                                                          const SizedBox(
+                                                              height: 8),
+                                                          _WebsiteLinkPreview(
+                                                              sharedUrl,
+                                                              widget.token),
                                                         ],
-                                                      ),
+                                                        if (isMe &&
+                                                            msg['deliverySummary']
+                                                                is Map)
+                                                          _GroupDeliverySummary(
+                                                            Map<String,
+                                                                    dynamic>.from(
+                                                                msg['deliverySummary']
+                                                                    as Map),
+                                                          ),
+                                                        if (uploadFileType !=
+                                                                'image' &&
+                                                            uploadFileType !=
+                                                                'video')
+                                                          Align(
+                                                              alignment: Alignment
+                                                                  .centerLeft,
+                                                              widthFactor: 1,
+                                                              child: Row(
+                                                                mainAxisSize:
+                                                                    MainAxisSize
+                                                                        .min,
+                                                                children: [
+                                                                  if (msg['isEdited'] ==
+                                                                      true)
+                                                                    const Text(
+                                                                        'נערך · ',
+                                                                        style: TextStyle(
+                                                                            fontSize:
+                                                                                10,
+                                                                            color:
+                                                                                kSubtext,
+                                                                            fontStyle:
+                                                                                FontStyle.italic)),
+                                                                  Text(
+                                                                      msg['time'] as String? ??
+                                                                          '',
+                                                                      style: const TextStyle(
+                                                                          fontSize:
+                                                                              11,
+                                                                          color:
+                                                                              kSubtext)),
+                                                                  if (isMe) ...[
+                                                                    const SizedBox(
+                                                                        width:
+                                                                            3),
+                                                                    Icon(
+                                                                        msg['status'] == 'read' || msg['status'] == 'delivered'
+                                                                            ? Icons
+                                                                                .done_all
+                                                                            : Icons
+                                                                                .done,
+                                                                        size:
+                                                                            14,
+                                                                        color:
+                                                                            kPrimary),
+                                                                  ],
+                                                                ],
+                                                              )),
+                                                      ],
                                                     ),
-                                                  )
-                                                else if (sharedContact != null)
-                                                  _SharedContactCard(
-                                                    sharedContact,
-                                                    token: widget.token,
-                                                    me: widget.me,
-                                                  )
-                                                else
-                                                  Text(
-                                                    msg['text'] as String? ??
-                                                        '',
-                                                    style: TextStyle(
-                                                        fontSize: _looksLikeSticker(
-                                                                msg['text']
-                                                                        as String? ??
-                                                                    '')
-                                                            ? 44
-                                                            : 15,
-                                                        height: 1.4),
-                                                    textDirection:
-                                                        TextDirection.rtl,
                                                   ),
-                                                if (sharedUrl != null) ...[
-                                                  const SizedBox(height: 8),
-                                                  _WebsiteLinkPreview(
-                                                      sharedUrl, widget.token),
-                                                ],
-                                                if (isMe &&
-                                                    msg['deliverySummary']
-                                                        is Map)
-                                                  _GroupDeliverySummary(
-                                                    Map<String, dynamic>.from(
-                                                        msg['deliverySummary']
-                                                            as Map),
-                                                  ),
-                                                const SizedBox(height: 4),
-                                                Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: [
-                                                    if (msg['isEdited'] == true)
-                                                      const Text('נערך · ',
-                                                          style: TextStyle(
-                                                              fontSize: 10,
-                                                              color: kSubtext,
-                                                              fontStyle:
-                                                                  FontStyle
-                                                                      .italic)),
-                                                    Text(
-                                                        msg['time']
-                                                                as String? ??
-                                                            '',
-                                                        style: const TextStyle(
-                                                            fontSize: 11,
-                                                            color: kSubtext)),
-                                                  ],
                                                 ),
+                                                if (_selectedMessageKeys
+                                                    .isNotEmpty)
+                                                  PositionedDirectional(
+                                                    top: 6,
+                                                    start: 6,
+                                                    child: Icon(
+                                                      _selectedMessageKeys
+                                                              .contains(
+                                                                  _selectionKey(
+                                                                      msg))
+                                                          ? Icons.check_circle
+                                                          : Icons
+                                                              .radio_button_unchecked,
+                                                      color: _selectedMessageKeys
+                                                              .contains(
+                                                                  _selectionKey(
+                                                                      msg))
+                                                          ? kPrimary
+                                                          : kSubtext,
+                                                      size: 26,
+                                                    ),
+                                                  ),
                                               ],
                                             ),
-                                          ),
-                                        ),
-                                        if (_selectedMessageKeys.isNotEmpty)
-                                          PositionedDirectional(
-                                            top: 6,
-                                            start: 6,
-                                            child: Icon(
-                                              _selectedMessageKeys.contains(
-                                                      _selectionKey(msg))
-                                                  ? Icons.check_circle
-                                                  : Icons
-                                                      .radio_button_unchecked,
-                                              color:
-                                                  _selectedMessageKeys.contains(
-                                                          _selectionKey(msg))
-                                                      ? kPrimary
-                                                      : kSubtext,
-                                              size: 26,
-                                            ),
-                                          ),
+                                          ), // GestureDetector
                                       ],
-                                    ),
-                                  ), // GestureDetector
+                                    ))),
+                                  ],
+                                ),
                               ],
                             );
                           },
@@ -33612,7 +35214,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   child: Row(
                     children: [
                       IconButton(
-                        tooltip: 'סמיילים ומדבקות של בתשובה',
+                        tooltip: 'אימוג׳י ומדבקות',
                         icon: const Icon(Icons.emoji_emotions_outlined,
                             color: kPrimary),
                         onPressed: _showGroupExpressions,
@@ -33713,6 +35315,9 @@ class ContentFilterSettingsScreen extends StatefulWidget {
   final String? groupName;
   final String? groupPhotoUrl;
   final List<Map<String, dynamic>> groupMembers;
+  final Listenable? groupMembersChanges;
+  final String? currentUserId;
+  final Future<void> Function(Map<String, dynamic>)? onGroupMemberSelected;
   final VoidCallback? onAddGroupMember;
   final VoidCallback? onManageGroupMembers;
   final VoidCallback? onChangeGroupPhoto;
@@ -33727,6 +35332,9 @@ class ContentFilterSettingsScreen extends StatefulWidget {
       this.groupName,
       this.groupPhotoUrl,
       this.groupMembers = const [],
+      this.groupMembersChanges,
+      this.currentUserId,
+      this.onGroupMemberSelected,
       this.onAddGroupMember,
       this.onManageGroupMembers,
       this.onChangeGroupPhoto,
@@ -33740,11 +35348,15 @@ class ContentFilterSettingsScreen extends StatefulWidget {
 
 class _ContentFilterSettingsScreenState
     extends State<ContentFilterSettingsScreen> {
+  final _phoneChoice = PhoneSharingController();
+  bool _requiresPhoneChoice = false;
   bool _loading = true;
   bool _saving = false;
   bool _saved = false;
   bool _inherit = true;
   bool _enforceGeneralFilter = false;
+  String? _openingGroupMemberId;
+  String? _groupMemberError;
   Map<String, dynamic> _generalFilter = {};
   late String _groupName = widget.groupName ?? 'קבוצה';
   final Map<String, bool> _filter = {
@@ -33830,6 +35442,12 @@ class _ContentFilterSettingsScreenState
     _load();
   }
 
+  @override
+  void dispose() {
+    _phoneChoice.dispose();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     try {
       final path = _isGroup
@@ -33846,6 +35464,7 @@ class _ContentFilterSettingsScreenState
       if (!mounted) return;
       setState(() {
         _inherit = (_isContact || _isGroup) && data['inherited'] == true;
+        _requiresPhoneChoice = _isContact && data['requiresChoice'] == true;
         _enforceGeneralFilter = data['enforceGeneralFilter'] == true;
         _generalFilter =
             Map<String, dynamic>.from(data['generalFilter'] as Map? ?? {});
@@ -33871,11 +35490,12 @@ class _ContentFilterSettingsScreenState
           : _isContact
               ? '/contacts/${widget.contactId}/filter-settings'
               : '/filter-settings';
-      final body = _isGroup
+      final Map<String, dynamic> body = _isGroup
           ? (_inherit ? {'inherit': true} : {'filter': _filter})
           : _isContact
               ? (_inherit ? {'inherit': true} : {'filter': _filter})
               : {..._filter, 'enforceGeneralFilter': _enforceGeneralFilter};
+      if (_isContact) body.addAll(_phoneChoice.confirmationPayload);
       final response = await http.put(Uri.parse('$kApi$path'),
           headers: {
             'Authorization': 'Bearer ${widget.token}',
@@ -34050,8 +35670,42 @@ class _ContentFilterSettingsScreenState
     );
   }
 
+  Future<void> _openGroupMember(Map<String, dynamic> member) async {
+    final memberId = member['id']?.toString() ?? '';
+    final onSelected = widget.onGroupMemberSelected;
+    if (onSelected == null ||
+        _openingGroupMemberId != null ||
+        memberId.isEmpty ||
+        memberId == widget.currentUserId) {
+      return;
+    }
+    setState(() {
+      _openingGroupMemberId = memberId;
+      _groupMemberError = null;
+    });
+    try {
+      await onSelected(member);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _groupMemberError =
+            error.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _openingGroupMemberId = null);
+    }
+  }
+
   Widget _groupOverview() {
-    final members = widget.groupMembers.take(6).toList();
+    final changes = widget.groupMembersChanges;
+    if (changes == null) return _buildGroupOverview();
+    return AnimatedBuilder(
+      animation: changes,
+      builder: (_, __) => _buildGroupOverview(),
+    );
+  }
+
+  Widget _buildGroupOverview() {
+    final members = widget.groupMembers;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
       child: Column(children: [
@@ -34193,16 +35847,54 @@ class _ContentFilterSettingsScreenState
                       separatorBuilder: (_, __) => const SizedBox(width: 8),
                       itemBuilder: (_, index) {
                         final member = members[index];
-                        return UserAvatar(
-                          radius: 24,
-                          picUrl: member['profile_pic_url'] as String?,
-                          name: member['name']?.toString() ?? 'חבר',
+                        final memberId = member['id']?.toString() ?? '';
+                        final name = member['name']?.toString() ?? 'חבר';
+                        final isMe = memberId == widget.currentUserId;
+                        final canOpen = widget.onGroupMemberSelected != null &&
+                            memberId.isNotEmpty &&
+                            !isMe &&
+                            _openingGroupMemberId == null;
+                        return Tooltip(
+                          message: isMe ? '$name (אני)' : 'פתח שיחה עם $name',
+                          child: InkWell(
+                            onTap:
+                                canOpen ? () => _openGroupMember(member) : null,
+                            borderRadius: BorderRadius.circular(24),
+                            child: Center(
+                              child: SizedBox.square(
+                                dimension: 48,
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    IgnorePointer(
+                                      child: UserAvatar(
+                                        radius: 24,
+                                        picUrl: member['profile_pic_url']
+                                            as String?,
+                                        name: name,
+                                      ),
+                                    ),
+                                    if (_openingGroupMemberId == memberId)
+                                      const CircularProgressIndicator(
+                                        strokeWidth: 3,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
                         );
                       },
                     ),
                   ),
                 ]),
               ),
+              if (_groupMemberError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_groupMemberError!,
+                      style: const TextStyle(color: Colors.red)),
+                ),
             ],
           ),
         ),
@@ -34257,6 +35949,13 @@ class _ContentFilterSettingsScreenState
                         child: Text(
                             'אכיפת הסינון הכללי פעילה. סוגי תוכן שחסומים בו יישארו חסומים גם כאן.')),
                   if (_isGroup) _groupOverview(),
+                  if (_isContact && _isPersonalPhoneContact(widget.contactId, widget.currentUserId))
+                    Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      child: PhoneSharingPanel(api: kApi, token: widget.token,
+                        contactId: widget.contactId!, controller: _phoneChoice,
+                        contactName: widget.contactName ?? 'איש הקשר', compact: true,
+                        initialChoice: _requiresPhoneChoice,
+                        onChanged: () { if (mounted) setState(() {}); })),
                   if (_isContact || _isGroup) ...[
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
@@ -34389,7 +36088,7 @@ class _ContentFilterSettingsScreenState
                               height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2))
                           : const Icon(Icons.save),
-                      label: const Text('שמור הגדרות'),
+                      label: Text(_isContact ? _phoneChoice.confirmationLabel(saveLabel: 'שמור הגדרות') : 'שמור הגדרות'),
                     ),
                   ),
                 ]),
@@ -34402,7 +36101,10 @@ class _ContentFilterSettingsScreenState
 // ── Personal media library ───────────────────────────────────────
 class PersonalMediaScreen extends StatefulWidget {
   final String token;
-  const PersonalMediaScreen({super.key, required this.token});
+  final bool embedded;
+  final VoidCallback? onClose;
+  const PersonalMediaScreen(
+      {super.key, required this.token, this.embedded = false, this.onClose});
 
   @override
   State<PersonalMediaScreen> createState() => _PersonalMediaScreenState();
@@ -34410,6 +36112,23 @@ class PersonalMediaScreen extends StatefulWidget {
 
 class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   final List<Map<String, dynamic>> _items = [];
+  Map<String, dynamic> _summary = {};
+  List<Map<String, dynamic>> _destinations = [];
+  String? _destinationKind;
+  String? _destinationId;
+  String? _destinationLabel;
+  bool _onlyDeletable = false;
+  bool _advancedFilters = false;
+  bool _selecting = false;
+  bool _deleting = false;
+  bool _catalogLoading = true;
+  String? _catalogError;
+  String? _moreError;
+  String _view = 'grid';
+  int _loadGeneration = 0;
+  int _catalogGeneration = 0;
+  int _totalBytes = 0;
+  final Set<String> _selectedIds = {};
   String _type = 'all';
   String _scope = 'all';
   String _sort = 'date_desc';
@@ -34480,7 +36199,75 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   @override
   void initState() {
     super.initState();
-    _load(reset: true);
+    _refresh();
+  }
+
+  @override
+  void didUpdateWidget(covariant PersonalMediaScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.token == widget.token) return;
+    _filterDebounce?.cancel();
+    _loadGeneration++;
+    _catalogGeneration++;
+    _items.clear();
+    _summary = {};
+    _destinations = [];
+    _selectedIds.clear();
+    _busyMediaIds.clear();
+    _destinationKind = _destinationId = _destinationLabel = null;
+    _type = _scope = _moderation = _backup = _classification = 'all';
+    _sort = 'date_desc';
+    _onlyDeletable = _selecting = _deleting = false;
+    _dateFrom = _dateTo = null;
+    _searchCtrl.clear();
+    _minSizeCtrl.clear();
+    _maxSizeCtrl.clear();
+    _total = _totalBytes = 0;
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    _filterDebounce?.cancel();
+    await Future.wait([_loadCatalog(), _load(reset: true)]);
+  }
+
+  Future<void> _loadCatalog() async {
+    final generation = ++_catalogGeneration;
+    final token = widget.token;
+    setState(() {
+      _catalogLoading = true;
+      _catalogError = null;
+    });
+    try {
+      final response = await http
+          .get(Uri.parse('$kApi/media-library/catalog'), headers: _headers)
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) throw Exception('catalog unavailable');
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted ||
+          generation != _catalogGeneration ||
+          token != widget.token) {
+        return;
+      }
+      setState(() {
+        _summary = Map<String, dynamic>.from(body['summary'] as Map? ?? {});
+        _destinations = (body['destinations'] as List? ?? [])
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList();
+        _catalogLoading = false;
+      });
+    } catch (_) {
+      if (!mounted ||
+          generation != _catalogGeneration ||
+          token != widget.token) {
+        return;
+      }
+      setState(() {
+        _catalogLoading = false;
+        _catalogError = 'סיכום האחסון אינו זמין כרגע';
+      });
+    }
   }
 
   @override
@@ -34494,20 +36281,50 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
 
   void _debouncedLoad() {
     _filterDebounce?.cancel();
+    // Invalidate the old request immediately, including during the debounce.
+    _loadGeneration++;
     _filterDebounce =
         Timer(const Duration(milliseconds: 350), () => _load(reset: true));
   }
 
   Future<void> _load({required bool reset}) async {
+    if (!reset && (_loading || _loadingMore)) return;
+    final generation = ++_loadGeneration;
+    final token = widget.token;
     if (reset) {
+      _filterDebounce?.cancel();
       setState(() {
         _loading = true;
+        _loadingMore = false;
         _error = null;
+        _moreError = null;
+        _selectedIds.clear();
       });
     } else {
       setState(() => _loadingMore = true);
     }
     try {
+      final minimum =
+          double.tryParse(_minSizeCtrl.text.trim().replaceAll(',', '.'));
+      final maximum =
+          double.tryParse(_maxSizeCtrl.text.trim().replaceAll(',', '.'));
+      final invalidSize = (_minSizeCtrl.text.trim().isNotEmpty &&
+              (minimum == null || !minimum.isFinite || minimum < 0)) ||
+          (_maxSizeCtrl.text.trim().isNotEmpty &&
+              (maximum == null || !maximum.isFinite || maximum < 0)) ||
+          (minimum != null && maximum != null && minimum > maximum);
+      if (invalidSize ||
+          (_dateFrom != null &&
+              _dateTo != null &&
+              _dateFrom!.isAfter(_dateTo!))) {
+        setState(() {
+          _loading = _loadingMore = false;
+          _error = invalidSize
+              ? 'יש להזין טווח גודל תקין, ממספר קטן לגדול'
+              : 'תאריך הסיום צריך להיות אחרי תאריך ההתחלה';
+        });
+        return;
+      }
       final offset = reset ? 0 : _items.length;
       final query = Uri(queryParameters: {
         'type': _type,
@@ -34520,50 +36337,69 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         'moderation': _moderation,
         'backup': _backup,
         'classification': _classification,
+        if (_destinationKind != null) 'destinationKind': _destinationKind!,
+        if (_destinationId != null) 'destinationId': _destinationId!,
+        if (_onlyDeletable) 'deletable': 'true',
         if (_dateFrom != null)
           'dateFrom': _dateFrom!.toIso8601String().split('T').first,
         if (_dateTo != null)
           'dateTo': _dateTo!.toIso8601String().split('T').first,
-        if (double.tryParse(_minSizeCtrl.text) != null)
-          'minSize': '${(double.parse(_minSizeCtrl.text) * 1048576).round()}',
-        if (double.tryParse(_maxSizeCtrl.text) != null)
-          'maxSize': '${(double.parse(_maxSizeCtrl.text) * 1048576).round()}',
+        if (minimum != null) 'minSize': '${(minimum * 1048576).round()}',
+        if (maximum != null) 'maxSize': '${(maximum * 1048576).round()}',
       }).query;
-      final response = await http.get(
-        Uri.parse('$kApi/media-library?$query'),
-        headers: _headers,
-      );
+      final response = await http
+          .get(
+            Uri.parse('$kApi/media-library?$query'),
+            headers: _headers,
+          )
+          .timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) throw Exception('load failed');
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       final rows = (body['items'] as List<dynamic>? ?? const [])
           .map((item) => Map<String, dynamic>.from(item as Map))
           .toList();
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration || token != widget.token) {
+        return;
+      }
       setState(() {
         if (reset) _items.clear();
-        _items.addAll(rows);
+        final knownIds = _items.map((row) => row['id']).toSet();
+        _items.addAll(rows.where((row) => knownIds.add(row['id'])));
         _total = (body['total'] as num?)?.toInt() ?? _items.length;
+        _totalBytes = (body['totalBytes'] as num?)?.toInt() ?? 0;
         _loading = false;
         _loadingMore = false;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration || token != widget.token) {
+        return;
+      }
       setState(() {
         _loading = false;
         _loadingMore = false;
-        _error = 'לא ניתן היה לטעון את ספריית המדיה';
+        if (reset) {
+          _error = 'לא ניתן היה לטעון את ספריית המדיה';
+        } else {
+          _moreError = 'טעינת קבצים נוספים נכשלה';
+        }
       });
     }
   }
 
   String _size(Object? raw) {
     final bytes = (raw as num?)?.toInt() ?? 0;
+    String label;
     if (bytes >= 1073741824) {
-      return '${(bytes / 1073741824).toStringAsFixed(1)} GB';
+      label = '${(bytes / 1073741824).toStringAsFixed(1)} GB';
+    } else if (bytes >= 1048576) {
+      label = '${(bytes / 1048576).toStringAsFixed(1)} MB';
+    } else if (bytes >= 1024) {
+      label = '${(bytes / 1024).toStringAsFixed(0)} KB';
+    } else {
+      label = '$bytes B';
     }
-    if (bytes >= 1048576) return '${(bytes / 1048576).toStringAsFixed(1)} MB';
-    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
-    return '$bytes B';
+    // Keep units and numbers together inside Hebrew sentences and date rows.
+    return '\u2066$label\u2069';
   }
 
   String _date(Object? raw) {
@@ -34809,73 +36645,95 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   }
 
   Future<void> _delete(Map<String, dynamic> item) async {
+    if (_deleting) return;
     if (item['canDelete'] != true) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('הקובץ מוגן ממחיקה'),
-          content: Text(
-              'הקובץ עדיין משמש ב־${_usageText(item)}. יש להסיר אותו משם תחילה.'),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('סגור'))
-          ],
-        ),
-      );
+      final uploading = item['backupStatus'] == 'uploading';
+      final showUsage = await showDialog<bool>(
+          context: context,
+          useRootNavigator: false,
+          builder: (dialogContext) => AlertDialog(
+                  title: Text(
+                      uploading ? 'גיבוי הקובץ בתהליך' : 'הקובץ מוגן ממחיקה'),
+                  content: Text(uploading
+                      ? 'אפשר למחוק את הקובץ לאחר סיום הגיבוי. נסה שוב בעוד מעט זמן.'
+                      : 'הקובץ עדיין מופיע בשיחה או במקום נוסף. כדי למחוק אותו, יש להסיר אותו מהמקומות המקושרים תחילה.'),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext, false),
+                        child: const Text('סגור')),
+                    if (!uploading)
+                      FilledButton(
+                          onPressed: () => Navigator.pop(dialogContext, true),
+                          child: const Text('הצג שימושים'))
+                  ]));
+      if (showUsage == true && mounted) await _showDestinations(item);
       return;
     }
-    final backedUp = item['backupStatus'] != null;
+    await _confirmDeleteItems([item]);
+  }
+
+  Future<void> _confirmDeleteItems(List<Map<String, dynamic>> items) async {
+    if (_deleting || items.isEmpty) return;
+    final token = widget.token;
+    final eligible = items.where((item) => item['canDelete'] == true).toList();
+    if (eligible.isEmpty) return;
+    final bytes = eligible.fold<int>(
+        0, (sum, item) => sum + ((item['size'] as num?)?.toInt() ?? 0));
+    final hasBackup = eligible.any((item) => item['backupStatus'] != null);
     final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('מחיקה לצמיתות'),
-        content: Text(
-          'למחוק את „${item['name']}” ולפנות ${_size(item['size'])}?'
-          '${backedUp ? '\nגם העותק המוצפן ב־Google Drive יימחק.' : ''}\nלא ניתן לבטל פעולה זו.',
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('ביטול')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('מחק לצמיתות'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    final id = item['id'].toString();
+        context: context,
+        useRootNavigator: false,
+        builder: (dialogContext) => AlertDialog(
+                title: const Text('מחיקה לצמיתות'),
+                content: Text(
+                    '${eligible.length == 1 ? 'למחוק את „${eligible.first['name']}”' : 'למחוק ${eligible.length} קבצים שנבחרו'} ולפנות ${_size(bytes)}?'
+                    '${hasBackup ? '\nגם העותק המוצפן ב־Google Drive יימחק.' : ''}\nלא ניתן לבטל פעולה זו.'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, false),
+                      child: const Text('ביטול')),
+                  FilledButton(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFAF5157)),
+                      onPressed: () => Navigator.pop(dialogContext, true),
+                      child: const Text('מחק לצמיתות'))
+                ]));
+    if (confirmed != true || !mounted || token != widget.token) return;
+    setState(() => _deleting = true);
+    var deleted = 0;
+    var deletedBytes = 0;
+    final errors = <String>[];
     try {
-      final response = await http.delete(
-        Uri.parse('$kApi/media-library/$id'),
-        headers: {..._headers, 'Content-Type': 'application/json'},
-      );
-      final body = jsonDecode(response.body) as Map<String, dynamic>;
-      if (!mounted) return;
-      if (response.statusCode == 200) {
-        setState(() {
-          _items.removeWhere((row) => row['id'].toString() == id);
-          _total = math.max(0, _total - 1);
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('הקובץ נמחק ופונו ${_size(body['deletedBytes'])}')),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(body['error']?.toString() ?? 'המחיקה נכשלה')),
-        );
-        if (response.statusCode == 409) _load(reset: true);
+      for (final item in eligible) {
+        if (!mounted || token != widget.token) break;
+        try {
+          final response = await http
+              .delete(Uri.parse('$kApi/media-library/${item['id']}'), headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json'
+          });
+          final body = jsonDecode(response.body) as Map<String, dynamic>;
+          if (response.statusCode == 200) {
+            deleted++;
+            deletedBytes += (body['deletedBytes'] as num?)?.toInt() ?? 0;
+          } else {
+            errors.add(body['error']?.toString() ?? 'מחיקת הקובץ נכשלה');
+          }
+        } catch (_) {
+          errors.add('שגיאת תקשורת. לא התקבל אישור מחיקה');
+        }
       }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('שגיאת תקשורת. הקובץ לא נמחק')),
-        );
-      }
+      if (!mounted || token != widget.token) return;
+      await _refresh();
+      if (!mounted || token != widget.token) return;
+      final notice = deleted == 0
+          ? (errors.firstOrNull ?? 'לא נמחקו קבצים')
+          : '${deleted == 1 ? 'הקובץ נמחק' : '$deleted קבצים נמחקו'} ופונו ${_size(deletedBytes)}'
+              '${errors.isEmpty ? '' : '. ${errors.length == 1 ? 'קובץ אחד לא נמחק' : '${errors.length} קבצים לא נמחקו'}: ${errors.first}'}';
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(notice)));
+    } finally {
+      if (mounted && token == widget.token) setState(() => _deleting = false);
     }
   }
 
@@ -35134,7 +36992,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
               if (value == 'appeal') _appealClassification(item);
               if (value == 'download') {
                 _downloadChatFile(
-                    context, item['url'].toString(), item['name']?.toString());
+                    context, item['url'].toString(), item['name']?.toString(),
+                    token: widget.token);
               }
               if (value == 'destinations') _showDestinations(item);
               if (value == 'delete') _delete(item);
@@ -35213,7 +37072,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           if (value == 'appeal') _appealClassification(item);
           if (value == 'download') {
             _downloadChatFile(
-                context, item['url'].toString(), item['name']?.toString());
+                context, item['url'].toString(), item['name']?.toString(),
+                token: widget.token);
           }
           if (value == 'destinations') _showDestinations(item);
           if (value == 'delete') _delete(item);
@@ -35582,9 +37442,13 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                       _tableText(
                           item['releasedAt'] != null
                               ? 'בענן בלבד'
-                              : item['backupStatus'] != null
+                              : item['backupStatus'] == 'verified'
                                   ? 'מגובה'
-                                  : 'מקומי',
+                                  : item['backupStatus'] == 'failed'
+                                      ? 'הגיבוי נכשל'
+                                      : item['backupStatus'] != null
+                                          ? 'ממתין לגיבוי'
+                                          : 'מקומי',
                           color: kPrimary),
                       _tableActions(item),
                     ],
@@ -35606,6 +37470,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         child: DropdownButtonFormField<String>(
           initialValue: value,
           isDense: true,
+          key: ValueKey('media-column-$label-$value'),
+          isExpanded: true,
           decoration: InputDecoration(labelText: label),
           items: values.entries
               .map((entry) =>
@@ -35644,6 +37510,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       _moderation = 'all';
       _backup = 'all';
       _classification = 'all';
+      _destinationKind = _destinationId = _destinationLabel = null;
+      _onlyDeletable = false;
       _dateFrom = null;
       _dateTo = null;
       _searchCtrl.clear();
@@ -35653,171 +37521,934 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     _load(reset: true);
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
-        backgroundColor: kBg,
-        appBar: AppBar(title: const Text('המדיה שלי')),
-        body: Column(children: [
+  Color _typeColor(String type) => switch (type) {
+        'video' => const Color(0xFF6179BA),
+        'audio' => const Color(0xFF278691),
+        'document' => const Color(0xFF387BA0),
+        _ => kPrimary,
+      };
+
+  String get _backupText => '${_summary['backedUpCount'] ?? 0} קבצים מגובים';
+
+  Widget _summaryPanel(bool compact) => Container(
+        padding: EdgeInsets.all(compact ? 18 : 24),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+              colors: [Color(0xFF0D4F82), Color(0xFF287EB5)],
+              begin: Alignment.centerRight,
+              end: Alignment.bottomLeft),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Row(children: [
           Container(
-            width: double.infinity,
-            color: kCard,
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('$_total קבצים בבעלותך',
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 220,
-                      child: TextField(
-                        controller: _searchCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'שם הקובץ',
-                          prefixIcon: Icon(Icons.search, size: 20),
-                        ),
-                        onChanged: (_) => _debouncedLoad(),
-                      ),
-                    ),
-                    _filterDropdown(
-                      label: 'סוג',
-                      value: _type,
-                      values: _filters,
-                      onChanged: (value) {
-                        setState(() => _type = value);
-                        _load(reset: true);
-                      },
-                      width: 145,
-                    ),
-                    SizedBox(
-                      width: 125,
-                      child: TextField(
-                        controller: _minSizeCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration:
-                            const InputDecoration(labelText: 'גודל מ־MB'),
-                        onChanged: (_) => _debouncedLoad(),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 125,
-                      child: TextField(
-                        controller: _maxSizeCtrl,
-                        keyboardType: TextInputType.number,
-                        decoration:
-                            const InputDecoration(labelText: 'גודל עד MB'),
-                        onChanged: (_) => _debouncedLoad(),
-                      ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => _pickFilterDate(from: true),
-                      icon: const Icon(Icons.date_range, size: 18),
-                      label: Text(_dateFrom == null
-                          ? 'מתאריך'
-                          : _date(_dateFrom).split(' ').first),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => _pickFilterDate(from: false),
-                      icon: const Icon(Icons.event, size: 18),
-                      label: Text(_dateTo == null
-                          ? 'עד תאריך'
-                          : _date(_dateTo).split(' ').first),
-                    ),
-                    _filterDropdown(
-                      label: 'שייך אל',
-                      value: _scope,
-                      values: _scopes,
-                      onChanged: (value) {
-                        setState(() => _scope = value);
-                        _load(reset: true);
-                      },
-                    ),
-                    _filterDropdown(
-                      label: 'מצב סריקה',
-                      value: _moderation,
-                      values: _moderationFilters,
-                      onChanged: (value) {
-                        setState(() => _moderation = value);
-                        _load(reset: true);
-                      },
-                    ),
-                    _filterDropdown(
-                      label: 'מצב גיבוי',
-                      value: _backup,
-                      values: _backupFilters,
-                      onChanged: (value) {
-                        setState(() => _backup = value);
-                        _load(reset: true);
-                      },
-                    ),
-                    _filterDropdown(
-                      label: 'סיווג',
-                      value: _classification,
-                      values: _classificationFilters,
-                      onChanged: (value) {
-                        setState(() => _classification = value);
-                        _load(reset: true);
-                      },
-                    ),
-                    _filterDropdown(
-                      label: 'מיון',
-                      value: _sort,
-                      values: _sorts,
-                      onChanged: (value) {
-                        setState(() => _sort = value);
-                        _load(reset: true);
-                      },
-                    ),
-                    TextButton.icon(
-                      onPressed: _clearColumnFilters,
-                      icon: const Icon(Icons.filter_alt_off_outlined),
-                      label: const Text('נקה מסננים'),
-                    ),
-                  ]),
-            ]),
-          ),
+              width: compact ? 50 : 66,
+              height: compact ? 50 : 66,
+              decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: .14),
+                  borderRadius: BorderRadius.circular(18)),
+              child: Icon(Icons.perm_media_outlined,
+                  color: Colors.white, size: compact ? 28 : 36)),
+          const SizedBox(width: 16),
           Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                    ? Center(
-                        child:
-                            Column(mainAxisSize: MainAxisSize.min, children: [
-                        Text(_error!),
-                        TextButton(
-                            onPressed: () => _load(reset: true),
-                            child: const Text('נסה שוב')),
-                      ]))
-                    : _items.isEmpty
-                        ? const Center(child: Text('לא נמצאו קבצים'))
-                        : RefreshIndicator(
-                            onRefresh: () => _load(reset: true),
-                            child: ListView(children: [
-                              Card(
-                                margin: const EdgeInsets.all(12),
-                                clipBehavior: Clip.antiAlias,
-                                child: _mediaTable(),
-                              ),
-                              if (_items.length < _total)
-                                Padding(
-                                  padding: const EdgeInsets.all(16),
-                                  child: Center(
-                                      child: _loadingMore
-                                          ? const CircularProgressIndicator()
-                                          : OutlinedButton(
-                                              onPressed: () =>
-                                                  _load(reset: false),
-                                              child: const Text('טען עוד'))),
-                                ),
-                            ]),
-                          ),
-          ),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text('כל הקבצים שלך, במקום אחד',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: compact ? 17 : 23,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 7),
+                if (_catalogLoading && _summary.isEmpty)
+                  const SizedBox(
+                      width: 120,
+                      child: LinearProgressIndicator(
+                          color: Colors.white,
+                          backgroundColor: Color(0xFF6099BF),
+                          minHeight: 2))
+                else
+                  Text(
+                      '${_summary['totalCount'] ?? 0} קבצים  ·  ${_size(_summary['totalBytes'])}',
+                      key: const ValueKey('media-summary-total'),
+                      style: const TextStyle(
+                          color: Color(0xFFD8EAF8), fontSize: 14)),
+                const SizedBox(height: 5),
+                Text(_backupText,
+                    style: const TextStyle(
+                        color: Color(0xFFD8EAF8), fontSize: 12)),
+              ])),
+          if (!compact) ...[
+            const SizedBox(width: 20),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: Color(0xFF7BB2D5))),
+              onPressed: () {
+                setState(() => _onlyDeletable = !_onlyDeletable);
+                _load(reset: true);
+              },
+              icon: const Icon(Icons.cleaning_services_outlined, size: 19),
+              label:
+                  Text('${_summary['deletableCount'] ?? 0} קבצים שניתן למחוק'),
+            ),
+          ],
         ]),
       );
+
+  Widget _typeTile(String type, {double? width}) {
+    final raw = (_summary['byType'] as Map?)?[type];
+    final count = type == 'all'
+        ? _summary['totalCount']
+        : (raw is Map ? raw['count'] : null);
+    final bytes = type == 'all'
+        ? _summary['totalBytes']
+        : (raw is Map ? raw['bytes'] : null);
+    final selected = type == _type;
+    final color = _typeColor(type);
+    return SizedBox(
+        width: width,
+        child: Material(
+          color: selected ? const Color(0xFFE4F1FC) : Colors.white,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(
+                  color: selected ? kPrimary : kBorder,
+                  width: selected ? 1.5 : 1)),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            key: ValueKey('media-type-$type'),
+            onTap: () {
+              setState(() => _type = type);
+              _load(reset: true);
+            },
+            child: Padding(
+                padding: const EdgeInsets.all(13),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Icon(
+                            type == 'all'
+                                ? Icons.folder_copy_outlined
+                                : _fileIcon(type),
+                            size: 23,
+                            color: color),
+                        const Spacer(),
+                        Text(count?.toString() ?? '—',
+                            style: TextStyle(
+                                color: color,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700))
+                      ]),
+                      const SizedBox(height: 9),
+                      Text(_filters[type]!,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, color: kTextDark)),
+                      const SizedBox(height: 2),
+                      Text(_size(bytes),
+                          textDirection: TextDirection.ltr,
+                          style: const TextStyle(
+                              fontSize: 11, color: Color(0xFF5E7B92))),
+                    ])),
+          ),
+        ));
+  }
+
+  Widget _typeTiles(double width) => width >= 620
+      ? Row(
+          children: _filters.keys
+              .map((type) => Expanded(
+                  child: Padding(
+                      padding: EdgeInsetsDirectional.only(
+                          end: type == 'document' ? 0 : 10),
+                      child: _typeTile(type))))
+              .toList())
+      : SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+              children: _filters.keys
+                  .map((type) => Padding(
+                      padding: const EdgeInsetsDirectional.only(end: 8),
+                      child: _typeTile(type, width: 116)))
+                  .toList()));
+
+  Future<void> _chooseDestination() async {
+    var query = '';
+    final choice = await showDialog<Map<String, dynamic>>(
+        context: context,
+        useRootNavigator: false,
+        builder: (dialogContext) => StatefulBuilder(builder: (context, update) {
+              final filtered = _destinations
+                  .where((row) => (row['label']?.toString() ?? '')
+                      .toLowerCase()
+                      .contains(query.toLowerCase()))
+                  .toList();
+              return AlertDialog(
+                  title: const Text('מדיה לפי חבר או קבוצה'),
+                  content: SizedBox(
+                      width: 440,
+                      height: math.min(
+                          440, MediaQuery.sizeOf(context).height * .55),
+                      child: Column(children: [
+                        TextField(
+                            autofocus: true,
+                            onChanged: (value) => update(() => query = value),
+                            decoration: const InputDecoration(
+                                hintText: 'חיפוש שם חבר או קבוצה',
+                                prefixIcon: Icon(Icons.search))),
+                        const SizedBox(height: 10),
+                        Expanded(
+                            child: ListView(children: [
+                          ListTile(
+                              key: const ValueKey('media-destination-all'),
+                              leading: const Icon(Icons.folder_copy_outlined,
+                                  color: kPrimary),
+                              title: const Text('כל החברים והקבוצות'),
+                              onTap: () => Navigator.pop(
+                                  dialogContext, <String, dynamic>{})),
+                          if (_catalogError != null)
+                            TextButton.icon(
+                                onPressed: () async {
+                                  await _loadCatalog();
+                                  if (context.mounted) update(() {});
+                                },
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('נסה לטעון שוב')),
+                          for (final destination in filtered)
+                            ListTile(
+                                key: ValueKey(
+                                    'media-destination-${destination['kind']}-${destination['id']}'),
+                                leading: CircleAvatar(
+                                    backgroundColor: kChatBg,
+                                    child: Icon(
+                                        destination['kind'] == 'group'
+                                            ? Icons.groups_outlined
+                                            : Icons.person_outline,
+                                        color: kPrimary)),
+                                title: Text(
+                                    destination['label']?.toString() ?? 'שיחה'),
+                                subtitle: Text(
+                                    '${destination['kind'] == 'group' ? 'קבוצה' : 'חבר'} · ${destination['count']} קבצים · ${_size(destination['bytes'])}'),
+                                trailing: _destinationId == destination['id'] &&
+                                        _destinationKind == destination['kind']
+                                    ? const Icon(Icons.check_circle,
+                                        color: kPrimary)
+                                    : null,
+                                onTap: () =>
+                                    Navigator.pop(dialogContext, destination)),
+                          if (filtered.isEmpty && _catalogError == null)
+                            const Padding(
+                                padding: EdgeInsets.all(20),
+                                child:
+                                    Text('לא נמצאו חברים או קבוצות עם מדיה')),
+                        ])),
+                      ])),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: const Text('סגור'))
+                  ]);
+            }));
+    if (choice == null || !mounted) return;
+    setState(() {
+      _destinationKind = choice['kind']?.toString();
+      _destinationId = choice['id']?.toString();
+      _destinationLabel = choice['label']?.toString();
+      _scope = 'all';
+    });
+    await _load(reset: true);
+  }
+
+  int get _activeFilters => [
+        _type != 'all',
+        _scope != 'all',
+        _destinationId != null,
+        _onlyDeletable,
+        _searchCtrl.text.trim().isNotEmpty,
+        _moderation != 'all',
+        _backup != 'all',
+        _classification != 'all',
+        _dateFrom != null || _dateTo != null,
+        _minSizeCtrl.text.isNotEmpty || _maxSizeCtrl.text.isNotEmpty,
+      ].where((active) => active).length;
+
+  Widget _toolsPanel(double width) => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: kBorder)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          TextField(
+              key: const ValueKey('media-search'),
+              controller: _searchCtrl,
+              onChanged: (_) {
+                setState(() {});
+                _debouncedLoad();
+              },
+              decoration: InputDecoration(
+                  hintText: 'חיפוש קובץ לפי שם…',
+                  labelText: 'שם הקובץ',
+                  prefixIcon: const Icon(Icons.search, color: kPrimary),
+                  suffixIcon: _searchCtrl.text.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: 'נקה חיפוש',
+                          onPressed: () {
+                            setState(_searchCtrl.clear);
+                            _load(reset: true);
+                          },
+                          icon: const Icon(Icons.close)),
+                  filled: true,
+                  fillColor: const Color(0xFFF7FAFE))),
+          const SizedBox(height: 12),
+          Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                ConstrainedBox(
+                    constraints:
+                        BoxConstraints(maxWidth: math.max(160, width - 28)),
+                    child: OutlinedButton.icon(
+                        key: const ValueKey('media-destination-filter'),
+                        onPressed: _chooseDestination,
+                        icon: const Icon(Icons.people_outline, size: 18),
+                        label: Text(_destinationLabel ?? 'כל החברים והקבוצות',
+                            maxLines: 1, overflow: TextOverflow.ellipsis))),
+                OutlinedButton.icon(
+                    key: const ValueKey('media-advanced-filters'),
+                    onPressed: () =>
+                        setState(() => _advancedFilters = !_advancedFilters),
+                    icon: const Icon(Icons.tune, size: 18),
+                    label:
+                        Text(_advancedFilters ? 'סגור מסננים' : 'סינון מתקדם')),
+                FilterChip(
+                    label: const Text('ניתנים למחיקה'),
+                    selected: _onlyDeletable,
+                    onSelected: (value) {
+                      setState(() => _onlyDeletable = value);
+                      _load(reset: true);
+                    }),
+                if (_activeFilters > 0)
+                  TextButton.icon(
+                      onPressed: _clearColumnFilters,
+                      icon: const Icon(Icons.filter_alt_off_outlined, size: 17),
+                      label: Text('נקה מסננים ($_activeFilters)')),
+              ]),
+          if (_advancedFilters) ...[
+            const Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Divider(height: 1)),
+            Wrap(spacing: 10, runSpacing: 12, children: [
+              _filterDropdown(
+                  label: 'מיקום',
+                  value: _scope,
+                  values: _scopes,
+                  onChanged: (value) {
+                    setState(() => _scope = value);
+                    _load(reset: true);
+                  }),
+              _filterDropdown(
+                  label: 'מצב סריקה',
+                  value: _moderation,
+                  values: _moderationFilters,
+                  onChanged: (value) {
+                    setState(() => _moderation = value);
+                    _load(reset: true);
+                  }),
+              _filterDropdown(
+                  label: 'מצב גיבוי',
+                  value: _backup,
+                  values: _backupFilters,
+                  onChanged: (value) {
+                    setState(() => _backup = value);
+                    _load(reset: true);
+                  }),
+              _filterDropdown(
+                  label: 'סיווג',
+                  value: _classification,
+                  values: _classificationFilters,
+                  onChanged: (value) {
+                    setState(() => _classification = value);
+                    _load(reset: true);
+                  }),
+              SizedBox(
+                  width: 140,
+                  child: TextField(
+                      key: const ValueKey('media-min-size'),
+                      controller: _minSizeCtrl,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) => _debouncedLoad(),
+                      decoration: const InputDecoration(
+                          labelText: 'גודל מינימלי (MB)'))),
+              SizedBox(
+                  width: 140,
+                  child: TextField(
+                      key: const ValueKey('media-max-size'),
+                      controller: _maxSizeCtrl,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) => _debouncedLoad(),
+                      decoration:
+                          const InputDecoration(labelText: 'גודל מרבי (MB)'))),
+              OutlinedButton.icon(
+                  onPressed: () => _pickFilterDate(from: true),
+                  icon: const Icon(Icons.date_range, size: 18),
+                  label: Text(_dateFrom == null
+                      ? 'מתאריך'
+                      : _date(_dateFrom).split(' ').first)),
+              OutlinedButton.icon(
+                  onPressed: () => _pickFilterDate(from: false),
+                  icon: const Icon(Icons.event, size: 18),
+                  label: Text(_dateTo == null
+                      ? 'עד תאריך'
+                      : _date(_dateTo).split(' ').first)),
+            ]),
+          ],
+        ]),
+      );
+
+  Future<void> _openMedia(Map<String, dynamic> item) async {
+    if (item['moderationStatus'] != 'approved') {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(item['moderationStatus'] == 'rejected'
+              ? 'הקובץ נחסם בסריקה'
+              : 'הקובץ עדיין בבדיקה')));
+      return;
+    }
+    final url = item['url']?.toString() ?? '';
+    final name = item['name']?.toString() ?? 'קובץ';
+    final type = item['fileType']?.toString();
+    if (type == 'image') {
+      await Navigator.push(
+          context,
+          MaterialPageRoute(
+              builder: (_) => ImagePreviewScreen(url: url, filename: name)));
+    } else if (name.toLowerCase().endsWith('.pdf')) {
+      _openPdfInsideApp(context, url, name);
+    } else if (_isOfficePreviewFile(name)) {
+      _openOfficeInsideApp(context, url, name, widget.token);
+    } else if (type == 'video' || type == 'audio') {
+      await showDialog<void>(
+          context: context,
+          useRootNavigator: false,
+          builder: (dialogContext) => AlertDialog(
+                  title:
+                      Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  content: SizedBox(
+                      width: type == 'video' ? 640 : 400,
+                      child: type == 'video'
+                          ? AspectRatio(
+                              aspectRatio: 16 / 9,
+                              child: kIsWeb
+                                  ? NativeWebVideoPlayer(
+                                      url: _absoluteMediaUrl(url))
+                                  : _ChatVideoPlayer(url: url))
+                          : VoiceMessagePlayer(
+                              url: url, isMe: true, senderName: name)),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: const Text('סגור'))
+                  ]));
+    } else {
+      await _downloadChatFile(context, url, name, token: widget.token);
+    }
+  }
+
+  String _destinationSummary(Map<String, dynamic> item) {
+    final names = (item['destinations'] as List? ?? [])
+        .whereType<Map>()
+        .map((row) => row['label']?.toString() ?? '')
+        .where((name) => name.isNotEmpty)
+        .toSet()
+        .toList();
+    if (names.isEmpty) {
+      return item['canDelete'] == true ? 'ללא שיוך לשיחה' : 'קובץ בשימוש';
+    }
+    return names.length == 1
+        ? names.first
+        : '${names.first} ועוד ${names.length - 1}';
+  }
+
+  Widget _thumbnail(Map<String, dynamic> item, {bool small = false}) {
+    final type = item['fileType']?.toString() ?? 'document';
+    final approved = item['moderationStatus'] == 'approved';
+    final color = _typeColor(type);
+    return InkWell(
+        onTap: () => _selecting ? _toggleSelected(item) : _openMedia(item),
+        child: Container(
+          color: color.withValues(alpha: .075),
+          child: type == 'image' && approved
+              ? _PersistentMediaImage(
+                  key: ValueKey('media-image-${item['id']}-${item['url']}'),
+                  url: item['url']?.toString() ?? '',
+                  width: double.infinity,
+                  height: double.infinity,
+                  fit: BoxFit.cover,
+                  loadingBuilder: (_) => Center(
+                      child: Icon(Icons.image_outlined,
+                          size: 42, color: color.withValues(alpha: .4))),
+                  errorBuilder: (_) => Center(
+                      child: Icon(Icons.cloud_download_outlined,
+                          size: 40, color: color)))
+              : Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(!approved ? Icons.shield_outlined : _fileIcon(type),
+                      size: small ? 28 : 40, color: color),
+                  if (!small) const SizedBox(height: 8),
+                  if (!small)
+                    Text(
+                        !approved
+                            ? _moderationLabel(
+                                item['moderationStatus']?.toString())
+                            : type == 'video'
+                                ? 'נגן סרטון'
+                                : type == 'audio'
+                                    ? 'האזנה להקלטה'
+                                    : (item['name']
+                                            ?.toString()
+                                            .split('.')
+                                            .last
+                                            .toUpperCase() ??
+                                        'קובץ'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: color,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500)),
+                ])),
+        ));
+  }
+
+  void _toggleSelected(Map<String, dynamic> item) {
+    if (item['canDelete'] != true || _deleting) return;
+    final id = item['id'].toString();
+    setState(() {
+      if (!_selectedIds.add(id)) _selectedIds.remove(id);
+    });
+  }
+
+  Widget _selectionCheckbox(Map<String, dynamic> item) => Tooltip(
+      message:
+          item['canDelete'] == true ? 'בחירה למחיקה' : 'הקובץ עדיין בשימוש',
+      child: Checkbox(
+          key: ValueKey('media-select-${item['id']}'),
+          value: _selectedIds.contains(item['id'].toString()),
+          onChanged: item['canDelete'] == true && !_deleting
+              ? (_) => _toggleSelected(item)
+              : null));
+
+  Widget _deleteButton(Map<String, dynamic> item) => IconButton(
+      key: ValueKey('media-delete-${item['id']}'),
+      tooltip: item['canDelete'] == true ? 'מחיקת קובץ' : 'בדיקת אפשרות מחיקה',
+      visualDensity: VisualDensity.compact,
+      onPressed: _deleting || _busyMediaIds.contains(item['id'].toString())
+          ? null
+          : () => _delete(item),
+      icon: Icon(
+          item['canDelete'] == true ? Icons.delete_outline : Icons.lock_outline,
+          size: 19,
+          color: item['canDelete'] == true
+              ? const Color(0xFFAF5157)
+              : const Color(0xFF6D8A9F)));
+
+  Widget _mediaCard(Map<String, dynamic> item) {
+    final selected = _selectedIds.contains(item['id'].toString());
+    return Material(
+        key: ValueKey('media-file-${item['id']}'),
+        color: Colors.white,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(17),
+            side: BorderSide(
+                color: selected ? kPrimary : kBorder, width: selected ? 2 : 1)),
+        clipBehavior: Clip.antiAlias,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(
+              child: Stack(fit: StackFit.expand, children: [
+            _thumbnail(item),
+            if (_selecting)
+              PositionedDirectional(
+                  top: 6,
+                  start: 6,
+                  child: Material(
+                      color: Colors.white,
+                      shape: const CircleBorder(),
+                      child: _selectionCheckbox(item))),
+            if (item['backupStatus'] == 'verified')
+              const PositionedDirectional(
+                  top: 9,
+                  end: 9,
+                  child: Tooltip(
+                      message: 'מגובה ב־Drive',
+                      child: CircleAvatar(
+                          radius: 14,
+                          backgroundColor: Colors.white,
+                          child: Icon(Icons.cloud_done_outlined,
+                              color: kPrimary, size: 18)))),
+          ])),
+          Padding(
+              padding: const EdgeInsets.fromLTRB(11, 10, 11, 0),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(item['name']?.toString() ?? 'קובץ',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: kTextDark,
+                            fontSize: 13)),
+                    const SizedBox(height: 4),
+                    Text(
+                        '${_size(item['size'])} · ${_date(item['createdAt']).split(' ').first}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11, color: Color(0xFF637F95))),
+                  ])),
+          Padding(
+              padding: const EdgeInsetsDirectional.only(start: 8, end: 3),
+              child: Row(children: [
+                Expanded(
+                    child: InkWell(
+                        onTap: () => _showDestinations(item),
+                        child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Text(_destinationSummary(item),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 11, color: kPrimary))))),
+                _deleteButton(item),
+                _tableActions(item),
+              ])),
+        ]));
+  }
+
+  Widget _mediaListRow(Map<String, dynamic> item) => Container(
+      key: ValueKey('media-file-${item['id']}'),
+      margin: const EdgeInsets.only(bottom: 9),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: kBorder)),
+      child: Row(children: [
+        if (_selecting) _selectionCheckbox(item),
+        ClipRRect(
+            borderRadius: BorderRadius.circular(11),
+            child: SizedBox(
+                width: 58, height: 66, child: _thumbnail(item, small: true))),
+        const SizedBox(width: 12),
+        Expanded(
+            child: InkWell(
+                onTap: () =>
+                    _selecting ? _toggleSelected(item) : _openMedia(item),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(item['name']?.toString() ?? 'קובץ',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600, color: kTextDark)),
+                      const SizedBox(height: 4),
+                      Text(
+                          '${_size(item['size'])} · ${_date(item['createdAt']).split(' ').first}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12, color: Color(0xFF637F95))),
+                      const SizedBox(height: 4),
+                      Text(_destinationSummary(item),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style:
+                              const TextStyle(fontSize: 12, color: kPrimary)),
+                    ]))),
+        _deleteButton(item),
+        _tableActions(item),
+      ]));
+
+  Widget _viewToolbar(double width) {
+    final selection = OutlinedButton.icon(
+        key: const ValueKey('media-select-mode'),
+        onPressed: _deleting
+            ? null
+            : () => setState(() {
+                  _selecting = !_selecting;
+                  _selectedIds.clear();
+                  if (_selecting && _view == 'table') _view = 'grid';
+                }),
+        icon: Icon(_selecting ? Icons.close : Icons.checklist, size: 17),
+        label: Text(_selecting ? 'ביטול בחירה' : 'בחירת קבצים'));
+    final count = Text('$_total קבצים · ${_size(_totalBytes)}',
+        key: const ValueKey('media-results-count'),
+        style: const TextStyle(color: kTextDark, fontWeight: FontWeight.w600));
+    final sorting = SizedBox(
+        width: 146,
+        child: DropdownButton<String>(
+            key: const ValueKey('media-sort'),
+            value: _sort,
+            isExpanded: true,
+            underline: const SizedBox.shrink(),
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(fontSize: 13, color: kPrimary),
+            items: _sorts.entries
+                .map((entry) => DropdownMenuItem(
+                    value: entry.key, child: Text(entry.value)))
+                .toList(),
+            onChanged: (value) {
+              if (value != null) {
+                setState(() => _sort = value);
+                _load(reset: true);
+              }
+            }));
+    final views = Row(mainAxisSize: MainAxisSize.min, children: [
+      for (final entry in {
+        'grid': Icons.grid_view_rounded,
+        'list': Icons.view_list_outlined,
+        'table': Icons.table_chart_outlined
+      }.entries)
+        IconButton(
+            key: ValueKey('media-view-${entry.key}'),
+            tooltip: {
+              'grid': 'גלריה',
+              'list': 'רשימה',
+              'table': 'טבלה מפורטת'
+            }[entry.key],
+            style: IconButton.styleFrom(
+                backgroundColor: _view == entry.key
+                    ? const Color(0xFFDAECFA)
+                    : Colors.transparent,
+                foregroundColor:
+                    _view == entry.key ? kPrimary : const Color(0xFF7A96AB)),
+            onPressed: () => setState(() => _view = entry.key),
+            icon: Icon(entry.value, size: 20)),
+    ]);
+    return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: width < 680
+            ? Column(children: [
+                Row(children: [
+                  Expanded(child: count),
+                  const SizedBox(width: 8),
+                  selection
+                ]),
+                const SizedBox(height: 4),
+                Row(children: [sorting, const Spacer(), views]),
+              ])
+            : Row(children: [
+                Expanded(child: count),
+                sorting,
+                const SizedBox(width: 8),
+                views,
+                const SizedBox(width: 14),
+                selection
+              ]));
+  }
+
+  Widget _emptyState() => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 48),
+      child: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const CircleAvatar(
+            radius: 35,
+            backgroundColor: Color(0xFFDDEDFB),
+            child: Icon(Icons.folder_open_outlined, size: 36, color: kPrimary)),
+        const SizedBox(height: 18),
+        Text(
+            _activeFilters > 0
+                ? 'לא נמצאו קבצים שמתאימים לסינון'
+                : 'המדיה שלך תופיע כאן',
+            style: const TextStyle(
+                color: kTextDark, fontSize: 17, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Text(
+            _activeFilters > 0
+                ? 'אפשר לשנות את החיפוש או לנקות את המסננים'
+                : 'תמונות, סרטונים וקבצים ששלחת או שקיבלת',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Color(0xFF637F95))),
+        if (_activeFilters > 0)
+          TextButton(
+              onPressed: _clearColumnFilters, child: const Text('נקה מסננים')),
+      ])));
+
+  Widget? _selectionBar() {
+    if (!_selecting) return null;
+    final chosen = _items
+        .where((item) => _selectedIds.contains(item['id'].toString()))
+        .toList();
+    final bytes = chosen.fold<int>(
+        0, (sum, item) => sum + ((item['size'] as num?)?.toInt() ?? 0));
+    return SafeArea(
+        top: false,
+        child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: const BoxDecoration(
+                color: Colors.white,
+                border: Border(top: BorderSide(color: kBorder))),
+            child: Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text('${chosen.length} נבחרו · ${_size(bytes)}',
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  FilledButton.icon(
+                      key: const ValueKey('media-delete-selected'),
+                      style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFAF5157)),
+                      onPressed: chosen.isEmpty || _deleting
+                          ? null
+                          : () => _confirmDeleteItems(chosen),
+                      icon: _deleting
+                          ? const SizedBox(
+                              width: 17,
+                              height: 17,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.delete_outline, size: 19),
+                      label: Text(_deleting ? 'מוחק…' : 'מחק נבחרים')),
+                ])));
+  }
+
+  @override
+  Widget build(BuildContext context) => Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF2F7FC),
+        appBar: AppBar(
+            title: const Text('המדיה שלי'),
+            backgroundColor: kHeader,
+            foregroundColor: Colors.white,
+            leading: IconButton(
+                tooltip: 'חזרה',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: widget.onClose ?? () => Navigator.maybePop(context)),
+            actions: [
+              IconButton(
+                  tooltip: 'רענון המדיה',
+                  onPressed: _deleting ? null : _refresh,
+                  icon: const Icon(Icons.refresh)),
+              const SizedBox(width: 6)
+            ]),
+        bottomNavigationBar: _selectionBar(),
+        body: LayoutBuilder(builder: (context, constraints) {
+          final compact = constraints.maxWidth < 620;
+          final padding = compact ? 12.0 : 24.0;
+          final width = constraints.maxWidth - padding * 2;
+          final columns = width < 300 ? 1 : (width / 220).floor().clamp(2, 6);
+          return RefreshIndicator(
+              onRefresh: _refresh,
+              child: CustomScrollView(
+                key: const ValueKey('media-scroll'),
+                physics: const AlwaysScrollableScrollPhysics(),
+                slivers: [
+                  SliverPadding(
+                      padding:
+                          EdgeInsets.fromLTRB(padding, padding, padding, 0),
+                      sliver: SliverToBoxAdapter(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            _summaryPanel(compact),
+                            if (_catalogError != null)
+                              Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: TextButton.icon(
+                                      onPressed: _loadCatalog,
+                                      icon: const Icon(Icons.refresh, size: 16),
+                                      label: Text(_catalogError!))),
+                            const SizedBox(height: 16),
+                            _typeTiles(width),
+                            const SizedBox(height: 16),
+                            _toolsPanel(width),
+                            _viewToolbar(width),
+                          ]))),
+                  if (_loading)
+                    const SliverToBoxAdapter(
+                        child: Padding(
+                            padding: EdgeInsets.all(48),
+                            child: Center(child: CircularProgressIndicator())))
+                  else if (_error != null)
+                    SliverToBoxAdapter(
+                        child: Padding(
+                            padding: const EdgeInsets.all(32),
+                            child: Column(children: [
+                              const Icon(Icons.cloud_off_outlined,
+                                  size: 36, color: kPrimary),
+                              const SizedBox(height: 12),
+                              Text(_error!),
+                              TextButton(
+                                  onPressed: () => _load(reset: true),
+                                  child: const Text('נסה שוב'))
+                            ])))
+                  else if (_items.isEmpty)
+                    SliverToBoxAdapter(child: _emptyState())
+                  else if (_view == 'table')
+                    SliverPadding(
+                        padding: EdgeInsets.symmetric(horizontal: padding),
+                        sliver: SliverToBoxAdapter(
+                            child: Material(
+                                color: Colors.white,
+                                clipBehavior: Clip.antiAlias,
+                                borderRadius: BorderRadius.circular(15),
+                                child: _mediaTable())))
+                  else if (_view == 'grid')
+                    SliverPadding(
+                        padding: EdgeInsets.symmetric(horizontal: padding),
+                        sliver: SliverGrid(
+                            key: const ValueKey('media-grid'),
+                            gridDelegate:
+                                SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: columns,
+                                    crossAxisSpacing: compact ? 10 : 14,
+                                    mainAxisSpacing: compact ? 10 : 14,
+                                    mainAxisExtent: 246),
+                            delegate: SliverChildBuilderDelegate(
+                                (context, index) => _mediaCard(_items[index]),
+                                childCount: _items.length)))
+                  else
+                    SliverPadding(
+                        padding: EdgeInsets.symmetric(horizontal: padding),
+                        sliver: SliverList(
+                            key: const ValueKey('media-list'),
+                            delegate: SliverChildBuilderDelegate(
+                                (context, index) =>
+                                    _mediaListRow(_items[index]),
+                                childCount: _items.length))),
+                  if (!_loading && _error == null && _items.length < _total)
+                    SliverToBoxAdapter(
+                        child: Padding(
+                            padding: const EdgeInsets.all(20),
+                            child: Center(
+                                child: _loadingMore
+                                    ? const CircularProgressIndicator()
+                                    : Column(children: [
+                                        if (_moreError != null)
+                                          Text(_moreError!),
+                                        OutlinedButton.icon(
+                                            key: const ValueKey(
+                                                'media-load-more'),
+                                            onPressed: () =>
+                                                _load(reset: false),
+                                            icon: const Icon(Icons.expand_more),
+                                            label: const Text('טען עוד')),
+                                      ])))),
+                  const SliverToBoxAdapter(child: SizedBox(height: 24)),
+                ],
+              ));
+        }),
+      ));
 }
 
 // ── Settings Screen ───────────────────────────────────────────────
@@ -36881,7 +39512,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 // Modesty settings
                 const _SectionHeader(title: 'הגדרות תוכן לא ראוי'),
-                Container(
+                Material(
                   color: kCard,
                   child: Column(
                     children: [
@@ -36905,7 +39536,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
 
                 const _SectionHeader(title: 'אחסון וגיבוי אישי'),
-                Container(
+                Material(
                   color: kCard,
                   child: Column(children: [
                     ListTile(
@@ -37016,7 +39647,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 // Notifications
                 const _SectionHeader(title: 'התראות'),
-                Container(
+                Material(
                   color: kCard,
                   child: Column(
                     children: [
@@ -37045,10 +39676,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 // Privacy
                 const _SectionHeader(title: 'פרטיות'),
-                Container(
+                Material(
                   color: kCard,
                   child: Column(
                     children: [
+                      ListTile(
+                        leading: const Icon(Icons.contact_phone_outlined, color: kSubtext),
+                        title: const Text('שיתוף מספר הטלפון'),
+                        subtitle: const Text('בקשות והרשאות שנתתי לחברים'),
+                        trailing: const Icon(Icons.chevron_left, color: kSubtext),
+                        onTap: () => Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => PhoneSharingPrivacyScreen(api: kApi, token: widget.token))),
+                      ),
+                      const Divider(height: 1, indent: 16),
                       ListTile(
                         leading: const Icon(Icons.block, color: kSubtext),
                         title: const Text('משתמשים חסומים'),
@@ -37094,7 +39734,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                 // About
                 const _SectionHeader(title: 'אודות'),
-                Container(
+                Material(
                   color: kCard,
                   child: Column(
                     children: [
@@ -37136,7 +39776,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
 
                 const _SectionHeader(title: 'סיוע ומעקב'),
-                Container(
+                Material(
                   color: kCard,
                   child: ListTile(
                     leading: const Icon(Icons.pending_actions_outlined,
@@ -37157,7 +39797,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // Admin Panel (visible only to admins)
                 if (widget.adminPerm != null) ...[
                   const _SectionHeader(title: 'ניהול'),
-                  Container(
+                  Material(
                     color: kCard,
                     child: ListTile(
                       leading: const Icon(Icons.admin_panel_settings,

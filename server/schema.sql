@@ -149,6 +149,16 @@ CREATE TABLE IF NOT EXISTS message_user_deletions (
   PRIMARY KEY (message_id, user_id)
 );
 
+-- Personal conversation visibility does not change contacts or group membership.
+CREATE TABLE IF NOT EXISTS conversation_user_state (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('chat','group')),
+  target_id UUID NOT NULL,
+  hidden BOOLEAN NOT NULL DEFAULT FALSE,
+  cleared_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id,kind,target_id)
+);
+
 -- ── Groups: membership ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS group_members (
   group_id      UUID NOT NULL REFERENCES groups(id),
@@ -229,11 +239,30 @@ ALTER TABLE messages ADD COLUMN IF NOT EXISTS education_form_id
 CREATE TABLE IF NOT EXISTS user_contacts (
   owner_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   contact_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  contact_source TEXT NOT NULL DEFAULT 'unknown',
+  known_phone_hash TEXT,
   filter_override JSONB,
   created_at     TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (owner_id, contact_id),
   CHECK (owner_id <> contact_id)
 );
+
+-- Saving or messaging a contact never grants phone access. Exact previously
+-- supplied numbers and explicit directed grants are tied to that phone value.
+ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS contact_source TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS known_phone_hash TEXT;
+CREATE TABLE IF NOT EXISTS contact_phone_permissions (
+  phone_owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  viewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  state TEXT NOT NULL CHECK (state IN ('pending','approved','declined','revoked')),
+  phone_hash TEXT,
+  requested_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (phone_owner_id, viewer_id),
+  CHECK (phone_owner_id <> viewer_id)
+);
+CREATE INDEX IF NOT EXISTS contact_phone_permissions_viewer_idx
+  ON contact_phone_permissions(viewer_id, phone_owner_id);
 
 -- Invitations to the app. Credit is granted only after the invited identity
 -- verifies the phone number or email address used by the inviter.
@@ -329,6 +358,7 @@ CREATE OR REPLACE FUNCTION enqueue_classification_shadow_job()
 RETURNS trigger AS $$
 BEGIN
   IF NEW.file_type='image'
+     AND NEW.context_type IS DISTINCT FROM 'received'
      AND NEW.moderation_details->'classificationStats' IS NOT NULL THEN
     INSERT INTO classification_shadow_jobs(stored_file_id)
     VALUES(NEW.id) ON CONFLICT(stored_file_id) DO NOTHING;
@@ -343,6 +373,7 @@ FOR EACH ROW EXECUTE FUNCTION enqueue_classification_shadow_job();
 INSERT INTO classification_shadow_jobs(stored_file_id)
 SELECT id FROM stored_files
 WHERE file_type='image'
+  AND context_type IS DISTINCT FROM 'received'
   AND moderation_details->'classificationStats' IS NOT NULL
   AND content_purged_at IS NULL
 ON CONFLICT(stored_file_id) DO NOTHING;

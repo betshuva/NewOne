@@ -112,7 +112,7 @@ test('Israel only offers allowlisted in-app destinations', () => {
   const client = fs.readFileSync(
     path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
   assert.match(client,
-    /betshuva:\/\/app\/\(content-filter\|profile\|personal-media\|screenshot\|my-issues\)/);
+    /betshuva:\/\/app\/\(content-filter\|profile\|personal-media\|backup-settings\|guide-file\|screenshot\|my-issues\)/);
   assert.match(client, /message\['from'\] == kSystemGuideId/);
   assert.match(client, /_openGuideAppLink\(/);
   assert.match(client,
@@ -254,7 +254,7 @@ test('Israel no longer performs settings actions or browses user messages', () =
   const exchange = source.slice(
     source.indexOf('async function createSystemExchange'),
     source.indexOf('// ── Activity logger'));
-  assert.match(exchange, /generateSystemAnswer\(pool, userId, question\)/);
+  assert.match(exchange, /generateSystemAnswer\(pool, userId, question, sent\.rows\[0\]\.id\)/);
   assert.doesNotMatch(exchange, /handleSystemAction/);
   assert.doesNotMatch(exchange, /handleMessageBrowsing/);
 });

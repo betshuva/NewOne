@@ -19,7 +19,8 @@ test('reactions enforce membership, visibility and per-user ownership in Postgre
     await db.query(`
       CREATE TEMP TABLE users(id uuid PRIMARY KEY,content_filter jsonb);
       CREATE TEMP TABLE messages(id uuid PRIMARY KEY,sender_id uuid,recipient_id uuid,group_id uuid,type text,
-        file_url text,deleted_for_everyone boolean DEFAULT false,deleted_for_sender boolean DEFAULT false);
+        file_url text,created_at timestamptz DEFAULT now(),deleted_for_everyone boolean DEFAULT false,deleted_for_sender boolean DEFAULT false);
+      CREATE TEMP TABLE conversation_user_state(user_id uuid,kind text,target_id uuid,cleared_at timestamptz);
       CREATE TEMP TABLE groups(id uuid PRIMARY KEY,creator_id uuid,content_filter jsonb);
       CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,status text,filter_override jsonb);
       CREATE TEMP TABLE stored_files(public_url text,moderation_details jsonb);

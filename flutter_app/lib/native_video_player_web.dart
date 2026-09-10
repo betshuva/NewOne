@@ -5,6 +5,7 @@ import 'dart:html' as html;
 import 'dart:ui_web' as ui_web;
 
 import 'package:flutter/material.dart';
+import 'message_hover.dart';
 
 class NativeWebVideoPlayer extends StatefulWidget {
   final String url;
@@ -23,6 +24,12 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer> {
   html.ButtonElement? _optionsButton;
   StreamSubscription<html.Event>? _contextMenuSubscription;
   StreamSubscription<html.Event>? _optionsSubscription;
+  final List<StreamSubscription<html.Event>> _detailSubscriptions = [];
+
+  void _showDetails(bool visible) {
+    _video.controls = visible;
+    _optionsButton?.style.visibility = visible ? 'visible' : 'hidden';
+  }
 
   @override
   void initState() {
@@ -78,9 +85,23 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer> {
       });
       _container.append(_optionsButton!);
     }
+    _detailSubscriptions
+        .add(_container.onMouseEnter.listen((_) => _showDetails(true)));
+    _detailSubscriptions
+        .add(_container.onMouseLeave.listen((_) => _showDetails(false)));
+    _detailSubscriptions
+        .add(_container.onTouchStart.listen((_) => _showDetails(true)));
+    _detailSubscriptions
+        .add(_container.on['focusin'].listen((_) => _showDetails(true)));
     ui_web.platformViewRegistry.registerViewFactory(_viewType, (_) {
       return _container;
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _showDetails(MessageHover.detailsVisible(context));
   }
 
   @override
@@ -98,6 +119,9 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer> {
   void dispose() {
     _contextMenuSubscription?.cancel();
     _optionsSubscription?.cancel();
+    for (final subscription in _detailSubscriptions) {
+      subscription.cancel();
+    }
     _video
       ..pause()
       ..src = ''

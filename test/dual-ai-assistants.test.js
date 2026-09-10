@@ -22,7 +22,7 @@ test('Israel and Safe Information use separate immutable system identities', () 
 test('each assistant has its own history and answer generator', () => {
   assert.match(server, /recipient_id=\$2[\s\S]*?SAFE_INFORMATION_USER_ID/);
   assert.match(server, /assistantId === SAFE_INFORMATION_USER_ID[\s\S]*?generateSafeInformationSystemAnswer/);
-  assert.match(server, /generateSystemAnswer\(pool, userId, question\)/);
+  assert.match(server, /generateSystemAnswer\(pool, userId, question, sent\.rows\[0\]\.id\)/);
   assert.match(server, /createSystemExchange\([\s\S]*?assistantId = SYSTEM_USER_ID/);
 });
 

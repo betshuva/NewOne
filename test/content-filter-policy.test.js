@@ -58,8 +58,8 @@ test('private and group HTTP forwarding routes enforce the shared policy', () =>
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
   const privateRoute = source.slice(
-    source.indexOf("app.post('/api/messages'"),
-    source.indexOf("app.get('/api/messages/requests'"));
+    source.indexOf("async function sendPrivateHttpMessage("),
+    source.indexOf("app.post('/api/messages'"));
   const groupRoute = source.slice(
     source.indexOf("app.post('/api/groups/:id/messages'"),
     source.indexOf("app.get('/api/groups/:id/messages'"));

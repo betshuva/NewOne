@@ -11,6 +11,7 @@ const allowlist = JSON.parse(
 );
 
 test('the approved Twemoji allowlist and every referenced SVG are bundled', () => {
+  assert.match(source, /LicenseRegistry\.addLicense/);
   assert.equal(allowlist.length, 171);
   for (const item of allowlist) {
     assert.ok(item.emoji && item.category && item.label_he && item.twemoji_code);
@@ -25,12 +26,4 @@ test('the approved Twemoji allowlist and every referenced SVG are bundled', () =
       `missing SVG for ${item.emoji}`,
     );
   }
-});
-
-test('the replacement picker exposes only the user-provided sticker catalog', () => {
-  const picker = source.slice(source.indexOf('class _ExpressionPickerSheetState'), source.indexOf('class _RemoteExpressionGrid'));
-  assert.doesNotMatch(picker, /TabBar|_buildTwemojiPicker|_legacyBuild|_buildAvielStickerPicker/);
-  assert.match(picker, /user-stickers/);
-  assert.match(picker, /assets\/stickers\/user-catalog\.json/);
-  assert.match(source, /LicenseRegistry\.addLicense/);
 });

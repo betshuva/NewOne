@@ -27,7 +27,7 @@ test('teen conversations require mutual saved contacts on every content path', (
   assert.match(server, /async function teenContactAllowed/);
   assert.match(routeSource("app.get('/api/messages/:userId'", "app.post('/api/messages'"),
     /teenContactAllowed/);
-  assert.match(routeSource("app.post('/api/messages'", "app.get('/api/message-requests'"),
+  assert.match(routeSource("async function sendPrivateHttpMessage(", "app.post('/api/messages'"),
     /teenContactAllowed/);
   assert.match(routeSource("app.post('/api/upload'", '// ── Groups: list mine'),
     /teenContactAllowed/);

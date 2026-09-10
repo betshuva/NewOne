@@ -16,7 +16,7 @@ test('HTTP group sends notify the sender so the conversation time refreshes', ()
   const route = server.slice(start, end);
   assert.match(route, /relay\(senderId, 'group:message', payload\)/);
   assert.match(route,
-    /relay\(recipient\.id, 'group:message', recipientPayload\)/);
+    /relay\(recipient\.id, 'group:message',\s*await recipientMediaMessage\(pool, recipient\.id, recipientPayload\)\)/);
 });
 
 test('group file bubbles display the persisted server timestamp', () => {

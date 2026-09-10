@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
-const start = source.indexOf("app.post('/api/messages',");
+const start = source.indexOf("async function sendPrivateHttpMessage(");
 const end = source.indexOf("app.get('/api/message-requests',", start);
 
 async function deliver(body, { contentAllowed = true, approved = true } = {}) {
@@ -20,7 +20,7 @@ async function deliver(body, { contentAllowed = true, approved = true } = {}) {
   }};
   vm.runInNewContext(source.slice(start,end), {
     app:{post: (...args) => { handler = args.at(-1); }},
-    auth:()=>{}, messageRateLimit:()=>{},
+    auth:()=>{}, messageRateLimit:()=>{}, registerGuideMessageSend:()=>{}, SCAN_BOT_ID:'scan',
     SYSTEM_USER_ID:'guide', SAFE_INFORMATION_USER_ID:'info',
     normalizeBuiltinStickerId:()=>null, moderateChatText:()=>({blocked:false}),
     verifyMessageLinks:async()=>{}, getPool:async()=>pool,

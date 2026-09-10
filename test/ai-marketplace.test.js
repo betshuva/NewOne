@@ -45,26 +45,29 @@ test('specific listing ignores unrelated filters but still requires active statu
   assert.equal(result.has_more, false);
 });
 
-test('AI calls marketplace and returns only verified listing links', async () => {
+test('listing searches offer web tools, keep verified listing links and omit source/date footers', async () => {
   let requests = 0;
   const answer = await generateSafeInformationAnswer({
     apiKey:'test', question:'אילו מקררים מוצעים למסירה?',
+    validateSource: async () => assert.fail('listing results require no external source validation'),
     searchMarketplace: async args => { assert.deepEqual(args.terms,['מקרר']); return {listings:[{id,url,title:'מקרר',type:'free'}]}; },
     fetchImpl: async (_, options) => {
       const body = JSON.parse(options.body);
       requests++;
       assert.ok(body.tools.some(tool => tool.name === 'search_marketplace'));
+      assert.ok(body.tools.some(tool => tool.type === 'web_search'));
       if (requests === 1) return {ok:true,json:async()=>({output:[{type:'function_call', name:'search_marketplace',call_id:'call1',arguments:JSON.stringify({terms:['מקרר']})}]})};
       const output = body.input.find(item => item.type === 'function_call_output');
       assert.equal(output.call_id,'call1');
       assert.equal(JSON.parse(output.output).listings[0].title,'מקרר');
-      return {ok:true,json:async()=>({output:[{content:[{type:'output_text',text:`מקרר למסירה\n${url}\nbetshuva://listing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`}]}]})};
+      return {ok:true,json:async()=>({output:[{content:[{type:'output_text',text:`מקרר למסירה\n${url}\nbetshuva://listing/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\nמקור: מודעות פעילות בבתשובה\nמקורות: https://unverified.example.test\nנבדק בתאריך: 09/09/2026\nנתוני המודעות נבדקו בתאריך: 09/09/2026`}]}]})};
     },
   });
   assert.equal(requests,2);
   assert.match(answer,new RegExp(url));
   assert.doesNotMatch(answer,/aaaaaaaa/);
   assert.doesNotMatch(answer,/לא צורף מקור/);
+  assert.doesNotMatch(answer,/מקור|נבדק|09\/09\/2026|https:/);
 });
 
 test('teen has no marketplace tool even when a callback exists', async () => {
