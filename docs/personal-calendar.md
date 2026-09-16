@@ -21,3 +21,5 @@ Events store UTC instants with their original IANA zone. Repeats preserve civil 
 `server/calendar.js` exports an idempotent additive schema applied after the existing startup migrations. No separate database credentials or external calendar connection is required. The reminder worker runs in the primary application process every 30 seconds. The existing Flutter web release process builds the client; no Android binary is included in this web release.
 
 Source: https://www.hebcal.com/home/195/jewish-calendar-rest-api
+
+Published web build: `20260916215708`. All five tables were verified installed; authenticated read-only requests to settings, summary, events, inbox and holidays returned HTTP 200; unauthenticated event access returned HTTP 401. Published index/bootstrap/application/icon-font hashes match the isolated build.
