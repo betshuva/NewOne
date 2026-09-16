@@ -12,6 +12,10 @@ const {
   registerCalendar,
   runReminders,
 } = require("../server/calendar");
+const {
+  createLocationResolver,
+  timezoneList,
+} = require("../server/calendar-location");
 const id = (n) => `33000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const base = {
   title: "פגישה",
@@ -42,6 +46,36 @@ test("calendar validates dates, DST gaps, ambiguous times and request limits", (
     assert.throws(() => validateEvent({ ...base, ...patch }));
   assert.throws(() => validateSettings({ ...CITIES[0], latitude: NaN }));
   assert.throws(() => validateSettings({ ...CITIES[0], israel: "yes" }));
+});
+test("calendar resolves public city data locally, rejects false country matches and malformed locations", async () => {
+  const resolve = createLocationResolver(CITIES);
+  const city = await resolve({ city: "ראשון לציון" });
+  assert.equal(city.timezone, "Asia/Jerusalem");
+  assert.ok(city.latitude > 31.9 && city.latitude < 32.1);
+  assert.equal(
+    (await resolve({ city: "תל אביב - יפו", country: "ישראל" })).city,
+    "תל אביב - יפו",
+  );
+  assert.equal(
+    (await resolve({ city: "לונדון", country: "United Kingdom" })).timezone,
+    "Europe/London",
+  );
+  await assert.rejects(resolve({ city: "לונדון", country: "United States" }), {
+    status: 404,
+  });
+  await assert.rejects(resolve({ city: "מקום שלא קיים" }), { status: 404 });
+  await assert.rejects(resolve({ city: ["ירושלים"] }), { status: 400 });
+  for (const latitude of [null, "", " ", [], true, "NaN", 66])
+    await assert.rejects(resolve({ latitude, longitude: 35.235 }), {
+      status: 400,
+    });
+  const point = await resolve({ latitude: 31.778, longitude: 35.235 });
+  assert.equal(point.city, "ירושלים");
+  assert.equal(point.candle_minutes, 40);
+  const abroad = await resolve({ latitude: 40.7128, longitude: -74.006 });
+  assert.equal(abroad.timezone, "America/New_York");
+  assert.equal(abroad.israel, false);
+  assert.ok(timezoneList().includes("Asia/Jerusalem"));
 });
 test("weekly events preserve local hour across Israel DST and monthly dates stay valid", () => {
   const e = occurrences(validateEvent({ ...base, repeat: "weekly", count: 2 }));
@@ -123,7 +157,7 @@ test(
     try {
       await db.query("SET search_path=pg_temp");
       await db.query(
-        `CREATE TEMP TABLE users(id UUID PRIMARY KEY,name TEXT);CREATE TEMP TABLE user_contacts(owner_id UUID,contact_id UUID);CREATE TEMP TABLE blocked_users(blocker_id UUID,blocked_id UUID);`,
+        `CREATE TEMP TABLE users(id UUID PRIMARY KEY,name TEXT,city TEXT,country TEXT,latitude DOUBLE PRECISION,longitude DOUBLE PRECISION,is_teen BOOLEAN DEFAULT FALSE);CREATE TEMP TABLE user_contacts(owner_id UUID,contact_id UUID);CREATE TEMP TABLE blocked_users(blocker_id UUID,blocked_id UUID);`,
       );
       // Every relation lives only on this connection, never in the application's schema.
       await db.query(
@@ -133,7 +167,7 @@ test(
         ),
       );
       for (let n = 1; n <= 4; n++)
-        await db.query("INSERT INTO users VALUES($1,$2)", [
+        await db.query("INSERT INTO users(id,name) VALUES($1,$2)", [
           id(n),
           `person${n}`,
         ]);
@@ -155,6 +189,9 @@ test(
         auth() {},
         getPool: async () => pool,
         canInvite: async (_db, _uid, target) => target !== id(4),
+        fetchHolidays: async (settings) => [
+          { category: "candles", title: settings.city },
+        ],
       });
       const req = async (
         method,
@@ -163,11 +200,12 @@ test(
         body = {},
         params = {},
         query = {},
+        isTeen = false,
       ) => {
         let status = 200,
           result;
         await handlers.get(`${method} /api/calendar/${path}`)(
-          { user: { id: id(user) }, body, params, query },
+          { user: { id: id(user), isTeen }, body, params, query },
           {
             set() {
               return this;
@@ -183,6 +221,109 @@ test(
         );
         return { status, body: result };
       };
+      const fallback = await req("get", "settings");
+      assert.equal(fallback.body.source, "default");
+      assert.equal(fallback.body.settings.city, "ירושלים");
+      assert.equal(fallback.body.configured, true);
+      assert.ok(fallback.body.timezones.includes("America/New_York"));
+      const initialHolidays = await req(
+        "get",
+        "holidays",
+        1,
+        {},
+        {},
+        { start: "2026-09-01", end: "2026-09-30" },
+      );
+      assert.equal(initialHolidays.body.items[0].title, "ירושלים");
+      const auto = await req("post", "location/default", 1, {
+        latitude: 32.0853,
+        longitude: 34.7818,
+      });
+      assert.equal(auto.body.source, "location");
+      assert.equal(auto.body.settings.city, "תל אביב");
+      assert.equal(
+        (await req("get", "settings")).body.settings.city,
+        "תל אביב",
+      );
+      await db.query(
+        "UPDATE users SET city='חיפה',country='ישראל' WHERE id=$1",
+        [id(1)],
+      );
+      assert.equal((await req("get", "settings")).body.source, "profile");
+      assert.equal((await req("get", "settings")).body.settings.city, "חיפה");
+      const blockedOverride = await req("post", "location/default", 1, {
+        latitude: 31.778,
+        longitude: 35.235,
+      });
+      assert.equal(blockedOverride.body.settings.city, "חיפה");
+      const save = await req("put", "settings", 1, {
+        city: "ירושלים",
+        timezone: "America/New_York",
+        israel: true,
+        candle_minutes: 40,
+        latitude: 0,
+        longitude: 0,
+      });
+      assert.equal(save.status, 200);
+      assert.equal((await req("get", "settings")).body.source, "saved");
+      assert.equal(
+        (await req("get", "settings")).body.settings.latitude,
+        CITIES[0].latitude,
+      );
+      assert.equal(
+        (await req("get", "settings")).body.settings.timezone,
+        "America/New_York",
+      );
+      assert.equal(
+        (await req("get", "settings")).body.settings.city,
+        "ירושלים",
+      );
+      await db.query("DELETE FROM calendar_settings WHERE user_id=$1", [id(1)]);
+      await db.query(
+        "UPDATE users SET city=NULL,country=NULL,latitude=31.778,longitude=35.235 WHERE id=$1",
+        [id(1)],
+      );
+      assert.equal((await req("get", "settings")).body.source, "location");
+      assert.equal(
+        (await req("get", "settings")).body.settings.city,
+        "ירושלים",
+      );
+      await db.query("UPDATE users SET is_teen=TRUE WHERE id=$1", [id(1)]);
+      const teen = await req("get", "settings", 1, {}, {}, {}, true);
+      assert.equal(teen.body.location_allowed, false);
+      assert.equal(teen.body.source, "default");
+      assert.equal(
+        (
+          await req(
+            "post",
+            "location/default",
+            1,
+            { latitude: 32.0853, longitude: 34.7818 },
+            {},
+            {},
+            true,
+          )
+        ).status,
+        403,
+      );
+      assert.equal(
+        (
+          await req(
+            "get",
+            "location",
+            1,
+            {},
+            {},
+            { latitude: "32.0853", longitude: "34.7818" },
+            true,
+          )
+        ).status,
+        403,
+      );
+      await db.query(
+        "UPDATE users SET is_teen=FALSE,latitude=NULL,longitude=NULL WHERE id=$1",
+        [id(1)],
+      );
       assert.equal(
         (await req("post", "events", 1, { ...base, invitees: [id(3)] })).status,
         403,

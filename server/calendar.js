@@ -1,12 +1,15 @@
 "use strict";
 const { DateTime, IANAZone } = require("luxon");
 const crypto = require("node:crypto");
+const { createLocationResolver, timezoneList } = require("./calendar-location");
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS calendar_settings (
  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
  city TEXT NOT NULL, latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL,
- timezone TEXT NOT NULL, israel BOOLEAN NOT NULL, candle_minutes INTEGER NOT NULL DEFAULT 18
+ timezone TEXT NOT NULL, israel BOOLEAN NOT NULL, candle_minutes INTEGER NOT NULL DEFAULT 18,
+ source TEXT NOT NULL DEFAULT 'saved'
 );
+ALTER TABLE calendar_settings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'saved';
 CREATE TABLE IF NOT EXISTS calendar_events (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  series_id UUID, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '',
@@ -59,6 +62,7 @@ const CITIES = [
   candle_minutes,
 }));
 const fail = (status, message) => Object.assign(new Error(message), { status });
+const defaultLocationResolver = createLocationResolver(CITIES);
 function validateSettings(b) {
   if (
     !b ||
@@ -285,6 +289,8 @@ function registerCalendar(
     sendPush = async () => {},
     canInvite = async () => true,
     validateShared = async () => {},
+    resolveLocation = defaultLocationResolver,
+    fetchHolidays = holidays,
   },
 ) {
   const wrap = (fn) => async (req, res) => {
@@ -301,8 +307,65 @@ function registerCalendar(
   const settingsFor = async (db, uid) =>
     (await db.query("SELECT * FROM calendar_settings WHERE user_id=$1", [uid]))
       .rows[0] || null;
+  const effectiveSettings = async (db, uid) => {
+    const saved = await settingsFor(db, uid);
+    if (saved && saved.source !== "location")
+      return { settings: saved, source: "saved" };
+    const profile =
+      (
+        await db.query(
+          "SELECT city,country,latitude,longitude,is_teen FROM users WHERE id=$1",
+          [uid],
+        )
+      ).rows[0] || {};
+    if (profile.city?.trim()) {
+      try {
+        return {
+          settings: await resolveLocation({
+            city: profile.city,
+            country: profile.country,
+          }),
+          source: "profile",
+        };
+      } catch (error) {
+        if (!error.status) throw error;
+      }
+    }
+    if (
+      !profile.is_teen &&
+      profile.latitude != null &&
+      profile.longitude != null
+    ) {
+      try {
+        return {
+          settings: await resolveLocation({
+            latitude: profile.latitude,
+            longitude: profile.longitude,
+          }),
+          source: "location",
+        };
+      } catch (error) {
+        if (!error.status) throw error;
+      }
+    }
+    if (saved && !profile.is_teen)
+      return { settings: saved, source: "location" };
+    return { settings: CITIES[0], source: "default" };
+  };
   const getSettings = async (db, uid) =>
-    (await settingsFor(db, uid)) || CITIES[0];
+    (await effectiveSettings(db, uid)).settings;
+  const settingsPayload = async (db, req) => {
+    const result = await effectiveSettings(db, req.user.id);
+    return {
+      ...result,
+      configured: true,
+      saved: result.source === "saved",
+      cities: CITIES,
+      timezones: timezoneList(),
+      location_allowed: req.user.isTeen !== true,
+      today: DateTime.now().setZone(result.settings.timezone).toISODate(),
+    };
+  };
   const notice = async (db, uid, eventId, message) => {
     await db.query(
       "INSERT INTO calendar_notices(user_id,event_id,message) VALUES($1,$2,$3)",
@@ -329,24 +392,74 @@ function registerCalendar(
     auth,
     wrap(async (req, res) => {
       const db = await getPool();
-      const settings = await getSettings(db, req.user.id);
-      res.json({
-        settings,
-        configured: !!(await settingsFor(db, req.user.id)),
-        cities: CITIES,
-        today: DateTime.now().setZone(settings.timezone).toISODate(),
-      });
+      res.json(await settingsPayload(db, req));
+    }),
+  );
+  app.get(
+    "/api/calendar/location",
+    auth,
+    wrap(async (req, res) => {
+      if (
+        !(typeof req.query.city === "string" && req.query.city.trim()) &&
+        req.user.isTeen
+      )
+        throw fail(403, "שיתוף מיקום אינו זמין בחשבון נוער");
+      res.json({ settings: await resolveLocation(req.query) });
+    }),
+  );
+  app.post(
+    "/api/calendar/location/default",
+    auth,
+    wrap(async (req, res) => {
+      if (req.user.isTeen) throw fail(403, "שיתוף מיקום אינו זמין בחשבון נוער");
+      const db = await getPool();
+      const current = await effectiveSettings(db, req.user.id);
+      if (current.source === "default") {
+        const s = validateSettings(
+          await resolveLocation({
+            latitude: req.body?.latitude,
+            longitude: req.body?.longitude,
+          }),
+        );
+        // A manual choice made concurrently in another tab always wins.
+        if ((await effectiveSettings(db, req.user.id)).source === "default")
+          await db.query(
+            `INSERT INTO calendar_settings(user_id,city,latitude,longitude,timezone,israel,candle_minutes,source)
+          VALUES($1,$2,$3,$4,$5,$6,$7,'location') ON CONFLICT(user_id) DO NOTHING`,
+            [
+              req.user.id,
+              s.city,
+              s.latitude,
+              s.longitude,
+              s.timezone,
+              s.israel,
+              s.candle_minutes,
+            ],
+          );
+      }
+      res.json(await settingsPayload(db, req));
     }),
   );
   app.put(
     "/api/calendar/settings",
     auth,
     wrap(async (req, res) => {
-      const s = validateSettings(req.body);
-      await (
-        await getPool()
-      ).query(
-        `INSERT INTO calendar_settings(user_id,city,latitude,longitude,timezone,israel,candle_minutes) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(user_id) DO UPDATE SET city=$2,latitude=$3,longitude=$4,timezone=$5,israel=$6,candle_minutes=$7`,
+      const db = await getPool();
+      const current = await getSettings(db, req.user.id);
+      const location =
+        req.body?.city === current.city
+          ? current
+          : await resolveLocation({
+              city: req.body?.city,
+              country: req.body?.country,
+            });
+      const s = validateSettings({
+        ...req.body,
+        latitude: location.latitude,
+        longitude: location.longitude,
+      });
+      await db.query(
+        `INSERT INTO calendar_settings(user_id,city,latitude,longitude,timezone,israel,candle_minutes,source) VALUES($1,$2,$3,$4,$5,$6,$7,'saved') ON CONFLICT(user_id) DO UPDATE SET city=$2,latitude=$3,longitude=$4,timezone=$5,israel=$6,candle_minutes=$7,source='saved'`,
         [
           req.user.id,
           s.city,
@@ -420,8 +533,7 @@ function registerCalendar(
     "/api/calendar/holidays",
     auth,
     wrap(async (req, res) => {
-      const s = await settingsFor(await getPool(), req.user.id);
-      if (!s) return res.json({ items: [], configured: false });
+      const s = await getSettings(await getPool(), req.user.id);
       const start = String(req.query.start),
         end = String(req.query.end);
       const a = DateTime.fromISO(start),
@@ -436,7 +548,7 @@ function registerCalendar(
       )
         throw fail(400, "טווח התאריכים אינו תקין");
       res.json({
-        items: await holidays(s, start, end),
+        items: await fetchHolidays(s, start, end),
         configured: true,
         source: "Hebcal",
         settings: s,

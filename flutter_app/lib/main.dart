@@ -1,3 +1,4 @@
+import 'location_autocomplete.dart';
 import 'calendar.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'conversation_cleanup.dart';
@@ -13216,52 +13217,7 @@ void _refreshCategoryDependencies(
   }
 }
 
-const _kIsraeliLocations = [
-  'כל הארץ',
-  'אזור המרכז',
-  'אזור ירושלים',
-  'אזור הצפון',
-  'אזור הדרום',
-  'אזור השרון',
-  'ירושלים',
-  'תל אביב-יפו',
-  'חיפה',
-  'ראשון לציון',
-  'פתח תקווה',
-  'אשדוד',
-  'נתניה',
-  'באר שבע',
-  'בני ברק',
-  'חולון',
-  'רמת גן',
-  'אשקלון',
-  'רחובות',
-  'בית שמש',
-  'כפר סבא',
-  'הרצליה',
-  'חדרה',
-  'מודיעין',
-  'לוד',
-  'רמלה',
-  'רעננה',
-  'גבעתיים',
-  'הוד השרון',
-  'קריית גת',
-  'נהריה',
-  'עכו',
-  'טבריה',
-  'צפת',
-  'עפולה',
-  'נצרת',
-  'כרמיאל',
-  'קריית שמונה',
-  'אילת',
-  'יבנה',
-  'נס ציונה',
-  'אריאל',
-  'מעלה אדומים',
-  'קריית ארבע',
-];
+
 
 String _listingPublishedAt(dynamic value, {bool compact = false}) {
   final parsed = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
@@ -13462,7 +13418,7 @@ class _PopularValueFieldState extends State<_PopularValueField> {
   }
 }
 
-class _LocationAutocompleteField extends StatefulWidget {
+class _LocationAutocompleteField extends StatelessWidget {
   final TextEditingController controller;
   final String label;
   final String? hint;
@@ -13475,106 +13431,13 @@ class _LocationAutocompleteField extends StatefulWidget {
   });
 
   @override
-  State<_LocationAutocompleteField> createState() =>
-      _LocationAutocompleteFieldState();
-}
-
-class _LocationAutocompleteFieldState
-    extends State<_LocationAutocompleteField> {
-  final _focusNode = FocusNode();
-  Timer? _searchDebounce;
-  List<String> _governmentLocations = const [];
-
-  void _searchGovernmentLocations(String value) {
-    _searchDebounce?.cancel();
-    final query = value.trim();
-    _searchDebounce = Timer(const Duration(milliseconds: 220), () async {
-      try {
-        final uri = Uri.parse('$kApi/localities')
-            .replace(queryParameters: {if (query.isNotEmpty) 'q': query});
-        final response = await http.get(uri);
-        if (!mounted || response.statusCode != 200) return;
-        final rows =
-            (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
-        setState(() => _governmentLocations = rows
-            .map((row) => row['city']?.toString() ?? '')
-            .where((city) => city.isNotEmpty)
-            .toList());
-      } catch (_) {}
-    });
-  }
-
-  @override
-  void dispose() {
-    _searchDebounce?.cancel();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => RawAutocomplete<String>(
-        textEditingController: widget.controller,
-        focusNode: _focusNode,
-        displayStringForOption: (option) => option,
-        optionsBuilder: (value) {
-          final query = value.text.trim();
-          final combined = <String>{
-            ..._governmentLocations,
-            ..._kIsraeliLocations
-                .where((location) => query.isEmpty || location.contains(query)),
-          };
-          return combined.take(30);
-        },
-        onSelected: (option) {
-          widget.controller.text = option;
-          widget.onChanged?.call(option);
-        },
-        fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
-            TextField(
-          controller: controller,
-          focusNode: focusNode,
-          textDirection: TextDirection.rtl,
-          onChanged: (value) {
-            _searchGovernmentLocations(value);
-            widget.onChanged?.call(value);
-          },
-          onSubmitted: (_) => onSubmitted(),
-          decoration: InputDecoration(
-            labelText: widget.label,
-            hintText: widget.hint,
-            prefixIcon: const Icon(Icons.location_city_outlined),
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        optionsViewBuilder: (context, onSelected, options) => Align(
-          alignment: Alignment.topRight,
-          child: Material(
-            elevation: 8,
-            borderRadius: BorderRadius.circular(10),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 260, maxWidth: 420),
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                shrinkWrap: true,
-                itemCount: options.length,
-                itemBuilder: (_, index) {
-                  final option = options.elementAt(index);
-                  return ListTile(
-                    dense: true,
-                    leading: Icon(
-                      option.startsWith('אזור') || option == 'כל הארץ'
-                          ? Icons.map_outlined
-                          : Icons.location_on_outlined,
-                      color: kPrimary,
-                    ),
-                    title: Text(option, textDirection: TextDirection.rtl),
-                    onTap: () => onSelected(option),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
+  Widget build(BuildContext context) => LocationAutocompleteField(
+        controller: controller,
+        api: kApi,
+        label: label,
+        hint: hint,
+        onChanged: onChanged,
+        onSelected: onChanged,
       );
 }
 

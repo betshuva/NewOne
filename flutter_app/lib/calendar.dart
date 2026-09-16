@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'location_autocomplete.dart';
 import 'package:http/http.dart' as http;
 
 const _blue = Color(0xFF1B6CA8);
@@ -179,6 +182,8 @@ class _CalendarScreenState extends State<CalendarScreen>
       _holidays = [],
       _invitations = [],
       _notices = [];
+  List<String> _timezones = [];
+  bool _locationAllowed = true, _autoLocationAttempted = false;
   DateTime _selected = _day(DateTime.now());
   String _view = 'month';
   bool _loading = true, _configured = false;
@@ -222,6 +227,7 @@ class _CalendarScreenState extends State<CalendarScreen>
       _invitations = [];
       _notices = [];
       _settings = null;
+      _autoLocationAttempted = false;
       _init();
     }
   }
@@ -259,8 +265,18 @@ class _CalendarScreenState extends State<CalendarScreen>
         if (firstLoad) _selected = _today;
         _configured = b['configured'] == true;
         _cities = _maps(b['cities']);
+        _timezones = (b['timezones'] as List? ?? []).cast<String>();
+        _locationAllowed = b['location_allowed'] != false;
       });
       await _load();
+      if (mounted &&
+          token == widget.token &&
+          b['source'] == 'default' &&
+          _locationAllowed &&
+          !_autoLocationAttempted) {
+        _autoLocationAttempted = true;
+        unawaited(_automaticLocation());
+      }
     } catch (e) {
       if (mounted && token == widget.token) {
         setState(() {
@@ -347,23 +363,51 @@ class _CalendarScreenState extends State<CalendarScreen>
     _load();
   }
 
+  Future<void> _automaticLocation() async {
+    final client = api;
+    final token = widget.token;
+    try {
+      // Screen loading never opens a permission prompt. The location button
+      // lets the user grant permission explicitly if it is not already given.
+      final permission = await Geolocator.checkPermission();
+      if (permission != LocationPermission.always &&
+          permission != LocationPermission.whileInUse) {
+        return;
+      }
+      final position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.low,
+              timeLimit: Duration(seconds: 10)));
+      if (!mounted || token != widget.token) return;
+      await client.call('location/default', method: 'POST', body: {
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+      });
+      if (mounted && token == widget.token) await _init();
+    } catch (_) {
+      // Jerusalem remains usable when device location is unavailable.
+    }
+  }
+
   Future<void> _preferences() async {
     if (_settings == null) return;
+    final client = api;
+    final token = widget.token;
     final result = await showDialog<Map<String, dynamic>>(
         context: context,
-        builder: (_) =>
-            _CalendarSettings(settings: _settings!, cities: _cities));
-    if (result == null || !mounted) return;
+        builder: (_) => _CalendarSettings(
+            api: client,
+            settings: _settings!,
+            cities: _cities,
+            timezones: _timezones,
+            locationAllowed: _locationAllowed));
+    if (result == null || !mounted || token != widget.token) return;
     try {
-      await api.call('settings', method: 'PUT', body: result);
-      if (!mounted) return;
-      setState(() {
-        _settings = result;
-        _configured = true;
-      });
+      await client.call('settings', method: 'PUT', body: result);
+      if (!mounted || token != widget.token) return;
       await _init();
     } catch (e) {
-      _message(e);
+      if (mounted && token == widget.token) _message(e);
     }
   }
 
@@ -942,33 +986,155 @@ class _CalendarScreenState extends State<CalendarScreen>
 }
 
 class _CalendarSettings extends StatefulWidget {
+  final CalendarApi api;
   final Map<String, dynamic> settings;
   final List<Map<String, dynamic>> cities;
-  const _CalendarSettings({required this.settings, required this.cities});
+  final List<String> timezones;
+  final bool locationAllowed;
+  const _CalendarSettings(
+      {required this.api,
+      required this.settings,
+      required this.cities,
+      required this.timezones,
+      required this.locationAllowed});
   @override
   State<_CalendarSettings> createState() => _CalendarSettingsState();
 }
 
 class _CalendarSettingsState extends State<_CalendarSettings> {
   late Map<String, dynamic> s;
-  late final TextEditingController city, lat, lon, zone, minutes;
+  late final TextEditingController city, minutes;
+  bool _busy = false;
+  bool _zoneEdited = false, _minutesEdited = false, _israelEdited = false;
+  String? _error;
+  int _request = 0;
   @override
   void initState() {
     super.initState();
     s = Map.from(widget.settings);
     city = TextEditingController(text: s['city']);
-    lat = TextEditingController(text: '${s['latitude']}');
-    lon = TextEditingController(text: '${s['longitude']}');
-    zone = TextEditingController(text: s['timezone']);
     minutes = TextEditingController(text: '${s['candle_minutes']}');
   }
 
   @override
   void dispose() {
-    for (final c in [city, lat, lon, zone, minutes]) {
-      c.dispose();
-    }
+    _request++;
+    city.dispose();
+    minutes.dispose();
     super.dispose();
+  }
+
+  void _apply(Map<String, dynamic> settings, {bool preserveOverrides = false}) {
+    final oldZone = s['timezone'], oldIsrael = s['israel'];
+    s = settings;
+    city.text = s['city'];
+    if (preserveOverrides && _zoneEdited) s['timezone'] = oldZone;
+    if (preserveOverrides && _israelEdited) s['israel'] = oldIsrael;
+    if (!preserveOverrides || !_minutesEdited) {
+      minutes.text = '${s['candle_minutes']}';
+    }
+    if (!preserveOverrides) {
+      _zoneEdited = _minutesEdited = _israelEdited = false;
+    }
+    _error = null;
+  }
+
+  Future<bool> _resolveCity(String name,
+      {bool preserveOverrides = false}) async {
+    final query = name.trim();
+    final request = ++_request;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final b = await widget.api
+          .call('location?${Uri(queryParameters: {'city': query}).query}');
+      if (!mounted || request != _request) return false;
+      setState(() => _apply(Map<String, dynamic>.from(b['settings']),
+          preserveOverrides: preserveOverrides));
+      return true;
+    } catch (e) {
+      if (mounted && request == _request) {
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
+      return false;
+    } finally {
+      if (mounted && request == _request) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _deviceLocation() async {
+    final request = ++_request;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission != LocationPermission.always &&
+          permission != LocationPermission.whileInUse) {
+        throw Exception('המיקום אינו זמין. אפשר לבחור עיר מהרשימה.');
+      }
+      final position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.low,
+              timeLimit: Duration(seconds: 10)));
+      final b = await widget.api.call('location?${Uri(queryParameters: {
+            'latitude': '${position.latitude}',
+            'longitude': '${position.longitude}',
+          }).query}');
+      if (!mounted || request != _request) return;
+      setState(() => _apply(Map<String, dynamic>.from(b['settings'])));
+    } catch (_) {
+      if (mounted && request == _request) {
+        setState(() =>
+            _error = 'לא ניתן לזהות את המיקום כרגע. אפשר לבחור עיר מהרשימה.');
+      }
+    } finally {
+      if (mounted && request == _request) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _save() async {
+    FocusScope.of(context).unfocus();
+    if (city.text.trim().isEmpty) {
+      setState(() => _error = 'יש לבחור עיר או יישוב');
+      return;
+    }
+    if (city.text.trim() != s['city'] &&
+        !await _resolveCity(city.text, preserveOverrides: true)) {
+      return;
+    }
+    if (!mounted) return;
+    final m = int.tryParse(minutes.text);
+    if (m == null || m < 0 || m > 60) {
+      setState(() => _error = 'יש לבחור בין 0 ל־60 דקות לפני השקיעה');
+      return;
+    }
+    Navigator.pop(context, {...s, 'candle_minutes': m});
+  }
+
+  Future<void> _chooseTimezone() async {
+    final zones = <String>{
+      'Asia/Jerusalem',
+      s['timezone'] as String,
+      ...widget.timezones,
+      ...widget.cities.map((c) => c['timezone'] as String),
+      'UTC'
+    }.toList();
+    final chosen = await showDialog<String>(
+        context: context,
+        builder: (_) => _TimeZonePicker(zones: zones, selected: s['timezone']));
+    if (chosen != null && mounted) {
+      setState(() {
+        s['timezone'] = chosen;
+        _zoneEdited = true;
+      });
+    }
   }
 
   @override
@@ -980,57 +1146,60 @@ class _CalendarSettingsState extends State<_CalendarSettings> {
               width: 430,
               child: SingleChildScrollView(
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
-                DropdownButtonFormField<String>(
-                    decoration:
-                        const InputDecoration(labelText: 'בחירה מהירה של עיר'),
-                    items: widget.cities
-                        .map((x) => DropdownMenuItem(
-                            value: x['city'] as String, child: Text(x['city'])))
-                        .toList(),
-                    onChanged: (v) {
-                      final c = widget.cities.firstWhere((x) => x['city'] == v);
-                      setState(() {
-                        s = Map.from(c);
-                        city.text = c['city'];
-                        lat.text = '${c['latitude']}';
-                        lon.text = '${c['longitude']}';
-                        zone.text = c['timezone'];
-                        minutes.text = '${c['candle_minutes']}';
-                      });
-                    }),
-                TextField(
+                LocationAutocompleteField(
+                    api: widget.api.base,
                     controller: city,
-                    decoration: const InputDecoration(labelText: 'עיר')),
-                Row(children: [
-                  Expanded(
-                      child: TextField(
-                          controller: lat,
-                          keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true, signed: true),
-                          decoration:
-                              const InputDecoration(labelText: 'קו רוחב'))),
-                  const SizedBox(width: 12),
-                  Expanded(
-                      child: TextField(
-                          controller: lon,
-                          keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true, signed: true),
-                          decoration:
-                              const InputDecoration(labelText: 'קו אורך')))
-                ]),
-                TextField(
-                    controller: zone,
-                    textDirection: TextDirection.ltr,
-                    decoration: const InputDecoration(
-                        labelText: 'אזור זמן', hintText: 'Asia/Jerusalem')),
+                    label: 'עיר או יישוב',
+                    hint: 'הקלד שם עיר או יישוב',
+                    citiesOnly: true,
+                    extraCities:
+                        widget.cities.map((c) => c['city'] as String).toList(),
+                    onChanged: (_) => setState(() {
+                          _request++;
+                          _busy = false;
+                          _error = null;
+                        }),
+                    onSelected: (name) => _resolveCity(name)),
+                if (widget.locationAllowed)
+                  Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                          onPressed: _busy ? null : _deviceLocation,
+                          icon: const Icon(Icons.my_location, size: 18),
+                          label: const Text('שימוש במיקום הנוכחי'))),
+                if (_busy) const LinearProgressIndicator(minHeight: 2),
+                if (_error != null)
+                  Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(_error!,
+                          style: const TextStyle(color: Colors.red))),
+                const SizedBox(height: 12),
+                InkWell(
+                    key: const ValueKey('calendar-timezone'),
+                    onTap: _busy ? null : _chooseTimezone,
+                    borderRadius: BorderRadius.circular(8),
+                    child: InputDecorator(
+                        decoration: const InputDecoration(
+                            labelText: 'אזור זמן',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.schedule),
+                            suffixIcon: Icon(Icons.arrow_drop_down)),
+                        child: Text(_zoneLabel(s['timezone']),
+                            maxLines: 2, overflow: TextOverflow.ellipsis))),
                 SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('לוח חגים של ישראל'),
                     subtitle: const Text('כבוי: חו״ל ויום טוב שני'),
                     value: s['israel'] == true,
-                    onChanged: (v) => setState(() => s['israel'] = v)),
+                    onChanged: _busy
+                        ? null
+                        : (v) => setState(() {
+                              s['israel'] = v;
+                              _israelEdited = true;
+                            })),
                 TextField(
                     controller: minutes,
+                    onChanged: (_) => _minutesEdited = true,
                     keyboardType: TextInputType.number,
                     decoration: const InputDecoration(
                         labelText: 'דקות הדלקת נרות לפני השקיעה')),
@@ -1039,40 +1208,101 @@ class _CalendarSettingsState extends State<_CalendarSettings> {
                     child: Text(
                         'יציאה: צאת הכוכבים לפי 8.5°. רבנו תם מוצג בנפרד לפי 72 דקות קבועות אחרי השקיעה. יש לבחור את מנהג ההדלקה הנהוג בעירכם. הזמנים מחושבים לפי מרכז העיר.',
                         style: TextStyle(fontSize: 12))),
+                const SizedBox(height: 8),
+                Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
+                  const Text('נתוני מיקום: ', style: TextStyle(fontSize: 11)),
+                  TextButton(
+                      onPressed: () => launchUrl(
+                          Uri.parse('https://data.gov.il/'),
+                          mode: LaunchMode.externalApplication),
+                      child: const Text('data.gov.il',
+                          style: TextStyle(fontSize: 11))),
+                  TextButton(
+                      onPressed: () => launchUrl(
+                          Uri.parse('https://www.geonames.org/'),
+                          mode: LaunchMode.externalApplication),
+                      child: const Text('GeoNames',
+                          style: TextStyle(fontSize: 11))),
+                ]),
               ]))),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('ביטול')),
             FilledButton(
-                onPressed: () {
-                  final a = double.tryParse(lat.text),
-                      b = double.tryParse(lon.text),
-                      m = int.tryParse(minutes.text);
-                  if (a == null ||
-                      b == null ||
-                      m == null ||
-                      m < 0 ||
-                      m > 60 ||
-                      a.abs() > 65 ||
-                      b.abs() > 180 ||
-                      city.text.trim().isEmpty ||
-                      zone.text.trim().isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('יש למלא מיקום ומנהג תקינים')));
-                    return;
-                  }
-                  Navigator.pop(context, {
-                    'city': city.text.trim(),
-                    'latitude': a,
-                    'longitude': b,
-                    'timezone': zone.text.trim(),
-                    'israel': s['israel'] == true,
-                    'candle_minutes': m
-                  });
-                },
-                child: const Text('שמירה'))
+                onPressed: _busy ? null : _save, child: const Text('שמירה'))
           ]));
+}
+
+const _zoneNames = {
+  'Asia/Jerusalem': 'ישראל',
+  'America/New_York': 'ניו יורק',
+  'America/Chicago': 'שיקגו',
+  'America/Los_Angeles': 'לוס אנג׳לס',
+  'Europe/London': 'לונדון',
+  'Europe/Paris': 'פריז',
+  'Europe/Berlin': 'ברלין',
+  'Europe/Moscow': 'מוסקבה',
+  'Asia/Dubai': 'דובאי',
+  'Asia/Tokyo': 'טוקיו',
+  'Australia/Sydney': 'סידני',
+  'UTC': 'זמן אוניברסלי',
+};
+String _zoneLabel(String zone) => _zoneNames.containsKey(zone)
+    ? '${_zoneNames[zone]} · $zone'
+    : zone.replaceAll('_', ' ');
+
+class _TimeZonePicker extends StatefulWidget {
+  final List<String> zones;
+  final String selected;
+  const _TimeZonePicker({required this.zones, required this.selected});
+  @override
+  State<_TimeZonePicker> createState() => _TimeZonePickerState();
+}
+
+class _TimeZonePickerState extends State<_TimeZonePicker> {
+  String _query = '';
+  @override
+  Widget build(BuildContext context) {
+    final zones = widget.zones
+        .where((z) => '$z ${_zoneLabel(z)}'
+            .toLowerCase()
+            .contains(_query.toLowerCase().trim()))
+        .toList();
+    return Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+            title: const Text('בחירת אזור זמן'),
+            content: SizedBox(
+                width: 430,
+                height: MediaQuery.sizeOf(context).height * .5,
+                child: Column(children: [
+                  TextField(
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                          labelText: 'חיפוש אזור זמן',
+                          prefixIcon: Icon(Icons.search)),
+                      onChanged: (v) => setState(() => _query = v)),
+                  const SizedBox(height: 8),
+                  Expanded(
+                      child: zones.isEmpty
+                          ? const Center(child: Text('לא נמצאו אזורי זמן'))
+                          : ListView.builder(
+                              itemCount: zones.length,
+                              itemBuilder: (_, i) => ListTile(
+                                  title: Text(_zoneLabel(zones[i])),
+                                  trailing: zones[i] == widget.selected
+                                      ? const Icon(Icons.check, color: _blue)
+                                      : null,
+                                  onTap: () =>
+                                      Navigator.pop(context, zones[i])))),
+                ])),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('ביטול'))
+            ]));
+  }
 }
 
 class _EventEditor extends StatefulWidget {

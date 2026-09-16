@@ -38,12 +38,14 @@ Future<void> withCalendar(
     WidgetTester tester, Future<void> Function(List<http.Request>) check,
     {Size size = const Size(1200, 900),
     bool pending = false,
-    bool failHolidays = false}) async {
+    bool failHolidays = false,
+    http.Response? Function(http.Request)? respond}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final requests = <http.Request>[];
+  var currentSettings = Map<String, dynamic>.from(settings);
   await http.runWithClient(() async {
     try {
       await tester.pumpWidget(MaterialApp(
@@ -64,6 +66,8 @@ Future<void> withCalendar(
       () => MockClient((r) async {
             requests.add(r);
             final p = r.url.path;
+            final response = respond?.call(r);
+            if (response != null) return response;
             if (r.method == 'POST') {
               return json({
                 'ids': ['saved'],
@@ -71,10 +75,21 @@ Future<void> withCalendar(
               });
             }
             if (p.endsWith('/settings')) {
+              if (r.method == 'PUT') {
+                currentSettings = Map<String, dynamic>.from(jsonDecode(r.body));
+              }
               return json({
-                'settings': settings,
+                'settings': currentSettings,
                 'configured': true,
+                'source': 'saved',
+                'location_allowed': false,
                 'cities': [settings],
+                'timezones': [
+                  'Asia/Jerusalem',
+                  'Europe/London',
+                  'Europe/Berlin',
+                  'America/New_York'
+                ],
                 'today': '2026-09-18'
               });
             }
@@ -138,6 +153,158 @@ Future<void> withCalendar(
 }
 
 void main() {
+  testWidgets(
+      'city search resolves hidden coordinates and local calendar rules',
+      (tester) async {
+    const london = {
+      'city': 'לונדון',
+      'latitude': 51.5072,
+      'longitude': -0.1276,
+      'timezone': 'Europe/London',
+      'israel': false,
+      'candle_minutes': 18
+    };
+    await withCalendar(tester, (requests) async {
+      await tester.tap(find.byTooltip('עיר וזמני שבת'));
+      await tester.pumpAndSettle();
+      expect(find.text('קו רוחב'), findsNothing);
+      expect(find.text('קו אורך'), findsNothing);
+      expect(find.widgetWithText(TextField, 'אזור זמן'), findsNothing);
+      await tester.enterText(
+          find.widgetWithText(TextField, 'עיר או יישוב'), 'לונ');
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ListTile, 'לונדון'));
+      await tester.pumpAndSettle();
+      expect(
+          requests.any((r) =>
+              r.url.path == '/api/localities' &&
+              r.url.queryParameters['q'] == 'לונ'),
+          isTrue);
+      expect(
+          requests
+              .singleWhere((r) => r.url.path.endsWith('/location'))
+              .url
+              .queryParameters,
+          {'city': 'לונדון'});
+      expect(find.text('לונדון · Europe/London'), findsOneWidget);
+      expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
+          isFalse);
+      expect(
+          tester
+              .widget<TextField>(
+                  find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'))
+              .controller!
+              .text,
+          '18');
+      await tester.tap(find.text('שמירה'));
+      await tester.pumpAndSettle();
+      expect(jsonDecode(requests.singleWhere((r) => r.method == 'PUT').body),
+          london);
+      expect(find.textContaining('לונדון · Europe/London'), findsOneWidget);
+    }, respond: (r) {
+      if (r.url.path == '/api/localities') {
+        return json([
+          {'city': 'לונדון'}
+        ]);
+      }
+      if (r.url.path.endsWith('/location')) return json({'settings': london});
+      return null;
+    });
+  });
+
+  testWidgets(
+      'mobile time zone list supports Hebrew search and persists choice',
+      (tester) async {
+    await withCalendar(tester, (requests) async {
+      await tester.tap(find.byTooltip('עיר וזמני שבת'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-timezone')));
+      await tester.pumpAndSettle();
+      tester.view.viewInsets = const FakeViewPadding(bottom: 330);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.enterText(
+          find.widgetWithText(TextField, 'חיפוש אזור זמן'), 'ברלין');
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ListTile, 'ברלין · Europe/Berlin'),
+          findsOneWidget);
+      expect(find.widgetWithText(ListTile, 'לונדון · Europe/London'),
+          findsNothing);
+      await tester.tap(find.widgetWithText(ListTile, 'ברלין · Europe/Berlin'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('שמירה'));
+      await tester.tap(find.text('שמירה'));
+      await tester.pumpAndSettle();
+      expect(jsonDecode(requests.singleWhere((r) => r.method == 'PUT').body),
+          {...settings, 'timezone': 'Europe/Berlin'});
+    }, size: const Size(390, 844));
+  });
+
+  testWidgets(
+      'typed city resolution preserves subsequently chosen time zone and candle minutes',
+      (tester) async {
+    const haifa = {
+      'city': 'חיפה',
+      'latitude': 32.794,
+      'longitude': 34.9896,
+      'timezone': 'Asia/Jerusalem',
+      'israel': true,
+      'candle_minutes': 30
+    };
+    await withCalendar(tester, (requests) async {
+      await tester.tap(find.byTooltip('עיר וזמני שבת'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.widgetWithText(TextField, 'עיר או יישוב'), 'חיפה');
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+      // Move focus without selecting a locality suggestion.
+      await tester.enterText(
+          find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'), '25');
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('calendar-timezone')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.widgetWithText(TextField, 'חיפוש אזור זמן'), 'ברלין');
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ListTile, 'ברלין · Europe/Berlin'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('שמירה'));
+      await tester.pumpAndSettle();
+      expect(jsonDecode(requests.singleWhere((r) => r.method == 'PUT').body),
+          {...haifa, 'timezone': 'Europe/Berlin', 'candle_minutes': 25});
+    }, respond: (r) {
+      if (r.url.path == '/api/localities') return json([]);
+      if (r.url.path.endsWith('/location')) return json({'settings': haifa});
+      return null;
+    });
+  });
+
+  testWidgets('unresolved city shows an error and cannot save old coordinates',
+      (tester) async {
+    await withCalendar(tester, (requests) async {
+      await tester.tap(find.byTooltip('עיר וזמני שבת'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+          find.widgetWithText(TextField, 'עיר או יישוב'), 'עיר לא קיימת');
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('שמירה'));
+      await tester.pumpAndSettle();
+      expect(find.text('לא ניתן למצוא את העיר'), findsOneWidget);
+      expect(find.text('מיקום וזמני שבת וחג'), findsOneWidget);
+      expect(requests.where((r) => r.method == 'PUT'), isEmpty);
+    }, respond: (r) {
+      if (r.url.path == '/api/localities') return json([]);
+      if (r.url.path.endsWith('/location')) {
+        return http.Response(
+            jsonEncode({'error': 'לא ניתן למצוא את העיר'}), 404,
+            headers: {'content-type': 'application/json; charset=utf-8'});
+      }
+      return null;
+    });
+  });
+
   testWidgets(
       'calendar month, week and day show events and distinct exit times',
       (tester) async {
