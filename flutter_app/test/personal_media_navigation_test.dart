@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:betshuva/main.dart';
+import 'package:betshuva/calendar.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -79,6 +80,27 @@ Future<void> _withShell(
       () => MockClient((request) async {
             requests.add(request);
             final path = request.url.path;
+            if (path.endsWith('/calendar/settings')) {
+              return _json({
+                'configured': false,
+                'cities': [],
+                'settings': {
+                  'city': 'ירושלים',
+                  'timezone': 'Asia/Jerusalem',
+                  'candle_minutes': 40,
+                  'israel': true,
+                  'latitude': 31.778,
+                  'longitude': 35.235,
+                }
+              });
+            }
+            if (path.endsWith('/calendar/events')) return _json({'events': []});
+            if (path.endsWith('/calendar/inbox')) {
+              return _json({'invitations': [], 'notices': []});
+            }
+            if (path.endsWith('/calendar/holidays')) {
+              return _json({'items': [], 'configured': false});
+            }
             if (path.endsWith('/registration-status')) {
               return _json({'birthDateMissing': false});
             }
@@ -308,5 +330,38 @@ void main() {
       expect(find.byType(ConversationsScreen), findsOneWidget);
       expect(_entry, findsOneWidget);
     });
+  });
+  testWidgets(
+      'calendar friend opens desktop calendar and contact navigation closes it',
+      (tester) async {
+    await _withShell(tester, (requests) async {
+      await tester.tap(find.byKey(const ValueKey('calendar-friend')));
+      await tester.pumpAndSettle();
+      expect(find.byType(CalendarScreen), findsOneWidget);
+      expect(find.byType(ConversationsScreen), findsOneWidget);
+      expect(tester.getRect(find.byType(CalendarScreen)).left, closeTo(0, .1));
+      await tester.tap(_inConversations(find.text(_friend['name']!)));
+      await tester.pumpAndSettle();
+      expect(find.byType(CalendarScreen), findsNothing);
+      expect(find.byType(ChatScreen), findsOneWidget);
+      expect(
+          requests.where(
+              (r) => r.method != 'GET' && r.url.path.contains('/calendar/')),
+          isEmpty);
+    });
+  });
+  testWidgets(
+      'calendar friend opens full screen on mobile and returns to conversations',
+      (tester) async {
+    await _withShell(tester, (_) async {
+      await tester.tap(find.byKey(const ValueKey('calendar-friend')));
+      await tester.pumpAndSettle();
+      expect(find.byType(CalendarScreen), findsOneWidget);
+      expect(find.byType(ConversationsScreen), findsNothing);
+      await tester.tap(find.byTooltip('חזרה'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CalendarScreen), findsNothing);
+      expect(find.byType(ConversationsScreen), findsOneWidget);
+    }, size: const Size(390, 844), empty: true);
   });
 }

@@ -22,6 +22,7 @@ const sharp      = require('sharp');
 const { cert, getApps, initializeApp } = require('firebase-admin/app');
 const { getMessaging } = require('firebase-admin/messaging');
 const { getPool } = require('./db');
+const calendarService = require('./calendar');
 const {
   googleSafeSearchConfigured,
   normalizeBlockThreshold,
@@ -587,7 +588,7 @@ async function sendPush(userId, title, body, data = {}) {
       },
       webpush: {
         notification: { icon: '/betshuva-app/icons/Icon-192.png' },
-        fcmOptions: { link: '/betshuva-app/' },
+        fcmOptions: { link: data.type === 'calendar' ? '/betshuva-app/?screen=calendar' : '/betshuva-app/' },
       },
       apns: { payload: { aps: { badge: 1, sound: 'default' } } },
     });
@@ -3788,6 +3789,17 @@ async function auth(req, res, next) {
 
 // Allows a saved session to finish phone setup before entering the app.
 registerGuideFileRoutes(app, { auth, getPool, uploadRoot: UPLOAD_ROOT, secret: JWT_SECRET });
+calendarService.registerCalendar(app, { auth, getPool, sendPush,
+  canInvite: async (pool, from, to) =>
+    ![SCAN_BOT_ID, SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(to) &&
+    teenContactAllowed(pool, from, to),
+  validateShared: async (text) => {
+    if (moderateChatText(text).blocked)
+      throw Object.assign(new Error('ההזמנה כוללת תוכן שאינו מותר לשליחה'), { status: 422 });
+    try { await verifyMessageLinks(text); }
+    catch { throw Object.assign(new Error(LINK_BLOCKED_MESSAGE), { status: 422 }); }
+  },
+});
 
 app.get('/api/registration-status', async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -12167,6 +12179,11 @@ app.delete('/api/account/data', auth, async (req, res) => {
     }
     if (profile.rows[0].profile_pic_url) fileUrls.push(profile.rows[0].profile_pic_url);
 
+    await client.query('DELETE FROM calendar_events WHERE owner_id=$1', [uid]);
+    await client.query('DELETE FROM calendar_attendees WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM calendar_notices WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM calendar_reminders WHERE user_id=$1', [uid]);
+    await client.query('DELETE FROM calendar_settings WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM message_status WHERE user_id=$1', [uid]);
     await client.query(`UPDATE messages SET reply_to_id=NULL WHERE reply_to_id IN
       (SELECT id FROM messages WHERE sender_id=$1 OR recipient_id=$1)`, [uid]);
@@ -14047,6 +14064,11 @@ async function startServer() {
   await migrateDatabase();
   await initPendingTable();
   const pool = await getPool();
+  await pool.query(calendarService.SCHEMA);
+  const calendarTick = () => calendarService.runReminders(getPool, sendPush)
+    .catch(error => console.error('[calendar reminders]', error.message));
+  setInterval(calendarTick, 30000);
+  setTimeout(calendarTick, 5000);
   await recoverOrphanedPendingScans(pool);
   await migrateMessageBodiesAtRest();
   const localityCount = await pool.query(

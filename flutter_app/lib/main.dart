@@ -1,3 +1,5 @@
+import 'calendar.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'conversation_cleanup.dart';
 import 'guide_message_draft.dart';
 import 'guide_file.dart';
@@ -2865,6 +2867,8 @@ class BetshuvApp extends StatelessWidget {
       title: 'בתשובה',
       debugShowCheckedModeBanner: false,
       locale: const Locale('he', 'IL'),
+      supportedLocales: const [Locale('he', 'IL'), Locale('en')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       builder: (ctx, child) => RepaintBoundary(
           key: appScreenshotBoundaryKey,
           child:
@@ -7409,7 +7413,8 @@ class _MainShellContent extends StatefulWidget {
 
 class _MainShellContentState extends State<_MainShellContent> {
   // The Drive OAuth callback returns to the same browser tab.
-  int _idx = kIsWeb && Uri.base.queryParameters.containsKey('backup') ? 3 : 0;
+  int _idx = kIsWeb && Uri.base.queryParameters['screen'] == 'calendar'
+      ? 5 : kIsWeb && Uri.base.queryParameters.containsKey('backup') ? 3 : 0;
   final _desktopContentNavigatorKey = GlobalKey<NavigatorState>();
   int _conversationFilterIndex = 0;
   final GlobalKey<_ConversationsScreenState> _conversationsKey =
@@ -8175,6 +8180,12 @@ class _MainShellContentState extends State<_MainShellContent> {
     if (msg == null || !mounted) return;
     final fromUserId = msg.data['fromUserId'] as String?;
     final type = msg.data['type'] as String?;
+    if (type == 'calendar') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _selectMainNavigation(5);
+      });
+      return;
+    }
     if (type == 'chat' && fromUserId != null) {
       final user = _users.firstWhere(
         (u) => u['id'] == fromUserId,
@@ -8479,6 +8490,8 @@ class _MainShellContentState extends State<_MainShellContent> {
       onSettings: () => _selectMainNavigation(3),
       onPersonalMedia: () => _selectMainNavigation(4),
       personalMediaSelected: _idx == 4,
+      onCalendar: () => _selectMainNavigation(5),
+      calendarSelected: _idx == 5,
       onContactsChanged: _loadUsers,
       onVoiceCall: (user) {
         _voiceCalls?.startCall(
@@ -8490,7 +8503,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       onMainNavigationSelected: _selectMainNavigation,
       onFilterChanged: (index) =>
           setState(() => _conversationFilterIndex = index),
-      selectedUserId: _idx == 4 ? null : _desktopRecipient?['id'] as String?,
+      selectedUserId: _idx >= 4 ? null : _desktopRecipient?['id'] as String?,
       onUserSelected: (user) {
         _closeDesktopContentRoutes();
         final userId = user['id'] as String;
@@ -8507,7 +8520,7 @@ class _MainShellContentState extends State<_MainShellContent> {
           _openGroupMembersOnSelect = false;
         });
       },
-      selectedGroupId: _idx == 4 ? null : _desktopGroup?['id'] as String?,
+      selectedGroupId: _idx >= 4 ? null : _desktopGroup?['id'] as String?,
       onGroupSelected: _openGroup,
       onChatOpened: (userId) {
         if (_unreadCounts.containsKey(userId)) {
@@ -8550,6 +8563,8 @@ class _MainShellContentState extends State<_MainShellContent> {
         embedded: isDesktop,
         onClose: () => _selectMainNavigation(0),
       ),
+      CalendarScreen(api: kApi, token: widget.token,
+          onClose: () => _selectMainNavigation(0)),
     ];
 
     final body = isDesktop && (_idx == 0 || _idx == 1 || _idx >= 3)
@@ -8561,8 +8576,8 @@ class _MainShellContentState extends State<_MainShellContent> {
               Expanded(
                 child: _DesktopContentPane(
                   navigatorKey: _desktopContentNavigatorKey,
-                  child: _idx == 4
-                      ? screens[4]
+                  child: _idx >= 4
+                      ? screens[_idx]
                       : _idx == 3
                           ? Navigator(
                               key:
@@ -19647,6 +19662,8 @@ class ConversationsScreen extends StatefulWidget {
   final VoidCallback onSettings;
   final VoidCallback? onPersonalMedia;
   final bool personalMediaSelected;
+  final VoidCallback? onCalendar;
+  final bool calendarSelected;
   final Future<void> Function() onContactsChanged;
   final void Function(Map<String, dynamic> user) onVoiceCall;
   final int currentMainNavigationIndex;
@@ -19668,6 +19685,8 @@ class ConversationsScreen extends StatefulWidget {
     required this.onSettings,
     this.onPersonalMedia,
     this.personalMediaSelected = false,
+    this.onCalendar,
+    this.calendarSelected = false,
     required this.onContactsChanged,
     required this.onVoiceCall,
     required this.currentMainNavigationIndex,
@@ -20569,6 +20588,17 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     setState(() => _searchQuery = value.trim().toLowerCase()),
               ),
             ),
+          if (_tab == 0 && 'לוח שנה'.contains(_searchQuery))
+            CalendarFriendTile(api: kApi, token: widget.token,
+              selected: widget.calendarSelected,
+              onTap: () async {
+                if (widget.onCalendar != null && MediaQuery.sizeOf(context).width >= 900) {
+                  widget.onCalendar!();
+                } else {
+                  await Navigator.push(context, MaterialPageRoute<void>(
+                    builder: (_) => CalendarScreen(api: kApi, token: widget.token)));
+                }
+              }),
           if (_tab == 0 && 'המדיה שלי'.contains(_searchQuery))
             _PersonalMediaConversationTile(
               token: widget.token,
@@ -20833,7 +20863,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       if (searchedUsers.isEmpty && showGroups.isEmpty) {
                         if (_tab == 0 &&
                             _searchQuery.isNotEmpty &&
-                            'המדיה שלי'.contains(_searchQuery)) {
+                            ('המדיה שלי'.contains(_searchQuery) || 'לוח שנה'.contains(_searchQuery))) {
                           return const SizedBox.shrink();
                         }
                         return const Center(
