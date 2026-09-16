@@ -20569,13 +20569,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             ),
           if (_tab == 0 && 'המדיה שלי'.contains(_searchQuery))
             _PersonalMediaConversationTile(
+              token: widget.token,
               selected: widget.personalMediaSelected,
-              onTap: () {
+              onTap: () async {
                 if (widget.onPersonalMedia != null &&
                     MediaQuery.sizeOf(context).width >= 900) {
                   widget.onPersonalMedia!();
                 } else {
-                  Navigator.push(
+                  await Navigator.push(
                     context,
                     MaterialPageRoute<void>(
                       builder: (_) => PersonalMediaScreen(token: widget.token),
@@ -21064,25 +21065,109 @@ IconData? _conversationPreviewIcon(Map<String, dynamic> item) {
 
 // A personal library shortcut, deliberately separate from user/group rows.
 // It never participates in recipients, unread counts, pinning or message APIs.
-class _PersonalMediaConversationTile extends StatelessWidget {
-  final VoidCallback onTap;
+class _PersonalMediaConversationTile extends StatefulWidget {
+  final String token;
+  final Future<void> Function() onTap;
   final bool selected;
 
   const _PersonalMediaConversationTile({
+    required this.token,
     required this.onTap,
     required this.selected,
   });
 
   @override
+  State<_PersonalMediaConversationTile> createState() =>
+      _PersonalMediaConversationTileState();
+}
+
+class _PersonalMediaConversationTileState
+    extends State<_PersonalMediaConversationTile> with WidgetsBindingObserver {
+  Timer? _summaryTimer;
+  String? _summary;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadSummary();
+    _summaryTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        _loadSummary();
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _PersonalMediaConversationTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.token != widget.token) {
+      _summary = null;
+      _loadSummary();
+    } else if (oldWidget.selected != widget.selected) {
+      _loadSummary();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _loadSummary();
+  }
+
+  Future<void> _loadSummary() async {
+    if (_loading) return;
+    _loading = true;
+    final token = widget.token;
+    try {
+      final response = await http.get(
+        Uri.parse('$kApi/media-library/catalog'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 15));
+      if (!mounted || widget.token != token) return;
+      if (response.statusCode != 200) throw Exception('summary unavailable');
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final summary = body['summary'] as Map<String, dynamic>;
+      final count = (summary['totalCount'] as num).toInt();
+      final bytes = (summary['totalBytes'] as num).toInt();
+      final size = bytes >= 1073741824
+          ? '${(bytes / 1073741824).toStringAsFixed(1)} GB'
+          : bytes >= 1048576
+              ? '${(bytes / 1048576).toStringAsFixed(1)} MB'
+              : bytes >= 1024
+                  ? '${(bytes / 1024).toStringAsFixed(0)} KB'
+                  : '$bytes B';
+      setState(() => _summary = '$count קבצים · \u2066$size\u2069');
+    } catch (_) {
+      if (mounted && widget.token == token && _summary == null) {
+        setState(() => _summary = 'כמות ונפח אינם זמינים כרגע');
+      }
+    } finally {
+      _loading = false;
+      if (mounted && widget.token != token) _loadSummary();
+    }
+  }
+
+  @override
+  void dispose() {
+    _summaryTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => Semantics(
         button: true,
-        selected: selected,
+        selected: widget.selected,
         label: 'המדיה שלי, ספרייה אישית',
         child: Material(
-          color: selected ? const Color(0xFFDCEFFC) : const Color(0xFFF4FAFE),
+          color: widget.selected ? const Color(0xFFDCEFFC) : const Color(0xFFF4FAFE),
           child: InkWell(
             key: const ValueKey('personal-media-conversation-entry'),
-            onTap: onTap,
+            onTap: () async {
+              await widget.onTap();
+              if (mounted) _loadSummary();
+            },
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: const BoxDecoration(
@@ -21111,22 +21196,22 @@ class _PersonalMediaConversationTile extends StatelessWidget {
                       color: Colors.white, size: 26),
                 ),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('המדיה שלי',
+                      const Text('המדיה שלי',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               color: kHeader,
                               fontSize: 15,
                               fontWeight: FontWeight.w700)),
-                      SizedBox(height: 4),
-                      Text('תמונות, סרטונים וקבצים במקום אחד',
+                      const SizedBox(height: 4),
+                      Text(_summary ?? 'טוען כמות קבצים ונפח…',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: kSubtext, fontSize: 12)),
+                          style: const TextStyle(color: kSubtext, fontSize: 12)),
                     ],
                   ),
                 ),
