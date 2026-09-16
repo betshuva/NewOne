@@ -314,7 +314,9 @@ function registerCalendar(
     const profile =
       (
         await db.query(
-          "SELECT city,country,latitude,longitude,is_teen FROM users WHERE id=$1",
+          `SELECT city,country,latitude,longitude,
+                  (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
+           FROM users WHERE id=$1`,
           [uid],
         )
       ).rows[0] || {};

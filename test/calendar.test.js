@@ -157,7 +157,7 @@ test(
     try {
       await db.query("SET search_path=pg_temp");
       await db.query(
-        `CREATE TEMP TABLE users(id UUID PRIMARY KEY,name TEXT,city TEXT,country TEXT,latitude DOUBLE PRECISION,longitude DOUBLE PRECISION,is_teen BOOLEAN DEFAULT FALSE);CREATE TEMP TABLE user_contacts(owner_id UUID,contact_id UUID);CREATE TEMP TABLE blocked_users(blocker_id UUID,blocked_id UUID);`,
+        `CREATE TEMP TABLE users(id UUID PRIMARY KEY,name TEXT,city TEXT,country TEXT,latitude DOUBLE PRECISION,longitude DOUBLE PRECISION,birth_date DATE);CREATE TEMP TABLE user_contacts(owner_id UUID,contact_id UUID);CREATE TEMP TABLE blocked_users(blocker_id UUID,blocked_id UUID);`,
       );
       // Every relation lives only on this connection, never in the application's schema.
       await db.query(
@@ -167,10 +167,10 @@ test(
         ),
       );
       for (let n = 1; n <= 4; n++)
-        await db.query("INSERT INTO users(id,name) VALUES($1,$2)", [
-          id(n),
-          `person${n}`,
-        ]);
+        await db.query(
+          "INSERT INTO users(id,name,birth_date) VALUES($1,$2,DATE '1990-01-01')",
+          [id(n), `person${n}`],
+        );
       await db.query("INSERT INTO user_contacts VALUES($1,$2),($1,$3)", [
         id(1),
         id(2),
@@ -222,6 +222,7 @@ test(
         return { status, body: result };
       };
       const fallback = await req("get", "settings");
+      assert.equal(fallback.status, 200);
       assert.equal(fallback.body.source, "default");
       assert.equal(fallback.body.settings.city, "ירושלים");
       assert.equal(fallback.body.configured, true);
@@ -278,9 +279,24 @@ test(
         (await req("get", "settings")).body.settings.city,
         "ירושלים",
       );
+      // A manual city choice remains available when age or location is unavailable.
+      await db.query("UPDATE users SET birth_date=NULL WHERE id=$1", [id(1)]);
+      const savedWithoutBirthDate = await req(
+        "get",
+        "settings",
+        1,
+        {},
+        {},
+        {},
+        true,
+      );
+      assert.equal(savedWithoutBirthDate.status, 200);
+      assert.equal(savedWithoutBirthDate.body.source, "saved");
+      assert.equal(savedWithoutBirthDate.body.settings.city, "ירושלים");
+      assert.equal(savedWithoutBirthDate.body.location_allowed, false);
       await db.query("DELETE FROM calendar_settings WHERE user_id=$1", [id(1)]);
       await db.query(
-        "UPDATE users SET city=NULL,country=NULL,latitude=31.778,longitude=35.235 WHERE id=$1",
+        "UPDATE users SET birth_date=DATE '1990-01-01',city=NULL,country=NULL,latitude=31.778,longitude=35.235 WHERE id=$1",
         [id(1)],
       );
       assert.equal((await req("get", "settings")).body.source, "location");
@@ -288,7 +304,10 @@ test(
         (await req("get", "settings")).body.settings.city,
         "ירושלים",
       );
-      await db.query("UPDATE users SET is_teen=TRUE WHERE id=$1", [id(1)]);
+      await db.query(
+        "UPDATE users SET birth_date=CURRENT_DATE - INTERVAL '15 years' WHERE id=$1",
+        [id(1)],
+      );
       const teen = await req("get", "settings", 1, {}, {}, {}, true);
       assert.equal(teen.body.location_allowed, false);
       assert.equal(teen.body.source, "default");
@@ -320,8 +339,32 @@ test(
         ).status,
         403,
       );
+      // Match auth's calendar-birthday boundary using the real production column.
+      for (const birthDate of [
+        "NULL",
+        "CURRENT_DATE - INTERVAL '18 years' + INTERVAL '1 day'",
+      ]) {
+        await db.query(
+          `UPDATE users SET birth_date=${birthDate},latitude=32.0853,longitude=34.7818 WHERE id=$1`,
+          [id(1)],
+        );
+        const restricted = await req("get", "settings", 1, {}, {}, {}, true);
+        assert.equal(restricted.status, 200);
+        assert.equal(restricted.body.location_allowed, false);
+        assert.equal(restricted.body.source, "default");
+        assert.equal(restricted.body.settings.city, "ירושלים");
+      }
       await db.query(
-        "UPDATE users SET is_teen=FALSE,latitude=NULL,longitude=NULL WHERE id=$1",
+        "UPDATE users SET birth_date=CURRENT_DATE - INTERVAL '18 years' WHERE id=$1",
+        [id(1)],
+      );
+      const eighteenthBirthday = await req("get", "settings");
+      assert.equal(eighteenthBirthday.status, 200);
+      assert.equal(eighteenthBirthday.body.location_allowed, true);
+      assert.equal(eighteenthBirthday.body.source, "location");
+      assert.equal(eighteenthBirthday.body.settings.city, "תל אביב");
+      await db.query(
+        "UPDATE users SET birth_date=DATE '1990-01-01',latitude=NULL,longitude=NULL WHERE id=$1",
         [id(1)],
       );
       assert.equal(
