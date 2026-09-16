@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const root = path.join(__dirname, '..');
 const server = fs.readFileSync(path.join(root, 'server', 'index.js'), 'utf8');
@@ -15,6 +16,73 @@ function routeSource(startMarker, endMarker) {
   assert.ok(start >= 0 && end > start, `missing route section: ${startMarker}`);
   return server.slice(start, end);
 }
+
+test('data reset preserves login identity and a usable saved session', async () => {
+  const identity = {
+    email: 'reset@example.test', phone: '+972501234567',
+    password_hash: 'existing-hash', google_id: 'existing-google-id',
+    email_verified: true, phone_verified: true,
+  };
+  const user = { ...identity, name: 'Original name', gender: 'male',
+    city: 'Original city', birth_date: '1990-01-01', profile_pic_url: null };
+  let committed = false;
+  const pool = {
+    async connect() { return { query: this.query, release() {} }; },
+    async query(sql) {
+      if (sql === 'COMMIT') committed = true;
+      if (/UPDATE users SET/.test(sql)) {
+        const assignments = sql.split('SET')[1].split('WHERE')[0];
+        for (const assignment of assignments.split(',')) {
+          const match = assignment.trim().match(/^(\w+)\s*=\s*(NULL|TRUE|FALSE|\d+|'[^']*')$/);
+          assert.ok(match, `unexpected reset assignment: ${assignment}`);
+          const [, key, literal] = match;
+          user[key] = literal === 'NULL' ? null : literal === 'TRUE' ? true
+            : literal === 'FALSE' ? false : literal.startsWith("'")
+              ? literal.slice(1, -1) : Number(literal);
+        }
+      }
+      return { rows: /SELECT .*FROM users/s.test(sql) ? [user] : [] };
+    },
+  };
+  let reset;
+  let registrationStatus;
+  const context = vm.createContext({
+    app: {
+      delete(_path, _auth, handler) { reset = handler; },
+      get(_path, handler) { registrationStatus = handler; },
+    },
+    getPool: async () => pool,
+    prepareAccountBackupDeletion: async () => ({ deleted: 0 }),
+    transferOwnedGroups: async () => {},
+    deleteStoredFile: async () => true,
+    accountModerationError: () => null,
+    jwt: { verify: () => ({ id: 'existing-user' }) }, JWT_SECRET: 'test', console,
+  });
+  vm.runInContext(routeSource('async function auth(req, res, next)',
+    '// Allows a saved session'), context);
+  vm.runInContext(routeSource("app.delete('/api/account/data'",
+    "app.delete('/api/admin/users"), context);
+  vm.runInContext(routeSource("app.get('/api/registration-status'",
+    '// Short-lived TURN REST credentials.'), context);
+  const res = { statusCode: 200, status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; } };
+  await reset({ user: { id: 'existing-user' }, body: { confirmation: 'DELETE_DATA' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(committed, true);
+  for (const [key, value] of Object.entries(identity)) assert.equal(user[key], value, key);
+  assert.notEqual(user.name, 'Original name');
+  assert.equal(user.gender, null);
+  assert.equal(user.city, null);
+  const req = { headers: { authorization: 'Bearer saved-session' }, path: '/profile' };
+  let authenticated = false;
+  await context.auth(req, res, () => { authenticated = true; });
+  assert.equal(authenticated, true, 'the existing session must remain usable after reset');
+  await registrationStatus(req, res);
+  assert.equal(res.body.registrationIncomplete, false);
+  assert.equal(res.body.phoneMissing, false);
+  assert.equal(res.body.verificationRequired, false);
+});
 
 test('full account deletion requires explicit confirmation and removes active data', () => {
   const route = routeSource("app.delete('/api/account'", "app.delete('/api/account/data'");
