@@ -71,7 +71,7 @@ test('data reset preserves login identity and a usable saved session', async () 
   assert.equal(res.body.ok, true);
   assert.equal(committed, true);
   for (const [key, value] of Object.entries(identity)) assert.equal(user[key], value, key);
-  assert.notEqual(user.name, 'Original name');
+  assert.equal(user.name, 'Original name');
   assert.equal(user.gender, null);
   assert.equal(user.city, null);
   const req = { headers: { authorization: 'Bearer saved-session' }, path: '/profile' };
@@ -152,5 +152,5 @@ test('deletion confirmation warns that encrypted Drive backups are deleted', () 
   assert.match(appSource,
     /כולל הגיבויים המוצפנים ב־Google Drive/);
   assert.match(appSource,
-    /פרטי הפרופיל והגיבויים המוצפנים ב־Google Drive יימחקו/);
+    /שאר פרטי הפרופיל והגיבויים המוצפנים ב־Google Drive יימחקו/);
 });

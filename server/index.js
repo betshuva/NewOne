@@ -12198,11 +12198,8 @@ app.delete('/api/account/data', auth, async (req, res) => {
     await client.query('DELETE FROM cloud_backup_accounts WHERE user_id=$1', [uid]);
     await client.query('DELETE FROM user_backup_settings WHERE user_id=$1', [uid]);
     // File rows are removed by deleteStoredFile only after physical deletion.
-    // Keep login credentials and verification intact. The legacy name
-    // 'משתמש' with a null gender marks an unfinished registration in auth,
-    // sockets and user listings, so a cleared profile needs a distinct label.
+    // Preserve the display name, email, login credentials and verification.
     await client.query(`UPDATE users SET
-      name='משתמש ללא פרופיל',
       city=NULL, country=NULL,
       street=NULL, house_number=NULL, apartment=NULL, profile_pic_url=NULL,
       latitude=NULL, longitude=NULL, location_updated_at=NULL, gender=NULL,

@@ -39438,7 +39438,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             : 'איפוס נתונים'),
         content: Text(choice == 'account'
             ? 'כל הנתונים והחשבון יימחקו, כולל הגיבויים המוצפנים ב־Google Drive. תתבצע יציאה ותועבר/י למסך הרשמה חדשה.'
-            : 'ההודעות, הקבצים, המיקום, פרטי הפרופיל והגיבויים המוצפנים ב־Google Drive יימחקו. האימייל, הטלפון וחשבון ההתחברות יישארו פעילים, ולאחר הפעולה תישאר/י מחובר/ת.'),
+            : 'ההודעות, הקבצים, המיקום, שאר פרטי הפרופיל והגיבויים המוצפנים ב־Google Drive יימחקו. השם והאימייל יישמרו, והטלפון וחשבון ההתחברות יישארו פעילים, ולאחר הפעולה תישאר/י מחובר/ת.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -39484,8 +39484,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                 content: Text(filesPending > 0
-                    ? 'התוכן ופרטי הפרופיל נמחקו. $filesPending קבצים ממתינים להשלמת מחיקה.'
-                    : 'התוכן ופרטי הפרופיל נמחקו בהצלחה')));
+                    ? 'הנתונים אופסו והשם והאימייל נשמרו. $filesPending קבצים ממתינים להשלמת מחיקה.'
+                    : 'הנתונים אופסו בהצלחה. השם והאימייל נשמרו')));
           }
         }
       } else if (deletingAccount &&
