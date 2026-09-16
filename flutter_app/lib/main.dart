@@ -1795,7 +1795,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.24';
+const kVersion = '1.3.25';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -23752,7 +23752,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('תמונות');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _pickFile(ImageSource.gallery);
                         },
                       ),
@@ -23769,7 +23769,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('תמונות');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _capturePhoto();
                         },
                       ),
@@ -23786,7 +23786,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('מסמכים');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _scanDocument();
                         },
                       ),
@@ -23803,7 +23803,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('מסמכים');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _pickDocument();
                         },
                       ),
@@ -23820,7 +23820,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('וידאו');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _pickVideo();
                         },
                       ),
@@ -23837,7 +23837,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('וידאו');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _recordVideo();
                         },
                       ),
@@ -23854,7 +23854,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('הקלטות שמע');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _toggleVoiceRecording();
                         },
                       ),
@@ -23871,7 +23871,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('שיתוף אנשי קשר');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _sharePhoneContact();
                         },
                       ),
@@ -23888,7 +23888,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             _showRecipientFilterNotice('שיתוף פרטים');
                             return;
                           }
-                          Navigator.pop(context);
+                          Navigator.of(dialogContext).pop();
                           _shareMyContact();
                         },
                       ),
@@ -29492,7 +29492,7 @@ class _AttachOption extends StatelessWidget {
           onTap: onTap,
           borderRadius: BorderRadius.circular(12),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
