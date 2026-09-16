@@ -123,7 +123,7 @@ Future<List<http.Request>> openCalendar(
                   'latitude': located ? 32.794 : 31.778,
                   'longitude': located ? 34.9896 : 35.235,
                   'israel': true,
-                  'candle_minutes': located ? 30 : 40
+                  'candle_minutes': 15
                 }
               });
             }

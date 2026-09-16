@@ -11,7 +11,7 @@ const settings = {
   'longitude': 35.235,
   'timezone': 'Asia/Jerusalem',
   'israel': true,
-  'candle_minutes': 40
+  'candle_minutes': 15
 };
 Map<String, dynamic> event(String id, String title, String start, String end,
         {String? response}) =>
@@ -39,13 +39,14 @@ Future<void> withCalendar(
     {Size size = const Size(1200, 900),
     bool pending = false,
     bool failHolidays = false,
+    Map<String, dynamic> initialSettings = settings,
     http.Response? Function(http.Request)? respond}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final requests = <http.Request>[];
-  var currentSettings = Map<String, dynamic>.from(settings);
+  var currentSettings = Map<String, dynamic>.from(initialSettings);
   await http.runWithClient(() async {
     try {
       await tester.pumpWidget(MaterialApp(
@@ -162,7 +163,7 @@ void main() {
       'longitude': -0.1276,
       'timezone': 'Europe/London',
       'israel': false,
-      'candle_minutes': 18
+      'candle_minutes': 15
     };
     await withCalendar(tester, (requests) async {
       await tester.tap(find.byTooltip('עיר וזמני שבת'));
@@ -170,6 +171,8 @@ void main() {
       expect(find.text('קו רוחב'), findsNothing);
       expect(find.text('קו אורך'), findsNothing);
       expect(find.widgetWithText(TextField, 'אזור זמן'), findsNothing);
+      expect(find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'),
+          findsNothing);
       await tester.enterText(
           find.widgetWithText(TextField, 'עיר או יישוב'), 'לונ');
       await tester.pump(const Duration(milliseconds: 300));
@@ -190,13 +193,8 @@ void main() {
       expect(find.text('לונדון · Europe/London'), findsOneWidget);
       expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
           isFalse);
-      expect(
-          tester
-              .widget<TextField>(
-                  find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'))
-              .controller!
-              .text,
-          '18');
+      expect(find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'),
+          findsNothing);
       await tester.tap(find.text('שמירה'));
       await tester.pumpAndSettle();
       expect(jsonDecode(requests.singleWhere((r) => r.method == 'PUT').body),
@@ -213,12 +211,30 @@ void main() {
     });
   });
 
+  testWidgets('legacy saved candle offset is replaced with fixed 15 minutes',
+      (tester) async {
+    await withCalendar(tester, (requests) async {
+      expect(find.textContaining('הדלקה 15 דק׳ לפני שקיעה'), findsOneWidget);
+      expect(find.textContaining('הדלקה 40'), findsNothing);
+      await tester.tap(find.byTooltip('עיר וזמני שבת'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'),
+          findsNothing);
+      await tester.tap(find.text('שמירה'));
+      await tester.pumpAndSettle();
+      expect(jsonDecode(requests.singleWhere((r) => r.method == 'PUT').body),
+          settings);
+    }, initialSettings: {...settings, 'candle_minutes': 40});
+  });
+
   testWidgets(
       'mobile time zone list supports Hebrew search and persists choice',
       (tester) async {
     await withCalendar(tester, (requests) async {
       await tester.tap(find.byTooltip('עיר וזמני שבת'));
       await tester.pumpAndSettle();
+      expect(find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'),
+          findsNothing);
       await tester.tap(find.byKey(const ValueKey('calendar-timezone')));
       await tester.pumpAndSettle();
       tester.view.viewInsets = const FakeViewPadding(bottom: 330);
@@ -241,7 +257,7 @@ void main() {
   });
 
   testWidgets(
-      'typed city resolution preserves subsequently chosen time zone and candle minutes',
+      'typed city preserves chosen time zone and ignores legacy city candle offset',
       (tester) async {
     const haifa = {
       'city': 'חיפה',
@@ -258,10 +274,11 @@ void main() {
           find.widgetWithText(TextField, 'עיר או יישוב'), 'חיפה');
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pumpAndSettle();
-      // Move focus without selecting a locality suggestion.
-      await tester.enterText(
-          find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'), '25');
+      // Dismiss suggestions without choosing a city; save resolves the text.
+      FocusManager.instance.primaryFocus?.unfocus();
       await tester.pumpAndSettle();
+      expect(find.widgetWithText(TextField, 'דקות הדלקת נרות לפני השקיעה'),
+          findsNothing);
       await tester.tap(find.byKey(const ValueKey('calendar-timezone')));
       await tester.pumpAndSettle();
       await tester.enterText(
@@ -272,7 +289,7 @@ void main() {
       await tester.tap(find.text('שמירה'));
       await tester.pumpAndSettle();
       expect(jsonDecode(requests.singleWhere((r) => r.method == 'PUT').body),
-          {...haifa, 'timezone': 'Europe/Berlin', 'candle_minutes': 25});
+          {...haifa, 'timezone': 'Europe/Berlin', 'candle_minutes': 15});
     }, respond: (r) {
       if (r.url.path == '/api/localities') return json([]);
       if (r.url.path.endsWith('/location')) return json({'settings': haifa});

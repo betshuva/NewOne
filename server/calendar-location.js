@@ -1,5 +1,6 @@
 "use strict";
 const { IANAZone } = require("luxon");
+const { CANDLE_LIGHTING_MINUTES } = require("./calendar-policy");
 const { find: findTimezones } = require("geo-tz/all");
 const dataset = require("./data/calendar-locations.json");
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -72,9 +73,6 @@ function createLocationResolver(cities) {
       ? "IL"
       : { לונדון: "GB", "ניו יורק": "US", פריז: "FR" }[item.city];
   const fromRow = (row, city = row[0]) => {
-    const preset = cities.find(
-      (item) => normalizeCity(item.city) === normalizeCity(city),
-    );
     return {
       city,
       country: row[3],
@@ -82,7 +80,7 @@ function createLocationResolver(cities) {
       longitude: row[2],
       timezone: row[4],
       israel: row[3] === "IL",
-      candle_minutes: preset?.candle_minutes ?? 18,
+      candle_minutes: CANDLE_LIGHTING_MINUTES,
     };
   };
   return async ({ city, country, latitude, longitude }) => {
@@ -111,7 +109,13 @@ function createLocationResolver(cities) {
                 ? "IL"
                 : { לונדון: "GB", "ניו יורק": "US", פריז: "FR" }[item.city])),
       );
-      if (preset) return { ...preset, city, country: presetCountry(preset) };
+      if (preset)
+        return {
+          ...preset,
+          city,
+          country: presetCountry(preset),
+          candle_minutes: CANDLE_LIGHTING_MINUTES,
+        };
       const matches = (names.get(name) || []).filter(
         (row) => !code || row[3] === code,
       );

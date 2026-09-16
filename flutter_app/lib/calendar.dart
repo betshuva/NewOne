@@ -8,6 +8,7 @@ import 'location_autocomplete.dart';
 import 'package:http/http.dart' as http;
 
 const _blue = Color(0xFF1B6CA8);
+const _candleMinutes = 15;
 const _colors = <String, Color>{
   'blue': _blue,
   'green': Color(0xFF25835B),
@@ -260,7 +261,10 @@ class _CalendarScreenState extends State<CalendarScreen>
       if (!mounted || token != widget.token) return;
       setState(() {
         final firstLoad = _settings == null;
-        _settings = Map<String, dynamic>.from(b['settings']);
+        _settings = {
+          ...Map<String, dynamic>.from(b['settings']),
+          'candle_minutes': _candleMinutes,
+        };
         _today = _day(DateTime.parse(b['today'] ?? _date(DateTime.now())));
         if (firstLoad) _selected = _today;
         _configured = b['configured'] == true;
@@ -944,8 +948,8 @@ class _CalendarScreenState extends State<CalendarScreen>
                       color: const Color(0xFFFFF9EB),
                       child: Text(
                           _configured
-                              ? '${_settings!['city']} · ${_settings!['timezone']} · הדלקה ${_settings!['candle_minutes']} דק׳ לפני שקיעה; יציאה 8.5°; רבנו תם 72 דק׳ אחרי שקיעה. מקור: Hebcal. התאריך העברי מתחלף בשקיעה.'
-                              : 'בחרו עיר ומנהג כדי להציג חגים וזמני שבת וחג',
+                              ? '${_settings!['city']} · ${_settings!['timezone']} · הדלקה $_candleMinutes דק׳ לפני שקיעה; יציאה 8.5°; רבנו תם 72 דק׳ אחרי שקיעה. מקור: Hebcal. התאריך העברי מתחלף בשקיעה.'
+                              : 'בחרו עיר להצגת חגים וזמני שבת וחג',
                           style: const TextStyle(
                               fontSize: 12, color: Color(0xFF74561E))))),
             if (_configured && _holidays.isNotEmpty)
@@ -1003,38 +1007,33 @@ class _CalendarSettings extends StatefulWidget {
 
 class _CalendarSettingsState extends State<_CalendarSettings> {
   late Map<String, dynamic> s;
-  late final TextEditingController city, minutes;
+  late final TextEditingController city;
   bool _busy = false;
-  bool _zoneEdited = false, _minutesEdited = false, _israelEdited = false;
+  bool _zoneEdited = false, _israelEdited = false;
   String? _error;
   int _request = 0;
   @override
   void initState() {
     super.initState();
-    s = Map.from(widget.settings);
+    s = {...widget.settings, 'candle_minutes': _candleMinutes};
     city = TextEditingController(text: s['city']);
-    minutes = TextEditingController(text: '${s['candle_minutes']}');
   }
 
   @override
   void dispose() {
     _request++;
     city.dispose();
-    minutes.dispose();
     super.dispose();
   }
 
   void _apply(Map<String, dynamic> settings, {bool preserveOverrides = false}) {
     final oldZone = s['timezone'], oldIsrael = s['israel'];
-    s = settings;
+    s = {...settings, 'candle_minutes': _candleMinutes};
     city.text = s['city'];
     if (preserveOverrides && _zoneEdited) s['timezone'] = oldZone;
     if (preserveOverrides && _israelEdited) s['israel'] = oldIsrael;
-    if (!preserveOverrides || !_minutesEdited) {
-      minutes.text = '${s['candle_minutes']}';
-    }
     if (!preserveOverrides) {
-      _zoneEdited = _minutesEdited = _israelEdited = false;
+      _zoneEdited = _israelEdited = false;
     }
     _error = null;
   }
@@ -1110,12 +1109,7 @@ class _CalendarSettingsState extends State<_CalendarSettings> {
       return;
     }
     if (!mounted) return;
-    final m = int.tryParse(minutes.text);
-    if (m == null || m < 0 || m > 60) {
-      setState(() => _error = 'יש לבחור בין 0 ל־60 דקות לפני השקיעה');
-      return;
-    }
-    Navigator.pop(context, {...s, 'candle_minutes': m});
+    Navigator.pop(context, {...s, 'candle_minutes': _candleMinutes});
   }
 
   Future<void> _chooseTimezone() async {
@@ -1197,16 +1191,10 @@ class _CalendarSettingsState extends State<_CalendarSettings> {
                               s['israel'] = v;
                               _israelEdited = true;
                             })),
-                TextField(
-                    controller: minutes,
-                    onChanged: (_) => _minutesEdited = true,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                        labelText: 'דקות הדלקת נרות לפני השקיעה')),
                 const Padding(
                     padding: EdgeInsets.only(top: 12),
                     child: Text(
-                        'יציאה: צאת הכוכבים לפי 8.5°. רבנו תם מוצג בנפרד לפי 72 דקות קבועות אחרי השקיעה. יש לבחור את מנהג ההדלקה הנהוג בעירכם. הזמנים מחושבים לפי מרכז העיר.',
+                        'יציאה: צאת הכוכבים לפי 8.5°. רבנו תם מוצג בנפרד לפי 72 דקות קבועות אחרי השקיעה. הזמנים מחושבים לפי מרכז העיר.',
                         style: TextStyle(fontSize: 12))),
                 const SizedBox(height: 8),
                 Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [

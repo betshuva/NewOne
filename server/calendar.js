@@ -2,14 +2,16 @@
 const { DateTime, IANAZone } = require("luxon");
 const crypto = require("node:crypto");
 const { createLocationResolver, timezoneList } = require("./calendar-location");
+const { CANDLE_LIGHTING_MINUTES } = require("./calendar-policy");
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS calendar_settings (
  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
  city TEXT NOT NULL, latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL,
- timezone TEXT NOT NULL, israel BOOLEAN NOT NULL, candle_minutes INTEGER NOT NULL DEFAULT 18,
+ timezone TEXT NOT NULL, israel BOOLEAN NOT NULL, candle_minutes INTEGER NOT NULL DEFAULT ${CANDLE_LIGHTING_MINUTES},
  source TEXT NOT NULL DEFAULT 'saved'
 );
 ALTER TABLE calendar_settings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'saved';
+ALTER TABLE calendar_settings ALTER COLUMN candle_minutes SET DEFAULT ${CANDLE_LIGHTING_MINUTES};
 CREATE TABLE IF NOT EXISTS calendar_events (
  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  series_id UUID, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '',
@@ -38,28 +40,28 @@ CREATE TABLE IF NOT EXISTS calendar_reminders (
  PRIMARY KEY(event_id,user_id,version)
 );`;
 const CITIES = [
-  ["ירושלים", 31.778, 35.235, "Asia/Jerusalem", true, 40],
-  ["תל אביב", 32.0853, 34.7818, "Asia/Jerusalem", true, 18],
-  ["חיפה", 32.794, 34.9896, "Asia/Jerusalem", true, 30],
-  ["בני ברק", 32.0849, 34.8352, "Asia/Jerusalem", true, 18],
-  ["פתח תקווה", 32.0871, 34.8875, "Asia/Jerusalem", true, 18],
-  ["אשדוד", 31.8044, 34.6553, "Asia/Jerusalem", true, 18],
-  ["באר שבע", 31.252, 34.7915, "Asia/Jerusalem", true, 18],
-  ["בית שמש", 31.746, 34.988, "Asia/Jerusalem", true, 40],
-  ["נתניה", 32.3215, 34.8532, "Asia/Jerusalem", true, 18],
-  ["טבריה", 32.794, 35.531, "Asia/Jerusalem", true, 18],
-  ["צפת", 32.965, 35.498, "Asia/Jerusalem", true, 18],
-  ["אילת", 29.558, 34.948, "Asia/Jerusalem", true, 18],
-  ["לונדון", 51.5074, -0.1278, "Europe/London", false, 18],
-  ["ניו יורק", 40.7128, -74.006, "America/New_York", false, 18],
-  ["פריז", 48.8566, 2.3522, "Europe/Paris", false, 18],
-].map(([city, latitude, longitude, timezone, israel, candle_minutes]) => ({
+  ["ירושלים", 31.778, 35.235, "Asia/Jerusalem", true],
+  ["תל אביב", 32.0853, 34.7818, "Asia/Jerusalem", true],
+  ["חיפה", 32.794, 34.9896, "Asia/Jerusalem", true],
+  ["בני ברק", 32.0849, 34.8352, "Asia/Jerusalem", true],
+  ["פתח תקווה", 32.0871, 34.8875, "Asia/Jerusalem", true],
+  ["אשדוד", 31.8044, 34.6553, "Asia/Jerusalem", true],
+  ["באר שבע", 31.252, 34.7915, "Asia/Jerusalem", true],
+  ["בית שמש", 31.746, 34.988, "Asia/Jerusalem", true],
+  ["נתניה", 32.3215, 34.8532, "Asia/Jerusalem", true],
+  ["טבריה", 32.794, 35.531, "Asia/Jerusalem", true],
+  ["צפת", 32.965, 35.498, "Asia/Jerusalem", true],
+  ["אילת", 29.558, 34.948, "Asia/Jerusalem", true],
+  ["לונדון", 51.5074, -0.1278, "Europe/London", false],
+  ["ניו יורק", 40.7128, -74.006, "America/New_York", false],
+  ["פריז", 48.8566, 2.3522, "Europe/Paris", false],
+].map(([city, latitude, longitude, timezone, israel]) => ({
   city,
   latitude,
   longitude,
   timezone,
   israel,
-  candle_minutes,
+  candle_minutes: CANDLE_LIGHTING_MINUTES,
 }));
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const defaultLocationResolver = createLocationResolver(CITIES);
@@ -76,14 +78,11 @@ function validateSettings(b) {
     !Number.isFinite(b.longitude) ||
     Math.abs(b.longitude) > 180 ||
     !IANAZone.isValidZone(b.timezone) ||
-    typeof b.israel !== "boolean" ||
-    !Number.isInteger(b.candle_minutes) ||
-    b.candle_minutes < 0 ||
-    b.candle_minutes > 60
+    typeof b.israel !== "boolean"
   )
     throw fail(
       400,
-      "יש לבחור עיר, אזור זמן ומנהג הדלקת נרות תקינים (קו רוחב עד 65 מעלות)",
+      "יש לבחור עיר ואזור זמן תקינים (קו רוחב עד 65 מעלות)",
     );
   return {
     city: b.city.trim(),
@@ -91,7 +90,7 @@ function validateSettings(b) {
     longitude: b.longitude,
     timezone: b.timezone,
     israel: b.israel,
-    candle_minutes: b.candle_minutes,
+    candle_minutes: CANDLE_LIGHTING_MINUTES,
   };
 }
 function validateEvent(b) {
@@ -205,7 +204,7 @@ async function holidays(settings, start, end, fetcher = fetch) {
     longitude: String(settings.longitude),
     tzid: settings.timezone,
     i: settings.israel ? "on" : "off",
-    b: String(settings.candle_minutes),
+    b: String(CANDLE_LIGHTING_MINUTES),
     lg: "he",
     M: "on",
   });
@@ -304,9 +303,15 @@ function registerCalendar(
       });
     }
   };
-  const settingsFor = async (db, uid) =>
-    (await db.query("SELECT * FROM calendar_settings WHERE user_id=$1", [uid]))
-      .rows[0] || null;
+  const settingsFor = async (db, uid) => {
+    const saved = (
+      await db.query("SELECT * FROM calendar_settings WHERE user_id=$1", [uid])
+    ).rows[0];
+    // Legacy saved offsets remain readable, but cannot override the fixed policy.
+    return saved
+      ? { ...saved, candle_minutes: CANDLE_LIGHTING_MINUTES }
+      : null;
+  };
   const effectiveSettings = async (db, uid) => {
     const saved = await settingsFor(db, uid);
     if (saved && saved.source !== "location")

@@ -71,11 +71,31 @@ test("calendar resolves public city data locally, rejects false country matches 
     });
   const point = await resolve({ latitude: 31.778, longitude: 35.235 });
   assert.equal(point.city, "ירושלים");
-  assert.equal(point.candle_minutes, 40);
+  assert.equal(point.candle_minutes, 15);
   const abroad = await resolve({ latitude: 40.7128, longitude: -74.006 });
   assert.equal(abroad.timezone, "America/New_York");
   assert.equal(abroad.israel, false);
   assert.ok(timezoneList().includes("Asia/Jerusalem"));
+});
+test("calendar fixes candle lighting at 15 minutes across cities and legacy settings", async () => {
+  for (const city of CITIES) assert.equal(city.candle_minutes, 15);
+  for (const candle_minutes of [undefined, 18, 20, 30, 40, 60])
+    assert.equal(
+      validateSettings({ ...CITIES[0], candle_minutes }).candle_minutes,
+      15,
+    );
+  const resolve = createLocationResolver(
+    CITIES.map((city) => ({ ...city, candle_minutes: 40 })),
+  );
+  for (const query of [
+    { city: "ירושלים" },
+    { city: "תל אביב - יפו" },
+    { city: "ראשון לציון" },
+    { city: "לונדון", country: "United Kingdom" },
+    { city: "Berlin", country: "Germany" },
+    { latitude: 40.7128, longitude: -74.006 },
+  ])
+    assert.equal((await resolve(query)).candle_minutes, 15);
 });
 test("weekly events preserve local hour across Israel DST and monthly dates stay valid", () => {
   const e = occurrences(validateEvent({ ...base, repeat: "weekly", count: 2 }));
@@ -93,7 +113,7 @@ test("weekly events preserve local hour across Israel DST and monthly dates stay
   assert.ok(monthly[1].start.startsWith("2027-02-28"));
   assert.ok(monthly[2].start.startsWith("2027-03-31"));
 });
-test("holiday provider requests both exit methods without replacing candle lighting", async () => {
+test("holiday provider forces 15 minutes for both exit methods and preserves nightfall candle lighting", async () => {
   const requests = [];
   const fetcher = async (url) => {
     const p = new URL(url).searchParams;
@@ -130,12 +150,42 @@ test("holiday provider requests both exit methods without replacing candle light
       }),
     };
   };
-  const rows = await holidays(CITIES[0], "2040-05-01", "2040-05-10", fetcher);
+  const rows = await holidays(
+    { ...CITIES[0], candle_minutes: 40 },
+    "2040-05-01",
+    "2040-05-10",
+    fetcher,
+  );
   assert.equal(rows.length, 4);
   assert.equal(rows.filter((r) => r.category === "candles").length, 1);
   assert.ok(rows.some((r) => r.category === "rabbeinu_tam"));
   assert.equal(requests[0].get("tzid"), "Asia/Jerusalem");
-  assert.equal(requests[0].get("b"), "40");
+  assert.equal(requests[0].get("b"), "15");
+  assert.equal(requests[1].get("b"), "15");
+  assert.equal(requests[0].get("M"), "on");
+  assert.equal(requests[1].get("m"), "72");
+  assert.equal(
+    rows.find((r) => r.category === "candles").date,
+    "2040-05-04T18:30:00+03:00",
+  );
+  assert.equal(
+    rows.find((r) => r.category === "havdalah").date,
+    "2040-05-05T20:10:00+03:00",
+  );
+  assert.ok(
+    rows.some(
+      (r) =>
+        r.category === "rabbeinu_tam" &&
+        r.date === "2040-05-05T20:42:00+03:00",
+    ),
+  );
+  assert.ok(
+    rows.some(
+      (r) =>
+        r.category === "rabbeinu_tam" &&
+        r.date === "2040-05-04T19:00:00+03:00",
+    ),
+  );
   assert.equal(requests[1].get("M"), null);
 });
 
@@ -190,7 +240,11 @@ test(
         getPool: async () => pool,
         canInvite: async (_db, _uid, target) => target !== id(4),
         fetchHolidays: async (settings) => [
-          { category: "candles", title: settings.city },
+          {
+            category: "candles",
+            title: settings.city,
+            candle_minutes: settings.candle_minutes,
+          },
         ],
       });
       const req = async (
@@ -225,6 +279,7 @@ test(
       assert.equal(fallback.status, 200);
       assert.equal(fallback.body.source, "default");
       assert.equal(fallback.body.settings.city, "ירושלים");
+      assert.equal(fallback.body.settings.candle_minutes, 15);
       assert.equal(fallback.body.configured, true);
       assert.ok(fallback.body.timezones.includes("America/New_York"));
       const initialHolidays = await req(
@@ -266,6 +321,49 @@ test(
         longitude: 0,
       });
       assert.equal(save.status, 200);
+      assert.equal(
+        (
+          await db.query(
+            "SELECT candle_minutes FROM calendar_settings WHERE user_id=$1",
+            [id(1)],
+          )
+        ).rows[0].candle_minutes,
+        15,
+      );
+      // Existing accounts can retain old storage values; reads and calculations
+      // must still expose and apply the fixed product setting.
+      await db.query(
+        "UPDATE calendar_settings SET candle_minutes=40 WHERE user_id=$1",
+        [id(1)],
+      );
+      assert.equal(
+        (await req("get", "settings")).body.settings.candle_minutes,
+        15,
+      );
+      const savedHolidays = await req(
+        "get",
+        "holidays",
+        1,
+        {},
+        {},
+        { start: "2026-09-01", end: "2026-09-30" },
+      );
+      assert.equal(savedHolidays.body.items[0].candle_minutes, 15);
+      const saveWithoutOffset = await req("put", "settings", 1, {
+        city: "ירושלים",
+        timezone: "America/New_York",
+        israel: true,
+      });
+      assert.equal(saveWithoutOffset.status, 200);
+      assert.equal(
+        (
+          await db.query(
+            "SELECT candle_minutes FROM calendar_settings WHERE user_id=$1",
+            [id(1)],
+          )
+        ).rows[0].candle_minutes,
+        15,
+      );
       assert.equal((await req("get", "settings")).body.source, "saved");
       assert.equal(
         (await req("get", "settings")).body.settings.latitude,
