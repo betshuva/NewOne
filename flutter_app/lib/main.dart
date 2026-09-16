@@ -5603,7 +5603,8 @@ class _GoogleDriveBackupOfferScreenState
       }
       final opened = await launchUrl(
           Uri.parse(body['authorizationUrl'] as String),
-          mode: LaunchMode.externalApplication);
+          mode: LaunchMode.externalApplication,
+          webOnlyWindowName: '_self');
       if (!opened) throw Exception('לא ניתן לפתוח את מסך האישור של Google');
     } catch (error) {
       if (mounted) {
@@ -7407,7 +7408,8 @@ class _MainShellContent extends StatefulWidget {
 }
 
 class _MainShellContentState extends State<_MainShellContent> {
-  int _idx = 0;
+  // The Drive OAuth callback returns to the same browser tab.
+  int _idx = kIsWeb && Uri.base.queryParameters.containsKey('backup') ? 3 : 0;
   final _desktopContentNavigatorKey = GlobalKey<NavigatorState>();
   int _conversationFilterIndex = 0;
   final GlobalKey<_ConversationsScreenState> _conversationsKey =
@@ -39007,7 +39009,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         throw Exception(body['error'] ?? 'החיבור אינו זמין');
       }
       final uri = Uri.parse(body['authorizationUrl'] as String);
-      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      final opened = await launchUrl(uri,
+          mode: LaunchMode.externalApplication,
+          webOnlyWindowName: '_self');
       if (!opened) throw Exception('לא ניתן לפתוח את Google');
     } catch (error) {
       if (mounted) {
