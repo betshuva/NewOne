@@ -185,7 +185,7 @@ async function verifyPersonClassification(buffer, classification, options) {
     } };
   }
 
-  if (!hasLocalPeople(classification) &&
+  if (googleAvailable && !hasLocalPeople(classification) &&
       classification?.uncertain !== true) {
     const verification = {
       required: true,
@@ -199,6 +199,9 @@ async function verifyPersonClassification(buffer, classification, options) {
     };
   }
 
+  // Face/object detection can miss recognizable human drawings. Negative
+  // Google results cannot erase local human evidence when the drawing-aware
+  // review is unavailable or uncertain.
   const openai = await (options.classifyOpenAI || classifyOpenAIPersonPresence)(
     buffer, { tracking: options.tracking });
   providers.openai = openai;
@@ -217,13 +220,15 @@ async function verifyPersonClassification(buffer, classification, options) {
     return { classification: verifiedClassification, verification: { required: true,
       decision: 'person_confirmed_by_openai', confidence: openai.confidence, providers } };
   }
-  if (openai.available && openai.decision === 'uncertain') {
-    return { classification, verification: { required: true,
-      decision: 'uncertain', confidence: openai.confidence, providers } };
-  }
-
-  if (!googleAvailable && (!openai.available || openai.decision !== 'non_human')) {
-    return { classification, verification: {
+  if (!openai.available || openai.decision !== 'non_human') {
+    const localPeople = hasLocalPeople(classification);
+    return { classification: {
+      ...classification,
+      category: localPeople ? classification.category : null,
+      detectedCategories: localPeople ? classification.detectedCategories : [],
+      uncertain: true,
+      uncertainStage: 'personVerification',
+    }, verification: {
       required: true, decision: 'uncertain', confidence: openai.confidence || 0,
       providers,
     } };
@@ -231,8 +236,8 @@ async function verifyPersonClassification(buffer, classification, options) {
 
   const verification = {
     required: true,
-    decision: openai.available ? 'non_human_confirmed' : 'non_human_google_consensus',
-    confidence: openai.available ? openai.confidence : 1,
+    decision: 'non_human_confirmed',
+    confidence: openai.confidence,
     providers,
   };
   return { classification: nonHumanClassification(classification, verification), verification };

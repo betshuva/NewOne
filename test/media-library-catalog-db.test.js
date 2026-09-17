@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { Client } = require('pg');
+const { mediaLibraryName } = require('../server/media-library-name');
 const { personalMessageVisible, messageAfterConversationClear } = require('../server/conversation-history');
 
 const id = n => `22000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -18,14 +19,21 @@ function routes(db) {
   assert.ok(start > 0 && end > start);
   const callbacks = new Map();
   const auth = () => {};
-  vm.runInNewContext(source.slice(start, end), {
-    app: { get(route, guard, callback) { assert.equal(guard, auth); callbacks.set(route, callback); } },
-    auth, getPool: async () => db, personalMessageVisible, messageAfterConversationClear, console,
+  const renameStart = source.indexOf("app.patch('/api/media-library/:id', auth,");
+  const renameEnd = source.indexOf('async function deleteOwnMedia(', renameStart);
+  vm.runInNewContext(source.slice(start, end) + source.slice(renameStart, renameEnd), {
+    app: { get(route, guard, callback) { assert.equal(guard, auth); callbacks.set(route, callback); },
+      patch(route, guard, callback) { assert.equal(guard, auth); callbacks.set('PATCH ' + route, callback); } },
+    auth, getPool: async () => ({ query: db.query.bind(db),
+      connect: async () => ({ query: db.query.bind(db), release() {} }) }),
+    // This suite verifies inventory SQL. Filter projection is covered separately.
+    projectFilterMediaLibrary: async (_db, _user, rows) => rows, mediaLibraryName,
+    personalMessageVisible, messageAfterConversationClear, console,
   });
-  return async (route = '/api/media-library', userId = owner, query = {}) => {
+  return async (route = '/api/media-library', userId = owner, query = {}, payload = {}) => {
     let status = 200, body;
     const headers = {};
-    await callbacks.get(route)({ user: { id: userId }, query }, {
+    await callbacks.get(route)({ user: { id: userId }, query, params: {id: payload.id}, body: payload.body }, {
       status(code) { status = code; return this; },
       set(name, value) { headers[name] = value; return this; },
       json(value) { body = JSON.parse(JSON.stringify(value)); },
@@ -57,7 +65,7 @@ test('media catalog and pages aggregate unique owned files without leaking inacc
     await db.query(`CREATE TEMP TABLE stored_files(id uuid PRIMARY KEY,user_id uuid,original_name text,
         storage_path text,public_url text,mime_type text,file_type text,file_size bigint,
         moderation_status text,moderation_details jsonb,created_at timestamptz DEFAULT '2026-09-01',
-        released_at timestamptz);
+        released_at timestamptz,content_sha256 text,content_purged_at timestamptz);
       CREATE TEMP TABLE messages(id uuid PRIMARY KEY,sender_id uuid,recipient_id uuid,group_id uuid,
         file_url text,created_at timestamptz DEFAULT '2026-09-02',deleted_for_everyone boolean DEFAULT false,
         deleted_for_sender boolean DEFAULT false);
@@ -133,6 +141,70 @@ test('media catalog and pages aggregate unique owned files without leaking inacc
       const empty = await catalog(emptyOwner);
       assert.equal(empty.summary.totalCount,0); assert.equal(empty.summary.totalBytes,0);
       assert.deepEqual(empty.destinations,[]);
+    });
+
+    await t.test('exact content groups before pagination with all destinations and physical byte totals', async () => {
+      await reset();
+      await addFile(100); await addFile(101); await addFile(102); await addFile(103);
+      await addFile(104, 'image', 100, stranger);
+      await db.query('UPDATE stored_files SET content_sha256=$1', ['a'.repeat(64)]);
+      await db.query("UPDATE stored_files SET moderation_status='pending' WHERE id=$1", [id(103)]);
+      await addMessage(200,100,owner,friend);
+      await addMessage(201,101,owner,null,group);
+      let result = await library({limit:'1'});
+      assert.equal(result.total,2); assert.equal(result.totalBytes,400);
+      const grouped = (await library({destinationKind:'group',destinationId:group})).items[0];
+      assert.equal(grouped.id,id(100)); assert.equal(grouped.duplicateCount,3);
+      assert.deepEqual(grouped.duplicateIds,[id(100),id(101),id(102)]);
+      assert.equal(grouped.storageBytes,300); assert.equal(grouped.size,100);
+      assert.equal(grouped.referenceCount,2); assert.equal(grouped.canDelete,false);
+      assert.equal((await library({search:'file-102'})).items[0].id,id(100));
+      assert.deepEqual(grouped.destinations.map(d=>d.kind).sort(),['chat','group_chat']);
+      const summary = await catalog();
+      assert.equal(summary.summary.totalCount,2); assert.equal(summary.summary.totalBytes,400);
+      assert.deepEqual(summary.destinations.map(d=>[d.kind,d.count]),[['chat',1],['group',1]]);
+      assert.equal((await library({},stranger)).items[0].duplicateCount,1);
+      // Same-looking but nonidentical files remain separate.
+      await db.query('UPDATE stored_files SET content_sha256=$1 WHERE id=$2',['b'.repeat(64),id(102)]);
+      assert.equal((await library()).total,3);
+    });
+
+    await t.test('group backup and release states account for every copy', async () => {
+      await reset(); await addFile(100); await addFile(101);
+      await db.query('UPDATE stored_files SET content_sha256=$1', ['d'.repeat(64)]);
+      await db.query("UPDATE stored_files SET released_at=now() WHERE id=$1", [id(100)]);
+      await db.query(`INSERT INTO media_backup_items(stored_file_id,user_id,provider,status,remote_file_id,restore_verified_at)
+        VALUES($1,$2,'google_drive','verified','remote-copy',now())`, [id(101),owner]);
+      let item=(await library()).items[0];
+      assert.equal(item.hasBackup,true); assert.equal(item.backupStatus,'verified');
+      assert.equal(item.restoreVerified,true); assert.equal(item.releasedAt,null);
+      assert.equal((await library({backup:'local'})).total,1);
+      assert.equal((await library({backup:'released'})).total,0);
+      await db.query('UPDATE stored_files SET released_at=now()');
+      assert.equal((await library({backup:'released'})).total,1);
+      await db.query("UPDATE media_backup_items SET status='uploading'");
+      item=(await library()).items[0];
+      assert.equal(item.canDelete,false); assert.equal(item.backupStatus,'uploading');
+    });
+
+    await t.test('rename is owner-only, preserves extension and URLs, and names all exact copies', async () => {
+      await reset(); await addFile(100); await addFile(101); await addFile(102,'image',100,stranger);
+      await db.query("UPDATE stored_files SET content_sha256=$1,original_name='old.png'", ['c'.repeat(64)]);
+      await addMessage(200,100,owner,friend);
+      const rename = (user,name,file=id(100)) => request('PATCH /api/media-library/:id',user,{},
+        {id:file,body:{name}});
+      assert.equal((await rename(stranger,'wrong')).status,404);
+      for (const name of ['', '../bad', 'a/b', 'a\\b', 'x'.repeat(256), null])
+        assert.equal((await rename(owner,name)).status,400);
+      const result = await rename(owner,'שם חדש');
+      assert.equal(result.status,200); assert.equal(result.body.item.name,'שם חדש.png');
+      assert.equal(result.body.item.id,id(100)); assert.equal(result.body.item.duplicateCount,2);
+      assert.equal(result.body.item.url,'/catalog-100');
+      const names = (await db.query('SELECT original_name FROM stored_files ORDER BY id')).rows.map(r=>r.original_name);
+      assert.deepEqual(names,['שם חדש.png','שם חדש.png','old.png']);
+      assert.equal((await db.query('SELECT file_url FROM messages')).rows[0].file_url,'/catalog-100');
+      assert.equal((await library({search:'שם חדש'})).total,1);
+      assert.equal((await rename(owner,'missing','bad-id')).status,400);
     });
 
     await t.test('one deduplicated received file is counted once per destination across repeated delivery', async () => {

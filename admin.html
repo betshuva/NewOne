@@ -228,6 +228,29 @@ tr:hover td{background:rgba(33,38,45,.8)}
 #listings-panel{display:none}
 #moderation-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
 #files-panel{display:none;flex:1;flex-direction:column;overflow:hidden}
+#filter-timeline-panel{display:none;flex:1;min-width:0;flex-direction:column;overflow:hidden}
+.filter-timeline-form{display:flex;gap:12px;flex-wrap:wrap;align-items:end;padding:14px 20px;border-bottom:1px solid var(--border)}
+.filter-timeline-form label{display:flex;flex:1;min-width:170px;flex-direction:column;gap:5px;font-size:12px;color:var(--text2)}
+.filter-timeline-form input,.filter-timeline-form select{width:100%;min-height:36px;background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--text);font:inherit}
+.filter-timeline-form input:focus,.filter-timeline-form select:focus{outline:2px solid var(--blue-light);outline-offset:1px}
+.filter-timeline-note{padding:10px 20px;background:var(--bg2);color:var(--text2);font-size:12px;line-height:1.7;border-bottom:1px solid var(--border)}
+.filter-timeline-feed{flex:1;overflow:auto;padding:16px 20px}
+.filter-timeline-event{position:relative;background:var(--bg2);border:1px solid var(--border);border-right:4px solid var(--blue-light);border-radius:9px;padding:14px 16px;margin-bottom:12px;overflow-wrap:anywhere}
+.filter-timeline-event.blocked{border-right-color:var(--red)}
+.filter-timeline-event.reported,.filter-timeline-event.baseline{border-right-color:var(--orange)}
+.filter-timeline-heading{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:14px}
+.filter-timeline-heading time{font-size:12px;color:var(--text2);direction:ltr;unicode-bidi:isolate}
+.filter-timeline-meta,.filter-timeline-explanation{margin-top:8px;font-size:12px;color:var(--text2);line-height:1.7}
+.filter-timeline-explanation{color:var(--text)}
+.filter-timeline-event dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin-top:10px;font-size:12px}
+.filter-timeline-event dt{color:var(--text2)}
+.filter-timeline-event dd{margin:0}
+.filter-timeline-event code{direction:ltr;unicode-bidi:isolate;display:inline-block;font-size:11px}
+.filter-timeline-policy{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.filter-timeline-policy span{background:var(--bg3);border-radius:5px;padding:4px 8px;font-size:12px}
+.filter-timeline-event details{margin-top:12px;font-size:12px;color:var(--text2)}
+.filter-timeline-event summary{cursor:pointer}
+.filter-timeline-event pre{direction:ltr;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border-radius:6px;padding:12px;margin-top:8px;max-height:360px;overflow:auto}
 .mod-body{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px}
 .mod-section{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:10px}
 .mod-section h3{margin:0;font-size:15px;font-weight:700}
@@ -309,6 +332,7 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div class="sb-section">ניהול</div>
     <div class="sb-item" id="sb-newgroup-item" onclick="openNewGroupModal()">➕ קבוצה חדשה</div>
     <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
+    <div class="sb-item" id="sb-filter-timeline-item" onclick="showFilterTimelinePanel()">🕒 היסטוריית סינון</div>
     <div class="sb-item" id="sb-vision-item" onclick="showVisionPanel()">🔬 תוצאות Vision</div>
     <div class="sb-item" id="sb-image-test-item" onclick="showImageTestPanel()">🧪 בדיקת תמונה</div>
     <div class="sb-item" id="sb-scan-item" onclick="showScanPanel()">🔍 סריקות תוכן לא ראוי</div>
@@ -393,6 +417,41 @@ tr:hover td{background:rgba(33,38,45,.8)}
     </div>
     <div class="act-feed" id="act-feed"><div class="loader">טוען...</div></div>
     <div class="pagination" id="act-pagination"></div>
+  </div>
+
+  <!-- Filter audit timeline -->
+  <div id="filter-timeline-panel">
+    <div class="main-head">
+      <h1>🕒 היסטוריית סינון</h1>
+      <button class="btn-sm" onclick="loadFilterTimeline()">רענן</button>
+    </div>
+    <form class="filter-timeline-form" onsubmit="event.preventDefault();loadFilterTimeline()">
+      <label>חיפוש משתמש בשם או באימייל
+        <input id="filter-timeline-search" type="search" placeholder="חיפוש משתמש..." oninput="renderFilterTimelineUsers()" autocomplete="off"/>
+      </label>
+      <label>משתמש
+        <select id="filter-timeline-user" onchange="loadFilterTimeline()"><option value="">כל המשתמשים</option></select>
+      </label>
+      <label>מזהה הודעה
+        <input id="filter-timeline-message" dir="ltr" placeholder="אופציונלי" autocomplete="off"/>
+      </label>
+      <label>מזהה קובץ
+        <input id="filter-timeline-file" dir="ltr" placeholder="אופציונלי" autocomplete="off"/>
+      </label>
+      <button class="btn-sm" type="submit">הצג היסטוריה</button>
+    </form>
+    <div class="filter-timeline-note">
+      האירועים מוצגים מהחדש לישן. הזמן הראשי הוא זמן הרישום בשרת, לפי אזור הזמן של הדפדפן; זמן UTC זמין בפרטים.
+      מצב התחלתי מתעד את ההגדרות בעת יצירת הרשומה או הפעלת היומן ואינו משחזר שינויים קודמים.
+      דיווח תצוגה מהדפדפן אינו הוכחה שהמשתמש צפה בתמונה; שמירת הודעה בשרת אינה אישור מסירה למכשיר.
+      <div id="filter-timeline-started"></div>
+      <div id="filter-timeline-user-error" role="status"></div>
+    </div>
+    <div class="filter-timeline-feed" id="filter-timeline-feed" aria-live="polite"><div class="empty">בחר משתמש או הצג את האירועים האחרונים</div></div>
+    <div class="pagination">
+      <span id="filter-timeline-count" role="status"></span>
+      <button class="pag-btn" id="filter-timeline-more" onclick="loadFilterTimeline(true)" hidden>אירועים קודמים</button>
+    </div>
   </div>
 
   <!-- Scan Panel -->
@@ -658,6 +717,12 @@ async function doLogin() {
 }
 
 function logout() {
+  hideFilterTimelinePanel();
+  filterTimelineUsers = [];
+  filterTimelineEvents = [];
+  filterTimelineCursor = null;
+  document.getElementById('filter-timeline-feed').innerHTML = '';
+  document.getElementById('filter-timeline-user').innerHTML = '<option value="">כל המשתמשים</option>';
   localStorage.removeItem('bt_admin_token');
   token = null; adminPerm = null;
   document.getElementById('app').style.display = 'none';
@@ -723,6 +788,7 @@ const TABLE_PK = {
 };
 
 async function loadTable(name, offset=0) {
+  hideFilterTimelinePanel();
   currentTable  = name;
   currentOffset = offset;
 
@@ -1329,6 +1395,7 @@ async function rescanAll() {
 }
 
 function showVisionPanel() {
+  hideFilterTimelinePanel();
   document.getElementById('files-panel').style.display = 'none';
   document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);
@@ -1350,6 +1417,7 @@ let imageTestFile = null;
 let imageTestPreviewUrl = null;
 
 function showImageTestPanel() {
+  hideFilterTimelinePanel();
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
   document.getElementById('sb-image-test-item').classList.add('active');
@@ -1452,6 +1520,244 @@ async function runImageTest() {
     btn.disabled = false; btn.textContent = '🔬 בדוק תמונה';
   }
 }
+
+// ── Filter audit timeline ────────────────────────────────────────
+let filterTimelineUsers = [];
+let filterTimelineEvents = [];
+let filterTimelineCursor = null;
+let filterTimelineQuery = {};
+let filterTimelineRequest = 0;
+let filterTimelineSession = 0;
+let filterTimelineController = null;
+
+const FILTER_TIMELINE_CATEGORIES = {
+  text:'טקסט', nonHumanImages:'נוף וחפצים', men:'גברים',
+  women:'נשים', children:'ילדים', video:'וידאו',
+  enforceGeneralFilter:'אכיפת הסינון הכללי',
+};
+const FILTER_TIMELINE_KINDS = {
+  filter_baseline: ['תיעוד מצב התחלתי','baseline'],
+  filter_changed: ['הגדרות הסינון השתנו',''],
+  image_classified: ['סיווג התמונה עודכן',''],
+  decision_allowed: ['השרת אישר את התוכן לפי הסינון',''],
+  decision_blocked: ['השרת חסם את התוכן לפי הסינון','blocked'],
+  delivery_persisted: ['הודעה נשמרה בשרת',''],
+  delivery_blocked_persisted: ['נרשמה חסימת הודעה עבור המשתמש','blocked'],
+  client_displayed: ['דיווח מהדפדפן: תמונה הוצגה','reported'],
+  client_hidden: ['דיווח מהדפדפן: תמונה הוסתרה','reported'],
+  history_action: ['בחירה לגבי תמונות קיימות',''],
+  history_image_action: ['הבחירה הוחלה על תמונה קיימת',''],
+  history_action_applied: ['הבחירה לגבי תמונות קיימות הוחלה',''],
+  history_restored: ['תמונות מוסתרות הוחזרו לתצוגה',''],
+  history_cleanup: ['תוצאת ניקוי קבצים לאחר מחיקה מההיסטוריה',''],
+};
+const FILTER_TIMELINE_ACTIONS = {
+  hide:'הסתרה', delete:'מחיקה עבור המשתמש', keep:'השארה בתצוגה', restore:'החזרה לתצוגה',
+};
+
+function filterTimelineEscape(value) {
+  return escHtml(String(value == null ? '' : value));
+}
+
+function filterTimelineTime(value) {
+  const date = new Date(value);
+  if (!value || !Number.isFinite(date.getTime())) return 'זמן לא ידוע';
+  return date.toLocaleString('he-IL', {
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit',
+    fractionalSecondDigits:3, hour12:false,
+  });
+}
+
+function renderFilterTimelinePolicy(before, after) {
+  const previous = before && typeof before === 'object' ? before : null;
+  const current = after && typeof after === 'object' ? after : {};
+  const parts = Object.entries(FILTER_TIMELINE_CATEGORIES).flatMap(([key,label]) => {
+    if (typeof current[key] !== 'boolean') return [];
+    const format = value => key === 'enforceGeneralFilter'
+      ? (value ? 'פעילה' : 'כבויה') : (value ? 'מותר' : 'חסום');
+    const changed = previous && typeof previous[key] === 'boolean' && previous[key] !== current[key];
+    return ['<span>' + label + ': ' + (changed ? format(previous[key]) + ' ← ' : '') +
+      '<strong>' + format(current[key]) + '</strong></span>'];
+  });
+  return parts.length ? '<div class="filter-timeline-policy">' + parts.join('') + '</div>' : '';
+}
+
+function renderFilterTimelineEvent(event) {
+  const detail = event.details && typeof event.details === 'object' ? event.details : {};
+  const [title,tone] = FILTER_TIMELINE_KINDS[event.kind] || ['אירוע סינון נוסף',''];
+  const scopes = {general:'כללי',contact:'חבר',group:'קבוצה',group_member:'חבר בקבוצה',personal:'שיחה אישית'};
+  const scope = detail.level === 'member' ? 'הסינון האישי בקבוצה' : scopes[event.scope_type] || event.scope_type || '—';
+  const E = filterTimelineEscape;
+  const actor = event.actor_name || event.actor_id;
+  const identifiers = [
+    ['מזהה אירוע',event.id], ['משתמש',event.user_id],
+    ['תחום',event.scope_id], ['הודעה',event.message_id], ['קובץ',event.file_id],
+  ].filter(([,value]) => value != null && value !== '');
+  let explanation = '';
+  if (event.kind === 'filter_baseline') {
+    explanation = detail.source === 'installation_baseline'
+      ? 'זהו המצב שנמצא בעת הפעלת התיעוד. אין באירוע זה מידע על מועד שינוי ההגדרות בעבר.'
+      : 'זהו תיעוד מצב התחלתי. אין באירוע זה מידע על מועד שינוי ההגדרות בעבר.';
+  } else if (event.kind === 'delivery_persisted') {
+    explanation = 'ההודעה נרשמה בשרת. אירוע זה לבדו אינו מעיד שהגיעה למכשיר או הוצגה.';
+  } else if (event.kind === 'client_displayed' || event.kind === 'client_hidden') {
+    explanation = 'זהו דיווח מהדפדפן. זמן השרת הוא זמן קליטת הדיווח; זמן המכשיר, אם נשלח, אינו זמן מאומת.';
+  } else if (event.kind === 'history_cleanup') {
+    explanation = 'ניקוי הקבצים מתבצע לאחר המחיקה מההיסטוריה. כשל בניקוי קובץ אינו מבטל את המחיקה עבור המשתמש.';
+  } else if (event.kind === 'decision_allowed') {
+    explanation = 'החלטת סינון שהתקבלה בשרת. זו אינה הוכחה למסירה או לתצוגה.';
+  }
+  const action = detail.action || detail.historyAction || detail.history_action;
+  const knownAction = FILTER_TIMELINE_ACTIONS[action];
+  const count = detail.affectedCount ?? detail.affected_count ?? detail.count;
+  const actionHtml = knownAction && event.kind !== 'history_cleanup' ? '<div class="filter-timeline-explanation">בחירת המשתמש: <strong>' + knownAction +
+    '</strong>' + (Number.isSafeInteger(count) && count >= 0 ? ' · ' + count + ' תמונות' : '') + '</div>' : '';
+  const cleanupLabels = {
+    affectedCount:'תמונות שנמחקו מההיסטוריה',
+    deletedPersonalFiles:'קבצים אישיים שנוקו',
+    retainedSharedFiles:'קבצים שדולגו (משותפים או חסרים)',
+    failedFiles:'קבצים שניקוים נכשל',
+  };
+  const cleanupHtml = event.kind === 'history_cleanup'
+    ? '<div class="filter-timeline-policy">' + Object.entries(cleanupLabels)
+      .filter(([key]) => Number.isSafeInteger(detail[key]) && detail[key] >= 0)
+      .map(([key,label]) => '<span>' + label + ': <strong>' + detail[key] + '</strong></span>').join('') + '</div>'
+    : '';
+  const before = detail.before || detail.oldFilter || detail.old_filter;
+  const after = detail.after || detail.newFilter || detail.new_filter || detail.effectiveFilter ||
+    detail.effective_filter || (detail.policy && (detail.policy.filter || detail.policy.effectiveFilter || detail.policy)) || detail.filter;
+  const classification = detail.classification || detail.classifications;
+  let classificationHtml = '';
+  if (classification && typeof classification === 'object' && !Array.isArray(classification)) {
+    const categories = Array.isArray(classification.detectedCategories)
+      ? classification.detectedCategories : [classification.category].filter(Boolean);
+    if (categories.length) classificationHtml = '<div class="filter-timeline-meta">סיווג: ' +
+      categories.map(category => E(FILTER_TIMELINE_CATEGORIES[category] || category)).join(', ') + '</div>';
+  }
+  const snapshot = {serverTime:event.created_at,kind:event.kind,actorId:event.actor_id,details:detail};
+  return '<article class="filter-timeline-event ' + tone + '">' +
+    '<div class="filter-timeline-heading"><strong>' + title + '</strong>' +
+    '<time datetime="' + E(event.created_at) + '" title="' + E(event.created_at) + '">' +
+    E(filterTimelineTime(event.created_at)) + '</time></div>' +
+    '<div class="filter-timeline-meta">' + E(event.user_name || 'משתמש ללא שם') +
+    ' · סינון: ' + E(scope) + (actor ? ' · בוצע על ידי: ' + E(actor) : '') + '</div>' +
+    (explanation ? '<div class="filter-timeline-explanation">' + explanation + '</div>' : '') +
+    actionHtml + cleanupHtml + renderFilterTimelinePolicy(before, after) + classificationHtml +
+    '<dl>' + identifiers.map(([label,value]) => '<dt>' + label + '</dt><dd><code>' + E(value) + '</code></dd>').join('') + '</dl>' +
+    '<details><summary>פרטי האירוע, גרסאות הסינון וזמן UTC</summary><pre>' +
+    E(JSON.stringify(snapshot, null, 2)) + '</pre></details></article>';
+}
+
+function hideFilterTimelinePanel() {
+  filterTimelineSession++;
+  filterTimelineRequest++;
+  if (filterTimelineController) filterTimelineController.abort();
+  filterTimelineController = null;
+  document.getElementById('filter-timeline-panel').style.display = 'none';
+}
+
+function showFilterTimelinePanel() {
+  clearInterval(actTimer);
+  document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('sb-filter-timeline-item').classList.add('active');
+  ['main-area','perm-panel','activity-panel','scan-panel','vision-panel',
+    'image-test-panel','listings-panel','moderation-panel','files-panel']
+    .forEach(id => document.getElementById(id).style.display = 'none');
+  document.getElementById('filter-timeline-panel').style.display = 'flex';
+  loadFilterTimelineUsers();
+  loadFilterTimeline();
+}
+
+function renderFilterTimelineUsers() {
+  const select = document.getElementById('filter-timeline-user');
+  const selected = select.value;
+  const search = document.getElementById('filter-timeline-search').value.trim().toLocaleLowerCase();
+  const matches = filterTimelineUsers.filter(user => !search ||
+    [user.name,user.email,user.id].some(value => String(value || '').toLocaleLowerCase().includes(search)));
+  const selectedUser = filterTimelineUsers.find(user => String(user.id) === selected);
+  if (selectedUser && !matches.includes(selectedUser)) matches.unshift(selectedUser);
+  select.innerHTML = '<option value="">כל המשתמשים</option>' + matches.map(user => {
+    const label = (user.name || 'ללא שם') + (user.email ? ' · ' + user.email : ' · ' + user.id);
+    return '<option value="' + filterTimelineEscape(user.id) + '">' + filterTimelineEscape(label) + '</option>';
+  }).join('');
+  select.value = selected;
+}
+
+async function loadFilterTimelineUsers() {
+  const session = filterTimelineSession;
+  const requestToken = token;
+  const error = document.getElementById('filter-timeline-user-error');
+  error.textContent = '';
+  try {
+    const response = await fetch(API + '/api/admin/users', {headers:{Authorization:'Bearer ' + token}});
+    const data = await response.json();
+    if (session !== filterTimelineSession || token !== requestToken) return;
+    if (!response.ok || !Array.isArray(data)) throw new Error(data.error || 'לא ניתן לטעון את רשימת המשתמשים');
+    filterTimelineUsers = data.map(({id,name,email}) => ({id,name,email}));
+    renderFilterTimelineUsers();
+  } catch (err) {
+    if (session === filterTimelineSession && token === requestToken) error.textContent = err.message;
+  }
+}
+
+async function loadFilterTimeline(append = false) {
+  if (append && !filterTimelineCursor) return;
+  const request = ++filterTimelineRequest;
+  if (filterTimelineController) filterTimelineController.abort();
+  filterTimelineController = new AbortController();
+  const feed = document.getElementById('filter-timeline-feed');
+  const more = document.getElementById('filter-timeline-more');
+  const count = document.getElementById('filter-timeline-count');
+  if (!append) {
+    filterTimelineQuery = {
+      userId:document.getElementById('filter-timeline-user').value,
+      messageId:document.getElementById('filter-timeline-message').value.trim(),
+      fileId:document.getElementById('filter-timeline-file').value.trim(),
+    };
+    filterTimelineEvents = [];
+    filterTimelineCursor = null;
+    feed.innerHTML = '<div class="loader">טוען היסטוריית סינון...</div>';
+    count.textContent = '';
+  }
+  more.disabled = true;
+  more.hidden = !append;
+  const params = new URLSearchParams({limit:'50'});
+  Object.entries(filterTimelineQuery).forEach(([key,value]) => { if (value) params.set(key,value); });
+  if (append) params.set('before',filterTimelineCursor);
+  try {
+    const response = await fetch(API + '/api/admin/filter-timeline?' + params.toString(), {
+      headers:{Authorization:'Bearer ' + token}, signal:filterTimelineController.signal,
+    });
+    const data = await response.json();
+    if (request !== filterTimelineRequest) return;
+    if (!response.ok || !Array.isArray(data.events)) throw new Error(data.error || 'טעינת היסטוריית הסינון נכשלה');
+    const knownIds = new Set(filterTimelineEvents.map(event => String(event.id)));
+    filterTimelineEvents.push(...data.events.filter(event => !knownIds.has(String(event.id))));
+    filterTimelineCursor = data.nextCursor || null;
+    feed.innerHTML = filterTimelineEvents.length
+      ? filterTimelineEvents.map(renderFilterTimelineEvent).join('')
+      : '<div class="empty">לא נמצאו אירועים מתועדים לבחירה זו. פעולות שבוצעו לפני הפעלת היומן אינן משוחזרות.</div>';
+    if (!append) feed.scrollTop = 0;
+    count.textContent = filterTimelineEvents.length + ' אירועים מוצגים' +
+      (filterTimelineCursor ? '' : ' · סוף התיעוד הזמין');
+    document.getElementById('filter-timeline-started').textContent = data.recordingStartedAt
+      ? 'התיעוד החל: ' + filterTimelineTime(data.recordingStartedAt) : '';
+    more.hidden = !filterTimelineCursor;
+  } catch (error) {
+    if (request !== filterTimelineRequest || error.name === 'AbortError') return;
+    if (append) {
+      count.textContent = 'טעינת אירועים קודמים נכשלה: ' + error.message;
+      more.hidden = false;
+    } else {
+      feed.innerHTML = '<div class="empty" style="color:var(--red)">' + filterTimelineEscape(error.message) + '</div>';
+    }
+  } finally {
+    if (request === filterTimelineRequest) more.disabled = false;
+  }
+}
+
+// ── End filter audit timeline ────────────────────────────────────
 
 // ── New Group Modal ───────────────────────────────────────────────
 let ngAllUsers = [];
@@ -1663,6 +1969,7 @@ async function loadActivity(offset = 0) {
 }
 
 function showActivityPanel() {
+  hideFilterTimelinePanel();
   document.getElementById('files-panel').style.display = 'none';
   document.getElementById('image-test-panel').style.display = 'none';
   document.querySelectorAll('.sb-item').forEach(el => el.classList.remove('active'));
@@ -1682,6 +1989,7 @@ function showActivityPanel() {
 
 // ── Permissions Panel ─────────────────────────────────────────────
 function showPermPanel() {
+  hideFilterTimelinePanel();
   document.getElementById('files-panel').style.display = 'none';
   document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);
@@ -1754,6 +2062,7 @@ let scanOffset    = 0;
 const SCAN_PAGE   = 100;
 
 function showScanPanel() {
+  hideFilterTimelinePanel();
   document.getElementById('files-panel').style.display = 'none';
   document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);
@@ -1943,6 +2252,7 @@ function formatBytes(n) {
 }
 
 function showFilesPanel() {
+  hideFilterTimelinePanel();
   clearInterval(actTimer);
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
   document.getElementById('sb-files-item').classList.add('active');
@@ -1982,6 +2292,7 @@ async function loadFiles(offset=0) {
 
 // ── Listings Panel ───────────────────────────────────────────────
 function showListingsPanel() {
+  hideFilterTimelinePanel();
   document.getElementById('files-panel').style.display = 'none';
   document.getElementById('image-test-panel').style.display = 'none';
   document.querySelectorAll('.sb-item').forEach(el=>el.classList.remove('active'));
@@ -2001,6 +2312,7 @@ const DEFAULT_FEMALE_LABELS_ADMIN = ['woman','women','girl','female','lady','lad
 const DEFAULT_BLOCKED_WORDS_ADMIN = ['עירום','פורנו','סקס','ניאוף','תועבה','זנות','חשפנות','porn','nude','naked','xxx','sex','erotic','adult content'];
 
 function showModerationPanel() {
+  hideFilterTimelinePanel();
   document.getElementById('files-panel').style.display = 'none';
   document.getElementById('image-test-panel').style.display = 'none';
   clearInterval(actTimer);

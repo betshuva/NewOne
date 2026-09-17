@@ -7,8 +7,6 @@ const path = require('node:path');
 
 const source = fs.readFileSync(
   path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
-const policySource = fs.readFileSync(
-  path.join(__dirname, '..', 'server', 'content-filter-policy.js'), 'utf8');
 const { imageAllowedByFilter } = require('../server/content-filter-policy');
 
 test('people umbrella does not override a permitted specific classification', () => {
@@ -37,14 +35,25 @@ test('people-only classification remains conservative', () => {
   }), true);
 });
 
-test('unresolved image classifications require every image category', () => {
-  const start = policySource.indexOf('function imageAllowedByFilter');
-  const end = policySource.indexOf('function contentAllowedByFilter', start);
-  const filterSource = policySource.slice(start, end);
-  assert.match(filterSource, /classification\?\.uncertain === true/);
-  assert.match(filterSource, /\['men', 'women', 'children', 'nonHumanImages'\]/);
-  assert.match(filterSource, /\.every\(category => filter\[category\] === true\)/);
-  assert.doesNotMatch(filterSource, /uncertain[\s\S]*return true/);
+test('unresolved image classifications require every people category, even a tentative landscape', () => {
+  const allowed = { men: true, women: true, children: true, nonHumanImages: false };
+  for (const classification of [{ uncertain: true }, { category: 'nonHumanImages', uncertain: true }]) {
+    assert.equal(imageAllowedByFilter(allowed, classification), true);
+    for (const category of ['men', 'women', 'children'])
+      assert.equal(imageAllowedByFilter({ ...allowed, [category]: false }, classification), false);
+  }
+});
+
+test('raw legacy filters permit landscapes while preserving mixed-image restrictions', () => {
+  const filter = { men: false, women: false, children: false, nonHumanImages: false };
+  for (const classification of [
+    { category: 'nonHumanImages' },
+    { detectedCategories: ['nonHumanImages'] },
+  ]) assert.equal(imageAllowedByFilter(filter, classification), true);
+  for (const category of ['men', 'women', 'children', 'people'])
+    assert.equal(imageAllowedByFilter(filter, {
+      detectedCategories: ['nonHumanImages', category],
+    }), false);
 });
 
 test('uncertain destination-filter rejections explain the conservative decision', () => {

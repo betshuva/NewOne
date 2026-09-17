@@ -43,6 +43,9 @@ const {
   getDriveFile,
 } = require('./google-drive');
 const personalDrive = require('./personal-drive');
+const { mediaLibraryName } = require('./media-library-name');
+const { registerMediaRenameRoutes } = require('./media-rename');
+const { MEDIA_DELETE_SCHEMA, createMediaLibraryDeletion } = require('./media-library-delete');
 const { decryptBuffer: decryptBackupBuffer, deriveKey: deriveBackupKey,
   encryptBuffer: encryptBackupBuffer } =
   require('./media-backup-crypto');
@@ -55,6 +58,7 @@ const {
   isAudioTranscriptionBusy,
 } = require('./audio-moderation');
 const { encryptMessageText, decryptMessageText } = require('./message-at-rest');
+const { inlineEmojiModerationText, inlineEmojiPlainText } = require('./inline-custom-emoji');
 const {
   DEFAULT_CONTENT_FILTER,
   NEW_ACCOUNT_CONTENT_FILTER,
@@ -63,6 +67,11 @@ const {
   normalizeContentFilter,
   resolveScopedContentFilter,
 } = require('./content-filter-policy');
+const { projectProfileImages } = require('./profile-image-policy');
+const { assertSenderMediaAllowed } = require('./sender-content-filter');
+const { initializeFilterAudit, registerFilterAuditRoutes, recordFilterEvent, recordFilterDecision } = require('./filter-audit');
+const { FILTER_MEDIA_SCHEMA, lockFilterOwner, prepareFilterHistoryChange,
+  finishFilterHistoryChange, projectFilteredHistory, projectFilterMediaLibrary, projectOwnScans, registerFilterHistoryRoutes } = require('./filter-media-history');
 const { registerMessageReactions } = require('./message-reactions');
 const { CONVERSATION_SCHEMA, messageAfterConversationClear, personalMessageVisible, registerConversationHistory } = require('./conversation-history');
 const { createReceivedMediaService, personalizeReceivedMessages,
@@ -72,6 +81,9 @@ const { imageClassificationOutcome } = require('./image-classification-outcome')
 const { generateGuideAnswer, localGuideAnswer } = require('./system-guide-ai');
 const { answerUserDataQuestion, executeGuideDataPlan } = require('./guide-user-data');
 const { registerGuideMessageSend } = require('./guide-message-send');
+const { notifyGuideFilterBlock, shortFilterReason, formatGroupFilterNotice,
+  projectGuideFilterNotice } = require('./guide-filter-notice');
+const { notifyGuideRejectedSend } = require('./guide-rejection-notice');
 const { guideFileId, loadOwnedGuideFile, readGuideFileBytes,
   persistGuideSpreadsheetReply, registerGuideFileRoutes } = require('./guide-files');
 const { generateSafeInformationAnswer } = require('./safe-information-ai');
@@ -89,16 +101,31 @@ const DRIVE_MEDIA_CACHE_MAX_BYTES = Number(process.env.DRIVE_MEDIA_CACHE_MAX_BYT
   20 * 1024 * 1024 * 1024;
 const driveMediaLoads = new Map();
 
+async function projectContactProfiles(pool, viewerId, rows, options) {
+  return projectProfileImages(pool, viewerId,
+    await projectContactPhones(pool, viewerId, rows, options));
+}
+
 async function recipientMediaMessage(pool, userId, message) {
   if (!message.fileUrl && !message.file_url) return message;
+  const hidden = { ...message, fileUrl: null, file_url: null, text: null, body: null,
+    filter_hidden: true, hidden_reason: 'content_filter' };
+  let filtered;
   try {
-    const personalized = await personalizeReceivedMessages(pool, userId, [message]);
-    return personalized[0] || message;
+    filtered = await projectFilteredHistory(pool, userId, [message],
+      { groupId: message.groupId || message.group_id || null });
   } catch (error) {
-    // Receipt retention is queued in the message transaction. A temporarily
-    // unavailable personal copy must not prevent delivery of its source.
+    console.error('[received-media:filter]', error.message);
+    return hidden;
+  }
+  if (!filtered.length) return hidden;
+  try {
+    const personalized = await personalizeReceivedMessages(pool, userId, filtered);
+    return personalized[0] || filtered[0];
+  } catch (error) {
+    // A failed personal-copy lookup may use only the already filtered source.
     console.error('[received-media:delivery]', error.message);
-    return message;
+    return filtered[0];
   }
 }
 
@@ -576,7 +603,7 @@ async function sendPush(userId, title, body, data = {}) {
     if (!tokens.length) return;
     const response = await getFirebaseMessaging().sendEachForMulticast({
       tokens,
-      notification: { title: title || 'בתשובה', body: body || '' },
+      notification: { title: title || 'בתשובה', body: inlineEmojiPlainText(body) },
       data: Object.fromEntries(Object.entries(data).map(([key, value]) =>
         [key, String(value)])),
       android: {
@@ -1040,7 +1067,7 @@ let FEMALE_LABELS = [...DEFAULT_FEMALE_LABELS];
 let BLOCKED_WORDS = [...DEFAULT_BLOCKED_WORDS];
 
 function normalizeModerationText(value) {
-  return String(value || '')
+  return inlineEmojiModerationText(value)
     .normalize('NFKC')
     .toLowerCase()
     .replace(/[\u0591-\u05C7]/g, '')
@@ -1164,7 +1191,9 @@ async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
   };
 }
 
-async function buildGroupDeliveryPlan(pool, groupId, senderId, type, classification) {
+async function buildGroupDeliveryPlan(pool, groupId, senderId, type, classification, auditContext = {}) {
+  const groupPolicy = await getGroupContentFilter(pool, groupId);
+  const groupAllows = contentAllowedByFilter(groupPolicy, type, classification);
   const members = await pool.query(
     `SELECT gm.user_id, u.name,
             betshuva_effective_filter(u.content_filter, COALESCE(gm.filter_override,
@@ -1176,15 +1205,26 @@ async function buildGroupDeliveryPlan(pool, groupId, senderId, type, classificat
     [groupId, senderId]);
   const delivered = [];
   const blocked = [];
+  const blockedNotices = [];
   for (const member of members.rows) {
     const target = { id: member.user_id, name: member.name };
-    if (contentAllowedByFilter(member.content_filter, type, classification))
+    if (groupAllows && contentAllowedByFilter(member.content_filter, type, classification))
       delivered.push(target);
-    else blocked.push(target);
+    else {
+      blocked.push(target);
+      blockedNotices.push({ ...target, filter: groupAllows ? member.content_filter : groupPolicy,
+        fileType: type, classification });
+      await recordFilterDecision(pool, { userId: member.user_id, actorId: senderId,
+        scopeType: 'group', scopeId: groupId, messageType: type, classification,
+        policy: groupAllows ? member.content_filter : groupPolicy,
+        source: groupAllows ? 'group_recipient_policy' : 'group_current_policy',
+        messageId: auditContext.messageId, fileUrl: auditContext.fileUrl });
+    }
   }
   return {
     delivered,
     blocked,
+    blockedNotices,
     summary: {
       deliveredCount: delivered.length,
       blockedCount: blocked.length,
@@ -1201,6 +1241,117 @@ async function getGroupContentFilter(pool, groupId) {
      WHERE g.id=$1`, [groupId]);
   return result.rows.length
     ? normalizeContentFilter(result.rows[0].content_filter) : null;
+}
+
+// A rejected destination never receives these messages. Validate existing media
+// access before creating any guide row (which itself would otherwise grant access).
+async function notifyDestinationFilterBlock(pool, {
+  userId, groupId, toUserId, fileUrl, filter, reason, noticeText,
+}) {
+  if (!fileUrl || !userId || (!groupId && !toUserId) ||
+      [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID, SCAN_BOT_ID].includes(toUserId)) return null;
+  try {
+    const loadFile = async (db, locked = false) => {
+      const found = await db.query(`SELECT id,file_type,original_name,moderation_details
+        FROM stored_files WHERE public_url=$1 AND moderation_status='approved'
+          AND content_purged_at IS NULL${locked ? ' FOR SHARE' : ''}`, [fileUrl]);
+      return found.rows[0] || null;
+    };
+    const file = await loadFile(pool);
+    if (!file || !['image', 'video', 'audio', 'document'].includes(file.file_type)) return null;
+    // General/guide visibility remains separate from the rejected destination.
+    if (!await validateApprovedFile(pool, userId, fileUrl, 'general', null)) return null;
+    const target = await pool.query(groupId
+      ? 'SELECT name FROM groups WHERE id=$1'
+      : 'SELECT name FROM users WHERE id=$1', [groupId || toUserId]);
+    if (!target.rows.length) return null;
+    const classification = file.moderation_details?.classification || null;
+    // Client-supplied type/name must not fabricate a failure for an allowed file.
+    if (filter && contentAllowedByFilter(filter, file.file_type, classification)) return null;
+    const explanation = shortFilterReason({ filter, fileType: file.file_type,
+      classification, reason });
+    const result = await notifyGuideFilterBlock({ pool, guideUserId: SYSTEM_USER_ID,
+      guideUserName: SYSTEM_USER_NAME, userId,
+      targetType: groupId ? 'group' : 'chat', targetId: groupId || toUserId,
+      targetName: target.rows[0].name, fileUrl, fileName: file.original_name,
+      fileType: file.file_type, classification, reason: explanation, noticeText,
+      authorize: async client => {
+        await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [userId]);
+        const current = await loadFile(client, true);
+        if (!current || current.id !== file.id || current.file_type !== file.file_type ||
+            JSON.stringify(current.moderation_details?.classification || null) !==
+              JSON.stringify(classification)) return false;
+        return validateApprovedFile(client, userId, fileUrl, 'general', null);
+      },
+      relay: async (recipientId, event, message) => relay(recipientId, event,
+        await recipientMediaMessage(pool, recipientId, message)),
+    });
+    if (result && !result.duplicate) {
+      const pushText = noticeText ||
+        `נחסם ל${groupId ? 'קבוצה ' : ''}${target.rows[0].name}: ${explanation}`;
+      await sendPush(userId, SYSTEM_USER_NAME, pushText.slice(0, 600),
+        { type: 'chat', fromUserId: SYSTEM_USER_ID });
+    }
+    return result;
+  } catch (error) {
+    // A notification failure must never turn a rejection into a delivery.
+    if (error.code !== 'SENDER_CONTENT_FILTERED')
+      console.error('guide filter notice:', error.code || error.name);
+    return null;
+  }
+}
+
+async function notifyGroupFilterBlocks(pool, { userId, groupId, fileUrl, deliveryPlan }) {
+  if (!fileUrl || !deliveryPlan.blockedNotices?.length) return;
+  try {
+    const group = await pool.query('SELECT name FROM groups WHERE id=$1', [groupId]);
+    if (!group.rows.length) return;
+    await notifyDestinationFilterBlock(pool, { userId, groupId, fileUrl,
+      noticeText: formatGroupFilterNotice(group.rows[0].name, deliveryPlan.blockedNotices) });
+  } catch (error) {
+    console.error('guide group filter notice:', error.code || error.name);
+  }
+}
+
+// Sender-policy and safety rejections are explained without sending the
+// rejected file back through the guide. Called at rejection time only.
+async function notifyRejectedSend(pool, { userId, groupId, toUserId, fileId, fileUrl,
+  error, reason, kind = 'sender_filter' }) {
+  try {
+    const decision = error?.senderDecision;
+    const found = await pool.query(`SELECT id,user_id,file_type,moderation_status,
+      moderation_details,content_purged_at FROM stored_files
+      WHERE ($1::uuid IS NOT NULL AND id=$1) OR ($1::uuid IS NULL AND public_url=$2) LIMIT 1`,
+    [fileId || decision?.fileId || null, fileUrl || decision?.fileUrl || null]);
+    const file = found.rows[0];
+    if (!file || !['image', 'video', 'audio', 'document'].includes(file.file_type)) return null;
+    if (kind === 'moderation' && file.moderation_status !== 'rejected') return null;
+    const targetType = groupId ? 'group' : toUserId ? 'chat' : 'general';
+    const explanation = kind === 'sender_filter'
+      ? shortFilterReason({ filter: decision?.policy,
+        classification: decision?.classification || file.moderation_details?.classification,
+        fileType: file.file_type, reason: reason || error?.message })
+      : reason || file.moderation_details?.reason;
+    return await notifyGuideRejectedSend({ pool, guideUserId: SYSTEM_USER_ID,
+      guideUserName: SYSTEM_USER_NAME, userId, targetType, targetId: groupId || toUserId || null,
+      fileId: file.id, fileType: file.file_type, kind, reason: explanation,
+      authorize: async client => {
+        const access = await client.query(`SELECT 1 FROM stored_files sf WHERE sf.id=$2
+          AND ($3<>'moderation' OR sf.moderation_status='rejected')
+          AND (sf.user_id=$1 OR ($3='sender_filter' AND (
+            EXISTS (SELECT 1 FROM messages m WHERE m.file_url=sf.public_url
+              AND ${personalMessageVisible('m', '$1')})
+            OR EXISTS (SELECT 1 FROM shared_gifs sg WHERE sg.stored_file_id=sf.id AND sg.status='active'))))`,
+        [userId, file.id, kind]);
+        return access.rows.length > 0;
+      },
+      relay: (recipientId, event, message) => relay(recipientId, event, message),
+    });
+  } catch (noticeError) {
+    // Explanation failures never change the original rejection or expose media.
+    console.error('guide rejection notice:', noticeError.code || noticeError.name);
+    return null;
+  }
 }
 
 async function validateApprovedFile(pool, userId, fileUrl, contextType, contextId) {
@@ -1223,13 +1374,17 @@ async function validateApprovedFile(pool, userId, fileUrl, contextType, contextI
        )
      )`,
     [userId, fileUrl, contextType, contextId]);
-  if (result.rows.length > 0) return true;
+  if (result.rows.length > 0) {
+    await assertSenderFileAllowed(pool, userId, fileUrl, contextType, contextId, 'approved_file_send');
+    return true;
+  }
   const shared = await pool.query(
     `SELECT sf.moderation_details FROM shared_gifs sg
      JOIN stored_files sf ON sf.id=sg.stored_file_id
      WHERE sf.public_url=$1 AND sf.moderation_status='approved'
        AND sg.status='active'`, [fileUrl]);
   if (!shared.rows.length) return false;
+  await assertSenderFileAllowed(pool, userId, fileUrl, contextType, contextId, 'shared_gif_send');
   if (contextType === 'chat') {
     const policy = await getEffectiveRecipientFilter(pool, contextId, userId);
     if (!policy?.isContact) return false;
@@ -1237,6 +1392,43 @@ async function validateApprovedFile(pool, userId, fileUrl, contextType, contextI
       policy.filter, shared.rows[0].moderation_details?.classification);
   }
   return true;
+}
+
+async function assertSenderFileAllowed(db, userId, fileUrl, contextType, contextId, source) {
+  const result = await db.query(`SELECT id,file_type,moderation_details FROM stored_files WHERE public_url=$1`, [fileUrl]);
+  const file = result.rows[0];
+  if (!file) return;
+  const policy = await assertSenderMediaAllowed(db, { userId,
+    contextType: contextId === SCAN_BOT_ID ? 'general' : contextType,
+    contextId: contextId === SCAN_BOT_ID ? null : contextId,
+    type: file.file_type, classification: file.moderation_details?.classification,
+    fileId: file.id, fileUrl, source });
+  if (policy && ['sender_persist','sender_delayed_persist'].includes(source))
+    await recordFilterDecision(db, { userId, actorId: userId,
+      scopeType: contextType === 'chat' ? 'contact' : contextType,
+      scopeId: contextId || null, messageType: file.file_type,
+      classification: file.moderation_details?.classification, policy,
+      fileId: file.id, allowed: true, source });
+  return policy;
+}
+
+async function writeSenderFilteredMedia(pool, options, write) {
+  if (!options.fileUrl) return write(pool);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // The preference writer takes FOR UPDATE; hold this snapshot through INSERT.
+    await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [options.userId]);
+    await assertSenderFileAllowed(client, options.userId, options.fileUrl,
+      options.contextType, options.contextId, 'sender_persist');
+    const result = await write(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (error.senderDecision) await recordFilterDecision(pool, error.senderDecision);
+    throw error;
+  } finally { client.release(); }
 }
 
 async function getStoredImageClassification(pool, fileUrl) {
@@ -1368,11 +1560,11 @@ async function saveScanBotReport(pool, userId, file, fileUrl, scanResult, status
      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,created_at`,
     [SCAN_BOT_ID, userId, file.dbType, body, fileUrl, file.name, file.size]);
   const sid = onlineUsers.get(userId);
-  if (sid) io.to(sid).emit('chat:message', {
+  if (sid) io.to(sid).emit('chat:message', await recipientMediaMessage(pool, userId, {
     id: saved.rows[0].id, fromUserId: SCAN_BOT_ID, fromName: 'סריקה',
     text: body, createdAt: saved.rows[0].created_at, fileType: file.dbType,
     fileUrl, fileName: file.name, fileSize: file.size,
-  });
+  }));
   return body;
 }
 
@@ -1993,7 +2185,7 @@ async function scanStaticImage(buffer, options = {}) {
 
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
-const MODERATION_CACHE_VERSION = '2026-09-06-classification-verification-13';
+const MODERATION_CACHE_VERSION = '2026-09-17-illustrated-person-verification-14';
 
 async function scanImage(buffer, options = {}) {
   // Recognize exact library bytes before invoking any content-analysis provider.
@@ -3018,6 +3210,8 @@ async function migrateDatabase() {
       )`);
 
     await migrateReceivedMedia(pool);
+    await pool.query(FILTER_MEDIA_SCHEMA);
+    await initializeFilterAudit(pool);
     console.log('Migration: all tables ready');
 
     // Load moderation lists from DB (if saved), else seed defaults
@@ -3241,6 +3435,8 @@ async function handleSystemAction(pool, userId, question) {
     const allowedKey = GROUP_FILTER_ACTIONS.some(item => item.key === payload.key);
     if (!allowedKey)
       return 'הפעולה אינה תקינה ולא בוצע שינוי.';
+    if (payload.key === 'text' || payload.key === 'nonHumanImages')
+      return 'טקסט ותמונות נוף או חפצים מותרים תמיד ואינם ניתנים לחסימה בהגדרות הסינון.';
     if (pending.rows[0].action === 'set_group_filter') {
       const updated = await pool.query(
         `UPDATE groups g SET content_filter=jsonb_set(
@@ -3277,7 +3473,9 @@ async function handleSystemAction(pool, userId, question) {
   if (!asksGroupChange && !asksFilterChange) return null;
   const category = GROUP_FILTER_ACTIONS.find(item => item.pattern.test(text));
   if (!category)
-    return 'איזו קטגוריה לשנות? אפשר לבחור נשים, גברים, ילדים, וידאו, טקסט או תמונות נוף או חפצים.';
+    return 'איזו קטגוריה לשנות? אפשר לבחור נשים, גברים, ילדים או וידאו. טקסט ותמונות נוף או חפצים מותרים תמיד.';
+  if (category.key === 'text' || category.key === 'nonHumanImages')
+    return 'טקסט ותמונות נוף או חפצים מותרים תמיד ואינם ניתנים לחסימה בהגדרות הסינון.';
   const enabled = /(?:^|\s)(אפשר|התר)/.test(text) && !/אל תאפשר/.test(text);
   const normalized = text.replace(/\s+/g, '').toLowerCase();
   if (!asksGroupChange) {
@@ -3515,6 +3713,11 @@ const serveReleasedDriveMedia = async (req, res, next) => {
     if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
       return res.status(400).end();
     const pool = await getPool();
+    const deleted = await pool.query('SELECT 1 FROM deleted_media_sources WHERE storage_path=$1 LIMIT 1', [relativePath]);
+    if (deleted.rows.length) {
+      res.set('Cache-Control', 'private, no-store');
+      return res.status(404).end();
+    }
     const moderation = await pool.query(
       `SELECT moderation_status,file_type,moderation_details FROM stored_files
        WHERE storage_path=$1 LIMIT 1`,
@@ -4257,7 +4460,11 @@ io.on('connection', async (socket) => {
         let input;
         try { input = await resolveSystemInput(pool, socket.user.id, toUserId,
           { text, fileUrl, fileName }); }
-        catch (error) { socket.emit('message:rejected', { toUserId, reason: error.message }); return; }
+        catch (error) {
+          if (error.code === 'SENDER_CONTENT_FILTERED')
+            await notifyRejectedSend(pool, { userId: socket.user.id, toUserId, fileUrl, error });
+          socket.emit('message:rejected', { toUserId, reason: error.message }); return;
+        }
         const exchange = await createSystemExchange(
           pool, socket.user.id, input.question, input.file, toUserId);
         socket.emit('chat:message', {
@@ -4293,6 +4500,12 @@ io.on('connection', async (socket) => {
         pool, toUserId, socket.user.id);
       if (!contentAllowedByFilter(
           recipientPolicy?.filter, msgType === 'sticker' ? 'text' : msgType, classification)) {
+        await recordFilterDecision(pool, { userId: toUserId, actorId: socket.user.id,
+          scopeType: 'contact', scopeId: socket.user.id, messageType: msgType,
+          classification, policy: recipientPolicy?.filter, fileUrl,
+          source: 'direct_socket_send' });
+        await notifyDestinationFilterBlock(pool, { userId: socket.user.id, toUserId,
+          fileUrl, filter: recipientPolicy?.filter });
         socket.emit('message:rejected', { toUserId,
           reason: 'סוג התוכן חסום בהגדרות הנמען' });
         return;
@@ -4341,11 +4554,12 @@ io.on('connection', async (socket) => {
           return;
         }
       }
-      const saved = await pool.query(
+      const saved = await writeSenderFilteredMedia(pool, { userId: socket.user.id, fileUrl,
+      contextType: 'chat', contextId: toUserId }, client => client.query(
         `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, created_at`,
-        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
+        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]));
       const row = saved.rows[0];
       await pool.query(
         `INSERT INTO message_status (message_id, user_id, status)
@@ -4376,6 +4590,12 @@ io.on('connection', async (socket) => {
         { type: 'chat', fromUserId: socket.user.id });
     } catch (e) {
       console.error('chat:message save:', e.message);
+      if (e.code === 'SENDER_CONTENT_FILTERED') {
+        await notifyRejectedSend(await getPool(), { userId: socket.user.id, toUserId, fileUrl, error: e });
+        socket.emit('message:rejected', { toUserId, fileUrl, code: e.code,
+          blockedBy: 'sender_filter', reason: e.message });
+        return;
+      }
       relay(toUserId, 'chat:message', { fromUserId: socket.user.id, fromName: socket.user.name, text });
     }
   });
@@ -4441,6 +4661,12 @@ io.on('connection', async (socket) => {
       const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
       if (!contentAllowedByFilter(effectiveGroupFilter,
           msgType === 'sticker' ? 'text' : msgType, classification)) {
+        await recordFilterDecision(pool, { userId: socket.user.id, actorId: socket.user.id,
+          scopeType: 'group', scopeId: groupId, messageType: msgType,
+          classification, policy: effectiveGroupFilter, fileUrl,
+          source: 'group_socket_send' });
+        await notifyDestinationFilterBlock(pool, { userId: socket.user.id, groupId,
+          fileUrl, filter: effectiveGroupFilter });
         socket.emit('message:rejected', { groupId, clientMessageId,
           reason: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה' });
         return;
@@ -4453,16 +4679,20 @@ io.on('connection', async (socket) => {
         return;
       }
 
-      const saved = await pool.query(
+      const saved = await writeSenderFilteredMedia(pool, { userId: socket.user.id, fileUrl,
+      contextType: 'group', contextId: groupId }, client => client.query(
         `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, created_at`,
-        [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]);
+        [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]));
       const row = saved.rows[0];
       const deliveryPlan = await buildGroupDeliveryPlan(
-        pool, groupId, socket.user.id, msgType, classification);
+        pool, groupId, socket.user.id, msgType, classification,
+        { messageId: row.id, fileUrl });
       await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
         [JSON.stringify(deliveryPlan.summary), row.id]);
+      await notifyGroupFilterBlocks(pool, { userId: socket.user.id, groupId,
+        fileUrl, deliveryPlan });
       const outgoingGroupMessage = {
         id:         row.id,
         groupId,
@@ -4494,7 +4724,14 @@ io.on('connection', async (socket) => {
           sendPush(recipient.id, `${groupName} • ${socket.user.name}`,
             pushBody, { type: 'group', groupId });
       }
-    } catch (e) { console.error('group:message:', e.message); }
+    } catch (e) {
+      console.error('group:message:', e.message);
+      if (e.code === 'SENDER_CONTENT_FILTERED') {
+        await notifyRejectedSend(await getPool(), { userId: socket.user.id, groupId, fileUrl, error: e });
+        socket.emit('message:rejected', {
+          groupId, clientMessageId, fileUrl, code: e.code, blockedBy: 'sender_filter', reason: e.message });
+      }
+    }
   });
 
   socket.on('group:typing', ({ groupId }) => {
@@ -4923,7 +5160,9 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
     logActivity(user.id, 'google_register', { email: user.email }, req.ip);
     // הודע לכל המחוברים על משתמש חדש
     req.app.get('io').emit('users:new', {
-      id: user.id, name: user.name, email: user.email, profile_pic_url: user.profile_pic_url || null
+      // Broadcast recipients have different filters; directory refreshes
+      // provide each viewer with their permitted profile image.
+      id: user.id, name: user.name, email: user.email, profile_pic_url: null
     });
     const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser });
@@ -5011,7 +5250,8 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
       ) last_msg ON TRUE WHERE u.id=$1`, [req.user.id]);
     const contacts = await projectContactPhones(pool, req.user.id, result.rows);
     res.set('Cache-Control', 'no-store');
-    res.json([...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...contacts]);
+    res.json(await projectProfileImages(pool, req.user.id,
+      [...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...contacts]));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -5043,7 +5283,7 @@ app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
         GOOGLE_PLAY_REVIEWER_ID,
       ]);
     res.set('Cache-Control', 'no-store');
-    res.json(await projectContactPhones(pool, req.user.id, result.rows));
+    res.json(await projectContactProfiles(pool, req.user.id, result.rows));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -5087,7 +5327,7 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
         GOOGLE_PLAY_REVIEWER_ID,
       ]);
     res.set('Cache-Control', 'no-store');
-    res.json(await projectContactPhones(pool, req.user.id, result.rows,
+    res.json(await projectContactProfiles(pool, req.user.id, result.rows,
       { knownPhones: digits ? [digits] : [] }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5148,18 +5388,32 @@ app.get('/api/filter-settings', authWithDbCheck, async (req, res) => {
 });
 
 app.put('/api/filter-settings', authWithDbCheck, async (req, res) => {
+  let client;
   try {
     const filter = normalizeContentFilter(req.body);
     const pool = await getPool();
     if (req.body.enforceGeneralFilter !== undefined && typeof req.body.enforceGeneralFilter !== 'boolean')
       return res.status(400).json({ error: 'ערך אכיפת הסינון אינו תקין' });
-    const saved = await pool.query(`UPDATE users SET content_filter=$1::jsonb ||
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const previous = await lockFilterOwner(client, req.user.id);
+    const next = { ...filter, enforceGeneralFilter: req.body.enforceGeneralFilter ?? (previous?.enforceGeneralFilter === true) };
+    const history = await prepareFilterHistoryChange(client, req.user.id,
+      { kind: 'general' }, next, req.body.existingMediaAction);
+    const saved = await client.query(`UPDATE users SET content_filter=$1::jsonb ||
       jsonb_build_object('enforceGeneralFilter', COALESCE($3::boolean,
         (content_filter->>'enforceGeneralFilter')::boolean, false))
       WHERE id=$2 RETURNING content_filter`,
       [JSON.stringify(filter), req.user.id, req.body.enforceGeneralFilter ?? null]);
+    await client.query('COMMIT');
+    await finishFilterHistoryChange(pool, req.user.id, history, deleteOwnMedia);
+    relay(req.user.id, 'filter:changed', { scope: 'general',
+      existingMediaAction: history.action, affectedCount: history.affectedCount });
     res.json(saved.rows[0].content_filter);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    res.status(e.status || 500).json({ error: e.message, code: e.code, affectedCount: e.affectedCount });
+  } finally { client?.release(); }
 });
 
 app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, res) => {
@@ -5253,6 +5507,13 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     const pool = await getPool();
     client = await pool.connect();
     await client.query('BEGIN');
+    await lockFilterOwner(client, req.user.id);
+    const exists = await client.query('SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
+      [req.user.id, req.params.userId]);
+    if (!exists.rows.length) throw Object.assign(new Error('איש הקשר לא נמצא'), { status: 404 });
+    const requested = req.body?.inherit === true ? null : normalizeContentFilter(req.body?.filter || req.body);
+    const history = await prepareFilterHistoryChange(client, req.user.id,
+      { kind: 'contact', id: req.params.userId }, requested, req.body?.existingMediaAction);
     let filter;
     let inherited = false;
     if (req.body?.inherit === true) {
@@ -5292,6 +5553,9 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     const phoneSharing = await applyPhoneSharingChoices(client, req.user.id,
       req.params.userId, phoneSharingChoices(req.body));
     await client.query('COMMIT');
+    await finishFilterHistoryChange(pool, req.user.id, history, deleteOwnMedia);
+    relay(req.user.id, 'filter:changed', { scope: 'contact', targetId: req.params.userId,
+      existingMediaAction: history.action, affectedCount: history.affectedCount });
     notifyPhoneSharingChange(io, onlineUsers, req.user.id, req.params.userId, phoneSharing);
     const saved = entry.rows[0];
     res.set('Cache-Control', 'no-store');
@@ -5311,7 +5575,7 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     });
   } catch (e) {
     if (client) await client.query('ROLLBACK').catch(() => {});
-    res.status(e.status || 500).json({ error: e.message, code: e.code });
+    res.status(e.status || 500).json({ error: e.message, code: e.code, affectedCount: e.affectedCount });
   } finally {
     client?.release();
   }
@@ -5345,7 +5609,7 @@ app.post('/api/contacts/match', authWithDbCheck, searchRateLimit, async (req, re
       source: req.body?.source === 'phone_manual' ? 'phone_manual' : 'phone_import',
     });
     res.set('Cache-Control', 'no-store');
-    res.json(await projectContactPhones(pool, req.user.id, result.rows,
+    res.json(await projectContactProfiles(pool, req.user.id, result.rows,
       { knownPhones: normalized }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5474,6 +5738,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         m.id, m.sender_id, m.recipient_id, m.type,
         m.body, m.file_url, m.file_name, m.file_size,
         m.reply_to_id, m.created_at,
+        (m.delivery_summary->'guideFilterNotice'->>'key') IS NOT NULL AS _guide_filter_notice,
         r.body        AS reply_body,
         ru.name       AS reply_sender_name,
         CASE WHEN ms.status = 'read' AND NOT
@@ -5588,10 +5853,12 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         entry.owner_id AS sender_id,
         entry.contact_id AS recipient_id,
         'private_filter' AS type,
-        entry.filter AS private_filter,
+        betshuva_effective_filter(owner.content_filter, contact.filter_override) AS private_filter,
         entry.created_at,
         'private' AS message_status
       FROM contact_filter_chat_entries entry
+      JOIN users owner ON owner.id=entry.owner_id
+      LEFT JOIN user_contacts contact ON contact.owner_id=entry.owner_id AND contact.contact_id=entry.contact_id
       WHERE entry.owner_id=$1 AND entry.contact_id=$2
         AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
           WHERE cs.user_id=$1 AND cs.kind='chat' AND cs.target_id=$2
@@ -5600,12 +5867,13 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       ORDER BY entry.created_at DESC
       LIMIT 50
     `, scanParams);
-    await retainVisibleReceivedMessages(pool, myId, result.rows);
-    const personalMessages = await personalizeReceivedMessages(pool, myId, result.rows);
+    const filteredMessages = await projectFilteredHistory(pool, myId, result.rows);
+    await retainVisibleReceivedMessages(pool, myId, filteredMessages.filter(row => !row.filter_hidden));
+    const personalMessages = await personalizeReceivedMessages(pool, myId, filteredMessages);
     const combined = [
       ...personalMessages,
-      ...scans.rows,
-      ...contactRequests.rows,
+      ...await projectOwnScans(pool, myId, scans.rows, { contextType: 'chat', contextId: otherId }),
+      ...await projectOwnScans(pool, myId, contactRequests.rows, { contextType: 'chat', contextId: otherId }),
       ...privateFilters.rows,
     ]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
@@ -5613,7 +5881,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       .map(row => {
         const transcript = decryptAudioTranscript(row._moderation_details);
         const { _moderation_details, ...safe } = row;
-        return { ...safe, audio_transcript: transcript };
+        return projectGuideFilterNotice({ ...safe, audio_transcript: transcript }, myId, SYSTEM_USER_ID);
       });
     res.json(combined);
   } catch (e) {
@@ -5658,7 +5926,11 @@ async function sendPrivateHttpMessage(req, res) {
       let input;
       try { input = await resolveSystemInput(pool, senderId, toUserId,
         { text, fileUrl, fileName }); }
-      catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+      catch (error) {
+        if (error.code === 'SENDER_CONTENT_FILTERED')
+          await notifyRejectedSend(await getPool(), { userId: senderId, toUserId, fileUrl, error });
+        return res.status(error.status || 400).json({ error: error.message });
+      }
       const exchange = await createSystemExchange(
         pool, senderId, input.question, input.file, toUserId);
       const sid = onlineUsers.get(senderId);
@@ -5700,11 +5972,17 @@ async function sendPrivateHttpMessage(req, res) {
     const recipientPolicy = await getEffectiveRecipientFilter(
       pool, toUserId, senderId);
     if (!contentAllowedByFilter(recipientPolicy?.filter,
-        type === 'sticker' ? 'text' : type, classification))
+        type === 'sticker' ? 'text' : type, classification)) {
+      await recordFilterDecision(pool, { userId: toUserId, actorId: senderId,
+        scopeType: 'contact', scopeId: senderId, messageType: type, classification,
+        policy: recipientPolicy?.filter, fileUrl, source: 'direct_http_send' });
+      await notifyDestinationFilterBlock(pool, { userId: senderId, toUserId,
+        fileUrl, filter: recipientPolicy?.filter });
       return res.status(403).json({
         error: 'סוג התוכן חסום בהגדרות הנמען',
         code: 'RECIPIENT_CONTENT_FILTERED',
       });
+    }
     if (fileUrl && !await validateApprovedFile(
         pool, senderId, fileUrl, 'chat', toUserId)) {
       return res.status(403).json({ error: 'הקובץ לא עבר סריקה ואישור עבור נמען זה' });
@@ -5749,11 +6027,12 @@ async function sendPrivateHttpMessage(req, res) {
         return res.status(403).json({ error: 'הודעות טקסט חסומות בהגדרות הנמען' });
     }
 
-    const saved = await pool.query(
+    const saved = await writeSenderFilteredMedia(pool, { userId: senderId, fileUrl,
+      contextType: 'chat', contextId: toUserId }, client => client.query(
       `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, created_at`,
-      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null]);
+      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null]));
     const row = saved.rows[0];
 
     // Keep a durable acknowledgement while the recipient is offline. Later
@@ -5800,7 +6079,10 @@ async function sendPrivateHttpMessage(req, res) {
       marketplaceInquiry: marketplaceInquiry.rows.length > 0 });
   } catch (e) {
     console.error('POST /api/messages:', e.message);
-    res.status(500).json({ error: e.message });
+    if (e.code === 'SENDER_CONTENT_FILTERED')
+      await notifyRejectedSend(await getPool(), { userId: senderId, toUserId, fileUrl, error: e });
+    res.status(e.status || 500).json({ error: e.message, code: e.code,
+      ...(e.code === 'SENDER_CONTENT_FILTERED' ? { blockedBy: 'sender_filter' } : {}) });
   }
 }
 app.post('/api/messages', auth, messageRateLimit, sendPrivateHttpMessage);
@@ -5829,7 +6111,8 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
       result.rows.map(row => ({ id: row.sender_id })));
     const statuses = new Map(sharing.map(({ id, ...status }) => [id, status]));
     res.set('Cache-Control', 'no-store');
-    res.json(result.rows.map(row => ({ ...row, phoneSharing: statuses.get(row.sender_id) })));
+    res.json(await projectProfileImages(pool, req.user.id,
+      result.rows.map(row => ({ ...row, phoneSharing: statuses.get(row.sender_id) }))));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -6079,7 +6362,8 @@ app.get('/api/blocked', auth, async (req, res) => {
        JOIN users u ON u.id = b.blocked_id
        WHERE b.blocker_id = $1
        ORDER BY u.name`, [req.user.id]);
-    res.json(result.rows);
+    res.set('Cache-Control', 'no-store');
+    res.json(await projectProfileImages(pool, req.user.id, result.rows));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -6162,10 +6446,10 @@ app.get('/api/media-library/catalog', auth, async (req, res) => {
     const result = await pool.query(`
       WITH owned AS (${mediaLibraryOwnedSql()}),
       library AS (SELECT *,${mediaLibraryReferenceSql()} AS reference_count FROM owned),
-      by_type AS (SELECT file_type,COUNT(*)::int AS count,COALESCE(SUM(file_size),0) AS bytes
+      by_type AS (SELECT file_type,COUNT(*)::int AS count,COALESCE(SUM(storage_bytes),0) AS bytes
         FROM library GROUP BY file_type),
       file_destinations AS (
-        SELECT DISTINCT sf.id AS file_id,sf.file_size,
+        SELECT DISTINCT sf.id AS file_id,sf.storage_bytes,
           CASE WHEN destination->>'kind'='chat' THEN 'chat' ELSE 'group' END AS kind,
           destination->>'targetId' AS id,destination->>'label' AS label
         FROM library sf CROSS JOIN LATERAL jsonb_array_elements(sf.destinations) destination
@@ -6173,13 +6457,13 @@ app.get('/api/media-library/catalog', auth, async (req, res) => {
           AND destination->>'targetId' IS NOT NULL
       ), destinations AS (
         SELECT kind,id,MAX(label) AS label,COUNT(*)::int AS count,
-          COALESCE(SUM(file_size),0) AS bytes
+          COALESCE(SUM(storage_bytes),0) AS bytes
         FROM file_destinations GROUP BY kind,id
       )
       SELECT jsonb_build_object(
-          'totalCount',COUNT(*)::int,'totalBytes',COALESCE(SUM(file_size),0),
+          'totalCount',COUNT(*)::int,'totalBytes',COALESCE(SUM(storage_bytes),0),
           'deletableCount',COUNT(*) FILTER (WHERE reference_count=0 AND backup_status IS DISTINCT FROM 'uploading')::int,
-          'deletableBytes',COALESCE(SUM(file_size) FILTER (WHERE reference_count=0 AND backup_status IS DISTINCT FROM 'uploading'),0),
+          'deletableBytes',COALESCE(SUM(storage_bytes) FILTER (WHERE reference_count=0 AND backup_status IS DISTINCT FROM 'uploading'),0),
           'backedUpCount',COUNT(*) FILTER (WHERE backup_status='verified')::int,
           'releasedCount',COUNT(*) FILTER (WHERE released_at IS NOT NULL)::int,
           'byType', '{"image":{"count":0,"bytes":0},"video":{"count":0,"bytes":0},"audio":{"count":0,"bytes":0},"document":{"count":0,"bytes":0}}'::jsonb ||
@@ -6252,7 +6536,9 @@ app.get('/api/media-library', auth, async (req, res) => {
       library AS (SELECT *,${mediaLibraryReferenceSql()} AS reference_count FROM owned),
       filtered AS MATERIALIZED (
         SELECT * FROM library sf WHERE ($2='all' OR sf.file_type=$2)
-          AND ($6='' OR sf.original_name ILIKE '%' || $6 || '%')
+          AND ($6='' OR sf.original_name ILIKE '%' || $6 || '%' OR EXISTS (
+            SELECT 1 FROM unnest(sf.original_names) AS names(name)
+            WHERE names.name ILIKE '%' || $6 || '%'))
           AND ($7='all' OR sf.moderation_status=$7)
           AND ($9::timestamptz IS NULL OR sf.created_at >= $9::timestamptz)
           AND ($10::timestamptz IS NULL OR sf.created_at < $10::timestamptz + INTERVAL '1 day')
@@ -6279,14 +6565,14 @@ app.get('/api/media-library', auth, async (req, res) => {
             (reference_count=0 AND backup_status IS DISTINCT FROM 'uploading')=$16::boolean)
       ), page AS (SELECT * FROM filtered ORDER BY ${sortSql} LIMIT $4 OFFSET $5)
       SELECT page.*,totals.total_count,totals.total_bytes
-      FROM (SELECT COUNT(*)::int AS total_count,COALESCE(SUM(file_size),0) AS total_bytes
+      FROM (SELECT COUNT(*)::int AS total_count,COALESCE(SUM(storage_bytes),0) AS total_bytes
         FROM filtered) totals LEFT JOIN page ON TRUE
       ORDER BY ${sortSql}`, params);
     res.set('Cache-Control', 'no-store');
     res.json({
       total: result.rows[0]?.total_count || 0,
       totalBytes: Number(result.rows[0]?.total_bytes || 0),
-      items: result.rows.filter(row => row.id).map(mediaLibraryItem),
+      items: (await projectFilterMediaLibrary(pool, req.user.id, result.rows.filter(row => row.id))).map(mediaLibraryItem),
     });
   } catch (e) {
     console.error('media library:', e.message);
@@ -6297,7 +6583,45 @@ app.get('/api/media-library', auth, async (req, res) => {
 // One owner-scoped inventory powers the page and catalog. Message destinations
 // only include conversations the owner can currently open; counts count files,
 // so repeated receipt of the same personal copy never inflates a destination.
+// Group exact approved bytes for this owner before pagination and filtering.
+// Physical copies remain intact; all references and storage bytes are retained.
 function mediaLibraryOwnedSql() {
+  return `WITH raw AS (${mediaLibraryRawOwnedSql()}), keyed AS (
+    SELECT *,CASE WHEN moderation_status='approved' AND content_purged_at IS NULL
+        AND content_sha256 ~ '^[0-9a-f]{64}$'
+      THEN content_sha256 || ':' || file_type ELSE id::text END AS content_key
+    FROM raw
+  ), grouped AS (
+    SELECT content_key,(array_agg(id ORDER BY created_at,id))[1] AS representative_id,
+      array_agg(id ORDER BY created_at,id) AS duplicate_ids,
+      array_agg(original_name) AS original_names,
+      COUNT(*)::int AS duplicate_count,COALESCE(SUM(file_size),0) AS storage_bytes,
+      SUM(message_refs)::int AS message_refs,SUM(pending_refs)::int AS pending_refs,
+      SUM(profile_refs)::int AS profile_refs,SUM(group_refs)::int AS group_refs,
+      SUM(listing_refs)::int AS listing_refs,SUM(form_refs)::int AS form_refs,
+      SUM(gif_refs)::int AS gif_refs,BOOL_OR(backup_status='uploading') AS backup_uploading,
+      BOOL_OR(backup_status='verified') AS backup_verified,
+      BOOL_OR(remote_file_id IS NOT NULL OR backup_status='verified') AS has_backup,
+      BOOL_OR(restore_verified_at IS NOT NULL) AS restore_verified,
+      CASE WHEN BOOL_AND(released_at IS NOT NULL) THEN MAX(released_at) END AS released_at
+    FROM keyed GROUP BY content_key
+  ) SELECT sf.id,sf.user_id,sf.original_name,sf.public_url,sf.mime_type,sf.file_type,
+      sf.file_size,sf.created_at,sf.moderation_status,sf.moderation_details,
+      grouped.released_at,sf.content_sha256,sf.content_purged_at,
+      grouped.duplicate_ids,grouped.duplicate_count,grouped.storage_bytes,grouped.original_names,
+      grouped.message_refs,grouped.pending_refs,grouped.profile_refs,grouped.group_refs,
+      grouped.listing_refs,grouped.form_refs,grouped.gif_refs,
+      CASE WHEN grouped.backup_uploading THEN 'uploading'
+        WHEN grouped.backup_verified THEN 'verified' ELSE sf.backup_status END AS backup_status,
+      grouped.has_backup,grouped.restore_verified,
+      sf.verified_at,sf.restore_verified_at,sf.remote_file_id,sf.encryption_metadata,sf.appeal_status,
+      COALESCE((SELECT jsonb_agg(DISTINCT destination)
+        FROM keyed copies CROSS JOIN LATERAL jsonb_array_elements(copies.destinations) destination
+        WHERE copies.content_key=grouped.content_key),'[]'::jsonb) AS destinations
+    FROM grouped JOIN keyed sf ON sf.id=grouped.representative_id`;
+}
+
+function mediaLibraryRawOwnedSql() {
   return `
         WITH files AS MATERIALIZED (
           SELECT * FROM stored_files WHERE user_id=$1
@@ -6385,13 +6709,20 @@ function mediaLibraryReferenceSql() {
 
 function mediaLibraryItem(row) {
   return {
-    id: row.id, name: row.original_name, url: row.public_url,
+    id: row.id, name: row.original_name, url: row.public_url, filterHidden: row.filter_hidden === true,
+    hiddenReason: row.hidden_reason || null, scanReason: row.scan_reason || null,
+    contentPurged: !!row.content_purged_at,
+    sourceMessageId: row.filter_source_message_id || null,
     mimeType: row.mime_type, fileType: row.file_type,
     size: Number(row.file_size || 0), createdAt: row.created_at,
+    storageBytes: Number(row.storage_bytes ?? row.file_size ?? 0),
+    duplicateCount: Number(row.duplicate_count || 1),
+    duplicateIds: row.duplicate_ids || [row.id],
     moderationStatus: row.moderation_status,
     classification: row.moderation_details?.classification || null,
     releasedAt: row.released_at, backupStatus: row.backup_status || null,
-    restoreVerified: Boolean(row.restore_verified_at),
+    restoreVerified: Boolean(row.restore_verified ?? row.restore_verified_at),
+    hasBackup: Boolean(row.has_backup ?? row.remote_file_id),
     appealStatus: row.appeal_status || null,
     referenceCount: row.reference_count,
     destinations: row.destinations || [],
@@ -6711,6 +7042,48 @@ app.post('/api/media-library/:id/classification-appeal', auth, messageRateLimit,
   }
 });
 
+app.patch('/api/media-library/:id', auth, async (req, res) => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.id))
+    return res.status(400).json({ error: 'מזהה הקובץ אינו תקין' });
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+      [`personal-media-owner:${req.user.id}`]);
+    const found = await client.query(`SELECT * FROM stored_files
+      WHERE id=$1 AND user_id=$2 FOR UPDATE`, [req.params.id, req.user.id]);
+    const file = found.rows[0];
+    if (!file) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'הקובץ לא נמצא' });
+    }
+    const name = mediaLibraryName(req.body?.name, file.original_name);
+    if (!name) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'יש להזין שם קובץ תקין, עד 255 תווים וללא לוכסנים' });
+    }
+    // Personal metadata only: historical messages, URLs and physical files stay intact.
+    await client.query(`UPDATE stored_files SET original_name=$3
+      WHERE user_id=$2 AND (id=$1 OR ($4::text ~ '^[0-9a-f]{64}$'
+        AND $5::boolean AND content_sha256=$4 AND file_type=$6
+        AND moderation_status='approved' AND content_purged_at IS NULL))`,
+    [file.id, req.user.id, name, file.content_sha256,
+      file.moderation_status === 'approved' && !file.content_purged_at, file.file_type]);
+    const updated = await client.query(`WITH owned AS (${mediaLibraryOwnedSql()})
+      SELECT *,${mediaLibraryReferenceSql()} AS reference_count FROM owned
+      WHERE $2::uuid=ANY(duplicate_ids)`, [req.user.id, file.id]);
+    const rows = await projectFilterMediaLibrary(client, req.user.id, updated.rows);
+    await client.query('COMMIT');
+    res.set('Cache-Control', 'no-store');
+    res.json({ item: mediaLibraryItem(rows[0]) });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('rename own media:', error.message);
+    res.status(500).json({ error: 'שינוי שם הקובץ נכשל. אפשר לנסות שוב.' });
+  } finally { client.release(); }
+});
+
 async function deleteOwnMedia(pool, userId, fileId) {
   const client = await pool.connect();
   try {
@@ -6825,8 +7198,46 @@ app.delete('/api/media-library/:id', auth, async (req, res) => {
   }
 });
 
+const mediaLibraryDeletion = createMediaLibraryDeletion({ uploadRoot: UPLOAD_ROOT });
+let mediaDeletionCleanupRunning = false;
+const cleanupDeletedMedia = async () => {
+  if (mediaDeletionCleanupRunning) return;
+  mediaDeletionCleanupRunning = true;
+  try {
+    if (await mediaLibraryDeletion.cleanup(await getPool()) === 20)
+      setTimeout(cleanupDeletedMedia, 200);
+  } catch (error) { console.error('[media-delete:cleanup]', error.code || error.name); }
+  finally { mediaDeletionCleanupRunning = false; }
+};
+for (const action of ['preview', 'confirm']) {
+  app.post(`/api/media-library/delete-${action}`, authWithDbCheck, async (req, res) => {
+    try {
+      const result = await mediaLibraryDeletion[action](await getPool(), req.user.id, req.body);
+      res.set('Cache-Control', 'no-store');
+      if (action === 'confirm') logActivity(req.user.id, 'delete_own_media_selection', {
+        deletedIds: result.deletedIds, failedCount: result.failed.length, deletedBytes: result.deletedBytes,
+      }, clientIp(req));
+      res.json(result);
+      if (action === 'confirm') setImmediate(cleanupDeletedMedia);
+    } catch (error) {
+      const busy = ['55P03', '40P01'].includes(error.code);
+      res.status(error.status || (busy ? 409 : 500)).json({
+        error: error.status ? error.message : busy
+          ? 'הקבצים נמצאים כרגע בשימוש. יש לנסות שוב בעוד רגע.' : 'לא ניתן להשלים את המחיקה. אפשר לנסות שוב.',
+        code: busy ? 'MEDIA_BUSY' : error.code || 'MEDIA_DELETE_FAILED',
+        ...(error.preview ? { preview: error.preview } : {}),
+        ...(error.maxIds ? { maxIds: error.maxIds } : {}),
+      });
+    }
+  });
+}
+registerMediaRenameRoutes(app, { auth: authWithDbCheck, getPool });
+
 registerConversationHistory(app, { auth: authWithDbCheck, rateLimit: messageRateLimit,
   getPool, deleteOwnMedia, notifyUser: (userId, event, payload) => relay(userId, event, payload) });
+registerFilterHistoryRoutes(app, { auth: authWithDbCheck, getPool,
+  notifyUser: (userId, event, payload) => relay(userId, event, payload) });
+registerFilterAuditRoutes(app, { auth: authWithDbCheck, adminAuth, getPool });
 
 // Phase 1: provider-neutral backup settings and read-only storage accounting.
 app.get('/api/backup', auth, async (req, res) => {
@@ -7622,7 +8033,8 @@ app.get('/api/users/nearby', auth, async (req, res) => {
          WHERE id != $1 AND city = $2
            AND (email_verified = TRUE OR phone_verified = TRUE)
          ORDER BY name ASC`, [req.user.id, city]);
-      return res.json(result.rows);
+      res.set('Cache-Control', 'no-store');
+      return res.json(await projectProfileImages(pool, req.user.id, result.rows));
     }
 
     // radius search — use caller's stored coordinates
@@ -7655,7 +8067,8 @@ app.get('/api/users/nearby', auth, async (req, res) => {
         )) <= $4
       ORDER BY distance_km ASC`, params);
 
-    res.json(result.rows);
+    res.set('Cache-Control', 'no-store');
+    res.json(await projectProfileImages(pool, req.user.id, result.rows));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8045,7 +8458,8 @@ app.get('/api/listings', auth, async (req, res) => {
       ) AS _q
       WHERE _q._rn >= ${rowFrom} AND _q._rn <= ${rowTo}
       ORDER BY _q._rn`, params);
-    res.json(result.rows);
+    res.set('Cache-Control', 'no-store');
+    res.json(await projectProfileImages(pool, req.user.id, result.rows, { fields: ['seller_pic'] }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8098,7 +8512,8 @@ app.get('/api/listings/:id', auth, async (req, res) => {
     item.images = imgs.rows.length
       ? imgs.rows.map(r => r.url)
       : (item.image_url ? [item.image_url] : []);
-    res.json(item);
+    res.set('Cache-Control', 'no-store');
+    res.json((await projectProfileImages(pool, req.user.id, [item], { fields: ['seller_pic'] }))[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8312,6 +8727,8 @@ app.post('/api/gifs/:id/use', auth, async (req, res) => {
   }
 });
 
+const { acquireUploadLock, findReusableUpload } = require('./upload-reuse');
+
 app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req, res) => {
   if (req.user.isTeen && req.body.groupId)
     return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
@@ -8368,10 +8785,12 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
   }
 
+  let releaseUploadLock;
   try {
     const pool = await getPool();
     const contentSha256 = crypto.createHash('sha256')
       .update(file.buffer).digest('hex');
+    releaseUploadLock = await acquireUploadLock(req.user.id, contentSha256, allowed.dbType);
     const trustedBuiltinExpression = allowed.dbType === 'image' &&
       await isTrustedBuiltinExpression(file);
     const visualFingerprint = allowed.dbType === 'image' && !trustedBuiltinExpression
@@ -8389,8 +8808,6 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         });
       recipientPolicy = await getEffectiveRecipientFilter(pool, req.body.toUserId, req.user.id);
       if (!recipientPolicy) return res.status(404).json({ error: 'הנמען לא נמצא' });
-      if (allowed.dbType === 'video' && recipientPolicy.filter.video !== true)
-        return res.status(403).json({ error: 'סרטוני וידאו חסומים בהגדרות הנמען' });
     }
     if (req.body.groupId) {
       const groupAccess = await pool.query(
@@ -8407,15 +8824,18 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       if (member.send_permission === 'admin' && member.role !== 'admin')
         return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
       groupFilter = await getGroupContentFilter(pool, req.body.groupId);
-      if (allowed.dbType === 'video' && groupFilter.video !== true)
-        return res.status(403).json({ error: 'סרטוני וידאו חסומים בהגדרות הקבוצה' });
     }
+    // A library exemption is tied to the current exact-byte trust check. It is
+    // not a completed content scan, including when old copies have a hash or
+    // visual fingerprint that matches this ordinary upload.
     const cachedScanQuery = trustedBuiltinExpression ? { rows: [] } : await pool.query(
       `SELECT moderation_details FROM stored_files
        WHERE content_sha256=$1 AND file_type=$2
          AND moderation_status IN ('approved','rejected')
          AND moderation_details->>'moderationVersion'=$3
          AND COALESCE((moderation_details->>'pending')::boolean,FALSE)=FALSE
+         AND moderation_details->>'source' IS DISTINCT FROM 'builtin-expression'
+         AND moderation_details->>'scanSkipped' IS DISTINCT FROM 'true'
        ORDER BY created_at DESC LIMIT 1`,
       [contentSha256, allowed.dbType, MODERATION_CACHE_VERSION]);
     let cachedScan = cachedScanQuery.rows[0]?.moderation_details || null;
@@ -8426,6 +8846,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
          WHERE file_type='image' AND visual_fingerprint IS NOT NULL
            AND moderation_status IN ('approved','rejected')
            AND moderation_details->>'moderationVersion'=$1
+           AND moderation_details->>'source' IS DISTINCT FROM 'builtin-expression'
+           AND moderation_details->>'scanSkipped' IS DISTINCT FROM 'true'
            AND ABS((visual_fingerprint->>'aspect')::double precision-$2)<=0.01
          ORDER BY created_at DESC LIMIT 100`,
         [MODERATION_CACHE_VERSION, visualFingerprint.aspect]);
@@ -8434,10 +8856,21 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       if (match) { cachedScan = match.moderation_details; cacheMatch = 'visual'; }
     }
 
-    // העלאה לאחסון תחילה (גם קבצים חסומים נשמרים לצורך ביקורת אדמין)
+    // Reuse only the owner's current, completed safety approval. All access
+    // checks above and destination/sender/listing filters below still run for
+    // this request; pending and safety-rejected uploads keep their own records.
+    const reused = (trustedBuiltinExpression || (cachedScan &&
+      cachedScan.blocked !== true && cachedScan.pending !== true))
+      ? await findReusableUpload(pool, {
+        userId: req.user.id, contentSha256, fileType: allowed.dbType,
+        mimeType: file.mimetype, fileSize: file.size,
+        listingImage: req.body.listingImage === 'true',
+        moderationVersion: MODERATION_CACHE_VERSION,
+        trustedBuiltinExpression,
+      }) : null;
     const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
-    const url = await uploadToBlob(file.buffer, blobName, file.mimetype);
-    const storedInsert = await pool.query(
+    const url = reused?.public_url || await uploadToBlob(file.buffer, blobName, file.mimetype);
+    const storedInsert = reused ? { rows: [{ id: reused.id }] } : await pool.query(
       `INSERT INTO stored_files
        (user_id, original_name, storage_path, public_url, mime_type, file_type,
         file_size, context_type, context_id, moderation_status, content_sha256,
@@ -8466,6 +8899,9 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       if (scanResult.blocked !== true) {
         delete scanResult.reason;
         delete scanResult.blockedCategories;
+        delete scanResult.senderFilterRejected;
+        delete scanResult.destinationFilterRejected;
+        if (scanResult.blockedBy === 'sender_filter') delete scanResult.blockedBy;
       }
     } else if (allowed.dbType === 'image')
       scanResult = await scanImage(file.buffer, { tracking: scanTracking });
@@ -8486,6 +8922,29 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       scanResult.moderationVersion = MODERATION_CACHE_VERSION;
       const ss = scanResult.safeSearch || {};
       console.log(`[Vision] ${file.originalname} | ${scanResult.cacheHit ? '♻️ CACHE' : scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
+    }
+
+    if (!scanResult?.pending) {
+      try {
+        await assertSenderMediaAllowed(pool, { userId: req.user.id,
+          contextType: req.body.groupId ? 'group' : req.body.toUserId && !scanBotUpload ? 'chat' : 'general',
+          contextId: req.body.groupId || (!scanBotUpload ? req.body.toUserId : null) || null,
+          type: allowed.dbType, classification: scanResult?.classification,
+          fileId: storedInsert.rows[0].id, source: 'sender_upload' });
+      } catch (error) {
+        if (error.code !== 'SENDER_CONTENT_FILTERED') throw error;
+        if (!reused) await pool.query(`UPDATE stored_files SET moderation_status=$1,moderation_details=$2,
+          blocked_content_expires_at=CASE WHEN $1='rejected' THEN now()+interval '2 minutes' ELSE NULL END
+          WHERE id=$3`, [scanResult?.blocked ? 'rejected' : 'approved',
+          JSON.stringify({ ...scanResult, senderFilterRejected: true,
+            senderFilterReason: error.message }), storedInsert.rows[0].id]);
+        await notifyRejectedSend(pool, { userId: req.user.id, groupId: req.body.groupId,
+          toUserId: req.body.toUserId, fileId: storedInsert.rows[0].id, error,
+          kind: scanResult?.blocked ? 'moderation' : 'sender_filter',
+          reason: scanResult?.blocked ? scanResult.reason : undefined });
+        return res.status(403).json({ error: error.message, reason: error.message,
+          code: error.code, blockedBy: 'sender_filter', status: 'rejected', fileType: allowed.dbType });
+      }
     }
 
     if (scanResult?.blocked) {
@@ -8511,6 +8970,9 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         scanReport = await saveScanBotReport(pool, req.user.id, {
           name: file.originalname, size: file.size, dbType: allowed.dbType,
         }, url, scanResult, 'rejected');
+      await notifyRejectedSend(pool, { userId: req.user.id, groupId: req.body.groupId,
+        toUserId: req.body.toUserId, fileId: storedInsert.rows[0].id,
+        kind: 'moderation', reason: scanResult.reason });
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason: scanResult.reason,
         blockedPreviewUrl, previewExpiresAt,
@@ -8519,9 +8981,13 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
 
     if (!scanResult?.pending && groupFilter &&
-        ['image', 'video', 'document'].includes(allowed.dbType) &&
+        ['image', 'video', 'document', 'audio'].includes(allowed.dbType) &&
         !contentAllowedByFilter(groupFilter, allowed.dbType,
           scanResult?.classification)) {
+      await recordFilterDecision(pool, { userId: req.user.id, actorId: req.user.id,
+        scopeType: 'group', scopeId: req.body.groupId, messageType: allowed.dbType,
+        classification: scanResult?.classification, policy: groupFilter,
+        fileId: storedInsert.rows[0].id, source: 'group_upload' });
       const categoryLabels = {
         men: 'גברים', women: 'נשים', children: 'ילדים',
         nonHumanImages: 'תמונות נוף או חפצים', people: 'אנשים',
@@ -8538,11 +9004,13 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         : blockedLabel
         ? `התמונה סווגה כ${blockedLabel}, וקטגוריה זו חסומה בהגדרות הקבוצה`
         : 'סוג התוכן חסום בהגדרות הסינון של הקבוצה';
-      await pool.query(
+      if (!reused) await pool.query(
         `UPDATE stored_files SET moderation_status='approved', moderation_details=$1
          WHERE public_url=$2`,
         [JSON.stringify({ ...scanResult, reason, blockedCategories,
           destinationFilterRejected: true }), url]);
+      await notifyDestinationFilterBlock(pool, { userId: req.user.id,
+        groupId: req.body.groupId, fileUrl: url, filter: groupFilter, reason });
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason,
         blockedCategories, classification: scanResult?.classification || null,
@@ -8592,7 +9060,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
           ? 'במודעות מותרות רק תמונות ללא אנשים'
           : 'לא ניתן לאשר שזו תמונה ללא אנשים';
         const details = { ...scanResult, reason, listingImage: true };
-        await pool.query(
+        if (!reused) await pool.query(
           `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1
            WHERE public_url=$2`,
           [JSON.stringify(details), url]);
@@ -8610,9 +9078,13 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
 
     if (!scanBotUpload && !scanResult?.pending &&
-        ['image', 'document'].includes(allowed.dbType) && recipientPolicy &&
+        ['image', 'video', 'document', 'audio'].includes(allowed.dbType) && recipientPolicy &&
         !contentAllowedByFilter(recipientPolicy.filter, allowed.dbType,
           scanResult?.classification)) {
+      await recordFilterDecision(pool, { userId: req.body.toUserId, actorId: req.user.id,
+        scopeType: 'contact', scopeId: req.user.id, messageType: allowed.dbType,
+        classification: scanResult?.classification, policy: recipientPolicy.filter,
+        fileId: storedInsert.rows[0].id, source: 'direct_upload' });
       const categories = scanResult?.classification?.detectedCategories ||
         [scanResult?.classification?.category || 'people'];
       const labels = { nonHumanImages: 'תמונות נוף או חפצים', men: 'תמונות גברים',
@@ -8629,7 +9101,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         localSafety: scanResult?.localSafety || null,
         googleSafeSearch: scanResult?.googleSafeSearch || null,
       }, req.ip);
-      await pool.query(
+      if (!reused) await pool.query(
         `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
         [JSON.stringify({ ...scanResult, reason, classification: scanResult?.classification || null,
           safeSearch: scanResult?.safeSearch || null,
@@ -8642,6 +9114,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         scanReport = await saveScanBotReport(pool, req.user.id, {
           name: file.originalname, size: file.size, dbType: allowed.dbType,
         }, url, { ...scanResult, reason }, 'rejected');
+      await notifyDestinationFilterBlock(pool, { userId: req.user.id,
+        toUserId: req.body.toUserId, fileUrl: url, filter: recipientPolicy.filter, reason });
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason,
         classification: scanResult?.classification || null,
@@ -8679,7 +9153,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       });
     }
 
-    await pool.query(
+    if (!reused) await pool.query(
       `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
       [JSON.stringify(scanResult || {}), url]);
 
@@ -8728,7 +9202,13 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       sharedGifId, classification: scanResult?.classification || null });
   } catch (e) {
     console.error('upload:', e.message);
-    res.status(500).json({ error: e.message });
+    if (e.code === 'SENDER_CONTENT_FILTERED')
+      await notifyRejectedSend(await getPool(), { userId: req.user.id,
+        groupId: req.body.groupId, toUserId: req.body.toUserId, error: e });
+    res.status(e.status || 500).json({ error: e.message, code: e.code,
+      ...(e.code === 'SENDER_CONTENT_FILTERED' ? { blockedBy: 'sender_filter' } : {}) });
+  } finally {
+    releaseUploadLock?.();
   }
 });
 
@@ -8781,7 +9261,8 @@ app.get('/api/groups', auth, async (req, res) => {
       ORDER BY gm.pinned_at DESC NULLS LAST,
                last_msg.created_at DESC NULLS LAST, g.created_at DESC
     `, [req.user.id]);
-    res.json(result.rows);
+    res.set('Cache-Control', 'no-store');
+    res.json(await projectProfileImages(pool, req.user.id, result.rows));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8854,7 +9335,10 @@ app.get('/api/groups/:id', auth, async (req, res) => {
          WHERE gm.group_id=$1 AND gm.status='member'
          ORDER BY gm.role DESC, u.name`, [req.params.id]),
     ]);
-    res.json({ ...grp.rows[0], members: members.rows, myRole: mem.rows[0].role });
+    const [group, ...visibleMembers] = await projectProfileImages(pool, req.user.id,
+      [grp.rows[0], ...members.rows]);
+    res.set('Cache-Control', 'no-store');
+    res.json({ ...group, members: visibleMembers, myRole: mem.rows[0].role });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8884,11 +9368,21 @@ app.get('/api/groups/:id/filter-settings', auth, async (req, res) => {
 });
 
 app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
+  let client;
   try {
     const pool = await getPool();
     const inherited = req.body?.inherit === true;
     const filter = inherited ? null : normalizeContentFilter(req.body.filter || req.body);
-    const updated = await pool.query(
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await lockFilterOwner(client, req.user.id);
+    const access = await client.query(`SELECT 1 FROM group_members
+      WHERE group_id=$1 AND user_id=$2 AND role='admin' AND status='member'`,
+      [req.params.id, req.user.id]);
+    if (!access.rows.length) throw Object.assign(new Error('רק מנהל קבוצה יכול לשנות סינון'), { status: 403 });
+    const history = await prepareFilterHistoryChange(client, req.user.id,
+      { kind: 'group', id: req.params.id }, filter, req.body?.existingMediaAction);
+    const updated = await client.query(
       `UPDATE groups g SET content_filter=$1
        WHERE g.id=$2 AND EXISTS (
          SELECT 1 FROM group_members gm WHERE gm.group_id=g.id
@@ -8896,8 +9390,8 @@ app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
        ) RETURNING content_filter`,
       [filter == null ? null : JSON.stringify(filter), req.params.id, req.user.id]);
     if (!updated.rows.length)
-      return res.status(403).json({ error: 'רק מנהל קבוצה יכול לשנות סינון' });
-    const effectiveFilter = await getGroupContentFilter(pool, req.params.id);
+      throw Object.assign(new Error('רק מנהל קבוצה יכול לשנות סינון'), { status: 403 });
+    const effectiveFilter = await getGroupContentFilter(client, req.params.id);
     const filterLabels = {
       text: 'טקסט',
       nonHumanImages: 'תמונות נוף או חפצים',
@@ -8917,10 +9411,14 @@ app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
       `מותר: ${allowedLabels.length ? allowedLabels.join(', ') : 'ללא'}`,
       `חסום: ${blockedLabels.length ? blockedLabels.join(', ') : 'ללא'}`,
     ].join('\n');
-    const notice = await pool.query(
+    const notice = await client.query(
       `INSERT INTO messages (sender_id, group_id, body, type)
        VALUES ($1,$2,$3,'text') RETURNING id, created_at`,
       [req.user.id, req.params.id, noticeText]);
+    await client.query('COMMIT');
+    await finishFilterHistoryChange(pool, req.user.id, history, deleteOwnMedia);
+    relay(req.user.id, 'filter:changed', { scope: 'group', targetId: req.params.id,
+      existingMediaAction: history.action, affectedCount: history.affectedCount });
     const noticePayload = {
       id: notice.rows[0].id,
       groupId: req.params.id,
@@ -8936,23 +9434,37 @@ app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
     for (const member of members.rows)
       relay(member.user_id, 'group:message', noticePayload);
     res.json({ inherited, filter: effectiveFilter, notice: noticePayload });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    res.status(e.status || 500).json({ error: e.message, code: e.code, affectedCount: e.affectedCount });
+  } finally { client?.release(); }
 });
 
 app.put('/api/groups/:id/personal-filter', auth, async (req, res) => {
+  let client;
   try {
     const pool = await getPool();
     const filter = normalizeContentFilter(req.body?.filter || req.body);
-    const updated = await pool.query(
-      `UPDATE group_members SET filter_override=$1
-       WHERE group_id=$2 AND user_id=$3 AND status='member'
-       RETURNING filter_override`,
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const general = await lockFilterOwner(client, req.user.id);
+    const access = await client.query(`SELECT 1 FROM group_members
+      WHERE group_id=$1 AND user_id=$2 AND status='member'`, [req.params.id, req.user.id]);
+    if (!access.rows.length) throw Object.assign(new Error('לא חבר פעיל בקבוצה'), { status: 403 });
+    const history = await prepareFilterHistoryChange(client, req.user.id,
+      { kind: 'group_personal', id: req.params.id }, filter, req.body?.existingMediaAction);
+    await client.query(`UPDATE group_members SET filter_override=$1
+      WHERE group_id=$2 AND user_id=$3 AND status='member'`,
       [JSON.stringify(filter), req.params.id, req.user.id]);
-    if (!updated.rows.length)
-      return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
-    const general = await pool.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
-    res.json({ filter: resolveScopedContentFilter(general.rows[0]?.content_filter, filter) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    await client.query('COMMIT');
+    await finishFilterHistoryChange(pool, req.user.id, history, deleteOwnMedia);
+    relay(req.user.id, 'filter:changed', { scope: 'group_personal', targetId: req.params.id,
+      existingMediaAction: history.action, affectedCount: history.affectedCount });
+    res.json({ filter: resolveScopedContentFilter(general, filter) });
+  } catch (e) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    res.status(e.status || 500).json({ error: e.message, code: e.code, affectedCount: e.affectedCount });
+  } finally { client?.release(); }
 });
 
 // ── Groups: messages ──────────────────────────────────────────────
@@ -8998,11 +9510,17 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
     const classification = fileUrl
       ? await getStoredImageClassification(pool, fileUrl) : null;
     const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
-    if (!contentAllowedByFilter(effectiveGroupFilter, type, classification))
+    if (!contentAllowedByFilter(effectiveGroupFilter, type, classification)) {
+      await recordFilterDecision(pool, { userId: senderId, actorId: senderId,
+        scopeType: 'group', scopeId: groupId, messageType: type, classification,
+        policy: effectiveGroupFilter, fileUrl, source: 'group_http_send' });
+      await notifyDestinationFilterBlock(pool, { userId: senderId, groupId,
+        fileUrl, filter: effectiveGroupFilter });
       return res.status(403).json({
         error: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה',
         code: 'GROUP_CONTENT_FILTERED',
       });
+    }
     if (fileUrl && !await validateApprovedFile(
         pool, senderId, fileUrl, 'group', groupId)) {
       return res.status(403).json({
@@ -9010,17 +9528,19 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       });
     }
 
-    const saved = await pool.query(
+    const saved = await writeSenderFilteredMedia(pool, { userId: senderId, fileUrl,
+      contextType: 'group', contextId: groupId }, client => client.query(
       `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, created_at`,
       [senderId, groupId, text || null, type, fileUrl || null,
-       fileName || null, replyToId || null]);
+       fileName || null, replyToId || null]));
     const row = saved.rows[0];
     const deliveryPlan = await buildGroupDeliveryPlan(
-      pool, groupId, senderId, type, classification);
+      pool, groupId, senderId, type, classification, { messageId: row.id, fileUrl });
     await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
       [JSON.stringify(deliveryPlan.summary), row.id]);
+    await notifyGroupFilterBlocks(pool, { userId: senderId, groupId, fileUrl, deliveryPlan });
     const payload = {
       id: row.id,
       groupId,
@@ -9055,7 +9575,10 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       classification, deliverySummary: deliveryPlan.summary });
   } catch (e) {
     console.error('POST /api/groups/:id/messages:', e.message);
-    res.status(500).json({ error: e.message });
+    if (e.code === 'SENDER_CONTENT_FILTERED')
+      await notifyRejectedSend(await getPool(), { userId: senderId, groupId, fileUrl, error: e });
+    res.status(e.status || 500).json({ error: e.message, code: e.code,
+      ...(e.code === 'SENDER_CONTENT_FILTERED' ? { blockedBy: 'sender_filter' } : {}) });
   }
 });
 
@@ -9164,13 +9687,11 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
       ORDER BY sf.created_at DESC
       LIMIT 50
     `, scanParams);
-    const personalFilter = normalizeContentFilter(check.rows[0].content_filter);
-    const visibleMessages = result.rows.filter(row =>
-      row.sender_id === req.user.id || contentAllowedByFilter(
-        personalFilter, row.type, row.image_classification));
-    await retainVisibleReceivedMessages(pool, req.user.id, visibleMessages);
+    const visibleMessages = await projectFilteredHistory(pool, req.user.id, result.rows,
+      { groupId: req.params.id });
+    await retainVisibleReceivedMessages(pool, req.user.id, visibleMessages.filter(row => !row.filter_hidden));
     const personalMessages = await personalizeReceivedMessages(pool, req.user.id, visibleMessages);
-    const combined = [...personalMessages, ...scans.rows]
+    const combined = [...personalMessages, ...await projectOwnScans(pool, req.user.id, scans.rows, { contextType: 'group', contextId: req.params.id })]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .slice(-50)
       .map(row => {
@@ -13152,6 +13673,10 @@ async function retryPendingScans() {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        // Own the pending delivery before touching its source, matching the
+        // explicit personal-media deleter and preventing cancelled deliveries.
+        const pending = await client.query('SELECT id FROM pending_scans WHERE id=$1 FOR UPDATE', [rowId]);
+        if (!pending.rows.length) throw new Error(`Pending scan ${rowId} no longer exists`);
         const result = await persistOutcome(client);
         const deleted = await client.query(
           `DELETE FROM pending_scans WHERE id=$1 RETURNING id`, [rowId]);
@@ -13289,6 +13814,31 @@ async function retryPendingScans() {
         }
         scanCompleted = true;
 
+        try {
+          await assertSenderMediaAllowed(pool, { userId: row.user_id,
+            contextType: row.group_id ? 'group' : row.to_user_id && row.to_user_id !== SCAN_BOT_ID ? 'chat' : 'general',
+            contextId: row.group_id || (row.to_user_id !== SCAN_BOT_ID ? row.to_user_id : null) || null,
+            type: row.file_type, classification: scanResult.classification,
+            fileId: row.stored_file_id, fileUrl: row.file_url, source: 'sender_delayed_scan' });
+        } catch (error) {
+          if (error.code !== 'SENDER_CONTENT_FILTERED') throw error;
+          await completePending(row.id, client => client.query(
+            `UPDATE stored_files SET moderation_status=$1,moderation_details=$2,
+              blocked_content_expires_at=CASE WHEN $1='rejected' THEN now()+interval '2 minutes' ELSE NULL END
+              WHERE public_url=$3`, [scanResult.blocked ? 'rejected' : 'approved',
+              JSON.stringify({ ...scanResult, senderFilterRejected: true,
+                senderFilterReason: error.message }), row.file_url]));
+          outcomePersisted = true;
+          await notifyRejectedSend(pool, { userId: row.user_id, groupId: row.group_id,
+            toUserId: row.to_user_id, fileId: row.stored_file_id, fileUrl: row.file_url, error,
+            kind: scanResult.blocked ? 'moderation' : 'sender_filter',
+            reason: scanResult.blocked ? scanResult.reason : undefined });
+          relay(row.user_id, 'scan:rejected', { fileName: row.file_name, fileUrl: row.file_url,
+            groupId: row.group_id || null, toUserId: row.to_user_id || null,
+            code: error.code, blockedBy: 'sender_filter', reason: error.message });
+          continue;
+        }
+
         if (scanResult.blocked) {
           const rejectedFile = await completePending(row.id, async client => {
             const updated = await client.query(
@@ -13314,6 +13864,9 @@ async function retryPendingScans() {
               localSafety: scanResult.localSafety || null,
               googleSafeSearch: scanResult.googleSafeSearch || null });
           // Notify sender that file was rejected
+          await notifyRejectedSend(pool, { userId: row.user_id, groupId: row.group_id,
+            toUserId: row.to_user_id, fileId: row.stored_file_id, fileUrl: row.file_url,
+            kind: 'moderation', reason: scanResult.reason });
           const sid = onlineUsers.get(row.user_id);
           if (sid) io.to(sid).emit('scan:rejected', {
             fileName: row.file_name, fileUrl: row.file_url,
@@ -13342,10 +13895,21 @@ async function retryPendingScans() {
         if (!deliveryPermitted || (deliveryFilter &&
             !contentAllowedByFilter(deliveryFilter, row.file_type, scanResult.classification))) {
           const reason = 'הקובץ אינו מותר לפי הגדרות הסינון הנוכחיות של היעד';
-          await completePending(row.id, client => client.query(
-            `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
-            [JSON.stringify({ ...scanResult, reason, destinationFilterRejected: true }), row.file_url]));
+          await completePending(row.id, async client => {
+            await recordFilterDecision(client, { userId: row.to_user_id || row.user_id,
+              actorId: row.user_id, scopeType: row.group_id ? 'group' : 'contact',
+              scopeId: row.group_id || row.user_id, messageType: row.file_type,
+              classification: scanResult.classification, policy: deliveryFilter,
+              fileUrl: row.file_url, source: 'delayed_scan',
+              reasonCode: deliveryPermitted ? 'content_filter' : 'contact_or_group_access' });
+            return client.query(
+              `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify({ ...scanResult, reason, destinationFilterRejected: true }), row.file_url]);
+          });
           outcomePersisted = true;
+          if (deliveryPermitted) await notifyDestinationFilterBlock(pool, {
+            userId: row.user_id, groupId: row.group_id, toUserId: row.to_user_id,
+            fileUrl: row.file_url, filter: deliveryFilter, reason });
           relay(row.user_id, 'scan:rejected', { fileName: row.file_name, fileUrl: row.file_url,
             groupId: row.group_id || null, toUserId: row.to_user_id || null, reason });
           continue;
@@ -13362,6 +13926,11 @@ async function retryPendingScans() {
               fileUrl: row.file_url, category: scanResult.classification?.category,
             });
             await completePending(row.id, async client => {
+              await recordFilterDecision(client, { userId: row.to_user_id, actorId: row.user_id,
+                scopeType: 'contact', scopeId: row.user_id, messageType: row.file_type,
+                classification: scanResult.classification, policy: policy?.filter,
+                fileUrl: row.file_url, source: 'delayed_image_scan',
+                reasonCode: policy?.isContact ? 'content_filter' : 'contact_not_approved' });
               await client.query(
                 `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
                 [JSON.stringify({ ...scanResult, reason, classification: scanResult.classification || null,
@@ -13389,6 +13958,11 @@ async function retryPendingScans() {
               ? 'הנמען עדיין לא אישר אותך כחבר'
               : 'סרטוני וידאו חסומים בהגדרות הנמען';
             await completePending(row.id, async client => {
+              await recordFilterDecision(client, { userId: row.to_user_id, actorId: row.user_id,
+                scopeType: 'contact', scopeId: row.user_id, messageType: row.file_type,
+                classification: scanResult.classification, policy: policy?.filter,
+                fileUrl: row.file_url, source: 'delayed_video_scan',
+                reasonCode: policy?.isContact ? 'content_filter' : 'contact_not_approved' });
               await client.query(
                 `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
                 [JSON.stringify({ ...scanResult, reason }), row.file_url]);
@@ -13488,6 +14062,8 @@ async function retryPendingScans() {
             await client.query(
               `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
               [JSON.stringify(scanResult), row.file_url]);
+            await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [row.user_id]);
+            await assertSenderFileAllowed(client, row.user_id, row.file_url, 'chat', row.to_user_id, 'sender_delayed_persist');
             const saved = await client.query(
               `INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name)
                VALUES ($1, $2, $3, $4, $5, $4)
@@ -13497,7 +14073,7 @@ async function retryPendingScans() {
           });
           outcomePersisted = true;
           const payload = {
-            id: msg.id, fromUserId: row.user_id, createdAt: msg.created_at,
+            id: msg.id, fromUserId: row.user_id, toUserId: row.to_user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
             audioTranscript: decryptAudioTranscript(scanResult),
             audioModerationStatus: row.file_type === 'audio' ? 'approved' : null,
@@ -13524,11 +14100,13 @@ async function retryPendingScans() {
         if (row.group_id && pendingGroup) {
           const deliveryPlan = await buildGroupDeliveryPlan(
             pool, row.group_id, row.user_id, row.file_type,
-            scanResult.classification || null);
+            scanResult.classification || null, { fileUrl: row.file_url });
           const msg = await completePending(row.id, async client => {
             await client.query(
               `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
               [JSON.stringify(scanResult), row.file_url]);
+            await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [row.user_id]);
+            await assertSenderFileAllowed(client, row.user_id, row.file_url, 'group', row.group_id, 'sender_delayed_persist');
             const saved = await client.query(
               `INSERT INTO messages (sender_id, group_id, type, body, file_url, file_name)
                VALUES ($1, $2, $3, $4, $5, $4)
@@ -13540,6 +14118,8 @@ async function retryPendingScans() {
             return saved.rows[0];
           });
           outcomePersisted = true;
+          await notifyGroupFilterBlocks(pool, { userId: row.user_id,
+            groupId: row.group_id, fileUrl: row.file_url, deliveryPlan });
           const payload = {
             id: msg.id,
             groupId: row.group_id,
@@ -13589,6 +14169,14 @@ async function retryPendingScans() {
         });
         outcomePersisted = true;
       } catch (e) {
+        if (e.code === 'SENDER_CONTENT_FILTERED') {
+          if (e.senderDecision) await recordFilterDecision(pool, e.senderDecision);
+          await notifyRejectedSend(pool, { userId: row.user_id, groupId: row.group_id,
+            toUserId: row.to_user_id, fileId: row.stored_file_id, fileUrl: row.file_url, error: e });
+          relay(row.user_id, 'scan:rejected', { fileName: row.file_name, fileUrl: row.file_url,
+            groupId: row.group_id || null, toUserId: row.to_user_id || null,
+            code: e.code, blockedBy: 'sender_filter', reason: e.message });
+        }
         console.error('retry row', row.id, e.message);
         if (!outcomePersisted && scanCompleted) {
           // A persistence failure after a successful scan must not consume the
@@ -14064,6 +14652,9 @@ async function startServer() {
   await migrateDatabase();
   await initPendingTable();
   const pool = await getPool();
+  await pool.query(MEDIA_DELETE_SCHEMA);
+  setTimeout(cleanupDeletedMedia, 2000);
+  setInterval(cleanupDeletedMedia, 60000);
   await pool.query(calendarService.SCHEMA);
   const calendarTick = () => calendarService.runReminders(getPool, sendPush)
     .catch(error => console.error('[calendar reminders]', error.message));

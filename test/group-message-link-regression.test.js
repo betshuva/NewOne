@@ -51,7 +51,20 @@ function groupHarness({ isTeen = false, member = { role: 'member', send_permissi
     getPool: async () => pool,
     getGroupContentFilter: async () => 'general',
     contentAllowedByFilter: () => true,
+    async writeSenderFilteredMedia(db, options, write) {
+      assert.equal(db, pool);
+      assert.equal(options.userId, 'sender-1');
+      assert.equal(options.contextType, 'group');
+      assert.equal(options.contextId, 'group-1');
+      assert.equal(options.fileUrl, undefined);
+      return write(pool);
+    },
     buildGroupDeliveryPlan: async () => ({ summary: { total: 0 }, delivered: [] }),
+    async notifyGroupFilterBlocks(db, options) {
+      assert.equal(db, pool);
+      assert.equal(options.groupId, 'group-1');
+      assert.equal(options.deliveryPlan.summary.total, 0);
+    },
     logActivity: () => {},
     relay: () => assert.fail('no external recipients in this test'),
     sendPush: () => assert.fail('no external recipients in this test'),

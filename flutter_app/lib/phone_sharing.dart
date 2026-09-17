@@ -71,7 +71,6 @@ Future<Map<String, dynamic>> updatePhoneSharing(String api, String token,
 class PhoneSharingController extends ChangeNotifier {
   Map<String, dynamic>? data;
   bool selectedShare = false;
-  bool selectedRequest = false;
 
   bool get loaded => data != null;
   bool get canShare => data?['can_share_my_phone'] == true;
@@ -81,11 +80,6 @@ class PhoneSharingController extends ChangeNotifier {
     data = sanitizedPhoneContact(value);
     selectedShare = canShare &&
         (value['share_my_phone'] == true || (firstLoad && initialChoice));
-    selectedRequest = firstLoad &&
-        initialChoice &&
-        value['can_request_phone'] == true &&
-        value['request_state'] != 'pending' &&
-        visibleContactPhone(value).isEmpty;
     notifyListeners();
   }
 
@@ -101,19 +95,13 @@ class PhoneSharingController extends ChangeNotifier {
             !selectedShare &&
             data?['incoming_request'] == true)
           'phone_response': 'decline',
-        if (loaded && selectedRequest && data?['can_request_phone'] == true)
-          'request_phone': true
       };
 
-  String confirmationLabel({String saveLabel = 'שמור סינון'}) => selectedRequest
-      ? (canShare && selectedShare
-          ? 'אשר, שתף טלפון ושלח בקשה'
-          : 'אשר סינון ושלח בקשת טלפון')
-      : !canShare
-          ? saveLabel
-          : selectedShare
-              ? 'אשר סינון ושתף טלפון'
-              : 'אשר סינון ללא שיתוף טלפון';
+  String confirmationLabel({String saveLabel = 'שמור סינון'}) => !canShare
+      ? saveLabel
+      : selectedShare
+          ? 'אשר סינון ושתף טלפון'
+          : 'אשר סינון ללא שיתוף טלפון';
 }
 
 class PhoneSharingPanel extends StatefulWidget {
@@ -265,26 +253,6 @@ class _PhoneSharingPanelState extends State<PhoneSharingPanel> {
           if (data['share_unavailable_reason'] == 'missing_phone')
             const Text(
                 'להוספת מספר טלפון יש לעדכן את הפרופיל. ניתן לאשר את הסינון ללא שיתוף טלפון.'),
-          if (widget.initialChoice &&
-              phone.isEmpty &&
-              data['can_request_phone'] == true &&
-              !pending)
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              visualDensity:
-                  widget.compact ? const VisualDensity(vertical: -2) : null,
-              value: controller.selectedRequest,
-              onChanged: _busy
-                  ? null
-                  : (value) {
-                      setState(
-                          () => controller.selectedRequest = value == true);
-                      widget.onChanged?.call();
-                    },
-              title: Text('בקש מ$name לשתף את מספר הטלפון'),
-              subtitle: Text(
-                  'הבקשה תישלח רק בלחיצה על האישור; השיתוף תלוי באישור של $name'),
-            ),
           if (phone.isEmpty &&
               (data['can_request_phone'] == true || pending) &&
               (!widget.initialChoice || pending))

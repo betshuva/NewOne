@@ -84,8 +84,9 @@ test('admin-only groups disable every member send entry point', () => {
 test('chat images render separately while full-screen browsing stays available', () => {
   assert.equal((source.match(/_ConsecutiveImageGrid\(/g) || []).length, 1);
   assert.doesNotMatch(source, /imageRunStart|imageRunEnd|imageSequence/);
-  assert.match(source,
-    /ImagePreviewScreen\([\s\S]{0,600}urls: _conversationImageMessages/);
+  const compactSource = source.replace(/\s+/g, ' ');
+  assert.match(compactSource,
+    /ImagePreviewScreen\(.{0,600}urls: _conversationImageMessages/);
 });
 
 test('blocked upload images can be opened in the full-screen zoom viewer', () => {
@@ -102,15 +103,21 @@ test('chat image tiles keep a stable height while media loads', () => {
   const directEnd = source.indexOf('class _ImageStatusBadge', directStart);
   const directSource = source.slice(directStart, directEnd);
   const directImageStart = directSource.indexOf('_PersistentMediaImage(');
-  const directImage = directSource.slice(directImageStart, directImageStart + 900);
-  assert.equal((directImage.match(/height: 180/g) || []).length, 3);
+  const directImageEnd = directSource.indexOf('Positioned(', directImageStart);
+  assert.ok(directImageStart >= 0 && directImageEnd > directImageStart);
+  const directImage = directSource.slice(directImageStart, directImageEnd);
+  assert.equal((directImage.match(/height:\s*180/g) || []).length, 3);
+  assert.equal((directImage.match(/width:\s*220/g) || []).length, 3);
   assert.match(directImage, /width: 220,[\s\S]*?fit: BoxFit\s*\.contain/);
 
   const groupStart = source.indexOf('class _GroupChatScreenState');
   const groupSource = source.slice(groupStart);
   const groupImageStart = groupSource.indexOf('_PersistentMediaImage(');
-  const groupImage = groupSource.slice(groupImageStart, groupImageStart + 1800);
-  assert.equal((groupImage.match(/height: 160/g) || []).length, 3);
+  const groupImageEnd = groupSource.indexOf('Positioned(', groupImageStart);
+  assert.ok(groupImageStart >= 0 && groupImageEnd > groupImageStart);
+  const groupImage = groupSource.slice(groupImageStart, groupImageEnd);
+  assert.equal((groupImage.match(/height:\s*160/g) || []).length, 3);
+  assert.equal((groupImage.match(/width:\s*200/g) || []).length, 3);
   assert.match(groupImage, /width: 200,[\s\S]*?fit: BoxFit\s*\.contain/);
 });
 
@@ -124,10 +131,11 @@ test('PDF messages show a first-page preview and open inside the app', () => {
 });
 
 test('desktop web documents open in the left detail pane', () => {
+  const compactSource = source.replace(/\s+/g, ' ');
   assert.match(source, /Widget\? _desktopDocument/);
-  assert.match(source, /onDocumentOpen: _openDesktopDocument/);
-  assert.match(source, /_desktopIssueId != null[\s\S]{0,500}_desktopDocument != null[\s\S]{0,100}_desktopDocument!/);
-  assert.match(source, /embedded: true,[\s\S]{0,100}onClose:/);
+  assert.match(compactSource, /onDocumentOpen: _openDesktopDocument/);
+  assert.match(compactSource, /_desktopIssueId != null.{0,500}_desktopDocument != null.{0,100}_desktopDocument!/);
+  assert.match(compactSource, /embedded: true,.{0,100}onClose:/);
 });
 
 test('contact filter status uses the full dynamic comparison table', () => {
@@ -221,6 +229,8 @@ test('the first outgoing message to a saved contact requires a receiving-filter 
   assert.match(guardSource, /contacts\/\$\{widget\.recipient\['id'\]\}\/filter-settings/);
   assert.match(guardSource, /phoneChoice\.confirmationLabel\(saveLabel: 'שמור והמשך'\)/);
   assert.match(guardSource, /phoneChoice\.confirmationPayload/);
+  assert.match(guardSource, /await saveReceivingFilter\(/);
+  assert.match(guardSource, /if \(response == null\) return false;/);
   assert.match(guardSource, /payload\['privateEntry'\]/);
   assert.match(guardSource, /_messages\.add\(normalized\)/);
   assert.match(source, /class _PrivateContactFilterEntry/);
@@ -234,7 +244,7 @@ test('the first outgoing message to a saved contact requires a receiving-filter 
   assert.match(source, /await _loadMessages\(silent: true\)/);
   assert.match(source, /body\['counterpartFilterAvailable'\] == true/);
   assert.match(source, /showCounterpartFilter: _counterpartFilterAvailable/);
-  assert.match(source, /לאחר שהחבר יאשר את הקשר/);
+  assert.match(source, /לאחר אישור הקשר על ידי \$recipientName/);
   assert.match(source, /picUrl: widget\.recipient\['profile_pic_url'\]/);
   assert.match(
     source,
@@ -499,7 +509,7 @@ test('destination filter rejection remains forwardable while safety rejection st
 
 test('multiple chat items can be forwarded to multiple users and groups', () => {
   const forwarding = source.slice(
-    source.indexOf('Future<void> forwardChatMessages'),
+    source.indexOf('Future<ForwardChatResult> forwardChatMessages'),
     source.indexOf('// Google Web Client ID'),
   );
   assert.match(forwarding, /CheckboxListTile/);
@@ -650,7 +660,7 @@ test('OpenAI and Gemini both decide modesty while local clothing scores are disa
   assert.match(serverSource,
     /action: 'approved_by_clean_safety_consensus'/);
   assert.match(serverSource,
-    /MODERATION_CACHE_VERSION = '2026-09-06-classification-verification-13'/);
+    /MODERATION_CACHE_VERSION = '2026-09-17-illustrated-person-verification-14'/);
 });
 
 test('safety-rejected media cannot be served locally or restored from Drive', () => {

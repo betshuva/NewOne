@@ -164,7 +164,7 @@ void main() {
   });
 
   testWidgets(
-      'loading valid initial defaults grants nothing until external confirmation',
+      'initial confirmation shares only the viewer phone and never requests a contact phone',
       (tester) async {
     final server = _Server()..loading = Completer<void>();
     await _withPanel(tester, server, (controller) async {
@@ -174,32 +174,32 @@ void main() {
       server.loading!.complete();
       await tester.pumpAndSettle();
       expect(_checkbox(tester, _shareLabel).value, isTrue);
-      expect(_checkbox(tester, _requestLabel).value, isTrue);
-      expect(controller.confirmationPayload,
-          {'share_my_phone': true, 'request_phone': true});
-      expect(controller.confirmationLabel(), 'אשר, שתף טלפון ושלח בקשה');
+      expect(find.text(_requestLabel), findsNothing);
+      expect(find.text('בקש מספר טלפון'), findsNothing);
+      expect(find.byType(CheckboxListTile), findsOneWidget);
+      expect(controller.confirmationPayload, {'share_my_phone': true});
+      expect(controller.confirmationLabel(), 'אשר סינון ושתף טלפון');
       expect(server.writes, isEmpty);
       final result = await updatePhoneSharing(
           _api, 'test-token', _contact, controller.confirmationPayload);
       controller.apply(result);
       await tester.pumpAndSettle();
       expect(server.choices, [
-        {'share_my_phone': true, 'request_phone': true}
+        {'share_my_phone': true}
       ]);
+      expect(server.status['request_state'], 'none');
     }, initialChoice: true, settle: false);
   });
 
   testWidgets(
-      'clearing the initial choices only changes the eventual confirmation payload',
+      'clearing initial sharing only changes the eventual confirmation payload',
       (tester) async {
     final server = _Server();
     await _withPanel(tester, server, (controller) async {
       await tester.tap(find.text(_shareLabel));
       await tester.pump();
-      await tester.tap(find.text(_requestLabel));
-      await tester.pump();
       expect(_checkbox(tester, _shareLabel).value, isFalse);
-      expect(_checkbox(tester, _requestLabel).value, isFalse);
+      expect(find.text(_requestLabel), findsNothing);
       expect(controller.confirmationPayload, {'share_my_phone': false});
       expect(controller.confirmationLabel(), 'אשר סינון ללא שיתוף טלפון');
       expect(server.writes, isEmpty);
@@ -212,7 +212,6 @@ void main() {
     final server = _Server({'request_state': 'revoked'});
     await _withPanel(tester, server, (controller) async {
       expect(controller.selectedShare, isFalse);
-      expect(controller.selectedRequest, isFalse);
       expect(_checkbox(tester, _shareLabel).value, isFalse);
       expect(find.text(_requestLabel), findsNothing);
       expect(find.text('בקש מספר טלפון'), findsOneWidget);
@@ -233,7 +232,7 @@ void main() {
   });
 
   testWidgets(
-      'compact filter panel hides status rows and names the contact in both explicit choices',
+      'compact filter panel shows only the viewer sharing choice',
       (tester) async {
     final server = _Server({'phone': _phone, 'phone_visibility': 'hidden'});
     await _withPanel(tester, server, (controller) async {
@@ -241,19 +240,18 @@ void main() {
       expect(find.text('הטלפון לא שותף'), findsNothing);
       expect(find.text(_phone), findsNothing);
       expect(find.text(_shareLabel), findsOneWidget);
-      expect(find.text(_requestLabel), findsOneWidget);
+      expect(find.text(_requestLabel), findsNothing);
+      expect(find.text('בקש מספר טלפון'), findsNothing);
+      expect(find.byType(CheckboxListTile), findsOneWidget);
       expect(
           find.text(
               'הבקשה תישלח רק בלחיצה על האישור; השיתוף תלוי באישור של $_contactName'),
-          findsOneWidget);
+          findsNothing);
       expect(find.text('השיתוף יבוצע רק לאחר לחיצה על כפתור האישור'),
           findsOneWidget);
-      expect(controller.confirmationPayload,
-          {'share_my_phone': true, 'request_phone': true});
+      expect(controller.confirmationPayload, {'share_my_phone': true});
       expect(server.writes, isEmpty);
       await tester.tap(find.text(_shareLabel));
-      await tester.pump();
-      await tester.tap(find.text(_requestLabel));
       await tester.pump();
       expect(controller.confirmationPayload, {'share_my_phone': false});
       expect(server.writes, isEmpty);
@@ -270,7 +268,7 @@ void main() {
       await _withPanel(tester, server, (controller) async {
         expect(find.text('אני מסכים לשתף את מספר הטלפון שלי עם $name'),
             findsOneWidget);
-        expect(find.text('בקש מ$name לשתף את מספר הטלפון'), findsOneWidget);
+        expect(find.text('בקש מ$name לשתף את מספר הטלפון'), findsNothing);
         final size = tester.getSize(find.byType(PhoneSharingPanel));
         expect(size.width, lessThanOrEqualTo(360));
         heights[compact] = size.height;
@@ -473,8 +471,6 @@ void main() {
     await _withPanel(tester, server, (controller) async {
       await tester.tap(find.text(_shareLabel));
       await tester.pump();
-      await tester.tap(find.text(_requestLabel));
-      await tester.pump();
       expect(controller.confirmationPayload,
           {'share_my_phone': false, 'phone_response': 'decline'});
       expect(server.writes, isEmpty);
@@ -529,8 +525,14 @@ void main() {
               isTrue);
           expect(find.text('חבר בתשובה'), findsNothing);
           expect(find.text('הטלפון לא שותף'), findsNothing);
+          expect(find.text('טקסט'), findsNothing);
+          expect(find.text('תמונות נוף או חפצים'), findsNothing);
+          expect(find.text('גברים'), findsOneWidget);
+          expect(find.text('נשים'), findsOneWidget);
+          expect(find.text('וידאו'), findsOneWidget);
           expect(_checkbox(tester, _shareLabel).value, isTrue);
-          expect(_checkbox(tester, _requestLabel).value, isTrue);
+          expect(find.text(_requestLabel), findsNothing);
+          expect(find.text('בקש מספר טלפון'), findsNothing);
           expect(server.writes, isEmpty);
           expect(savedBodies, isEmpty);
           if (!consent) {
@@ -538,13 +540,9 @@ void main() {
             await tester.pumpAndSettle();
             await tester.tap(find.text(_shareLabel));
             await tester.pump();
-            await tester.ensureVisible(find.text(_requestLabel));
-            await tester.pumpAndSettle();
-            await tester.tap(find.text(_requestLabel));
-            await tester.pump();
           }
           final save = find.text(consent
-              ? 'אשר, שתף טלפון ושלח בקשה'
+              ? 'אשר סינון ושתף טלפון'
               : 'אשר סינון ללא שיתוף טלפון');
           await tester.ensureVisible(save);
           await tester.pumpAndSettle();
@@ -554,7 +552,6 @@ void main() {
             {
               'filter': filter,
               'share_my_phone': consent,
-              if (consent) 'request_phone': true
             }
           ]);
           expect(server.writes, isEmpty,

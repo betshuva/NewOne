@@ -52,11 +52,13 @@ test('approved personal media can be sent to a friend or group by reference', ()
   const screen = app.slice(app.indexOf('class PersonalMediaScreen'),
     app.indexOf('// ──', app.indexOf('class PersonalMediaScreen') + 40));
   assert.match(screen, /Future<void> _send\(Map<String, dynamic> item\)/);
-  assert.match(screen, /_forwardChatMessage\(context, widget\.token, null/);
+  assert.match(screen, /await forwardChatMessages\(\s*context,\s*token,\s*null/);
+  assert.match(screen, /completedMessageIndexes/);
+  assert.match(screen, /canForward: canForward/);
   assert.match(screen, /'fileUrl': item\['url'\]/);
-  assert.match(screen, /'status': moderationStatus/);
+  assert.match(screen, /'status': item\['moderationStatus'\]/);
   assert.match(screen, /שליחה לחבר או לקבוצה/);
-  assert.match(screen, /enabled: item\['moderationStatus'\] == 'approved'/);
+  assert.match(screen, /enabled:\s*!_mediaHidden\(item\) &&\s*item\['moderationStatus'\] == 'approved'/);
   assert.doesNotMatch(screen, /MultipartRequest\('POST'/);
 });
 

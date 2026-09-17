@@ -4,6 +4,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'calendar_hebrew_date.dart';
+import 'calendar_event_widgets.dart';
+import 'hebrew_date_picker.dart';
 import 'location_autocomplete.dart';
 import 'package:http/http.dart' as http;
 
@@ -25,6 +28,13 @@ String _local(DateTime d) => '${_date(d)}T${_time(d)}';
 DateTime _day(DateTime d) => DateTime.utc(d.year, d.month, d.day);
 DateTime _wall(String value) => DateTime.parse('${value}Z');
 String _dayLabel(DateTime d) => '${d.day}/${d.month}/${d.year}';
+String _reminderLabel(dynamic value) => switch (value) {
+      null => 'ללא',
+      0 => 'בשעת האירוע',
+      60 => 'שעה לפני',
+      1440 => 'יום לפני',
+      _ => '$value דקות לפני',
+    };
 List<Map<String, dynamic>> _maps(dynamic v) =>
     (v as List? ?? []).map((x) => Map<String, dynamic>.from(x as Map)).toList();
 
@@ -186,19 +196,25 @@ class _CalendarScreenState extends State<CalendarScreen>
   List<String> _timezones = [];
   bool _locationAllowed = true, _autoLocationAttempted = false;
   DateTime _selected = _day(DateTime.now());
-  String _view = 'month';
+  String _view = 'week';
   bool _loading = true, _configured = false;
   String? _error, _holidayError;
   int _generation = 0;
   DateTime _today = _day(DateTime.now());
   Timer? _timer;
   final _hoursScroll = ScrollController(initialScrollOffset: 7 * 60);
-  DateTime get _start => _view == 'month'
-      ? DateTime.utc(_selected.year, _selected.month, 1).subtract(Duration(
-          days: DateTime.utc(_selected.year, _selected.month, 1).weekday % 7))
-      : _view == 'week'
-          ? _day(_selected).subtract(Duration(days: _selected.weekday % 7))
-          : _day(_selected);
+  HebrewDate get _selectedHebrew => HebrewDate.fromGregorian(_selected);
+  DateTime get _start {
+    if (_view == 'month') {
+      final selected = _selectedHebrew;
+      final first = HebrewDate(selected.year, selected.month, 1).toGregorian();
+      return first.subtract(Duration(days: first.weekday % 7));
+    }
+    return _view == 'week'
+        ? _day(_selected).subtract(Duration(days: _selected.weekday % 7))
+        : _day(_selected);
+  }
+
   int get _days => _view == 'month'
       ? 42
       : _view == 'week'
@@ -338,12 +354,7 @@ class _CalendarScreenState extends State<CalendarScreen>
           h['date'].toString().startsWith(_date(d)) &&
           h['category'] != 'hebdate')
       .toList();
-  String _hebrew(DateTime d) {
-    final found = _holidays.where((h) =>
-        h['category'] == 'hebdate' &&
-        h['date'].toString().startsWith(_date(d)));
-    return found.isEmpty ? '' : found.first['title'].toString();
-  }
+  String _hebrew(DateTime d) => HebrewDate.fromGregorian(d).label;
 
   String _holidayLabel(Map<String, dynamic> h) {
     final raw = h['date'].toString();
@@ -361,7 +372,7 @@ class _CalendarScreenState extends State<CalendarScreen>
   void _move(int n) {
     setState(() {
       _selected = _view == 'month'
-          ? DateTime.utc(_selected.year, _selected.month + n, 1)
+          ? _selectedHebrew.addMonths(n).toGregorian()
           : _selected.add(Duration(days: n * (_view == 'week' ? 7 : 1)));
     });
     _load();
@@ -455,36 +466,60 @@ class _CalendarScreenState extends State<CalendarScreen>
   Future<void> _details(Map<String, dynamic> e) async {
     // Only owners receive a null response from the joined attendee row.
     final owner = e['response'] == null;
+    final client = api;
+    final token = widget.token;
     final result = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
+                key: const ValueKey('calendar-event-details'),
                 title: Text(e['title']),
-                content: SingleChildScrollView(
-                    child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                      Text(
-                          '${_dayLabel(_wall(e['start_local']))} · ${e['all_day'] == true ? 'כל היום' : '${_time(_wall(e['start_local']))}–${_time(_wall(e['end_local']))}'}'),
-                      Text(
-                          'עד ${_dayLabel(_wall(e['end_local']))} · ${_settings?['timezone']}'),
-                      if (e['series_id'] != null)
-                        const Text('מופע מתוך סדרה — שינויים חלים על מופע זה'),
-                      Text('יוצר האירוע: ${e['owner_name']}'),
-                      if (e['location'].toString().isNotEmpty)
-                        Text('מקום: ${e['location']}'),
-                      if (e['notes'].toString().isNotEmpty)
-                        Padding(
-                            padding: const EdgeInsets.only(top: 12),
-                            child: Text(e['notes'])),
-                      if (!owner)
-                        Text('תשובתך: ${{
-                          'accepted': 'אישור',
-                          'maybe': 'אולי',
-                          'pending': 'טרם נענתה',
-                          'declined': 'דחייה'
-                        }[e['response']]}'),
-                    ])),
+                content: SizedBox(
+                    width: 480,
+                    child: SingleChildScrollView(
+                        child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                          Text(
+                              '${_dayLabel(_wall(e['start_local']))} · ${e['all_day'] == true ? 'כל היום' : '\u2066${_time(_wall(e['start_local']))}–${_time(_wall(e['end_local']))}\u2069'}'),
+                          Text(
+                              'עד ${_dayLabel(_wall(e['end_local']))} · ${_settings?['timezone']}'),
+                          if (e['series_id'] != null)
+                            const Text('מופע מתוך סדרה'),
+                          Text('יוצר האירוע: ${e['owner_name']}'),
+                          if (e['location'].toString().isNotEmpty)
+                            Text('מקום: ${e['location']}'),
+                          if (e['notes'].toString().isNotEmpty)
+                            Padding(
+                                padding: const EdgeInsets.only(top: 12),
+                                child: Text(e['notes'])),
+                          Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: Text(
+                                  'תזכורת: ${_reminderLabel(e['reminder_minutes'])}')),
+                          if (owner)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 16),
+                              child: CalendarEventAttendanceDetails(
+                                event: e,
+                                loadAttendees: () async {
+                                  final rows = await client
+                                      .call('events/${e['id']}/attendees');
+                                  if (!mounted || widget.token != token) {
+                                    throw StateError('החשבון השתנה');
+                                  }
+                                  return _maps(rows);
+                                },
+                              ),
+                            ),
+                          if (!owner)
+                            Text('תשובתך: ${{
+                              'accepted': 'אישור',
+                              'maybe': 'אולי',
+                              'pending': 'טרם נענתה',
+                              'declined': 'דחייה'
+                            }[e['response']]}'),
+                        ]))),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(ctx),
@@ -508,7 +543,7 @@ class _CalendarScreenState extends State<CalendarScreen>
                           }[r]!))
                   ],
                 ]));
-    if (!mounted || result == null) return;
+    if (!mounted || result == null || widget.token != token) return;
     if (result == 'edit') {
       await _edit(event: e);
       return;
@@ -591,26 +626,30 @@ class _CalendarScreenState extends State<CalendarScreen>
     }
   }
 
-  Widget _eventChip(Map<String, dynamic> e, {bool compact = false}) => InkWell(
-      onTap: () => _details(e),
-      child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 1),
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
-          decoration: BoxDecoration(
-              color: (_colors[e['color']] ?? _blue).withValues(alpha: .12),
-              border: Border(
-                  right: BorderSide(
-                      color: _colors[e['color']] ?? _blue, width: 3)),
-              borderRadius: BorderRadius.circular(4)),
-          child: Text(
-              '${e['all_day'] == true ? '' : '${_time(_wall(e['start_local']))} '}${e['title']}${e['response'] == 'maybe' ? ' · אולי' : ''}',
-              maxLines: compact ? 1 : 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  fontSize: compact ? 11 : 13,
-                  color: _colors[e['color']] ?? _blue))));
+  Widget _eventChip(Map<String, dynamic> e,
+          {bool compact = false, DateTime? day}) =>
+      InkWell(
+          onTap: () {
+            if (day != null) setState(() => _selected = day);
+            _details(e);
+          },
+          child: Container(
+              margin: const EdgeInsets.symmetric(vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
+              decoration: BoxDecoration(
+                  color: (_colors[e['color']] ?? _blue).withValues(alpha: .12),
+                  border: Border(
+                      right: BorderSide(
+                          color: _colors[e['color']] ?? _blue, width: 3)),
+                  borderRadius: BorderRadius.circular(4)),
+              child: CalendarEventSummary(
+                  event: e,
+                  compact: compact,
+                  color: _colors[e['color']] ?? _blue)));
   Widget _month() => LayoutBuilder(builder: (context, box) {
         final small = box.maxWidth < 600;
+        final month = _selectedHebrew;
+        final start = _start;
         final cellHeight =
             math.max(small ? 106.0 : 108.0, (box.maxHeight - 34) / 6);
         final maxItems = small || cellHeight < 135 ? 1 : 2;
@@ -636,59 +675,98 @@ class _CalendarScreenState extends State<CalendarScreen>
                         for (int day = 0; day < 7; day++)
                           Expanded(child: Builder(builder: (ctx) {
                             final date =
-                                _start.add(Duration(days: week * 7 + day));
+                                start.add(Duration(days: week * 7 + day));
+                            final hebrew = HebrewDate.fromGregorian(date);
+                            final selected = _date(date) == _date(_selected);
+                            final today = _date(date) == _date(_today);
+                            final inMonth = hebrew.year == month.year &&
+                                hebrew.month == month.month;
                             final entries = _onDay(date),
                                 holidays = _holidaysOn(date);
-                            return InkWell(
-                                onTap: () {
-                                  setState(() {
-                                    _selected = date;
-                                    _view = 'day';
-                                  });
-                                  _load();
-                                },
-                                child: Container(
-                                    padding: const EdgeInsets.all(4),
-                                    decoration: BoxDecoration(
-                                        color: _date(date) == _date(_today)
-                                            ? const Color(0xFFEAF5FE)
-                                            : date.month != _selected.month
-                                                ? const Color(0xFFF5F6F8)
-                                                : Colors.white,
-                                        border: Border.all(
-                                            color: const Color(0xFFE1E8ED),
-                                            width: .5)),
-                                    child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text('${date.day}',
-                                              style: const TextStyle(
-                                                  fontWeight: FontWeight.bold)),
-                                          Text(_hebrew(date),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                  fontSize: 10,
-                                                  color: Colors.blueGrey)),
-                                          for (final h
-                                              in holidays.take(maxItems))
-                                            Text(_holidayLabel(h),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                    fontSize: 10,
-                                                    color: Color(0xFF8B6419))),
-                                          for (final e
-                                              in entries.take(maxItems))
-                                            _eventChip(e, compact: true),
-                                          if (entries.length > (maxItems) ||
-                                              holidays.length > (maxItems))
-                                            const Text('עוד…',
-                                                style: TextStyle(
-                                                    fontSize: 10,
-                                                    color: _blue)),
-                                        ])));
+                            return Semantics(
+                                selected: selected,
+                                label: '${hebrew.label}, ${_dayLabel(date)}',
+                                child: InkWell(
+                                    onTap: () {
+                                      setState(() {
+                                        _selected = date;
+                                        _view = 'day';
+                                      });
+                                      _load();
+                                    },
+                                    child: Container(
+                                        key: ValueKey(
+                                            'calendar-month-day-${_date(date)}'),
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: BoxDecoration(
+                                            color: selected
+                                                ? const Color(0xFFDCEFFC)
+                                                : today
+                                                    ? const Color(0xFFEAF5FE)
+                                                    : !inMonth
+                                                        ? const Color(
+                                                            0xFFF5F6F8)
+                                                        : Colors.white,
+                                            border: Border.all(
+                                                color: selected
+                                                    ? _blue
+                                                    : const Color(0xFFE1E8ED),
+                                                width: selected ? 2 : .5)),
+                                        child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Row(children: [
+                                                Flexible(
+                                                  child: FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    child: Text(hebrew.dayLabel,
+                                                        style: const TextStyle(
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .bold)),
+                                                  ),
+                                                ),
+                                                if (today)
+                                                  const Padding(
+                                                    padding:
+                                                        EdgeInsetsDirectional
+                                                            .only(start: 5),
+                                                    child: Tooltip(
+                                                      message: 'היום',
+                                                      child: Icon(Icons.circle,
+                                                          size: 6,
+                                                          color: _blue),
+                                                    ),
+                                                  ),
+                                              ]),
+                                              Text('${date.day}/${date.month}',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.blueGrey)),
+                                              for (final h
+                                                  in holidays.take(maxItems))
+                                                Text(_holidayLabel(h),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                        fontSize: 10,
+                                                        color:
+                                                            Color(0xFF8B6419))),
+                                              for (final e
+                                                  in entries.take(maxItems))
+                                                _eventChip(e, compact: true),
+                                              if (entries.length > (maxItems) ||
+                                                  holidays.length > (maxItems))
+                                                const Text('עוד…',
+                                                    style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: _blue)),
+                                            ]))));
                           }))
                       ]))
           ]))
@@ -709,26 +787,45 @@ class _CalendarScreenState extends State<CalendarScreen>
                           width: col,
                           child: Builder(builder: (_) {
                             final d = _start.add(Duration(days: i));
-                            return Container(
-                                padding: const EdgeInsets.all(5),
-                                color: const Color(0xFFF1F7FC),
-                                child: Column(children: [
-                                  Text(
-                                      '${_weekdays[d.weekday % 7]} ${d.day}/${d.month}',
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.bold)),
-                                  Text(_hebrew(d),
-                                      style: const TextStyle(fontSize: 11)),
-                                  for (final h in _holidaysOn(d))
-                                    Text(_holidayLabel(h),
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(
-                                            fontSize: 11,
-                                            color: Color(0xFF8B6419))),
-                                  for (final e in _onDay(d)
-                                      .where((e) => e['all_day'] == true))
-                                    _eventChip(e, compact: true)
-                                ]));
+                            final selected = _date(d) == _date(_selected);
+                            final today = _date(d) == _date(_today);
+                            return Semantics(
+                                key: ValueKey('calendar-header-${_date(d)}'),
+                                selected: selected,
+                                child: InkWell(
+                                    onTap: () => setState(() => _selected = d),
+                                    child: Container(
+                                        padding: const EdgeInsets.all(5),
+                                        decoration: BoxDecoration(
+                                          color: selected
+                                              ? const Color(0xFFDCEFFC)
+                                              : const Color(0xFFF1F7FC),
+                                          border: Border(
+                                              bottom: BorderSide(
+                                            color: selected
+                                                ? _blue
+                                                : Colors.transparent,
+                                            width: 3,
+                                          )),
+                                        ),
+                                        child: Column(children: [
+                                          Text(
+                                              '${_weekdays[d.weekday % 7]} ${d.day}/${d.month}${today ? ' · היום' : ''}',
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.bold)),
+                                          Text(_hebrew(d),
+                                              style: const TextStyle(
+                                                  fontSize: 11)),
+                                          for (final h in _holidaysOn(d))
+                                            Text(_holidayLabel(h),
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(
+                                                    fontSize: 11,
+                                                    color: Color(0xFF8B6419))),
+                                          for (final e in _onDay(d).where(
+                                              (e) => e['all_day'] == true))
+                                            _eventChip(e, compact: true, day: d)
+                                        ]))));
                           }))
                   ]),
                   Expanded(
@@ -796,50 +893,63 @@ class _CalendarScreenState extends State<CalendarScreen>
       groupEnd = math.max(groupEnd, end);
     }
     flush();
-    return Stack(children: [
-      for (int h = 0; h < 48; h++)
-        Positioned(
-            top: h * 30.0,
-            left: 0,
-            right: 0,
-            height: 30,
-            child: InkWell(
-                onTap: () => _edit(at: day.add(Duration(minutes: h * 30))),
-                child: Container(
-                    decoration: BoxDecoration(
-                        border: Border(
-                            top: BorderSide(
-                                color: h.isEven
-                                    ? const Color(0xFFDCE5EC)
-                                    : const Color(0xFFF0F3F6)),
-                            left:
-                                const BorderSide(color: Color(0xFFE1E8ED))))))),
-      for (final p in placements)
-        Positioned(
-            top: p['start'] as double,
-            right: (p['lane'] as int) * width / (p['columns'] as int),
-            width: width / (p['columns'] as int) - 2,
-            height:
-                math.max(22, (p['end'] as double) - (p['start'] as double) - 2),
-            child: Material(
-                color: (_colors[p['event']['color']] ?? _blue)
-                    .withValues(alpha: .18),
-                borderRadius: BorderRadius.circular(5),
+    return ColoredBox(
+        key: ValueKey('calendar-column-${_date(day)}'),
+        color: _date(day) == _date(_selected)
+            ? const Color(0xFFF1F8FE)
+            : Colors.white,
+        child: Stack(children: [
+          for (int h = 0; h < 48; h++)
+            Positioned(
+                top: h * 30.0,
+                left: 0,
+                right: 0,
+                height: 30,
                 child: InkWell(
-                    onTap: () => _details(p['event']),
-                    child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: Text(
-                            '${_time(_wall(p['event']['start_local']))} ${p['event']['title']}',
-                            overflow: TextOverflow.fade,
-                            style: const TextStyle(fontSize: 12))))))
-    ]);
+                    onTap: () {
+                      setState(() => _selected = day);
+                      _edit(at: day.add(Duration(minutes: h * 30)));
+                    },
+                    child: Container(
+                        decoration: BoxDecoration(
+                            border: Border(
+                                top: BorderSide(
+                                    color: h.isEven
+                                        ? const Color(0xFFDCE5EC)
+                                        : const Color(0xFFF0F3F6)),
+                                left: const BorderSide(
+                                    color: Color(0xFFE1E8ED))))))),
+          for (final p in placements)
+            Positioned(
+                top: p['start'] as double,
+                right: (p['lane'] as int) * width / (p['columns'] as int),
+                width: width / (p['columns'] as int) - 2,
+                height: math.max(
+                    22, (p['end'] as double) - (p['start'] as double) - 2),
+                child: Material(
+                    color: (_colors[p['event']['color']] ?? _blue)
+                        .withValues(alpha: .18),
+                    borderRadius: BorderRadius.circular(5),
+                    child: InkWell(
+                        onTap: () {
+                          setState(() => _selected = day);
+                          _details(p['event']);
+                        },
+                        child: Padding(
+                            padding: const EdgeInsets.all(4),
+                            child: CalendarEventSummary(
+                                event: p['event'],
+                                color:
+                                    _colors[p['event']['color']] ?? _blue)))))
+        ]));
   }
 
   @override
   Widget build(BuildContext context) => Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
+          // Inputs live in dialogs, which handle their own keyboard insets.
+          resizeToAvoidBottomInset: false,
           backgroundColor: Colors.white,
           appBar: AppBar(
               backgroundColor: _blue,
@@ -897,39 +1007,32 @@ class _CalendarScreenState extends State<CalendarScreen>
                         IconButton(
                             tooltip: 'הקודם',
                             onPressed: () => _move(-1),
-                            icon: const Icon(Icons.chevron_right)),
-                        TextButton(
-                            onPressed: () async {
-                              final d = await showDatePicker(
-                                  context: context,
-                                  initialDate: _selected,
-                                  firstDate: DateTime(2020),
-                                  lastDate: DateTime(2100));
-                              if (d != null) {
-                                setState(() => _selected = d);
-                                _load();
-                              }
-                            },
-                            child: Text(_view == 'month'
-                                ? '${const [
-                                    'ינואר',
-                                    'פברואר',
-                                    'מרץ',
-                                    'אפריל',
-                                    'מאי',
-                                    'יוני',
-                                    'יולי',
-                                    'אוגוסט',
-                                    'ספטמבר',
-                                    'אוקטובר',
-                                    'נובמבר',
-                                    'דצמבר'
-                                  ][_selected.month - 1]} ${_selected.year}'
-                                : _dayLabel(_selected))),
+                            icon: const Icon(Icons.chevron_right,
+                                textDirection: TextDirection.ltr)),
+                        Flexible(
+                            child: TextButton(
+                                key: const ValueKey('calendar-date-picker'),
+                                onPressed: () async {
+                                  final d = await showHebrewDatePicker(
+                                      context: context,
+                                      initialDate: _selected,
+                                      firstDate: DateTime.utc(2020),
+                                      lastDate: DateTime.utc(2100));
+                                  if (d != null && mounted) {
+                                    setState(() => _selected = _day(d));
+                                    _load();
+                                  }
+                                },
+                                child: Text(
+                                    _view == 'month'
+                                        ? _selectedHebrew.monthYearLabel
+                                        : _selectedHebrew.label,
+                                    textAlign: TextAlign.center))),
                         IconButton(
                             tooltip: 'הבא',
                             onPressed: () => _move(1),
-                            icon: const Icon(Icons.chevron_left)),
+                            icon: const Icon(Icons.chevron_left,
+                                textDirection: TextDirection.ltr)),
                         TextButton(
                             onPressed: () {
                               setState(() => _selected = _today);
@@ -1316,6 +1419,11 @@ class _EventEditorState extends State<_EventEditor> {
   late bool allDay;
   late String color, zone;
   String repeat = 'none';
+  int repeatInterval = 1;
+  final Set<int> repeatWeekdays = {};
+  bool weekdaysChanged = false;
+  String repeatEnd = 'count', editScope = 'single';
+  late DateTime repeatUntil;
   int? reminder = 15;
   final Set<String> invitees = {};
   bool saving = false;
@@ -1332,6 +1440,8 @@ class _EventEditorState extends State<_EventEditor> {
     end = e == null
         ? start.add(const Duration(hours: 1))
         : _wall(e['event_end_local']);
+    repeatWeekdays.add(start.weekday);
+    repeatUntil = _day(start).add(const Duration(days: 28));
     allDay = e?['all_day'] == true;
     color = e?['color'] ?? 'blue';
     zone = e?['timezone'] ?? widget.settings['timezone'];
@@ -1349,11 +1459,11 @@ class _EventEditorState extends State<_EventEditor> {
 
   Future<void> pick(bool first) async {
     final original = first ? start : end;
-    final d = await showDatePicker(
+    final d = await showHebrewDatePicker(
         context: context,
         initialDate: original,
-        firstDate: DateTime(2020),
-        lastDate: DateTime(2100));
+        firstDate: DateTime.utc(2020),
+        lastDate: DateTime.utc(2100));
     if (d == null || !mounted) return;
     TimeOfDay? t;
     if (!allDay) {
@@ -1371,6 +1481,11 @@ class _EventEditorState extends State<_EventEditor> {
           DateTime.utc(d.year, d.month, d.day, t?.hour ?? 0, t?.minute ?? 0);
       if (first) {
         start = next;
+        if (!weekdaysChanged) {
+          repeatWeekdays
+            ..clear()
+            ..add(start.weekday);
+        }
         if (!end.isAfter(start)) {
           end = start.add(Duration(hours: allDay ? 24 : 1));
         }
@@ -1380,11 +1495,74 @@ class _EventEditorState extends State<_EventEditor> {
     });
   }
 
+  Future<void> pickRepeatUntil() async {
+    final selected = await showHebrewDatePicker(
+        context: context,
+        initialDate: repeatUntil,
+        firstDate: _day(start),
+        lastDate: DateTime.utc(2100, 12, 31));
+    if (selected != null && mounted) {
+      setState(() => repeatUntil = selected);
+    }
+  }
+
+  DateTime get firstRepeatStart {
+    if (repeat == 'weekly' && repeatWeekdays.isNotEmpty) {
+      for (var offset = 0; offset < 7; offset++) {
+        final candidate = start.add(Duration(days: offset));
+        if (repeatWeekdays.contains(candidate.weekday)) return candidate;
+      }
+    }
+    return start;
+  }
+
+  String get repeatSummary {
+    final frequency = switch (repeat) {
+      'daily' => repeatInterval == 1 ? 'כל יום' : 'כל $repeatInterval ימים',
+      'weekly' => repeatWeekdays.isEmpty
+          ? 'יש לבחור ימי שבוע'
+          : 'בכל שבוע בימי ${[
+              7,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ].where(repeatWeekdays.contains).map((d) => _weekdays[d % 7]).join(', ')}',
+      'monthly' => 'בכל חודש לועזי בתאריך ${start.day}',
+      _ => '',
+    };
+    final termination = repeatEnd == 'until'
+        ? 'עד ${HebrewDate.fromGregorian(repeatUntil).label} (${_dayLabel(repeatUntil)}), כולל יום זה'
+        : '${int.tryParse(count.text) ?? '—'} מופעים בסך הכול';
+    return '$frequency, ${allDay ? 'כל היום' : 'בשעה \u2066${_time(start)}\u2069'}; החל מ־${_dayLabel(firstRepeatStart)}; $termination.';
+  }
+
   Future<void> save() async {
     if (saving) return;
     if (title.text.trim().isEmpty || !end.isAfter(start)) {
       setState(() => error = 'יש להזין כותרת ושעת סיום אחרי ההתחלה');
       return;
+    }
+    if (widget.event == null && repeat != 'none') {
+      final occurrences = int.tryParse(count.text);
+      String? recurrenceError;
+      if (repeat == 'weekly' && repeatWeekdays.isEmpty) {
+        recurrenceError = 'יש לבחור לפחות יום אחד בשבוע';
+      } else if (repeatEnd == 'count' &&
+          (occurrences == null || occurrences < 1 || occurrences > 104)) {
+        recurrenceError = 'יש להזין מספר מופעים בין 1 ל־104';
+      } else if (repeatEnd == 'until' && repeatUntil.isBefore(_day(start))) {
+        recurrenceError = 'תאריך סיום החזרה חייב להיות ביום ההתחלה או אחריו';
+      } else if (repeatEnd == 'until' &&
+          repeatUntil.isBefore(_day(firstRepeatStart))) {
+        recurrenceError = 'אין מופעים בימים שנבחרו עד תאריך הסיום';
+      }
+      if (recurrenceError != null) {
+        setState(() => error = recurrenceError);
+        return;
+      }
     }
     setState(() {
       saving = true;
@@ -1405,9 +1583,21 @@ class _EventEditorState extends State<_EventEditor> {
             'color': color,
             'reminder_minutes': reminder,
             'repeat': repeat,
-            'count': int.tryParse(count.text),
+            if (widget.event == null && repeat != 'none') ...{
+              if (repeat == 'daily') 'interval': repeatInterval,
+              if (repeat == 'weekly')
+                'weekdays': repeatWeekdays.toList()..sort(),
+              'end_type': repeatEnd,
+              if (repeatEnd == 'count') 'count': int.parse(count.text),
+              if (repeatEnd == 'until') 'until': _date(repeatUntil),
+            },
             'invitees': invitees.toList(),
-            if (widget.event != null) 'version': widget.event!['version']
+            if (widget.event != null) ...{
+              'version': widget.event!['version'],
+              'scope': editScope,
+              if (editScope == 'series')
+                'series_revision': widget.event!['series_revision'],
+            }
           });
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -1429,6 +1619,8 @@ class _EventEditorState extends State<_EventEditor> {
     return Directionality(
         textDirection: TextDirection.rtl,
         child: AlertDialog(
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
             title: Text(
                 widget.event == null ? 'אירוע חדש' : 'עריכת אירוע ומוזמנים'),
             content: SizedBox(
@@ -1500,6 +1692,7 @@ class _EventEditorState extends State<_EventEditor> {
                       ]),
                       DropdownButtonFormField<int>(
                           initialValue: reminder ?? -1,
+                          isExpanded: true,
                           decoration:
                               const InputDecoration(labelText: 'תזכורת'),
                           items: const [
@@ -1527,16 +1720,18 @@ class _EventEditorState extends State<_EventEditor> {
                               TextStyle(fontSize: 11, color: Colors.blueGrey)),
                       if (widget.event == null) ...[
                         DropdownButtonFormField<String>(
+                            key: const ValueKey('calendar-repeat'),
                             initialValue: repeat,
+                            isExpanded: true,
                             decoration:
                                 const InputDecoration(labelText: 'חזרה'),
                             items: const [
                               DropdownMenuItem(
                                   value: 'none', child: Text('חד־פעמי')),
                               DropdownMenuItem(
-                                  value: 'daily', child: Text('כל יום')),
+                                  value: 'daily', child: Text('יומי')),
                               DropdownMenuItem(
-                                  value: 'weekly', child: Text('כל שבוע')),
+                                  value: 'weekly', child: Text('שבועי')),
                               DropdownMenuItem(
                                   value: 'monthly',
                                   child: Text('כל חודש (לועזי)'))
@@ -1544,16 +1739,128 @@ class _EventEditorState extends State<_EventEditor> {
                             onChanged: saving
                                 ? null
                                 : (v) => setState(() => repeat = v!)),
-                        if (repeat != 'none')
-                          TextField(
-                              controller: count,
-                              keyboardType: TextInputType.number,
+                        if (repeat == 'daily')
+                          DropdownButtonFormField<int>(
+                              key: const ValueKey('calendar-repeat-interval'),
+                              initialValue: repeatInterval,
+                              isExpanded: true,
                               decoration: const InputDecoration(
-                                  labelText:
-                                      'מספר מופעים, כולל הראשון (עד 104)'))
+                                  labelText: 'מרווח בין מופעים'),
+                              items: [
+                                for (var days = 1; days <= 7; days++)
+                                  DropdownMenuItem(
+                                      value: days,
+                                      child: Text(days == 1
+                                          ? 'כל יום'
+                                          : 'כל $days ימים'))
+                              ],
+                              onChanged: saving
+                                  ? null
+                                  : (v) => setState(() => repeatInterval = v!)),
+                        if (repeat == 'weekly') ...[
+                          const Padding(
+                              padding: EdgeInsets.only(top: 12),
+                              child: Text('באילו ימים בשבוע?')),
+                          Wrap(spacing: 6, runSpacing: 4, children: [
+                            for (final day in [7, 1, 2, 3, 4, 5, 6])
+                              FilterChip(
+                                  key: ValueKey('calendar-repeat-weekday-$day'),
+                                  label: Text([
+                                    'א׳',
+                                    'ב׳',
+                                    'ג׳',
+                                    'ד׳',
+                                    'ה׳',
+                                    'ו׳',
+                                    'ש׳'
+                                  ][day % 7]),
+                                  tooltip: _weekdays[day % 7],
+                                  selected: repeatWeekdays.contains(day),
+                                  onSelected: saving
+                                      ? null
+                                      : (selected) => setState(() {
+                                            weekdaysChanged = true;
+                                            if (selected) {
+                                              repeatWeekdays.add(day);
+                                            } else {
+                                              repeatWeekdays.remove(day);
+                                            }
+                                          }))
+                          ])
+                        ],
+                        if (repeat == 'monthly')
+                          const Padding(
+                              padding: EdgeInsets.only(top: 8),
+                              child: Text(
+                                  'החזרה לפי התאריך הלועזי. בחודש קצר יותר האירוע יחול ביום האחרון בחודש.')),
+                        if (repeat != 'none') ...[
+                          DropdownButtonFormField<String>(
+                              key: const ValueKey('calendar-repeat-end'),
+                              initialValue: repeatEnd,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                  labelText: 'סיום החזרה'),
+                              items: const [
+                                DropdownMenuItem(
+                                    value: 'count',
+                                    child: Text('לאחר מספר מופעים')),
+                                DropdownMenuItem(
+                                    value: 'until', child: Text('בתאריך'))
+                              ],
+                              onChanged: saving
+                                  ? null
+                                  : (v) => setState(() => repeatEnd = v!)),
+                          if (repeatEnd == 'count')
+                            TextField(
+                                key: const ValueKey('calendar-repeat-count'),
+                                controller: count,
+                                enabled: !saving,
+                                keyboardType: TextInputType.number,
+                                onChanged: (_) => setState(() {}),
+                                decoration: const InputDecoration(
+                                    labelText: 'מספר מופעים (כולל הראשון)',
+                                    helperText: 'בין 1 ל־104 מופעים')),
+                          if (repeatEnd == 'until')
+                            ListTile(
+                                key: const ValueKey('calendar-repeat-until'),
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('תאריך סיום החזרה'),
+                                subtitle: Text(
+                                    '${HebrewDate.fromGregorian(repeatUntil).label}\n${_dayLabel(repeatUntil)} (כולל)'),
+                                trailing: const Icon(Icons.edit_calendar),
+                                onTap: saving ? null : pickRepeatUntil),
+                          Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Text(repeatSummary,
+                                  key: const ValueKey(
+                                      'calendar-repeat-summary'))),
+                          const Text('ניתן ליצור עד 104 מופעים בכל סדרה.',
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.blueGrey))
+                        ]
                       ],
-                      if (widget.event?['series_id'] != null)
-                        const Text('העריכה חלה על מופע זה בלבד.'),
+                      if (widget.event?['series_id'] != null) ...[
+                        DropdownButtonFormField<String>(
+                            key: const ValueKey('calendar-edit-scope'),
+                            initialValue: editScope,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                                labelText: 'החלת השינויים'),
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'single', child: Text('מופע זה בלבד')),
+                              DropdownMenuItem(
+                                  value: 'series', child: Text('כל הסדרה'))
+                            ],
+                            onChanged: saving
+                                ? null
+                                : (v) => setState(() => editScope = v!)),
+                        Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(editScope == 'single'
+                                ? 'השינויים יישמרו במופע זה בלבד.'
+                                : 'פרטי האירוע, השעות, התזכורת והמוזמנים יעודכנו בכל המופעים שלא בוטלו. שינוי תאריך מזיז את כל הסדרה באותו מספר ימים; תדירות החזרה נשארת כפי שנקבעה.'))
+                      ],
                       const Padding(
                           padding: EdgeInsets.only(top: 16),
                           child: Text('הזמנת חברים',

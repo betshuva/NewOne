@@ -25,6 +25,9 @@ function visibleMessage(alias, user) {
 }
 
 const RECEIVED_MEDIA_SCHEMA = `
+CREATE TABLE IF NOT EXISTS deleted_media_sources (
+  public_url TEXT PRIMARY KEY,owner_id UUID NOT NULL,storage_path TEXT,deleted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 ALTER TABLE conversation_user_state ADD COLUMN IF NOT EXISTS media_deleted_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS personal_media_content (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -136,11 +139,15 @@ async function migrateReceivedMedia(pool) {
 async function retainVisibleReceivedMessages(db, userId, rows) {
   const ids = rows.map(row => row.id).filter(id => UUID.test(String(id)));
   if (!ids.length || !UUID.test(String(userId))) return;
-  await db.query(`INSERT INTO received_message_media(message_id,user_id,source_file_id)
-    SELECT m.id,$1,sf.id FROM messages m JOIN stored_files sf ON sf.public_url=m.file_url
+  await db.query(`WITH readable_sources AS MATERIALIZED (
+    SELECT m.id AS message_id,sf.id AS source_file_id FROM messages m
+    JOIN stored_files sf ON sf.public_url=m.file_url
     WHERE m.id=ANY($2::uuid[]) AND $1::uuid ${HUMAN_USER}
       AND sf.moderation_status='approved' AND sf.content_purged_at IS NULL
       AND ${visibleMessage('m', '$1')}
+    ORDER BY sf.id FOR SHARE OF sf
+    ) INSERT INTO received_message_media(message_id,user_id,source_file_id)
+    SELECT message_id,$1,source_file_id FROM readable_sources
     ON CONFLICT DO NOTHING`, [userId, ids]);
 }
 
@@ -152,8 +159,17 @@ async function personalizeReceivedMessages(db, userId, rows) {
     WHERE r.user_id=$1 AND sf.user_id=$1 AND r.message_id=ANY($2::uuid[])
       AND r.status='ready'`, [userId, ids]);
   const saved = new Map(result.rows.map(row => [row.message_id, row]));
+  const removed = await db.query(`SELECT m.id FROM messages m
+    LEFT JOIN received_message_media r ON r.message_id=m.id AND r.user_id=$1
+    WHERE m.id=ANY($2::uuid[]) AND (
+      (r.status='skipped' AND r.last_error IN ('owner_deleted','source_deleted'))
+      OR EXISTS (SELECT 1 FROM deleted_media_sources d WHERE d.public_url=m.file_url))`, [userId, ids]);
+  const deleted = new Set(removed.rows.map(row => row.id));
   return rows.map(row => {
     const copy = saved.get(row.id);
+    if (!copy && deleted.has(row.id)) return { ...row,
+      file_url: null, fileUrl: null, file_deleted: true,
+      filter_hidden: false, hidden_reason: null };
     if (!copy || !(row.file_url || row.fileUrl)) return row;
     const textFields = {};
     if (copy.source_file_id && copy.public_url.startsWith('/betshuva-app/api/guide-files/')) {

@@ -21,8 +21,10 @@ const NEW_ACCOUNT_CONTENT_FILTER = Object.freeze({
 function normalizeContentFilter(value, fallback = DEFAULT_CONTENT_FILTER) {
   const input = value && typeof value === 'object' && !Array.isArray(value)
     ? value : {};
+  // Text and non-human images remain available even for saved legacy filters.
   return Object.fromEntries(Object.keys(DEFAULT_CONTENT_FILTER).map(key => [
-    key, typeof input[key] === 'boolean' ? input[key] : fallback[key],
+    key, key === 'text' || key === 'nonHumanImages'
+      ? true : typeof input[key] === 'boolean' ? input[key] : fallback[key],
   ]));
 }
 
@@ -43,6 +45,7 @@ function imageAllowedByFilter(filter, classification) {
     const hasSpecificPeopleCategory = detected.some(category =>
       specificPeopleCategories.includes(category));
     return detected.every(category => {
+      if (category === 'nonHumanImages') return true;
       if (category === 'people')
         return hasSpecificPeopleCategory ||
           specificPeopleCategories.every(value => filter[value] === true);
@@ -50,9 +53,10 @@ function imageAllowedByFilter(filter, classification) {
     });
   }
   if (classification?.uncertain === true)
-    return ['men', 'women', 'children', 'nonHumanImages']
+    return ['men', 'women', 'children']
       .every(category => filter[category] === true);
   const category = classification?.category || 'people';
+  if (category === 'nonHumanImages') return true;
   if (category === 'people')
     return filter.men && filter.women && filter.children;
   return filter[category] === true;

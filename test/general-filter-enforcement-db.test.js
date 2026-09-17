@@ -15,9 +15,11 @@ test('SQL enforcement agrees with delivery policy and legacy updates preserve th
   for (const enforce of [false,true]) {
    for (let n=0;n<64;n++) {
     const general={...Object.fromEntries(keys.map((k,i)=>[k,!!(n&(1<<i))])),enforceGeneralFilter:enforce};
-    for (const scope of [null,DEFAULT_CONTENT_FILTER,{text:false,women:true}]) {
+    for (const scope of [null,DEFAULT_CONTENT_FILTER,{text:false,nonHumanImages:false,women:true}]) {
      const result=await db.query('SELECT pg_temp.betshuva_effective_filter($1,$2) AS filter',[JSON.stringify(general),scope===null?null:JSON.stringify(scope)]);
      assert.deepEqual(result.rows[0].filter,resolveScopedContentFilter(general,scope));
+     assert.equal(result.rows[0].filter.text,true);
+     assert.equal(result.rows[0].filter.nonHumanImages,true);
     }
    }
   }

@@ -35,3 +35,11 @@ Release verification: web build `20260910184856` matches the published JavaScrip
 All 150 user-supplied PNGs now replace the Unicode picker in one flat, searchable list. The header and image grid scroll together so an open keyboard also fits short landscape screens. Private-chat access follows the recipient's image permission. Existing text drafts and historical assets are preserved.
 
 Validation: 12 private/group widget tests passed, covering all 150 images, bundled-catalog fallback, first/last image delivery without duplicate sends, draft preservation, image permissions, and three keyboard-open mobile viewports including landscape. Six existing Node catalog/moderation checks passed, and all 150 public PNG URLs returned HTTP 200 with matching file sizes. Flutter analysis passed. Published as a web update; no Android APK rebuild is included.
+
+## Restored standard emoji alongside custom images — September 18, 2026
+
+The web composer offers both the existing 150 custom images under “של בתשובה” and the restored 171 standard Unicode emoji under “רגילים”. The custom collection opens first. Both private and group chats insert the chosen emoji at the preserved caret, replacing selected text when applicable. Selection does not send a message or upload media; the user sends the combined draft explicitly. Custom images remain small inline images in the draft and message, using the existing encoded-text format. Unicode emoji remain ordinary text.
+
+The standard picker retains its eight categories, Hebrew search, accessible labels and bundled Twemoji SVG artwork. Both collection views scroll their header, controls and results together to fit screens with an open keyboard. This update uses the existing catalogs and changes the web client only.
+
+Validation: 11 standalone picker tests, 11 inline-image/controller tests, and all 21 private/group integration cases passed with native Flutter testing. The 21 integration cases also passed in Chrome, including both lists on three keyboard-open viewports. Thirteen Node asset/catalog/moderation checks passed, and Flutter analysis reported no issues.

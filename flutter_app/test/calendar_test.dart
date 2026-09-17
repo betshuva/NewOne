@@ -323,12 +323,34 @@ void main() {
   });
 
   testWidgets(
-      'calendar month, week and day show events and distinct exit times',
+      'calendar opens the current week and keeps month and day navigation',
       (tester) async {
     await withCalendar(tester, (requests) async {
       expect(find.text('לוח שנה'), findsOneWidget);
       expect(find.textContaining('פגישה ראשונה'), findsWidgets);
       expect(find.textContaining('רבנו תם'), findsWidgets);
+      expect(
+          tester
+              .widget<SegmentedButton<String>>(
+                  find.byType(SegmentedButton<String>))
+              .selected,
+          {'week'});
+      final initialRange = requests
+          .firstWhere((r) => r.url.path.endsWith('/events'))
+          .url
+          .queryParameters;
+      expect(initialRange['start'], '2026-09-13');
+      expect(initialRange['end'], '2026-09-20');
+      expect(
+          tester
+              .widget<Semantics>(
+                  find.byKey(const ValueKey('calendar-header-2026-09-18')))
+              .properties
+              .selected,
+          isTrue);
+      await tester.tap(find.text('חודש'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('פגישה ראשונה'), findsWidgets);
       await tester.tap(find.text('שבוע'));
       await tester.pumpAndSettle();
       expect(find.text('09:00'), findsOneWidget);
@@ -342,6 +364,8 @@ void main() {
       'mobile month and weekly timeline fit and keep controls accessible',
       (tester) async {
     await withCalendar(tester, (requests) async {
+      await tester.tap(find.text('חודש'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('שבוע'));
       await tester.pumpAndSettle();
       expect(find.text('אירוע חדש'), findsOneWidget);

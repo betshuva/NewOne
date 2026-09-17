@@ -21,6 +21,11 @@ CREATE TABLE IF NOT EXISTS calendar_events (
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS calendar_events_owner_time ON calendar_events(owner_id,starts_at);
+CREATE INDEX IF NOT EXISTS calendar_events_owner_series ON calendar_events(owner_id,series_id) WHERE series_id IS NOT NULL;
+ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS reminder_version INTEGER;
+UPDATE calendar_events SET reminder_version=version WHERE reminder_version IS NULL;
+ALTER TABLE calendar_events ALTER COLUMN reminder_version SET DEFAULT 1;
+ALTER TABLE calendar_events ALTER COLUMN reminder_version SET NOT NULL;
 CREATE TABLE IF NOT EXISTS calendar_attendees (
  event_id UUID REFERENCES calendar_events(id) ON DELETE CASCADE,
  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -137,14 +142,33 @@ function validateEvent(b) {
   if (b.all_day && (start.hour || start.minute || end.hour || end.minute))
     throw fail(400, "אירוע של יום שלם חייב להתחיל ולהסתיים בחצות");
   const repeat = b.repeat || "none",
-    count = repeat === "none" ? 1 : b.count;
+    end_type = repeat === "none" ? "count" : (b.end_type ?? "count"),
+    count = repeat === "none" ? 1 : b.count,
+    interval = repeat === "daily" ? (b.interval ?? 1) : 1;
   if (
     !["none", "daily", "weekly", "monthly"].includes(repeat) ||
-    !Number.isInteger(count) ||
-    count < 1 ||
-    count > 104
+    !["count", "until"].includes(end_type) ||
+    (end_type === "count" &&
+      (!Number.isInteger(count) || count < 1 || count > 104))
   )
     throw fail(400, "ניתן ליצור עד 104 מופעים");
+  if (!Number.isInteger(interval) || interval < 1 || interval > 7)
+    throw fail(400, "בחזרה יומית יש לבחור מרווח של 1 עד 7 ימים");
+  let until = null;
+  if (end_type === "until") {
+    until = b.until;
+    const date = typeof until === "string"
+      ? DateTime.fromISO(until, { zone: "UTC" }) : null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(until ?? "") ||
+        !date?.isValid || date.toISODate() !== until ||
+        until < start.toISODate() || date.year > 2100)
+      throw fail(400, "תאריך סיום החזרה חייב להיות ביום תחילת האירוע או אחריו");
+  }
+  const weekdays = repeat === "weekly" ? (b.weekdays ?? [start.weekday]) : [];
+  if (!Array.isArray(weekdays) ||
+      (repeat === "weekly" && !weekdays.length) || weekdays.length > 7 ||
+      weekdays.some((day) => !Number.isInteger(day) || day < 1 || day > 7))
+    throw fail(400, "יש לבחור לפחות יום אחד בשבוע");
   if (
     !Array.isArray(b.invitees) ||
     b.invitees.length > 50 ||
@@ -158,29 +182,59 @@ function validateEvent(b) {
     location: b.location || "",
     repeat,
     count,
+    interval,
+    weekdays: [...new Set(weekdays)].sort((a, b) => a - b),
+    end_type,
+    until,
     start,
     end,
     invitees: [...new Set(b.invitees)],
   };
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function occurrences(e) {
-  const unit = { daily: "days", weekly: "weeks", monthly: "months" }[e.repeat];
-  return Array.from({ length: e.count }, (_, i) => {
-    const start = unit ? e.start.plus({ [unit]: i }) : e.start;
-    const end = unit ? e.end.plus({ [unit]: i }) : e.end;
-    if (
-      end <= start ||
-      start.hour !== e.start.hour ||
-      start.minute !== e.start.minute ||
-      end.hour !== e.end.hour ||
-      end.minute !== e.end.minute ||
-      start.getPossibleOffsets().length > 1 ||
-      end.getPossibleOffsets().length > 1
-    )
+function seriesRevision(rows) {
+  const versions = rows.map((row) => [row.id, row.version])
+    .sort(([a], [b]) => a.localeCompare(b));
+  return crypto.createHash("sha256").update(JSON.stringify(versions)).digest("hex");
+}
+// UTC here is a civil-calendar calculation space, not an instant conversion.
+// Apply the real zone only after date arithmetic so DST gaps cannot silently
+// move an occurrence, and months with fewer days retain the event's duration.
+const civilTime = (dt) => dt.setZone("UTC", { keepLocalTime: true });
+function occurrenceTimes(startCivil, endCivil, e) {
+  const resolve = (civil) => {
+    const local = civil.setZone(e.timezone, { keepLocalTime: true });
+    if (!local.isValid ||
+        local.toFormat("yyyy-MM-dd'T'HH:mm") !== civil.toFormat("yyyy-MM-dd'T'HH:mm") ||
+        local.getPossibleOffsets().length > 1)
       throw fail(400, "אחד ממופעי הסדרה נופל בשעת מעבר שעון. בחרו שעה אחרת");
-    return { start: start.toUTC().toISO(), end: end.toUTC().toISO() };
-  });
+    return local;
+  };
+  const start = resolve(startCivil), end = resolve(endCivil);
+  if (end <= start || start.year < 2020 || start.year > 2100 ||
+      end.diff(start, "days").days > 31 ||
+      (e.all_day && (start.hour || start.minute || end.hour || end.minute)))
+    throw fail(400, "אחד ממופעי הסדרה אינו בטווח תאריכים או שעות תקין");
+  return { start: start.toUTC().toISO(), end: end.toUTC().toISO() };
+}
+function occurrences(e) {
+  const result = [], anchor = civilTime(e.start);
+  const duration = civilTime(e.end).toMillis() - anchor.toMillis();
+  const endType = e.end_type ?? "count";
+  const weekdays = e.weekdays ?? [e.start.weekday];
+  for (let i = 0; ; i++) {
+    if (endType === "count" && result.length >= e.count) break;
+    const start = e.repeat === "monthly" ? anchor.plus({ months: i })
+      : anchor.plus({ days: i * (e.repeat === "daily" ? (e.interval ?? 1) : 1) });
+    if (endType === "until" && start.toISODate() > e.until) break;
+    if (e.repeat === "weekly" && !weekdays.includes(start.weekday)) continue;
+    if (result.length >= 104)
+      throw fail(400, "טווח החזרה כולל יותר מ־104 מופעים. יש לבחור תאריך סיום מוקדם יותר");
+    result.push(occurrenceTimes(start, start.plus({ milliseconds: duration }), e));
+    if (e.repeat === "none") break;
+  }
+  if (!result.length) throw fail(400, "אין מופעים בימים ובטווח התאריכים שנבחרו");
+  return result;
 }
 const cache = new Map();
 async function holidays(settings, start, end, fetcher = fetch) {
@@ -518,7 +572,7 @@ function registerCalendar(
         throw fail(400, "טווח התאריכים אינו תקין");
       const rows = (
         await db.query(
-          `SELECT e.*,u.name AS owner_name,a.response FROM calendar_events e JOIN users u ON u.id=e.owner_id LEFT JOIN calendar_attendees a ON a.event_id=e.id AND a.user_id=$1 WHERE NOT e.cancelled AND (e.owner_id=$1 OR a.response IN ('accepted','maybe')) AND ((NOT e.all_day AND e.starts_at<$3 AND e.ends_at>$2) OR
+          `SELECT e.*,u.name AS owner_name,a.response FROM calendar_events e JOIN users u ON u.id=e.owner_id LEFT JOIN calendar_attendees a ON a.event_id=e.id AND a.user_id=$1 AND e.owner_id<>$1 WHERE NOT e.cancelled AND (e.owner_id=$1 OR a.response IN ('accepted','maybe')) AND ((NOT e.all_day AND e.starts_at<$3 AND e.ends_at>$2) OR
           (e.all_day AND (e.starts_at AT TIME ZONE e.timezone)::date<$5::date
             AND (e.ends_at AT TIME ZONE e.timezone)::date>$4::date)) ORDER BY e.starts_at`,
           [
@@ -530,6 +584,61 @@ function registerCalendar(
           ],
         )
       ).rows;
+      const ownedIds = rows
+        .filter((e) => e.owner_id === req.user.id)
+        .map((e) => e.id);
+      const ownedSeriesIds = [...new Set(rows
+        .filter((e) => e.owner_id === req.user.id && e.series_id)
+        .map((e) => e.series_id))];
+      const seriesRevisions = new Map();
+      if (ownedSeriesIds.length) {
+        // Include members outside the visible range: changing any occurrence
+        // must invalidate a previously opened editor for the whole series.
+        const members = (await db.query(
+          `SELECT id,version,series_id FROM calendar_events WHERE owner_id=$1
+           AND series_id=ANY($2::uuid[]) AND NOT cancelled ORDER BY series_id,id`,
+          [req.user.id, ownedSeriesIds],
+        )).rows;
+        const bySeries = new Map();
+        for (const member of members) {
+          if (!bySeries.has(member.series_id)) bySeries.set(member.series_id, []);
+          bySeries.get(member.series_id).push(member);
+        }
+        for (const [seriesId, events] of bySeries)
+          seriesRevisions.set(seriesId, seriesRevision(events));
+      }
+      const summaries = new Map();
+      if (ownedIds.length) {
+        const counts = (
+          await db.query(
+            `SELECT event_id,COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE response='accepted')::int AS accepted,
+              COUNT(*) FILTER (WHERE response='maybe')::int AS maybe,
+              COUNT(*) FILTER (WHERE response='pending')::int AS pending,
+              COUNT(*) FILTER (WHERE response='declined')::int AS declined
+             FROM calendar_attendees
+             WHERE event_id=ANY($1::uuid[]) AND user_id<>$2
+             GROUP BY event_id`,
+            [ownedIds, req.user.id],
+          )
+        ).rows;
+        for (const { event_id, ...summary } of counts)
+          summaries.set(event_id, summary);
+      }
+      // Attendance counts are visible only to the organizer, including zero
+      // counts for personal events. A legacy self-invitation is not a guest.
+      for (const e of rows) {
+        if (e.owner_id === req.user.id)
+          e.attendee_summary = summaries.get(e.id) || {
+            total: 0,
+            accepted: 0,
+            maybe: 0,
+            pending: 0,
+            declined: 0,
+          };
+        if (e.owner_id === req.user.id && e.series_id)
+          e.series_revision = seriesRevisions.get(e.series_id);
+      }
       res.json({
         events: rows.map((e) => serialize(e, s.timezone)),
         timezone: s.timezone,
@@ -650,7 +759,7 @@ function registerCalendar(
       try {
         await c.query("BEGIN");
         await assertInvitees(c, req.user.id, e.invitees);
-        const series = e.count > 1 ? crypto.randomUUID() : null;
+        const series = times.length > 1 ? crypto.randomUUID() : null;
         for (const t of times) {
           const row = (
             await c.query(
@@ -713,8 +822,8 @@ function registerCalendar(
       res.json(
         (
           await db.query(
-            "SELECT a.user_id,u.name,a.response FROM calendar_attendees a JOIN users u ON u.id=a.user_id WHERE event_id=$1 ORDER BY u.name",
-            [req.params.id],
+            "SELECT a.user_id,u.name,a.response FROM calendar_attendees a JOIN users u ON u.id=a.user_id WHERE event_id=$1 AND a.user_id<>$2 ORDER BY u.name",
+            [req.params.id, req.user.id],
           )
         ).rows,
       );
@@ -725,78 +834,125 @@ function registerCalendar(
     auth,
     wrap(async (req, res) => {
       if (!UUID.test(req.params.id)) throw fail(404, "האירוע לא נמצא");
+      const scope = req.body.scope ?? "single";
+      if (!["single", "series"].includes(scope))
+        throw fail(400, "יש לבחור עדכון מופע יחיד או כל המופעים");
       const e = validateEvent({ ...req.body, repeat: "none" });
       if (e.invitees.length)
         await validateShared([e.title, e.notes, e.location].join("\n"));
       const db = await getPool(),
         c = await db.connect();
-      let targets = [];
+      let targets = [], updated = 0;
       try {
         await c.query("BEGIN");
-        const old = (
+        const selected = (
           await c.query(
-            "SELECT * FROM calendar_events WHERE id=$1 AND owner_id=$2 AND NOT cancelled FOR UPDATE",
+            "SELECT * FROM calendar_events WHERE id=$1 AND owner_id=$2 AND NOT cancelled",
             [req.params.id, req.user.id],
           )
         ).rows[0];
+        if (!selected) throw fail(404, "האירוע לא נמצא");
+        if (scope === "series" && !selected.series_id)
+          throw fail(400, "האירוע אינו חלק מסדרה");
+        // Do not lock the selected occurrence first: simultaneous edits from
+        // different occurrences must acquire all series locks in the same order.
+        // Non-key locks also allow reminder claims to check their event foreign
+        // keys without introducing a competing lock order across the series.
+        const rows = (
+          await c.query(
+            scope === "series"
+              ? "SELECT * FROM calendar_events WHERE series_id=$1 AND owner_id=$2 AND NOT cancelled ORDER BY id FOR NO KEY UPDATE"
+              : "SELECT * FROM calendar_events WHERE id=$1 AND owner_id=$2 AND NOT cancelled FOR NO KEY UPDATE",
+            [scope === "series" ? selected.series_id : selected.id, req.user.id],
+          )
+        ).rows;
+        const old = rows.find((row) => row.id === selected.id);
         if (!old) throw fail(404, "האירוע לא נמצא");
         if (old.version !== req.body.version)
           throw fail(409, "האירוע השתנה. יש לרענן ולנסות שוב");
-        const previous = (
+        if (scope === "series" &&
+            (typeof req.body.series_revision !== "string" ||
+             req.body.series_revision !== seriesRevision(rows)))
+          throw fail(409, "אחד ממופעי הסדרה השתנה. יש לרענן ולנסות שוב");
+        const attendees = (
           await c.query(
-            "SELECT user_id FROM calendar_attendees WHERE event_id=$1",
-            [old.id],
+            "SELECT event_id,user_id FROM calendar_attendees WHERE event_id=ANY($1::uuid[])",
+            [rows.map((row) => row.id)],
           )
-        ).rows.map((x) => x.user_id);
+        ).rows;
+        const previousByEvent = new Map(rows.map((row) => [row.id, []]));
+        for (const attendee of attendees)
+          previousByEvent.get(attendee.event_id).push(attendee.user_id);
         await assertInvitees(
           c,
           req.user.id,
-          e.invitees.filter((x) => !previous.includes(x)),
+          e.invitees.filter((uid) =>
+            rows.some((row) => !previousByEvent.get(row.id).includes(uid))),
         );
-        await c.query(
-          `UPDATE calendar_events SET title=$2,notes=$3,location=$4,starts_at=$5,ends_at=$6,timezone=$7,all_day=$8,color=$9,reminder_minutes=$10,version=version+1,updated_at=now() WHERE id=$1`,
-          [
-            old.id,
-            e.title,
-            e.notes,
-            e.location,
-            e.start.toUTC().toISO(),
-            e.end.toUTC().toISO(),
-            e.timezone,
-            e.all_day,
-            e.color,
-            e.reminder_minutes,
-          ],
-        );
-        await c.query(
-          "DELETE FROM calendar_attendees WHERE event_id=$1 AND NOT(user_id=ANY($2::uuid[]))",
-          [old.id, e.invitees],
-        );
-        const timeChanged =
+        const localStart = (row) => civilTime(DateTime.fromJSDate(
+          new Date(row.starts_at), { zone: row.timezone }));
+        const anchor = civilTime(e.start);
+        const shift = anchor.toMillis() - localStart(old).toMillis();
+        const duration = civilTime(e.end).toMillis() - anchor.toMillis();
+        const selectedScheduleChanged =
           new Date(old.starts_at).getTime() !== e.start.toMillis() ||
           new Date(old.ends_at).getTime() !== e.end.toMillis() ||
-          old.all_day !== e.all_day;
-        if (timeChanged)
+          old.timezone !== e.timezone || old.all_day !== e.all_day;
+        // Validate every new endpoint before writing any event. The relative
+        // local dates also support older series with no stored recurrence rule.
+        const changes = rows.map((row) => {
+          // A rename or notes edit must retain exceptions edited separately,
+          // including their duration, zone and all-day setting.
+          if (!selectedScheduleChanged) return {
+            row, start: new Date(row.starts_at).toISOString(),
+            end: new Date(row.ends_at).toISOString(), timezone: row.timezone,
+            all_day: row.all_day, timeChanged: false,
+          };
+          const start = localStart(row).plus({ milliseconds: shift });
+          const times = occurrenceTimes(start, start.plus({ milliseconds: duration }), e);
+          const timeChanged =
+            new Date(row.starts_at).getTime() !== Date.parse(times.start) ||
+            new Date(row.ends_at).getTime() !== Date.parse(times.end) ||
+            row.all_day !== e.all_day;
+          return { row, ...times, timezone: e.timezone, all_day: e.all_day, timeChanged };
+        });
+        for (const change of changes) {
+          const { row, start, end, timezone, all_day, timeChanged } = change;
           await c.query(
-            "UPDATE calendar_attendees SET response='pending' WHERE event_id=$1",
-            [old.id],
+            `UPDATE calendar_events SET title=$2,notes=$3,location=$4,starts_at=$5,ends_at=$6,timezone=$7,all_day=$8,color=$9,reminder_minutes=$10,version=version+1,reminder_version=reminder_version+$11,updated_at=now() WHERE id=$1`,
+            [row.id, e.title, e.notes, e.location, start, end, timezone,
+              all_day, e.color, e.reminder_minutes,
+              timeChanged || row.reminder_minutes !== e.reminder_minutes ? 1 : 0],
           );
-        for (const uid of e.invitees)
           await c.query(
-            "INSERT INTO calendar_attendees(event_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
-            [old.id, uid],
+            "DELETE FROM calendar_attendees WHERE event_id=$1 AND NOT(user_id=ANY($2::uuid[]))",
+            [row.id, e.invitees],
           );
-        targets = [...new Set([...previous, ...e.invitees])];
+          if (timeChanged)
+            await c.query(
+              "UPDATE calendar_attendees SET response='pending' WHERE event_id=$1",
+              [row.id],
+            );
+          for (const uid of e.invitees)
+            await c.query(
+              "INSERT INTO calendar_attendees(event_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+              [row.id, uid],
+            );
+        }
+        targets = [...new Set([...attendees.map((a) => a.user_id), ...e.invitees])];
+        const timeChanged = changes.some((change) => change.timeChanged);
+        const subject = scope === "series" ? "סדרת האירועים" : "האירוע";
         for (const uid of targets)
           await notice(
             c,
             uid,
             old.id,
             e.invitees.includes(uid)
-              ? `האירוע עודכן: ${e.title}${timeChanged ? " — יש לאשר את השעה החדשה" : ""}`
+              ? `${subject} עודכ${scope === "series" ? "נה" : "ן"}: ${e.title}${timeChanged ? " — יש לאשר את השעה החדשה" : ""}`
               : `ההזמנה בוטלה: ${old.title}`,
           );
         await c.query("COMMIT");
+        updated = rows.length;
       } catch (err) {
         await c.query("ROLLBACK");
         throw err;
@@ -804,7 +960,7 @@ function registerCalendar(
         c.release();
       }
       for (const uid of targets) push(uid, "אירוע ביומן עודכן");
-      res.json({ ok: true });
+      res.json({ ok: true, updated });
     }),
   );
   app.delete(
@@ -905,8 +1061,8 @@ async function runReminders(getPool, sendPush) {
   // Claim and persist together so overlapping ticks never create duplicate reminders.
   const rows = (
     await db.query(`WITH due AS (
- SELECT e.id,e.title,e.version,e.owner_id AS user_id FROM calendar_events e WHERE NOT e.cancelled AND e.reminder_minutes IS NOT NULL AND e.starts_at>now()-interval '5 minutes' AND e.ends_at>now() AND e.starts_at-make_interval(mins=>e.reminder_minutes)<=now()
- UNION SELECT e.id,e.title,e.version,a.user_id FROM calendar_events e JOIN calendar_attendees a ON a.event_id=e.id WHERE NOT e.cancelled AND a.response='accepted' AND e.reminder_minutes IS NOT NULL AND e.starts_at>now()-interval '5 minutes' AND e.ends_at>now() AND e.starts_at-make_interval(mins=>e.reminder_minutes)<=now()
+ SELECT e.id,e.title,e.reminder_version AS version,e.owner_id AS user_id FROM calendar_events e WHERE NOT e.cancelled AND e.reminder_minutes IS NOT NULL AND e.starts_at>now()-interval '5 minutes' AND e.ends_at>now() AND e.starts_at-make_interval(mins=>e.reminder_minutes)<=now()
+ UNION SELECT e.id,e.title,e.reminder_version AS version,a.user_id FROM calendar_events e JOIN calendar_attendees a ON a.event_id=e.id WHERE NOT e.cancelled AND a.response='accepted' AND e.reminder_minutes IS NOT NULL AND e.starts_at>now()-interval '5 minutes' AND e.ends_at>now() AND e.starts_at-make_interval(mins=>e.reminder_minutes)<=now()
  ), claimed AS (INSERT INTO calendar_reminders(event_id,user_id,version) SELECT id,user_id,version FROM due ON CONFLICT DO NOTHING RETURNING *)
  INSERT INTO calendar_notices(user_id,event_id,message) SELECT c.user_id,c.event_id,'תזכורת: '||d.title FROM claimed c JOIN due d ON d.id=c.event_id AND d.user_id=c.user_id AND d.version=c.version RETURNING user_id,message`)
   ).rows;

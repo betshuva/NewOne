@@ -15,11 +15,11 @@ test('normal group messages render outside the blocked-content branch', () => {
   const branch = source.slice(branchStart, branchEnd);
 
   assert.match(branch,
-    /uploadStatus ==\s*'blocked_content' &&\s*uploadFileType != 'image'/);
+    /uploadStatus ==\s*'blocked_content' &&\s*uploadFileType !=\s*'image'/);
   assert.match(branch,
-    /else if \(uploadStatus ==\s*'blocked_content'\)\s*const SizedBox\.shrink\(\)\s*else if \(avielSticker != null\)/);
-  assert.match(branch, /else if \(sharedContact != null\)/);
-  assert.match(branch, /else\s*Text\(/);
+    /else if \(uploadStatus ==\s*'blocked_content'\)\s*const SizedBox\s*\.shrink\(\)\s*else if \(avielSticker !=\s*null\)/);
+  assert.match(branch, /else if \(sharedContact !=\s*null\)/);
+  assert.match(branch, /else\s*InlineEmojiText\(\s*msg\['text'\]/);
 });
 
 test('group message bubbles size themselves to their content', () => {

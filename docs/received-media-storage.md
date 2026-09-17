@@ -38,3 +38,42 @@ database environment using `node --test test/received-media-db.test.js
 test/received-media-library-db.test.js test/conversation-history-db.test.js
 test/conversation-media-delete-db.test.js`. Tests use isolated schemas or
 temporary tables, temporary files, and mocked cloud operations.
+
+## Personal library and forwarding — 2026-09-17
+
+- The library groups approved, unpurged files with identical SHA-256 contents
+  and media type within one owner before pagination. Different resized bytes,
+  files without a verified hash, and pending/rejected records remain separate.
+  Destinations and protection references include every copy. `duplicateIds`
+  records the owned copies; `storageBytes` includes the physical bytes still
+  stored. Grouping itself does not remove files or change existing messages.
+- `PATCH /api/media-library/:id` accepts `{name}` and returns `{item}`. It changes
+  the owner's names for the grouped copies, preserves the extension, and leaves
+  paths, URLs and past message filenames intact. Name search matches all member
+  names before a rename as well.
+- New uploads reuse an owned, approved, unpurged local exact file only when its
+  completed moderation result matches the current version. Sender and recipient
+  filters still run for every attempt. Listing and other uploads stay separate
+  because their cleanup rules differ. `upload-reuse.js` serializes identical
+  requests in the current single API process; multiple API processes would need
+  a shared lock. Cloud-only files cause the supplied bytes to be stored again
+  instead of relying on a potentially disconnected cloud account.
+  Pending/rejected attempts keep the existing scan workflow.
+- Recipient search and selection live in persistent modal state, with user/group
+  ID namespaces. Search, keyboard and window changes preserve checked targets.
+  A source item loses selection only after every chosen target accepts it.
+- Media selection stores item snapshots across filtering, pagination and
+  grid/list/table changes. Approved files can be forwarded even when protected
+  from deletion. Account and receiving-filter changes invalidate selection.
+  Explicit group deletion confirms the copy count and uses the guarded deletion
+  endpoint for every copy; partial failures retain the remaining selection.
+
+Focused verification includes `test/upload-reuse.test.js`,
+`test/media-library-catalog-db.test.js`, `test/filter-media-history.test.js`,
+`flutter_app/test/incoming_share_flow_test.dart` and
+`flutter_app/test/personal_media_screen_test.dart`.
+
+Validation for this update: 118 focused Node/DB tests passed, including upload
+reuse, library grouping/rename, receiving filters, retention and guarded deletion.
+All 29 forwarding/media widget tests also passed on Chrome; scoped Flutter
+analyzer reported no issues. Web release: `20260917143835`.

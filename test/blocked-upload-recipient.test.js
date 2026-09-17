@@ -28,5 +28,5 @@ test('only destination-filtered group uploads identify the group', () => {
     /recipientName: uploadStatus ==[\s\S]*?'rejected_scan' &&[\s\S]*?msg\['forwardAllowed'\] ==\s*true[\s\S]*?'קבוצת \$\{widget\.group\['name'\]/,
   );
   assert.match(source,
-    /destinationFilterRejected:[\s\S]*?msg\['forwardAllowed'\] == true/);
+    /destinationFilterRejected:\s*msg\['forwardAllowed'\] ==\s*true/);
 });

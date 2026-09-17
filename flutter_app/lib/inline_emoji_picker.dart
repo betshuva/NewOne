@@ -10,10 +10,12 @@ class InlineEmojiPicker extends StatefulWidget {
     super.key,
     required this.onSelected,
     this.primaryColor,
+    this.header,
   });
 
   final ValueChanged<String> onSelected;
   final Color? primaryColor;
+  final Widget? header;
 
   @override
   State<InlineEmojiPicker> createState() => _InlineEmojiPickerState();
@@ -112,135 +114,147 @@ class _InlineEmojiPickerState extends State<InlineEmojiPicker> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loadFailed) {
-      return Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('לא ניתן לטעון את האימוג׳ים כרגע',
-                  textAlign: TextAlign.center),
-              TextButton.icon(
-                onPressed: () {
-                  setState(() => _loadFailed = false);
-                  _loadEntries();
-                },
-                icon: const Icon(Icons.refresh),
-                label: const Text('ניסיון נוסף'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
     final entries = _entries;
-    if (entries == null) {
-      return Center(child: CircularProgressIndicator(color: _primaryColor));
-    }
-    final categories = entries.map((entry) => entry.category).toSet();
+    final categories = entries?.map((entry) => entry.category).toSet();
     final filtered = entries
-        .where((entry) =>
+        ?.where((entry) =>
             (_category == null || entry.category == _category) &&
             entry.matches(_query))
         .toList();
 
     return Directionality(
       textDirection: TextDirection.rtl,
-      child: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-            child: TextField(
-              controller: _searchController,
-              onChanged: (value) =>
-                  setState(() => _query = value.trim().toLowerCase()),
-              decoration: InputDecoration(
-                hintText: 'חיפוש אימוג׳י',
-                prefixIcon: Icon(Icons.search, color: _primaryColor),
-                suffixIcon: _searchController.text.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: 'ניקוי החיפוש',
-                        onPressed: () {
-                          _searchController.clear();
-                          setState(() => _query = '');
-                        },
-                        icon: const Icon(Icons.close),
-                      ),
-                filled: true,
-                fillColor: _primaryColor.withValues(alpha: 0.04),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(
-                    color: _primaryColor.withValues(alpha: 0.20),
-                  ),
+      child: CustomScrollView(
+        slivers: [
+          if (widget.header != null) SliverToBoxAdapter(child: widget.header!),
+          if (_loadFailed)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('לא ניתן לטעון את האימוג׳ים כרגע',
+                        textAlign: TextAlign.center),
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() => _loadFailed = false);
+                        _loadEntries();
+                      },
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('ניסיון נוסף'),
+                    ),
+                  ],
                 ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 12,
+              ),
+            )
+          else if (entries == null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Center(
+                  child: CircularProgressIndicator(color: _primaryColor),
+                ),
+              ),
+            )
+          else ...[
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (value) =>
+                      setState(() => _query = value.trim().toLowerCase()),
+                  decoration: InputDecoration(
+                    hintText: 'חיפוש אימוג׳י',
+                    prefixIcon: Icon(Icons.search, color: _primaryColor),
+                    suffixIcon: _searchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'ניקוי החיפוש',
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _query = '');
+                            },
+                            icon: const Icon(Icons.close),
+                          ),
+                    filled: true,
+                    fillColor: _primaryColor.withValues(alpha: 0.04),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: _primaryColor.withValues(alpha: 0.20),
+                      ),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(
-              children: [
-                _categoryChip(null),
-                ...categories.map(_categoryChip),
-              ],
+            SliverToBoxAdapter(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    _categoryChip(null),
+                    ...categories!.map(_categoryChip),
+                  ],
+                ),
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: filtered.isEmpty
-                ? const Center(
-                    child: SingleChildScrollView(
-                      padding: EdgeInsets.all(16),
-                      child: Text(
-                        'לא נמצאו אימוג׳ים מתאימים',
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  )
-                : GridView.builder(
-                    key: ValueKey((_category, _query)),
-                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 56,
-                      mainAxisExtent: 52,
-                    ),
-                    itemCount: filtered.length,
-                    itemBuilder: (context, index) {
-                      final entry = filtered[index];
-                      return Tooltip(
-                        message: '${entry.label} ${entry.emoji}',
-                        excludeFromSemantics: true,
-                        child: Semantics(
-                          label: 'הוספת אימוג׳י: ${entry.label} ${entry.emoji}',
-                          button: true,
-                          child: InkWell(
-                            key: ValueKey('inline-emoji-${entry.code}'),
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: () => widget.onSelected(entry.emoji),
-                            child: Center(
-                              child: ExcludeSemantics(
-                                child: SvgPicture.asset(
-                                  'assets/twemoji/svg/${entry.code}.svg',
-                                  width: 28,
-                                  height: 28,
-                                ),
+            const SliverToBoxAdapter(child: SizedBox(height: 8)),
+            if (filtered!.isEmpty)
+              const SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'לא נמצאו אימוג׳ים מתאימים',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+                sliver: SliverGrid.builder(
+                  key: ValueKey((_category, _query)),
+                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 56,
+                    mainAxisExtent: 52,
+                  ),
+                  itemCount: filtered.length,
+                  itemBuilder: (context, index) {
+                    final entry = filtered[index];
+                    return Tooltip(
+                      message: '${entry.label} ${entry.emoji}',
+                      excludeFromSemantics: true,
+                      child: Semantics(
+                        label: 'הוספת אימוג׳י: ${entry.label} ${entry.emoji}',
+                        button: true,
+                        child: InkWell(
+                          key: ValueKey('inline-emoji-${entry.code}'),
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => widget.onSelected(entry.emoji),
+                          child: Center(
+                            child: ExcludeSemantics(
+                              child: SvgPicture.asset(
+                                'assets/twemoji/svg/${entry.code}.svg',
+                                width: 28,
+                                height: 28,
                               ),
                             ),
                           ),
                         ),
-                      );
-                    },
-                  ),
-          ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
         ],
       ),
     );

@@ -1,6 +1,7 @@
 'use strict';
 
 const { getPhoneSharingStatus, applyPhoneSharingChoices, projectContactPhones } = require('./contact-phone-privacy');
+const { projectProfileImages } = require('./profile-image-policy');
 
 function phoneSharingChoices(body) {
   const choices = {};
@@ -58,7 +59,8 @@ function registerContactPhoneRoutes(app, { auth, rateLimit, getPool, notify = ()
       const allowed = new Set(projected.filter(status =>
         state === 'pending' ? status.incoming_request : status.share_my_phone).map(status => status.id));
       res.set('Cache-Control', 'no-store');
-      res.json(result.rows.filter(row => allowed.has(row.user_id)));
+      res.json(await projectProfileImages(pool, req.user.id,
+        result.rows.filter(row => allowed.has(row.user_id))));
     } catch (error) { fail(res, error); }
   };
   app.get('/api/phone-sharing/requests', auth, listPermissions('pending'));

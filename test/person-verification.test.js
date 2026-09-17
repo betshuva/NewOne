@@ -19,18 +19,34 @@ const noObjects = async () => ({ available: true, personDetected: false,
 const noFaces = async () => ({ available: true, faceDetected: false,
   faceCount: 0, faces: [] });
 
-test('specialized Google consensus corrects a local false person result', async () => {
+test('negative Google detections never erase local people when OpenAI is unavailable', async () => {
   const result = await verifyPersonClassification(Buffer.from('image'),
     localFalsePositive, {
       scanObjects: noObjects,
       scanFaces: noFaces,
       classifyOpenAI: async () => ({ configured: false, available: false }),
     });
+  assert.equal(result.classification.category, 'people');
+  assert.deepEqual(result.classification.detectedCategories, ['men', 'children']);
+  assert.equal(result.classification.uncertain, true);
+  assert.equal(result.classification.uncertainStage, 'personVerification');
+  assert.equal(result.verification.decision, 'uncertain');
+  assert.equal(result.verification.confidence, 0);
+});
+
+test('drawing-aware non-human review can correct a local false person result', async () => {
+  const result = await verifyPersonClassification(Buffer.from('image'),
+    localFalsePositive, {
+      scanObjects: noObjects,
+      scanFaces: noFaces,
+      classifyOpenAI: async () => ({ available: true,
+        decision: 'non_human', confidence: 0.98 }),
+    });
   assert.equal(result.classification.category, 'nonHumanImages');
   assert.deepEqual(result.classification.detectedCategories, ['nonHumanImages']);
-  assert.deepEqual(result.classification.originalDetectedCategories,
-    ['men', 'children']);
-  assert.equal(result.verification.decision, 'non_human_google_consensus');
+  assert.deepEqual(result.classification.originalDetectedCategories, ['men', 'children']);
+  assert.equal(result.classification.uncertain, false);
+  assert.equal(result.verification.decision, 'non_human_confirmed');
 });
 
 test('a detected object keeps local demographic categories', async () => {
@@ -39,6 +55,7 @@ test('a detected object keeps local demographic categories', async () => {
       scanObjects: async () => ({ available: true, personDetected: true,
         maxPersonScore: 0.93, persons: [{ score: 0.93 }] }),
       scanFaces: noFaces,
+      classifyOpenAI: async () => ({ configured: false, available: false }),
     });
   assert.deepEqual(result.classification.detectedCategories, ['men', 'children']);
   assert.equal(result.verification.decision, 'person_confirmed');
@@ -227,6 +244,48 @@ test('Google checks every confident non-human image without unnecessary OpenAI',
   assert.equal(faceCalls, 1);
   assert.equal(openAICalls, 0);
   assert.equal(result.verification.decision, 'non_human_google_consensus');
+});
+
+test('an uncertain drawing-aware review preserves local human evidence', async () => {
+  const result = await verifyPersonClassification(Buffer.from('illustrated-person'),
+    localFalsePositive, {
+      scanObjects: noObjects,
+      scanFaces: noFaces,
+      classifyOpenAI: async () => ({ available: true, decision: 'uncertain',
+        confidence: 0.6 }),
+    });
+  assert.equal(result.classification.category, 'people');
+  assert.deepEqual(result.classification.detectedCategories, ['men', 'children']);
+  assert.equal(result.classification.uncertain, true);
+  assert.equal(result.verification.decision, 'uncertain');
+});
+
+test('incomplete Google checks without an OpenAI decision cannot approve local scenery', async t => {
+  const unavailable = async () => ({ available: false, status: 'error' });
+  const scenery = {
+    category: 'nonHumanImages', detectedCategories: ['nonHumanImages'],
+    uncertain: false,
+  };
+  for (const google of ['objects_unavailable', 'faces_unavailable', 'unavailable']) {
+    for (const decision of ['unavailable', 'uncertain']) {
+      await t.test(`${google} Google and ${decision} OpenAI`, async () => {
+        const result = await verifyPersonClassification(Buffer.from('scenery'), scenery, {
+          scanObjects: ['objects_unavailable', 'unavailable'].includes(google)
+            ? unavailable : noObjects,
+          scanFaces: ['faces_unavailable', 'unavailable'].includes(google)
+            ? unavailable : noFaces,
+          classifyOpenAI: async () => decision === 'unavailable'
+            ? { available: false, status: 'error' }
+            : { available: true, decision: 'uncertain', confidence: 0.6 },
+        });
+        assert.equal(result.classification.category, null);
+        assert.deepEqual(result.classification.detectedCategories, []);
+        assert.equal(result.classification.uncertain, true);
+        assert.equal(result.classification.uncertainStage, 'personVerification');
+        assert.equal(result.verification.decision, 'uncertain');
+      });
+    }
+  }
 });
 
 test('an illustrated person can be rescued when Google person checks are unavailable', async () => {

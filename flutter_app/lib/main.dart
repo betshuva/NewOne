@@ -3,7 +3,11 @@ import 'location_autocomplete.dart';
 import 'calendar.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'conversation_cleanup.dart';
+import 'filter_history.dart';
+import 'filter_audit_screen.dart';
 import 'guide_message_draft.dart';
+import 'inline_custom_emoji.dart';
+import 'inline_emoji_picker.dart';
 import 'guide_file.dart';
 import 'guide_table_text.dart';
 import 'safe_information_text.dart';
@@ -41,6 +45,8 @@ import 'package:video_player/video_player.dart';
 import 'file_download.dart';
 import 'hebrew_date.dart';
 import 'media_cache.dart';
+import 'media_delete_dialog.dart';
+import 'media_rename.dart';
 import 'native_video_player.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
@@ -312,6 +318,7 @@ Future<Map<String, String>?> _pickPhoneContact(BuildContext context) async {
 
 Future<Map<String, String>?> _pickAppFriend(
     BuildContext context, String token) async {
+  final pictureRevision = _profilePicturesRevision;
   try {
     final response = await http.get(
       Uri.parse('$kApi/users'),
@@ -323,6 +330,7 @@ Future<Map<String, String>?> _pickAppFriend(
         .cast<Map<String, dynamic>>()
         .where((friend) => friend['id']?.toString() != kScanBotId)
         .toList();
+    _approveProfilePictures(friends, pictureRevision);
     var query = '';
     return await showDialog<Map<String, String>>(
       context: context,
@@ -1254,10 +1262,33 @@ class _InAppPdfScreenState extends State<_InAppPdfScreen> {
   }
 }
 
-class _PdfFirstPagePreview extends StatelessWidget {
+class _PdfFirstPagePreview extends StatefulWidget {
   final String url;
 
   const _PdfFirstPagePreview({required this.url});
+
+  @override
+  State<_PdfFirstPagePreview> createState() => _PdfFirstPagePreviewState();
+}
+
+class _PdfFirstPagePreviewState extends State<_PdfFirstPagePreview> {
+  late PdfDocumentRefUri _documentRef;
+
+  @override
+  void initState() {
+    super.initState();
+    _documentRef = PdfDocumentRefUri(Uri.parse(_absoluteMediaUrl(widget.url)),
+        useProgressiveLoading: false);
+  }
+
+  @override
+  void didUpdateWidget(covariant _PdfFirstPagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final uri = Uri.parse(_absoluteMediaUrl(widget.url));
+    if (_documentRef.uri != uri) {
+      _documentRef = PdfDocumentRefUri(uri, useProgressiveLoading: false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1270,8 +1301,10 @@ class _PdfFirstPagePreview extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: kBorder),
       ),
-      child: PdfDocumentViewBuilder.uri(
-        Uri.parse(_absoluteMediaUrl(url)),
+      // pdfrx compares reference identity on rebuild. Keep it stable so chat
+      // updates do not dispose and reload an unchanged document.
+      child: PdfDocumentViewBuilder(
+        documentRef: _documentRef,
         loadingBuilder: (_) =>
             const Center(child: CircularProgressIndicator(strokeWidth: 2)),
         errorBuilder: (_, __, ___) => const Center(
@@ -1798,7 +1831,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.27';
+const kVersion = '1.3.28';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -1889,6 +1922,15 @@ class _FileUploadResult {
       {this.data = const <String, dynamic>{}, this.error});
 }
 
+bool _isSenderFilterRejection(Map data) =>
+    data['code'] == 'SENDER_CONTENT_FILTERED' ||
+    data['blockedBy'] == 'sender_filter';
+
+String _senderFilterRejectionMessage(Map data) =>
+    data['error']?.toString() ??
+    data['reason']?.toString() ??
+    'סוג התמונה חסום בהגדרות הסינון שלך';
+
 bool _matchesRecentFailedUpload(
     Map<String, dynamic> message, String fileName, String idPrefix) {
   if (message['status'] != 'failed' ||
@@ -1933,6 +1975,10 @@ Future<_FileUploadResult> _uploadFileRequest({
       if (decoded is Map<String, dynamic>) data = decoded;
     } catch (_) {}
 
+    if (_isSenderFilterRejection(data)) {
+      return _FileUploadResult(_FileUploadOutcome.failed,
+          data: data, error: _senderFilterRejectionMessage(data));
+    }
     if (streamed.statusCode != 200) {
       return _FileUploadResult(
         _FileUploadOutcome.failed,
@@ -2124,6 +2170,7 @@ class _PersistentMediaImage extends StatefulWidget {
   final BoxFit fit;
   final WidgetBuilder? loadingBuilder;
   final WidgetBuilder? errorBuilder;
+  final VoidCallback? onDisplayed;
 
   const _PersistentMediaImage({
     super.key,
@@ -2133,6 +2180,7 @@ class _PersistentMediaImage extends StatefulWidget {
     this.fit = BoxFit.cover,
     this.loadingBuilder,
     this.errorBuilder,
+    this.onDisplayed,
   });
 
   @override
@@ -2143,6 +2191,9 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
   late Future<Uint8List?> _bytes;
   Timer? _retryTimer;
   int _retryAttempt = 0;
+  bool _hasFrame = false;
+  bool _displayReported = false;
+  ScrollPosition? _visibilityScrollPosition;
 
   @override
   void initState() {
@@ -2156,12 +2207,32 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
     if (oldWidget.url != widget.url) {
       _retryTimer?.cancel();
       _retryAttempt = 0;
+      _hasFrame = false;
+      _displayReported = false;
       _bytes = _loadPersistentMedia(widget.url);
     }
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visibilityScrollPosition?.removeListener(_observeDisplay);
+    _visibilityScrollPosition = Scrollable.maybeOf(context)?.position;
+    _visibilityScrollPosition?.addListener(_observeDisplay);
+  }
+
+  void _observeDisplay() {
+    if (!_hasFrame || _displayReported || widget.onDisplayed == null ||
+        !mounted || !filterWidgetIsVisible(context)) {
+      return;
+    }
+    _displayReported = true;
+    widget.onDisplayed!();
+  }
+
+  @override
   void dispose() {
+    _visibilityScrollPosition?.removeListener(_observeDisplay);
     _retryTimer?.cancel();
     super.dispose();
   }
@@ -2192,6 +2263,13 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
             height: widget.height,
             fit: widget.fit,
             gaplessPlayback: true,
+            frameBuilder: (context, child, frame, synchronous) {
+              if (frame != null || synchronous) {
+                _hasFrame = true;
+                WidgetsBinding.instance.addPostFrameCallback((_) => _observeDisplay());
+              }
+              return child;
+            },
             errorBuilder: (_, __, ___) =>
                 widget.errorBuilder?.call(context) ?? const SizedBox.shrink(),
           );
@@ -2364,7 +2442,7 @@ Future<void> _clearGroupMessagesCache(Object? userId, Object? groupId) async {
   await prefs.remove(_groupMessagesCacheKey(userId, groupId));
 }
 
-Future<void> _forwardChatMessage(BuildContext context, String token,
+Future<ForwardChatResult> _forwardChatMessage(BuildContext context, String token,
         io.Socket? socket, Map<String, dynamic> message) =>
     forwardChatMessages(context, token, socket, [message]);
 
@@ -2413,67 +2491,122 @@ Future<void> _requestImageReclassification(
   }
 }
 
-Future<void> forwardChatMessages(BuildContext context, String token,
-    io.Socket? socket, List<Map<String, dynamic>> messages,
-    {String? initialRecipientId, http.Client? client}) async {
-  if (messages.isEmpty) return;
+class ForwardChatResult {
+  /// Message indexes accepted by every selected destination. A queued scan is
+  /// accepted by the server; cancelled, failed and partially sent items remain
+  /// selected in the source view.
+  final Set<int> completedMessageIndexes;
+  final int sentCount;
+  final int pendingCount;
+  final int totalDeliveries;
+  final bool cancelled;
+
+  const ForwardChatResult({
+    this.completedMessageIndexes = const <int>{},
+    this.sentCount = 0,
+    this.pendingCount = 0,
+    this.totalDeliveries = 0,
+    this.cancelled = false,
+  });
+}
+
+Future<ForwardChatResult> forwardChatMessages(
+  BuildContext context,
+  String token,
+  io.Socket? socket,
+  List<Map<String, dynamic>> messages, {
+  String? initialRecipientId,
+  http.Client? client,
+  bool Function()? canForward,
+}) async {
+  if (messages.isEmpty) return const ForwardChatResult();
   if (messages.any((message) {
     final status = message['status'] as String?;
     return status == 'pending_scan' ||
         (status == 'rejected_scan' && message['forwardAllowed'] != true);
   })) {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
         content: Text(
-            'לא ניתן להעביר קובץ שנכשל בבדיקת הבטיחות או שעדיין נמצא בסריקה')));
-    return;
+          'לא ניתן להעביר קובץ שנכשל בבדיקת הבטיחות או שעדיין נמצא בסריקה',
+        ),
+      ),
+    );
+    return const ForwardChatResult();
   }
   final transport = client ?? http.Client();
+  final pictureRevision = _profilePicturesRevision;
   try {
     Future<http.Response> loadTargets(String path) async {
       try {
-        return await transport.get(Uri.parse('$kApi/$path'), headers: {
-          'Authorization': 'Bearer $token',
-        }).timeout(const Duration(seconds: 15));
+        return await transport
+            .get(
+              Uri.parse('$kApi/$path'),
+              headers: {'Authorization': 'Bearer $token'},
+            )
+            .timeout(const Duration(seconds: 15));
       } catch (_) {
         return http.Response('', 599);
       }
     }
 
-    final responses = await Future.wait([
-      loadTargets('users'),
-      loadTargets('groups'),
-      loadTargets('users/directory'),
-    ]);
-    if (!context.mounted) return;
-    List<Map<String, dynamic>> responseList(http.Response response) {
-      if (response.statusCode != 200) return <Map<String, dynamic>>[];
-      final decoded = jsonDecode(response.body);
-      if (decoded is! List) return <Map<String, dynamic>>[];
-      return decoded.whereType<Map>().map(Map<String, dynamic>.from).toList();
-    }
-
-    final usersById = <String, Map<String, dynamic>>{};
-    for (final user in responseList(responses[0])) {
-      usersById[user['id'].toString()] = user;
-    }
-    // The directory is a safe fallback when the conversation list endpoint is
-    // temporarily unavailable. Only already-saved contacts are added.
-    for (final user in responseList(responses[2])) {
-      if (user['saved'] == true) {
-        usersById.putIfAbsent(user['id'].toString(), () => user);
+    List<Map<String, dynamic>>? responseList(http.Response response) {
+      if (response.statusCode != 200) return null;
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is! List) return null;
+        _approveProfilePictures(decoded, pictureRevision);
+        return decoded.whereType<Map>().map(Map<String, dynamic>.from).toList();
+      } catch (_) {
+        // One invalid response must not discard the other available targets.
+        return null;
       }
     }
-    final users = usersById.values.toList();
-    final groups = responseList(responses[1]);
-    final targetLoadFailed =
-        responses.every((response) => response.statusCode != 200);
-    final directUser =
-        initialRecipientId == null ? null : usersById[initialRecipientId];
+
+    Future<_ForwardTargetsData> loadTargetLists() async {
+      final responses = await Future.wait([
+        loadTargets('users'),
+        loadTargets('groups'),
+        loadTargets('users/directory'),
+      ]);
+      final contacts = responseList(responses[0]);
+      final groups = responseList(responses[1]);
+      final directory = responseList(responses[2]);
+      final usersById = <String, Map<String, dynamic>>{};
+      for (final user in contacts ?? <Map<String, dynamic>>[]) {
+        usersById[user['id'].toString()] = user;
+      }
+      // Only saved contacts from the directory may supplement the chat list.
+      for (final user in directory ?? <Map<String, dynamic>>[]) {
+        if (user['saved'] == true) {
+          usersById.putIfAbsent(user['id'].toString(), () => user);
+        }
+      }
+      return _ForwardTargetsData(
+        users: contacts == null && directory == null
+            ? null
+            : usersById.values.toList(),
+        groups: groups,
+        contactsLoaded: contacts != null,
+        loadFailed: contacts == null || groups == null,
+      );
+    }
+
+    final targetData = await loadTargetLists();
+    if (!context.mounted) return const ForwardChatResult(cancelled: true);
+    final users = targetData.users ?? <Map<String, dynamic>>[];
+    final groups = targetData.groups ?? <Map<String, dynamic>>[];
+    final usersById = {for (final user in users) user['id'].toString(): user};
+    final directUser = initialRecipientId == null
+        ? null
+        : usersById[initialRecipientId];
     if (initialRecipientId != null && directUser == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('איש הקשר אינו זמין לשיתוף. בחרו יעד מתוך בתשובה.'),
-      ));
-      return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('איש הקשר אינו זמין לשיתוף. בחרו יעד מתוך בתשובה.'),
+        ),
+      );
+      return const ForwardChatResult();
     }
     final initialSelection = <String, Map<String, dynamic>>{
       if (directUser != null)
@@ -2487,113 +2620,27 @@ Future<void> forwardChatMessages(BuildContext context, String token,
       context: context,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (sheetContext) {
-        final selected =
-            Map<String, Map<String, dynamic>>.from(initialSelection);
-        return StatefulBuilder(builder: (context, setSheetState) {
-          Widget targetTile(Map<String, dynamic> item, String kind) {
-            final key = '$kind:${item['id']}';
-            final checked = selected.containsKey(key);
-            return CheckboxListTile(
-              value: checked,
-              secondary: UserAvatar(
-                  picUrl: item['profile_pic_url'] as String?,
-                  name: item['name'] as String? ?? ''),
-              title: Text(item['name'] as String? ??
-                  (kind == 'user' ? 'משתמש' : 'קבוצה')),
-              onChanged: (_) => setSheetState(() {
-                if (checked) {
-                  selected.remove(key);
-                } else {
-                  selected[key] = {
-                    'kind': kind,
-                    'id': item['id'],
-                    'name': item['name'],
-                  };
-                }
-              }),
-            );
-          }
-
-          return SafeArea(
-            child: SizedBox(
-              height: MediaQuery.sizeOf(sheetContext).height * .78,
-              child: Column(children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
-                  child: Column(children: [
-                    Text(
-                        directUser == null
-                            ? 'העבר אל'
-                            : 'שליחה אל ${directUser['name']}',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 4),
-                    if (messages.any((m) => m['localPath'] != null))
-                      Text(
-                          messages
-                              .where((m) => m['localPath'] != null)
-                              .map((m) => m['fileName'])
-                              .take(3)
-                              .join(' • '),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis),
-                    Text('${messages.length} פריטים • ${selected.length} יעדים',
-                        style: const TextStyle(color: kSubtext)),
-                  ]),
-                ),
-                Expanded(
-                  child: users.isEmpty && groups.isEmpty
-                      ? Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Text(
-                              targetLoadFailed
-                                  ? 'לא ניתן לטעון כרגע את המשתתפים והקבוצות. נסו שוב.'
-                                  : 'לא נמצאו משתתפים או קבוצות שניתן להעביר אליהם.',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: kSubtext),
-                            ),
-                          ),
-                        )
-                      : ListView(children: [
-                          if (users.isNotEmpty)
-                            const _SectionHeader(title: 'משתמשים'),
-                          ...(directUser == null ? users : [directUser])
-                              .map((user) => targetTile(user, 'user')),
-                          if (directUser == null && groups.isNotEmpty)
-                            const _SectionHeader(title: 'קבוצות'),
-                          if (directUser == null)
-                            ...groups
-                                .map((group) => targetTile(group, 'group')),
-                        ]),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: selected.isEmpty
-                          ? null
-                          : () => Navigator.pop(
-                              sheetContext, selected.values.toList()),
-                      icon: const Icon(Icons.forward),
-                      label: Text(selected.isEmpty
-                          ? 'בחרו יעד אחד לפחות'
-                          : 'העבר ל־${selected.length} יעדים'),
-                    ),
-                  ),
-                ),
-              ]),
-            ),
-          );
-        });
-      },
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => _ForwardTargetsSheet(
+        users: directUser == null ? users : [directUser],
+        groups: directUser == null ? groups : const [],
+        initialSelection: initialSelection,
+        messages: messages,
+        directUserName: directUser?['name']?.toString(),
+        targetLoadFailed: directUser == null && targetData.loadFailed,
+        reloadTargets: directUser == null ? loadTargetLists : null,
+      ),
     );
-    if (targets == null || targets.isEmpty || !context.mounted) return;
+    if (targets == null ||
+        targets.isEmpty ||
+        !context.mounted ||
+        canForward?.call() == false) {
+      return const ForwardChatResult(cancelled: true);
+    }
     var sentCount = 0;
     var pendingCount = 0;
+    final acceptedByMessage = List<int>.filled(messages.length, 0);
     final forwardingErrors = <String>[];
     String responseError(http.Response response) {
       try {
@@ -2605,8 +2652,15 @@ Future<void> forwardChatMessages(BuildContext context, String token,
       return 'ההעברה נחסמה על ידי השרת';
     }
 
+    deliveries:
     for (final target in targets) {
-      for (final message in messages) {
+      for (
+        var messageIndex = 0;
+        messageIndex < messages.length;
+        messageIndex++
+      ) {
+        if (canForward?.call() == false) break deliveries;
+        final message = messages[messageIndex];
         try {
           var fileUrl = message['fileUrl'] as String?;
           var fileName = message['fileName'] as String?;
@@ -2623,16 +2677,25 @@ Future<void> forwardChatMessages(BuildContext context, String token,
                   ..fields[target['kind'] == 'group' ? 'groupId' : 'toUserId'] =
                       target['id'].toString();
             if (localBytes != null) {
-              request.files.add(http.MultipartFile.fromBytes('file', localBytes,
+              request.files.add(
+                http.MultipartFile.fromBytes(
+                  'file',
+                  localBytes,
                   filename: fileName ?? 'screenshot.png',
-                  contentType: MediaType('image', 'png')));
+                  contentType: MediaType('image', 'png'),
+                ),
+              );
             } else {
-              request.files.add(await http.MultipartFile.fromPath(
-                  'file', localPath!,
+              request.files.add(
+                await http.MultipartFile.fromPath(
+                  'file',
+                  localPath!,
                   filename: fileName,
                   contentType: message['mimeType'] is String
                       ? MediaType.parse(message['mimeType'] as String)
-                      : _mimeFromFileName(fileName ?? localPath)));
+                      : _mimeFromFileName(fileName ?? localPath),
+                ),
+              );
             }
             final upload = await transport
                 .send(request)
@@ -2640,17 +2703,20 @@ Future<void> forwardChatMessages(BuildContext context, String token,
             final uploadBody = await upload.stream.bytesToString();
             if (upload.statusCode != 200) {
               forwardingErrors.add(
-                  '${fileName ?? 'קובץ'}: ${responseError(http.Response(uploadBody, upload.statusCode))}');
+                '${fileName ?? 'קובץ'}: ${responseError(http.Response(uploadBody, upload.statusCode))}',
+              );
               continue;
             }
             final uploaded = jsonDecode(uploadBody) as Map<String, dynamic>;
             if (uploaded['status'] == 'rejected') {
               forwardingErrors.add(
-                  '${fileName ?? 'קובץ'}: ${uploaded['reason'] ?? 'נחסם לפי הגדרות הסינון'}');
+                '${fileName ?? 'קובץ'}: ${uploaded['reason'] ?? 'נחסם לפי הגדרות הסינון'}',
+              );
               continue;
             }
             if (uploaded['status'] == 'pending') {
               pendingCount++;
+              acceptedByMessage[messageIndex]++;
               continue;
             }
             fileUrl = uploaded['url'] as String?;
@@ -2665,12 +2731,14 @@ Future<void> forwardChatMessages(BuildContext context, String token,
           };
           var sent = false;
           if (target['kind'] == 'user') {
-            final response = await transport.post(Uri.parse('$kApi/messages'),
-                headers: {
-                  'Authorization': 'Bearer $token',
-                  'Content-Type': 'application/json'
-                },
-                body: jsonEncode({...payload, 'toUserId': target['id']}));
+            final response = await transport.post(
+              Uri.parse('$kApi/messages'),
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({...payload, 'toUserId': target['id']}),
+            );
             sent = response.statusCode == 200;
             if (!sent) forwardingErrors.add(responseError(response));
           } else {
@@ -2685,11 +2753,15 @@ Future<void> forwardChatMessages(BuildContext context, String token,
             sent = response.statusCode == 200;
             if (!sent) forwardingErrors.add(responseError(response));
           }
-          if (sent) sentCount++;
+          if (sent) {
+            sentCount++;
+            acceptedByMessage[messageIndex]++;
+          }
         } catch (error) {
           debugPrint('Forward item failed: $error');
           forwardingErrors.add(
-              '${message['fileName'] ?? 'הודעה'}: ההעברה נכשלה, יש לנסות שוב');
+            '${message['fileName'] ?? 'הודעה'}: ההעברה נכשלה, יש לנסות שוב',
+          );
         }
       }
     }
@@ -2700,27 +2772,357 @@ Future<void> forwardChatMessages(BuildContext context, String token,
       final pendingNotice = pendingCount == 0
           ? ''
           : ' • $pendingCount קבצים ממתינים לסריקה ולאישור';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text((forwardingErrors.isNotEmpty
-                ? (sentCount == 0
-                    ? uniqueErrors
-                    : '$uniqueErrors (הושלמו $sentCount מתוך $totalDeliveries שליחות)')
-                : allSent
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            (forwardingErrors.isNotEmpty
+                    ? (sentCount == 0
+                          ? uniqueErrors
+                          : '$uniqueErrors (הושלמו $sentCount מתוך $totalDeliveries שליחות)')
+                    : allSent
                     ? (messages.length == 1 && targets.length == 1
-                        ? 'ההודעה הועברה'
-                        : '${messages.length} פריטים הועברו ל־${targets.length} יעדים')
+                          ? 'ההודעה הועברה'
+                          : '${messages.length} פריטים הועברו ל־${targets.length} יעדים')
                     : 'הושלמו $sentCount מתוך $totalDeliveries שליחות') +
-            pendingNotice),
-      ));
+                pendingNotice,
+          ),
+        ),
+      );
     }
+    return ForwardChatResult(
+      completedMessageIndexes: Set<int>.unmodifiable({
+        for (var index = 0; index < messages.length; index++)
+          if (acceptedByMessage[index] == targets.length) index,
+      }),
+      sentCount: sentCount,
+      pendingCount: pendingCount,
+      totalDeliveries: messages.length * targets.length,
+    );
   } catch (error) {
     debugPrint('Forward message failed: $error');
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('שגיאת תקשורת בהעברת ההודעה')));
+        const SnackBar(content: Text('שגיאת תקשורת בהעברת ההודעה')),
+      );
     }
+    return const ForwardChatResult();
   } finally {
     if (client == null) transport.close();
+  }
+}
+
+class _ForwardTargetsData {
+  final List<Map<String, dynamic>>? users;
+  final List<Map<String, dynamic>>? groups;
+  final bool contactsLoaded;
+  final bool loadFailed;
+
+  const _ForwardTargetsData({
+    required this.users,
+    required this.groups,
+    required this.contactsLoaded,
+    required this.loadFailed,
+  });
+}
+
+class _ForwardTargetsSheet extends StatefulWidget {
+  final List<Map<String, dynamic>> users;
+  final List<Map<String, dynamic>> groups;
+  final Map<String, Map<String, dynamic>> initialSelection;
+  final List<Map<String, dynamic>> messages;
+  final String? directUserName;
+  final bool targetLoadFailed;
+  final Future<_ForwardTargetsData> Function()? reloadTargets;
+
+  const _ForwardTargetsSheet({
+    required this.users,
+    required this.groups,
+    required this.initialSelection,
+    required this.messages,
+    required this.directUserName,
+    required this.targetLoadFailed,
+    required this.reloadTargets,
+  });
+
+  @override
+  State<_ForwardTargetsSheet> createState() => _ForwardTargetsSheetState();
+}
+
+class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
+  final _searchController = TextEditingController();
+  late final Map<String, Map<String, dynamic>> _selected;
+  late List<Map<String, dynamic>> _users;
+  late List<Map<String, dynamic>> _groups;
+  late bool _targetLoadFailed;
+  bool _reloading = false;
+  String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // The route builder can run again after a resize or keyboard change. Keep
+    // the selection in State, independent of both that builder and the filter.
+    _selected = Map<String, Map<String, dynamic>>.from(widget.initialSelection);
+    _users = widget.users;
+    _groups = widget.groups;
+    _targetLoadFailed = widget.targetLoadFailed;
+  }
+
+  Future<void> _reloadTargets() async {
+    final reload = widget.reloadTargets;
+    if (_reloading || reload == null) return;
+    setState(() => _reloading = true);
+    try {
+      final data = await reload();
+      if (!mounted) return;
+      setState(() {
+        // A temporary failure must not erase a previously loaded list or choice.
+        _users = data.contactsLoaded
+            ? data.users!
+            : {
+                for (final user in _users) user['id'].toString(): user,
+                for (final user in data.users ?? <Map<String, dynamic>>[])
+                  user['id'].toString(): user,
+              }.values.toList();
+        _groups = data.groups ?? _groups;
+        _targetLoadFailed = data.loadFailed;
+      });
+    } finally {
+      if (mounted) setState(() => _reloading = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  bool _matches(Map<String, dynamic> item) =>
+      (item['name']?.toString() ?? '').toLowerCase().contains(_query);
+
+  Widget _targetTile(Map<String, dynamic> item, String kind) {
+    final key = '$kind:${item['id']}';
+    final checked = _selected.containsKey(key);
+    return CheckboxListTile(
+      key: ValueKey('forward-target-$key'),
+      value: checked,
+      secondary: UserAvatar(
+        picUrl: item['profile_pic_url'] as String?,
+        name: item['name'] as String? ?? '',
+      ),
+      title: Text(
+        item['name'] as String? ?? (kind == 'user' ? 'משתמש' : 'קבוצה'),
+      ),
+      subtitle: Text(kind == 'user' ? 'משתמש' : 'קבוצה'),
+      onChanged: (value) => setState(() {
+        if (value == true) {
+          _selected[key] = {
+            'kind': kind,
+            'id': item['id'],
+            'name': item['name'],
+          };
+        } else {
+          _selected.remove(key);
+        }
+      }),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final users = _users.where(_matches).toList();
+    final groups = _groups.where(_matches).toList();
+    final media = MediaQuery.of(context);
+    final height = math.min(
+      media.size.height * .78,
+      math.max(0.0, media.size.height - media.viewInsets.bottom - 24),
+    );
+    final entries = <Widget>[
+      if (users.isNotEmpty) const _SectionHeader(title: 'משתמשים'),
+      ...users.map((user) => _targetTile(user, 'user')),
+      if (groups.isNotEmpty) const _SectionHeader(title: 'קבוצות'),
+      ...groups.map((group) => _targetTile(group, 'group')),
+    ];
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+        child: SafeArea(
+          top: false,
+          child: SizedBox(
+            height: height,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 12, 18, 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          widget.directUserName == null
+                              ? 'העבר אל'
+                              : 'שליחה אל ${widget.directUserName}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'ביטול העברה',
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                if (widget.messages.any((m) => m['localPath'] != null))
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                    child: Text(
+                      widget.messages
+                          .where((m) => m['localPath'] != null)
+                          .map((m) => m['fileName'])
+                          .take(3)
+                          .join(' • '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                Text(
+                  '${widget.messages.length} פריטים • ${_selected.length} יעדים',
+                  style: const TextStyle(color: kSubtext),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                  child: TextField(
+                    key: const ValueKey('forward-target-search'),
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'חיפוש משתמשים או קבוצות',
+                      prefixIcon: const Icon(Icons.search),
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      suffixIcon: _query.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'ניקוי חיפוש',
+                              onPressed: () => setState(() {
+                                _searchController.clear();
+                                _query = '';
+                              }),
+                              icon: const Icon(Icons.close),
+                            ),
+                    ),
+                    onChanged: (value) =>
+                        setState(() => _query = value.trim().toLowerCase()),
+                  ),
+                ),
+                if (_selected.isNotEmpty)
+                  SizedBox(
+                    height: 44,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      children: _selected.entries.map((entry) {
+                        final name = entry.value['name']?.toString() ?? '';
+                        return Padding(
+                          padding: const EdgeInsetsDirectional.only(end: 6),
+                          child: InputChip(
+                            key: ValueKey('forward-selected-${entry.key}'),
+                            avatar: Icon(
+                              entry.value['kind'] == 'group'
+                                  ? Icons.group_outlined
+                                  : Icons.person_outline,
+                            ),
+                            label: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 150),
+                              child: Text(
+                                name,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            deleteButtonTooltipMessage: 'הסרת $name מהבחירה',
+                            onDeleted: () =>
+                                setState(() => _selected.remove(entry.key)),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                if (_targetLoadFailed && entries.isNotEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'חלק מהמשתתפים או הקבוצות לא נטענו. ניתן לנסות שוב.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: kSubtext),
+                    ),
+                  ),
+                if (_targetLoadFailed)
+                  TextButton.icon(
+                    key: const ValueKey('forward-target-retry'),
+                    onPressed: _reloading ? null : _reloadTargets,
+                    icon: _reloading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh),
+                    label: Text(_reloading ? 'טוען…' : 'נסו שוב'),
+                  ),
+                Expanded(
+                  child: entries.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Text(
+                              _targetLoadFailed
+                                  ? 'לא ניתן לטעון כרגע את המשתתפים והקבוצות. נסו שוב.'
+                                  : _query.isNotEmpty
+                                  ? 'לא נמצאו משתמשים או קבוצות התואמים לחיפוש'
+                                  : 'לא נמצאו משתתפים או קבוצות שניתן להעביר אליהם.',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: kSubtext),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          key: const ValueKey('forward-target-list'),
+                          itemCount: entries.length,
+                          itemBuilder: (_, index) => entries[index],
+                        ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _selected.isEmpty || _reloading
+                          ? null
+                          : () => Navigator.pop(
+                              context,
+                              _selected.values.toList(),
+                            ),
+                      icon: const Icon(Icons.forward),
+                      label: Text(
+                        _selected.isEmpty
+                            ? 'בחרו יעד אחד לפחות'
+                            : 'העבר ל־${_selected.length} יעדים',
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -3130,6 +3532,7 @@ class _GeneralFilterEnforcementCard extends StatelessWidget {
           title: const Text('אכיפת הסינון הכללי בכל המערכת',
               style: TextStyle(fontWeight: FontWeight.w700)),
           subtitle: const Text(
+              'הסינון חל על צפייה, קבלה, העלאה ושליחה של תמונות. '
               'הסינון הכללי משמש כברירת המחדל בשיחות עם חברים ובקבוצות. '
               'כשהאפשרות פעילה, אפשר להחמיר בסינון של חבר או קבוצה, אך לא להתיר תוכן שחסום בסינון הכללי. '
               'כשהאפשרות כבויה, ניתן להתאים את הסינון בנפרד לכל חבר או קבוצה.'),
@@ -3153,8 +3556,6 @@ class _RegistrationFilterSelector extends StatelessWidget {
   });
 
   static const _items = <String, (String, IconData)>{
-    'text': ('טקסט', Icons.chat_bubble_outline),
-    'nonHumanImages': ('נוף או חפצים', Icons.landscape_outlined),
     'men': ('גברים', Icons.man),
     'women': ('נשים', Icons.woman),
     'children': ('ילדים', Icons.child_care),
@@ -3165,10 +3566,7 @@ class _RegistrationFilterSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     final selectedCount =
         _items.keys.where((key) => filter[key] == true).length;
-    final safeDefault = filter['text'] == true &&
-        _items.keys
-            .where((key) => key != 'text')
-            .every((key) => filter[key] != true);
+    final safeDefault = _items.keys.every((key) => filter[key] != true);
     return Container(
       margin: const EdgeInsets.only(top: 18),
       padding: const EdgeInsets.all(16),
@@ -3257,10 +3655,10 @@ class _RegistrationFilterSelector extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('טקסט בלבד — ברירת מחדל בטוחה',
+                      Text('טקסט ונוף — ברירת מחדל',
                           style: TextStyle(
                               fontSize: 13, fontWeight: FontWeight.w700)),
-                      Text('תמונות, חיות ווידאו חסומים',
+                      Text('תמונות אנשים ווידאו חסומים',
                           style: TextStyle(color: kSubtext, fontSize: 11)),
                     ],
                   ),
@@ -4872,12 +5270,6 @@ class _AuthScreenState extends State<AuthScreen> {
         ]);
       case 3:
         const filterItems = <String, (String, String, IconData)>{
-          'text': ('טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
-          'nonHumanImages': (
-            'תמונות נוף או חפצים',
-            'חפצים, נוף, צמחים ובעלי חיים',
-            Icons.landscape_outlined
-          ),
           'men': ('גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
           'women': ('נשים', 'תמונות שסווגו כתמונות נשים', Icons.woman),
           'children': (
@@ -6111,59 +6503,143 @@ const kAvatarCollections = {
 bool _isEmojiAvatar(String? url) => url != null && url.startsWith('emoji:');
 String _emojiFromAvatar(String url) => url.substring(6);
 
+// Saved general filters invalidate mounted avatars, including open dialogs and
+// chats holding old contact maps. Only fresh viewer-filtered API results may
+// approve raster photos again. Cached contacts never approve their own URLs.
+int _profilePicturesRevision = 0;
+final _approvedProfilePictures = ValueNotifier<Set<String>?>(null);
+final _profilePictureFilterChanges = StreamController<String>.broadcast(
+  sync: true,
+);
+
+bool _profilePictureAllowed(String? url) =>
+    url == null ||
+    _isEmojiAvatar(url) ||
+    _approvedProfilePictures.value == null ||
+    _approvedProfilePictures.value!.contains(url);
+
+void _approveProfilePictures(dynamic data, int revision) {
+  if (revision != _profilePicturesRevision ||
+      _approvedProfilePictures.value == null) {
+    return;
+  }
+  final approved = {..._approvedProfilePictures.value!};
+  void collect(dynamic value) {
+    if (value is Map) {
+      for (final entry in value.entries) {
+        if ((entry.key == 'profile_pic_url' || entry.key == 'seller_pic') &&
+            entry.value is String) {
+          approved.add(entry.value as String);
+        }
+        if (entry.key == 'members' && entry.value is List) {
+          collect(entry.value);
+        }
+      }
+    } else if (value is List) {
+      for (final item in value) {
+        collect(item);
+      }
+    }
+  }
+
+  collect(data);
+  if (!setEquals(approved, _approvedProfilePictures.value)) {
+    _approvedProfilePictures.value = approved;
+  }
+}
+
+Map<String, dynamic> _withoutCachedProfilePicture(
+  Map<String, dynamic> user,
+) => {
+  ...user,
+  // Preserve offline names/conversations and emoji; photos wait for the API.
+  if (!_isEmojiAvatar(user['profile_pic_url']?.toString()))
+    'profile_pic_url': null,
+};
+
 class UserAvatar extends StatelessWidget {
   final String? picUrl;
   final String name;
   final double radius;
-  const UserAvatar(
-      {super.key, this.picUrl, required this.name, this.radius = 22});
+  final bool previewOwnPhoto;
+  const UserAvatar({
+    super.key,
+    this.picUrl,
+    required this.name,
+    this.radius = 22,
+    this.previewOwnPhoto = false,
+  });
 
   void _showExpandedImage(BuildContext context) {
     if (picUrl == null || _isEmojiAvatar(picUrl)) return;
+    final imageUrl = picUrl!;
+    if (!previewOwnPhoto && !_profilePictureAllowed(imageUrl)) return;
     showDialog<void>(
       context: context,
       barrierColor: Colors.black87,
-      builder: (dialogContext) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.all(24),
-        child: Stack(
-          alignment: Alignment.topRight,
-          children: [
-            GestureDetector(
-              onTap: () => Navigator.pop(dialogContext),
-              child: InteractiveViewer(
-                minScale: 0.8,
-                maxScale: 4,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: Image.network(
-                    _absoluteMediaUrl(picUrl!),
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const SizedBox(
-                      width: 280,
-                      height: 280,
-                      child: Center(
-                        child: Icon(Icons.broken_image_outlined,
-                            color: Colors.white, size: 56),
-                      ),
-                    ),
+      builder: (dialogContext) => ValueListenableBuilder<Set<String>?>(
+        valueListenable: _approvedProfilePictures,
+        builder: (_, __, ___) => Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.all(24),
+          child: Stack(
+            alignment: Alignment.topRight,
+            children: [
+              GestureDetector(
+                onTap: () => Navigator.pop(dialogContext),
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 4,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: !previewOwnPhoto && !_profilePictureAllowed(imageUrl)
+                        ? const SizedBox(
+                            width: 280,
+                            height: 280,
+                            child: Icon(
+                              Icons.person,
+                              color: Colors.white,
+                              size: 56,
+                            ),
+                          )
+                        : Image.network(
+                            _absoluteMediaUrl(imageUrl),
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => const SizedBox(
+                              width: 280,
+                              height: 280,
+                              child: Center(
+                                child: Icon(
+                                  Icons.broken_image_outlined,
+                                  color: Colors.white,
+                                  size: 56,
+                                ),
+                              ),
+                            ),
+                          ),
                   ),
                 ),
               ),
-            ),
-            IconButton(
-              tooltip: 'סגור',
-              onPressed: () => Navigator.pop(dialogContext),
-              icon: const Icon(Icons.close, color: Colors.white, size: 30),
-            ),
-          ],
+              IconButton(
+                tooltip: 'סגור',
+                onPressed: () => Navigator.pop(dialogContext),
+                icon: const Icon(Icons.close, color: Colors.white, size: 30),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ValueListenableBuilder<Set<String>?>(
+    valueListenable: _approvedProfilePictures,
+    builder: (context, _, __) =>
+        _buildAvatar(context, previewOwnPhoto || _profilePictureAllowed(picUrl) ? picUrl : null),
+  );
+
+  Widget _buildAvatar(BuildContext context, String? picUrl) {
     if (_isEmojiAvatar(picUrl)) {
       final emoji = _emojiFromAvatar(picUrl!);
       return CircleAvatar(
@@ -6175,7 +6651,7 @@ class UserAvatar extends StatelessWidget {
     // Frame the guide's original portrait around his face in small avatars.
     // The expanded view continues to show the complete original image.
     if (picUrl != null &&
-        Uri.tryParse(picUrl!)?.path.endsWith('/israel-profile-20260907.png') ==
+        Uri.tryParse(picUrl)?.path.endsWith('/israel-profile-20260907.png') ==
             true) {
       final diameter = radius * 2;
       return GestureDetector(
@@ -6191,7 +6667,7 @@ class UserAvatar extends StatelessWidget {
                   width: diameter * 1.8,
                   height: diameter * 2.7,
                   child: Image.network(
-                    _absoluteMediaUrl(picUrl!),
+                    _absoluteMediaUrl(picUrl),
                     fit: BoxFit.contain,
                     errorBuilder: (_, __, ___) => const Center(
                       child: Icon(Icons.person, color: kPrimary),
@@ -6211,14 +6687,18 @@ class UserAvatar extends StatelessWidget {
       child: CircleAvatar(
         radius: radius,
         backgroundColor: kPrimary,
-        backgroundImage:
-            picUrl != null ? NetworkImage(_absoluteMediaUrl(picUrl!)) : null,
+        backgroundImage: picUrl != null
+            ? NetworkImage(_absoluteMediaUrl(picUrl))
+            : null,
         child: picUrl == null
-            ? Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+            ? Text(
+                name.isNotEmpty ? name[0].toUpperCase() : '?',
                 style: TextStyle(
-                    color: Colors.white,
-                    fontSize: radius * 0.9,
-                    fontWeight: FontWeight.bold))
+                  color: Colors.white,
+                  fontSize: radius * 0.9,
+                  fontWeight: FontWeight.bold,
+                ),
+              )
             : null,
       ),
     );
@@ -6323,7 +6803,10 @@ class ImagePreviewScreen extends StatefulWidget {
   final List<String?>? dates;
   final List<Map<String, dynamic>>? messages;
   final void Function(Map<String, dynamic>)? onMessageOptions;
+  final Future<String?> Function(String url, String? filename)? onRename;
   final int initialIndex;
+  final String? filterToken;
+  final String? currentUserId;
   const ImagePreviewScreen({
     super.key,
     required this.url,
@@ -6333,7 +6816,10 @@ class ImagePreviewScreen extends StatefulWidget {
     this.dates,
     this.messages,
     this.onMessageOptions,
+    this.onRename,
     this.initialIndex = 0,
+    this.filterToken,
+    this.currentUserId,
   });
   @override
   State<ImagePreviewScreen> createState() => _ImagePreviewScreenState();
@@ -6347,10 +6833,24 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
   late final PageController _pageController;
   late int _currentIndex;
   bool _showBars = true;
+  bool _renaming = false;
+  bool _filterInvalidated = false;
+  final _nameLookups = <String>{};
+  final _ownedNames = <String, OwnedMediaName?>{};
+  StreamSubscription<String>? _filterSubscription;
 
   @override
   void initState() {
     super.initState();
+    if (widget.filterToken != null) {
+      _filterSubscription = receivingFilterChanges.stream.listen((token) {
+        if (token != widget.filterToken || !mounted || _filterInvalidated) return;
+        setState(() => _filterInvalidated = true);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && ModalRoute.of(context)?.isCurrent == true) Navigator.pop(context);
+        });
+      });
+    }
     _urls =
         widget.urls?.where((url) => url.isNotEmpty).toList() ?? [widget.url];
     if (_urls.isEmpty) _urls.add(widget.url);
@@ -6369,10 +6869,12 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
     );
     _currentIndex = widget.initialIndex.clamp(0, _urls.length - 1);
     _pageController = PageController(initialPage: _currentIndex);
+    _loadCurrentName();
   }
 
   @override
   void dispose() {
+    _filterSubscription?.cancel();
     _transform.dispose();
     _pageController.dispose();
     super.dispose();
@@ -6387,8 +6889,65 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
     );
   }
 
+  bool get _canRename => widget.onRename != null ||
+      (widget.filterToken != null && _ownedNames[_urls[_currentIndex]] != null);
+
+  Future<void> _loadCurrentName() async {
+    final token = widget.filterToken;
+    if (widget.onRename != null || token == null || _filterInvalidated) return;
+    final url = _urls[_currentIndex];
+    if (!_nameLookups.add(url)) return;
+    OwnedMediaName? owned;
+    try {
+      owned = await resolveMediaName(api: kApi, token: token, url: url);
+    } catch (_) {
+      // Missing or unavailable personal metadata leaves the viewer usable.
+    }
+    if (!mounted || widget.filterToken != token || _filterInvalidated) return;
+    setState(() {
+      _ownedNames[url] = owned;
+      if (owned != null) {
+        for (var index = 0; index < _urls.length; index++) {
+          if (_urls[index] == url) _filenames[index] = owned.name;
+        }
+      }
+    });
+  }
+
+  Future<void> _renameCurrent() async {
+    final rename = widget.onRename;
+    if (!_canRename || _renaming || _filterInvalidated) return;
+    final url = _urls[_currentIndex];
+    final filename = _filenames[_currentIndex];
+    setState(() => _renaming = true);
+    try {
+      final name = rename != null
+          ? await rename(url, filename)
+          : await renameMediaByUrl(context, api: kApi,
+              token: widget.filterToken!, url: url, media: _ownedNames[url]);
+      if (!mounted || name == null || name.isEmpty || _filterInvalidated) return;
+      setState(() {
+        final owned = _ownedNames[url];
+        if (owned != null) _ownedNames[url] = OwnedMediaName(id: owned.id, name: name);
+        for (var index = 0; index < _urls.length; index++) {
+          if (_urls[index] == url) _filenames[index] = name;
+        }
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('לא ניתן לשנות את שם הקובץ')));
+      }
+    } finally {
+      if (mounted) setState(() => _renaming = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_filterInvalidated) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
@@ -6402,6 +6961,7 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
               onPageChanged: (index) {
                 _transform.value = Matrix4.identity();
                 setState(() => _currentIndex = index);
+                _loadCurrentName();
               },
               itemBuilder: (_, index) => InteractiveViewer(
                 transformationController:
@@ -6411,6 +6971,12 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                 child: Center(
                   child: _PersistentMediaImage(
                     url: _urls[index],
+                    onDisplayed: widget.filterToken == null ||
+                        index >= (widget.messages?.length ?? 0)
+                        ? null : () => reportFilterDisplay(api: kApi,
+                            token: widget.filterToken!,
+                            messageId: widget.messages![index]['id']?.toString() ?? '',
+                            event: 'displayed'),
                     fit: BoxFit.contain,
                     loadingBuilder: (_) => const Center(
                         child: CircularProgressIndicator(color: Colors.white)),
@@ -6493,7 +7059,33 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            if ((_filenames[_currentIndex] ?? '').isNotEmpty)
+                            if (_canRename)
+                              TextButton.icon(
+                                key: const ValueKey('image-preview-rename'),
+                                onPressed: _renaming ? null : _renameCurrent,
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  disabledForegroundColor: Colors.white70,
+                                  padding: EdgeInsets.zero,
+                                  alignment: AlignmentDirectional.centerStart,
+                                ),
+                                icon: _renaming
+                                    ? const SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white70))
+                                    : const Icon(Icons.edit_outlined, size: 16),
+                                label: Text(
+                                  (_filenames[_currentIndex] ?? '').isNotEmpty
+                                      ? _filenames[_currentIndex]!
+                                      : 'שינוי שם הקובץ',
+                                  style: const TextStyle(fontSize: 14),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              )
+                            else if ((_filenames[_currentIndex] ?? '').isNotEmpty)
                               Text(
                                 _filenames[_currentIndex]!,
                                 style: const TextStyle(
@@ -7478,6 +8070,19 @@ class _MainShellContentState extends State<_MainShellContent> {
   int _usersLoadGeneration = 0;
   late final StreamSubscription<ConversationChange>
       _conversationChangesSubscription;
+  late final StreamSubscription<String> _profilePictureFilterSubscription;
+
+  void _profilePictureFilterChanged(String token) {
+    if (!mounted || token != widget.token) return;
+    _usersLoadGeneration++;
+    setState(() {
+      _users = _users.map(_withoutCachedProfilePicture).toList();
+      if (_desktopRecipient != null) {
+        _desktopRecipient = _withoutCachedProfilePicture(_desktopRecipient!);
+      }
+    });
+    _refreshConversationState();
+  }
 
   Future<void> _conversationListChanged(ConversationChange change) async {
     if (!mounted || change.accountId != _accountId) return;
@@ -7546,6 +8151,10 @@ class _MainShellContentState extends State<_MainShellContent> {
   @override
   void initState() {
     super.initState();
+    _profilePicturesRevision++;
+    _approvedProfilePictures.value = null;
+    _profilePictureFilterSubscription =
+        _profilePictureFilterChanges.stream.listen(_profilePictureFilterChanged);
     _conversationChangesSubscription =
         conversationChanges.stream.listen(_conversationListChanged);
     registerAppScreenshotMenu(this, _openScreenshotThroughIsrael);
@@ -7717,6 +8326,7 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   @override
   void dispose() {
+    _profilePictureFilterSubscription.cancel();
     _conversationChangesSubscription.cancel();
     unregisterAppScreenshotMenu(this);
     appScreenshotIssueOpened = null;
@@ -7804,6 +8414,7 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _loadMessageRequests() async {
+    final pictureRevision = _profilePicturesRevision;
     try {
       final response = await http.get(Uri.parse('$kApi/message-requests'),
           headers: {'Authorization': 'Bearer ${widget.token}'});
@@ -7816,6 +8427,7 @@ class _MainShellContentState extends State<_MainShellContent> {
               .where((request) =>
                   request['sender_id']?.toString() != _me?['id']?.toString()),
         );
+      _approveProfilePictures(_messageRequests, pictureRevision);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _showNextMessageRequest();
       });
@@ -7956,6 +8568,7 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _loadPhoneRequests() async {
+    final pictureRevision = _profilePicturesRevision;
     try {
       final response = await http.get(Uri.parse('$kApi/phone-sharing/requests'),
         headers: {'Authorization': 'Bearer ${widget.token}', 'Cache-Control': 'no-store'});
@@ -7963,6 +8576,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       final raw = jsonDecode(response.body);
       final rows = raw is List ? raw : raw is Map ? raw['requests'] : null;
       if (rows is! List) return;
+      _approveProfilePictures(rows, pictureRevision);
       _phoneRequests..clear()..addAll(rows.whereType<Map>().map((row) => Map<String, dynamic>.from(row)));
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _showNextPhoneRequest();
@@ -8244,6 +8858,7 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   Future<void> _loadUsers() async {
     final generation = _usersLoadGeneration;
+    final pictureRevision = _profilePicturesRevision;
     // Load from cache first for instant offline display
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -8254,7 +8869,8 @@ class _MainShellContentState extends State<_MainShellContent> {
       final cached = cacheKey == null ? null : prefs.getString(cacheKey);
       if (cached != null && _users.isEmpty) {
         setState(() => _users = _withoutScanBot(
-            (jsonDecode(cached) as List).cast<Map<String, dynamic>>()));
+            (jsonDecode(cached) as List).cast<Map<String, dynamic>>()
+                .map(_withoutCachedProfilePicture).toList()));
       }
     } catch (_) {}
     // Then fetch from server and update cache
@@ -8268,6 +8884,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         final data = jsonDecode(res.body) as List;
         if (mounted) {
           setState(() {
+            _approveProfilePictures(data, pictureRevision);
             _users = _withoutScanBot(data.cast<Map<String, dynamic>>());
             final selectedId = _desktopRecipient?['id'];
             if (selectedId != null) {
@@ -8326,6 +8943,14 @@ class _MainShellContentState extends State<_MainShellContent> {
     });
 
     // אדמין מחק את המשתמש בזמן שהוא מחובר
+    _socket!.on('filter:changed', (data) {
+      receivingFilterChanges.add(widget.token);
+      if (data is Map && data['scope'] == 'general') {
+        _profilePicturesRevision++;
+        _approvedProfilePictures.value = <String>{};
+        _profilePictureFilterChanges.add(widget.token);
+      }
+    });
     _socket!.on('conversation:changed', (data) {
       if (data is! Map || _accountId == null) return;
       _conversationListChanged(ConversationChange(
@@ -13245,8 +13870,6 @@ void _refreshCategoryDependencies(
   }
 }
 
-
-
 String _listingPublishedAt(dynamic value, {bool compact = false}) {
   final parsed = DateTime.tryParse(value?.toString() ?? '')?.toLocal();
   if (parsed == null) return '';
@@ -13667,6 +14290,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   }
 
   Future<void> _load() async {
+    final pictureRevision = _profilePicturesRevision;
     if (!mounted) return;
     setState(() => _loading = true);
     try {
@@ -13691,6 +14315,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
       if (!mounted) return;
       final data = jsonDecode(res.body);
       final items = List<Map<String, dynamic>>.from(data);
+      if (res.statusCode == 200) _approveProfilePictures(items, pictureRevision);
       _persistRecentImageUrls(items).ignore();
       setState(() {
         _items = items;
@@ -14702,6 +15327,7 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
   }
 
   Future<void> _load() async {
+    final pictureRevision = _profilePicturesRevision;
     if (!mounted) return;
     setState(() => _loading = true);
     try {
@@ -14712,6 +15338,7 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
       if (!mounted) return;
       setState(() {
         _items = List<Map<String, dynamic>>.from(jsonDecode(res.body));
+        if (res.statusCode == 200) _approveProfilePictures(_items, pictureRevision);
         _loading = false;
       });
     } catch (_) {
@@ -17342,6 +17969,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
   }
 
   Future<void> _loadDetail() async {
+    final pictureRevision = _profilePicturesRevision;
     try {
       final res = await http.get(
         Uri.parse('$kApi/listings/${widget.listingId}'),
@@ -17349,6 +17977,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
       );
       if (!mounted) return;
       final item = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200) _approveProfilePictures(item, pictureRevision);
       final imgs = List<String>.from(item['images'] ??
           (item['image_url'] != null ? [item['image_url']] : []));
       final vehicle = item['vehicle_details'] is Map
@@ -18712,18 +19341,11 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                     borderRadius: BorderRadius.circular(12)),
                 child: Column(children: [
                   Row(children: [
-                    CircleAvatar(
-                        radius: 24,
-                        backgroundColor: kBorder,
-                        backgroundImage: widget.item['seller_pic'] != null
-                            ? NetworkImage(widget.item['seller_pic'])
-                            : null,
-                        child: widget.item['seller_pic'] == null
-                            ? Text((widget.item['seller_name'] ?? '?')[0],
-                                style: TextStyle(
-                                    color: kPrimary,
-                                    fontWeight: FontWeight.bold))
-                            : null),
+                    UserAvatar(
+                      radius: 24,
+                      picUrl: widget.item['seller_pic']?.toString(),
+                      name: widget.item['seller_name']?.toString() ?? '?',
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                         child: Column(
@@ -18970,6 +19592,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   }
 
   Future<void> _loadUsers() async {
+    final pictureRevision = _profilePicturesRevision;
     try {
       final response = await http.get(Uri.parse('$kApi/users/directory'),
           headers: {'Authorization': 'Bearer ${widget.token}'});
@@ -18979,6 +19602,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
           ..sort((a, b) => (a['name'] ?? '')
               .toString()
               .compareTo((b['name'] ?? '').toString()));
+        _approveProfilePictures(users, pictureRevision);
         if (mounted) setState(() => _users = users);
       }
     } catch (_) {
@@ -19346,12 +19970,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                   ]),
                 ),
                 ...<String, (String, IconData)>{
-                  'text': ('הודעות טקסט', Icons.text_fields),
                   'video': ('וידאו', Icons.videocam_outlined),
-                  'nonHumanImages': (
-                    'תמונות נוף או חפצים',
-                    Icons.landscape_outlined
-                  ),
                   'men': ('תמונות גברים', Icons.man),
                   'women': ('תמונות נשים', Icons.woman),
                   'children': ('תמונות ילדים', Icons.child_care),
@@ -19756,6 +20375,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           }
           var matched = <Map<String, dynamic>>[];
           if (phones.isNotEmpty || emails.isNotEmpty) {
+            final pictureRevision = _profilePicturesRevision;
             final response = await http.post(
               Uri.parse('$kApi/contacts/match'),
               headers: {
@@ -19767,6 +20387,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
             if (response.statusCode == 200) {
               matched = (jsonDecode(response.body) as List)
                   .cast<Map<String, dynamic>>();
+              _approveProfilePictures(matched, pictureRevision);
             }
           }
           final matchedPhones = matched
@@ -19868,6 +20489,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           if (!directoryLoadStarted) {
             directoryLoadStarted = true;
             Future<void>(() async {
+              final pictureRevision = _profilePicturesRevision;
               try {
                 final response = await http.get(
                   Uri.parse('$kApi/users/directory'),
@@ -19878,6 +20500,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                     ..clear()
                     ..addAll((jsonDecode(response.body) as List)
                         .cast<Map<String, dynamic>>());
+                  _approveProfilePictures(directoryResults, pictureRevision);
                 }
               } catch (_) {
                 // Search remains available even if the initial directory
@@ -19895,6 +20518,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           }
 
           Future<void> search() async {
+            final pictureRevision = _profilePicturesRevision;
             final query = searchController.text.trim();
             if (query.isEmpty) {
               setDialogState(() {
@@ -19918,6 +20542,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                   ? (jsonDecode(response.body) as List)
                       .cast<Map<String, dynamic>>()
                   : <Map<String, dynamic>>[];
+              _approveProfilePictures(serverResults, pictureRevision);
               final manualPhone = normalizeContactPhone(query);
               if (RegExp(r'^[+\d ()-]+$').hasMatch(query) &&
                   manualPhone.length >= 9 && manualPhone.length <= 15) {
@@ -19933,6 +20558,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       final index = serverResults.indexWhere((item) => item['id'] == user['id']);
                       if (index < 0) { serverResults.add(user); } else { serverResults[index] = user; }
                     }
+                    _approveProfilePictures(serverResults, pictureRevision);
                     await widget.onContactsChanged();
                   }
                 } catch (_) {}
@@ -20155,6 +20781,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                       child: Scrollbar(
                         thumbVisibility: true,
                         child: ListView.builder(
+                          primary: true,
                           keyboardDismissBehavior:
                               ScrollViewKeyboardDismissBehavior.onDrag,
                           padding: const EdgeInsets.only(bottom: 8),
@@ -20221,6 +20848,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
 
   Future<void> _loadGroups({bool force = false}) async {
     final generation = _groupsLoadGeneration;
+    final pictureRevision = _profilePicturesRevision;
     if (_groupsLoaded && !force) return;
     try {
       final res = await http.get(Uri.parse('$kApi/groups'),
@@ -20230,6 +20858,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           generation == _groupsLoadGeneration) {
         setState(() {
           _groups = (jsonDecode(res.body) as List).cast();
+          _approveProfilePictures(_groups, pictureRevision);
           _groupsLoaded = true;
         });
         _openNextPendingGroupInvitation();
@@ -20828,7 +21457,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                                     const SizedBox(width: 4),
                                   ],
                                   Expanded(
-                                    child: Text(
+                                    child: InlineEmojiText(
                                       typingName != null
                                           ? '$typingName מקליד...'
                                           : groupPreview,
@@ -21253,7 +21882,7 @@ class _ConversationTile extends StatelessWidget {
                       const SizedBox(width: 4),
                     ],
                     Expanded(
-                      child: Text(
+                      child: InlineEmojiText(
                         isTyping
                             ? 'מקליד...'
                             : _conversationPreview(user).isNotEmpty
@@ -21415,12 +22044,7 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
   });
 
   static const _items = <String, (IconData, String)>{
-    'text': (Icons.comments_disabled_outlined, 'לא מוכן לקבל הודעות טקסט'),
     'video': (Icons.videocam_off_outlined, 'לא מוכן לקבל סרטוני וידאו'),
-    'nonHumanImages': (
-      Icons.image_not_supported_outlined,
-      'לא מוכן לקבל תמונות נוף או חפצים'
-    ),
     'men': (Icons.man, 'לא מוכן לקבל תמונות גברים'),
     'women': (Icons.woman, 'לא מוכן לקבל תמונות נשים'),
     'children': (Icons.child_care, 'לא מוכן לקבל תמונות ילדים'),
@@ -21549,12 +22173,6 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
   });
 
   static const _items = <String, (IconData, String, String)>{
-    'text': (Icons.text_fields, 'טקסט', 'הודעות טקסט רגילות'),
-    'nonHumanImages': (
-      Icons.landscape_outlined,
-      'תמונות נוף או חפצים',
-      'חפצים, נוף, צמחים ובעלי חיים'
-    ),
     'men': (Icons.man, 'גברים', 'תמונות שסווגו כתמונות גברים'),
     'women': (Icons.woman, 'נשים', 'תמונות שסווגו כתמונות נשים'),
     'children': (Icons.child_care, 'ילדים', 'תמונות שסווגו כתמונות ילדים'),
@@ -21566,15 +22184,10 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
       ...?groupFilter?.keys,
       ...?personalFilter?.keys,
     };
-    return [
-      ..._items.keys.where(available.contains),
-      ...available.where((key) => !_items.containsKey(key)).toList()..sort(),
-    ];
+    // Response maps also contain policy flags such as enforceGeneralFilter.
+    // Only the named content categories belong in this comparison table.
+    return _items.keys.where(available.contains).toList();
   }
-
-  (IconData, String, String) _itemFor(String key) =>
-      _items[key] ??
-      (Icons.filter_alt_outlined, key, 'סוג תוכן נוסף בהגדרות הסינון');
 
   @override
   Widget build(BuildContext context) {
@@ -21773,7 +22386,7 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
                     ]),
                   ),
                   ..._visibleKeys.map((key) {
-                    final item = _itemFor(key);
+                    final item = _items[key]!;
                     final mine = personalFilter![key] == true;
                     final groupAllows =
                         showCounterpartFilter && groupFilter?[key] == true;
@@ -21892,7 +22505,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
-  final _msgCtrl = TextEditingController();
+  final _msgCtrl = InlineEmojiController();
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
@@ -21914,9 +22527,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _messageRefreshTimer;
   String? _serverMessagesFingerprint;
   int _historyGeneration = 0;
+  int _historyRequestSerial = 0;
   DateTime? _clearedAt;
   late final StreamSubscription<ConversationChange> _cleanupSubscription;
   late final void Function(dynamic) _conversationChangedHandler;
+  late final StreamSubscription<String> _receivingFilterSubscription;
+  late final void Function(dynamic) _receivingFilterSocketHandler;
 
   void _listenForConversationChanges() {
     _cleanupSubscription = conversationChanges.stream.listen((change) {
@@ -22024,8 +22640,16 @@ class _ChatScreenState extends State<ChatScreen> {
             (message) => _selectedMessageKeys.contains(_selectionKey(message)))
         .toList();
     if (selected.isEmpty) return;
-    await forwardChatMessages(context, widget.token, widget.socket, selected);
-    if (mounted) setState(_selectedMessageKeys.clear);
+    final selectedKeys = selected.map(_selectionKey).toList();
+    final result =
+        await forwardChatMessages(context, widget.token, widget.socket, selected);
+    if (mounted && result.completedMessageIndexes.isNotEmpty) {
+      setState(() {
+        for (final index in result.completedMessageIndexes) {
+          _selectedMessageKeys.remove(selectedKeys[index]);
+        }
+      });
+    }
   }
 
   bool get _recipientAllowsText =>
@@ -22069,6 +22693,11 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _listenForConversationChanges();
+    _receivingFilterSubscription = receivingFilterChanges.stream.listen((token) {
+      if (token == widget.token) _refreshReceivingFilter();
+    });
+    _receivingFilterSocketHandler = (_) => receivingFilterChanges.add(widget.token);
+    widget.socket?.on('filter:changed', _receivingFilterSocketHandler);
     if (widget.recipient['conversation_hidden'] == true) {
       reopenConversation(
           api: kApi,
@@ -22153,12 +22782,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadOutgoingFilter() async {
+    final generation = _historyGeneration;
     try {
       final response = await http.get(
         Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-settings'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       ).timeout(const Duration(seconds: 10));
-      if (!mounted || response.statusCode != 200) return;
+      if (!mounted || generation != _historyGeneration || response.statusCode != 200) return;
       final body = jsonDecode(response.body);
       final raw = body is Map ? body['filter'] : null;
       if (raw is! Map) return;
@@ -22172,12 +22802,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<bool> _loadContactFilterComparison() async {
+    final generation = _historyGeneration;
     try {
       final response = await http.get(
         Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-comparison'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       ).timeout(const Duration(seconds: 10));
-      if (!mounted || response.statusCode != 200) return false;
+      if (!mounted || generation != _historyGeneration || response.statusCode != 200) return false;
       final body = jsonDecode(response.body);
       final recipient = body is Map ? body['recipientFilter'] : null;
       final personal = body is Map ? body['personalFilter'] : null;
@@ -22203,17 +22834,35 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  Future<void> _refreshReceivingFilter() async {
+    if (!mounted) return;
+    _historyGeneration++;
+    _serverMessagesFingerprint = null;
+    setState(() {
+      // Recheck every image, including our own sends, against current visibility.
+      _messages.removeWhere((message) => message['fileType'] == 'image');
+      _selectedMessageKeys.clear();
+      _outgoingFilter = null;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('cache_msgs_${widget.me?['id']}_${widget.recipient['id']}');
+    if (!mounted) return;
+    await Future.wait([_loadOutgoingFilter(), _loadMessages(silent: true)]);
+  }
+
   Future<void> _loadMessages({bool silent = false}) async {
     final generation = _historyGeneration;
+    final requestSerial = ++_historyRequestSerial;
     final cacheKey = 'cache_msgs_${widget.me?['id']}_${widget.recipient['id']}';
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (!mounted || generation != _historyGeneration) return;
+      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
       final cached = prefs.getString(cacheKey);
       if (!silent && cached != null && mounted) {
         final list = (jsonDecode(cached) as List)
             .cast<Map<String, dynamic>>()
+            .where((message) => message['fileType'] != 'image')
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
         setState(() {
@@ -22231,7 +22880,7 @@ class _ChatScreenState extends State<ChatScreen> {
         Uri.parse('$kApi/messages/${widget.recipient['id']}'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (!mounted || generation != _historyGeneration) return;
+      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         final normalized = data
@@ -22262,7 +22911,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _markAsRead();
         // Save to cache (last 50 messages)
         final prefs = await SharedPreferences.getInstance();
-        if (!mounted || generation != _historyGeneration) return;
+        if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
         final toCache = normalized.length > 50
             ? normalized.sublist(normalized.length - 50)
             : normalized;
@@ -22271,7 +22920,7 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _loading = false);
       }
     } catch (_) {
-      if (mounted && generation == _historyGeneration) {
+      if (mounted && generation == _historyGeneration && requestSerial == _historyRequestSerial) {
         setState(() => _loading = false);
       }
     }
@@ -22334,7 +22983,12 @@ class _ChatScreenState extends State<ChatScreen> {
       'isFile': isFile,
       'fileType': sticker != null ? 'sticker' : (isFile ? msgType : null),
       if (sticker != null) 'stickerId': sticker.id,
-      'fileUrl': map['file_url'],
+      'fileDeleted': map['file_deleted'] == true,
+      'filterHidden': map['filter_hidden'] == true,
+      'hiddenReason': map['hidden_reason'],
+      'moderationStatus': map['moderation_status'],
+      'filterKept': map['filter_kept'] == true,
+      'fileUrl': map['filter_hidden'] == true ? null : map['file_url'],
       'fileName': map['file_name'],
       'educationFormId': map['education_form_id'],
       'educationResponseStatus': map['education_response_status'],
@@ -22363,7 +23017,11 @@ class _ChatScreenState extends State<ChatScreen> {
       final fileUrl = data['fileUrl'] as String?;
       final fileName = data['fileName'] as String?;
       final fromUserId = data['fromUserId'];
-      final isIncoming = fromUserId == widget.recipient['id'];
+      final toUserId = data['toUserId'];
+      final isIncoming = fromUserId == widget.recipient['id'] &&
+          (toUserId == null || toUserId == widget.me?['id']);
+      final isOwnConversation = fromUserId == widget.me?['id'] &&
+          toUserId == widget.recipient['id'];
       final pendingIndex = fileUrl == null
           ? -1
           : _messages.indexWhere((message) =>
@@ -22375,13 +23033,28 @@ class _ChatScreenState extends State<ChatScreen> {
               : _messages.lastIndexWhere((message) =>
                   _matchesRecentFailedUpload(message, fileName, 'failed_'));
       final isDelayedOutgoing = fromUserId == widget.me?['id'] &&
-          (pendingIndex != -1 || recoveredFailedIndex != -1);
+          (toUserId == null || toUserId == widget.recipient['id']) &&
+          (isOwnConversation || pendingIndex != -1 || recoveredFailedIndex != -1);
       if (!isIncoming && !isDelayedOutgoing) return;
       final fileType = _normalizeIncomingFileType(
         data['fileType'] as String?,
         fileUrl: fileUrl,
         fileName: fileName,
       );
+      if (fileType == 'image' ||
+          fileType == 'video' ||
+          data['filter_hidden'] == true) {
+        // Resolve incoming and own sent media against the current server policy.
+        // Pending history deliberately omits URLs, so an own approval can be
+        // matched by destination even when no local upload preview remains.
+        setState(() => _messages.removeWhere((message) =>
+            message['id'] == data['id'] ||
+            (fileUrl != null && message['fileUrl'] == fileUrl &&
+                message['status'] == 'pending_scan')));
+        _serverMessagesFingerprint = null;
+        _loadMessages(silent: true);
+        return;
+      }
       final sticker = fileType == 'sticker'
           ? _avielStickerById(data['stickerId'] ?? data['text'])
           : null;
@@ -22443,6 +23116,16 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted || data is! Map) return;
       final fileUrl = data['fileUrl'] as String?;
       if (fileUrl == null) return;
+      if (_isSenderFilterRejection(data)) {
+        setState(() => _messages.removeWhere((message) =>
+            message['fileUrl'] == fileUrl &&
+            const ['pending_scan', 'uploading', 'rejected_scan']
+                .contains(message['status'])));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(_senderFilterRejectionMessage(data)),
+            backgroundColor: Colors.red));
+        return;
+      }
       final index = _messages.indexWhere((message) =>
           message['status'] == 'pending_scan' && message['fileUrl'] == fileUrl);
       if (index == -1) return;
@@ -22480,8 +23163,19 @@ class _ChatScreenState extends State<ChatScreen> {
       if (targetId != null && targetId != widget.recipient['id']?.toString()) {
         return;
       }
+      if (_isSenderFilterRejection(data)) {
+        final rejectedUrl = data['fileUrl']?.toString();
+        if (rejectedUrl != null) {
+          setState(() => _messages.removeWhere((message) =>
+              message['fileUrl'] == rejectedUrl &&
+              const ['pending_scan', 'uploading', 'rejected_scan']
+                  .contains(message['status'])));
+        }
+      }
       ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
-          data['reason']?.toString() ?? 'ההודעה נחסמה'));
+          _isSenderFilterRejection(data)
+              ? _senderFilterRejectionMessage(data)
+              : data['reason']?.toString() ?? 'ההודעה נחסמה'));
     };
     widget.socket?.on('message:rejected', _messageRejectedSocketHandler);
 
@@ -22575,6 +23269,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _cleanupSubscription.cancel();
+    _receivingFilterSubscription.cancel();
+    widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
     widget.socket?.off('conversation:changed', _conversationChangedHandler);
     unregisterAppScreenshotMenu(this);
     final screenshotDestination = AppScreenshotDestination.user(
@@ -22698,7 +23394,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     final sticker = _avielStickerById(stickerId);
-    final text = sticker?.id ?? _msgCtrl.text.trim();
+    final text = sticker?.id ?? encodeInlineEmojiText(_msgCtrl.text.trim());
     if (text.isEmpty) return;
     if (text == (widget.initialText ?? '').trim()) {
       _initialMessageHandled = true;
@@ -22944,20 +23640,20 @@ class _ChatScreenState extends State<ChatScreen> {
     if (choice == null || !mounted) return false;
 
     try {
-      final response = await http.put(
-        Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-settings'),
-        headers: {
-          'Authorization': 'Bearer ${widget.token}',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode(choice),
-      );
+      final response = await saveReceivingFilter(context: context, api: kApi,
+        token: widget.token,
+        path: '/contacts/${widget.recipient['id']}/filter-settings',
+        body: Map<String, dynamic>.from(choice));
+      if (response == null) return false;
       if (!mounted) return false;
       if (response.statusCode != 200) throw Exception();
       final payload = jsonDecode(response.body);
       final privateEntry = payload is Map ? payload['privateEntry'] : null;
       setState(() {
-        _outgoingFilter = Map<String, bool>.from(choice['filter'] as Map);
+        final effective = payload is Map ? payload['filter'] : null;
+        _outgoingFilter = effective is Map
+            ? effective.map((key, value) => MapEntry(key.toString(), value == true))
+            : null;
         _requiresFirstMessageFilterChoice = false;
         if (privateEntry is Map) {
           final normalized = _normalizeDbMessage(privateEntry);
@@ -22984,8 +23680,9 @@ class _ChatScreenState extends State<ChatScreen> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: ListView(
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
           children: [
             const SizedBox(height: 8),
             ListTile(
@@ -23204,10 +23901,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showContactPhoto(String imageUrl, String name) {
+    if (!_profilePictureAllowed(imageUrl)) return;
     showDialog<void>(
       context: context,
       barrierColor: Colors.black87,
-      builder: (dialogContext) => Dialog(
+      builder: (dialogContext) => ValueListenableBuilder<Set<String>?>(
+        valueListenable: _approvedProfilePictures,
+        builder: (_, __, ___) => Dialog(
         backgroundColor: Colors.transparent,
         insetPadding: const EdgeInsets.all(24),
         child: Stack(alignment: Alignment.topRight, children: [
@@ -23218,7 +23918,10 @@ class _ChatScreenState extends State<ChatScreen> {
               maxScale: 4,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(18),
-                child: Image.network(
+                child: !_profilePictureAllowed(imageUrl)
+                    ? const SizedBox(width: 280, height: 280,
+                        child: Icon(Icons.person, color: Colors.white, size: 56))
+                    : Image.network(
                   _absoluteMediaUrl(imageUrl),
                   fit: BoxFit.contain,
                   semanticLabel: 'תמונה של $name',
@@ -23240,7 +23943,7 @@ class _ChatScreenState extends State<ChatScreen> {
             icon: const Icon(Icons.close, color: Colors.white, size: 30),
           ),
         ]),
-      ),
+      )),
     );
   }
 
@@ -23251,8 +23954,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final email = widget.recipient['email']?.toString().trim() ?? '';
     final city = widget.recipient['city']?.toString().trim() ?? '';
     const filterItems = <String, (String, IconData)>{
-      'text': ('טקסט', Icons.text_fields),
-      'nonHumanImages': ('תמונות נוף או חפצים', Icons.landscape_outlined),
       'men': ('תמונות גברים', Icons.man),
       'women': ('תמונות נשים', Icons.woman),
       'children': ('תמונות ילדים', Icons.child_care),
@@ -23591,8 +24292,8 @@ class _ChatScreenState extends State<ChatScreen> {
                               itemCount: matches.length,
                               itemBuilder: (_, i) => ListTile(
                                 dense: true,
-                                title:
-                                    Text(matches[i]['text'] as String? ?? ''),
+                                title: InlineEmojiText(
+                                    matches[i]['text'] as String? ?? ''),
                                 trailing:
                                     Text(matches[i]['time'] as String? ?? ''),
                               ),
@@ -23932,31 +24633,20 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _showExpressions() async {
+    if (!_recipientAllowsText) return;
     final beforePicker = _msgCtrl.value;
     final choice = await _showExpressionPicker(context, widget.token);
     if (choice == null || !mounted) return;
     if (choice.startsWith(_remoteExpressionPrefix)) {
       final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
-      try {
-        final response = await http.get(Uri.parse(remoteUrl), headers: {
-          'Authorization': 'Bearer ${widget.token}',
-        });
-        if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
-          throw Exception('הקובץ אינו זמין כרגע');
-        }
-        final extension =
-            Uri.parse(remoteUrl).path.toLowerCase().endsWith('.gif')
-                ? 'gif'
-                : 'png';
-        final fileName = 'betshuva_${Uri.parse(remoteUrl).pathSegments.last}';
-        final file = XFile.fromData(response.bodyBytes,
-            name: fileName, mimeType: 'image/$extension');
-        await _uploadAndSend(file, fileName, 'image', extraFields: const {
-          'builtinExpression': 'true',
-        });
-      } catch (error) {
-        if (mounted) _showError('לא ניתן לשלוח את הביטוי: $error');
+      final emojiId = inlineEmojiIdFromUrl(remoteUrl);
+      if (emojiId == null) {
+        _showError('האימוג׳י אינו זמין כרגע');
+        return;
       }
+      _insertExpressionText(
+          _msgCtrl, inlineEmojiCharacter(emojiId), beforePicker);
+      _msgFocusNode.requestFocus();
       return;
     }
     if (choice.startsWith(_originalExpressionPrefix)) {
@@ -24453,7 +25143,9 @@ class _ChatScreenState extends State<ChatScreen> {
             result.outcome = _FileUploadOutcome.failed;
             result.error =
                 sendData['error']?.toString() ?? 'הקובץ הועלה אך לא נשלח';
-            if (showNotice && mounted) _showError(result.error!);
+            if ((showNotice || _isSenderFilterRejection(sendData)) && mounted) {
+              _showError(result.error!);
+            }
             return false;
           }
           if (sendData['requestPending'] == true) {
@@ -24599,9 +25291,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   static const _contactFilterLabels = <String, String>{
-    'text': 'הודעות טקסט',
     'video': 'סרטוני וידאו',
-    'nonHumanImages': 'תמונות נוף או חפצים',
     'men': 'תמונות גברים',
     'women': 'תמונות נשים',
     'children': 'תמונות ילדים',
@@ -24693,23 +25383,25 @@ class _ChatScreenState extends State<ChatScreen> {
                   : () async {
                       setDialogState(() => saving = true);
                       try {
-                        final response = await http.put(
-                          Uri.parse(
-                              '$kApi/contacts/${widget.recipient['id']}/filter-settings'),
-                          headers: {
-                            'Authorization': 'Bearer ${widget.token}',
-                            'Content-Type': 'application/json',
-                          },
-                          body: jsonEncode({'filter': personalDraft,
-                            ...phoneChoice.confirmationPayload}),
-                        );
+                        final response = await saveReceivingFilter(context: dialogContext,
+                          api: kApi, token: widget.token,
+                          path: '/contacts/${widget.recipient['id']}/filter-settings',
+                          body: {'filter': personalDraft,
+                            ...phoneChoice.confirmationPayload});
+                        if (response == null) {
+                          if (dialogContext.mounted) setDialogState(() => saving = false);
+                          return;
+                        }
                         if (!mounted) return;
                         if (response.statusCode != 200) throw Exception();
                         setState(() {
-                          _outgoingFilter = Map.from(personalDraft);
+                          final effective = (jsonDecode(response.body) as Map)['filter'];
+                          _outgoingFilter = effective is Map
+                              ? effective.map((key, value) => MapEntry(key.toString(), value == true))
+                              : null;
                           _requiresFirstMessageFilterChoice = false;
                         });
-                        await _loadMessages(silent: true);
+                        await Future.wait([_loadOutgoingFilter(), _loadMessages(silent: true)]);
                         if (!mounted) return;
                         if (dialogContext.mounted) {
                           Navigator.pop(dialogContext);
@@ -24963,7 +25655,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 color: kPrimary,
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold)),
-                        Text(
+                        InlineEmojiText(
                           _replyTo!['text'] as String,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -25002,7 +25694,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 color: Colors.orange,
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold)),
-                        Text(
+                        InlineEmojiText(
                           _editingMsg!['text'] as String? ?? '',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -25086,12 +25778,28 @@ class _ChatScreenState extends State<ChatScreen> {
                                   recipientAvatarUrl: widget
                                       .recipient['profile_pic_url']
                                       ?.toString(),
-                                  filter: (msg['privateFilter'] as Map?)?.map(
-                                        (key, value) => MapEntry(
-                                            key.toString(), value == true),
-                                      ) ??
-                                      const <String, bool>{},
+                                  filter: _outgoingFilter,
+
                                   onUpdate: _showContactFilterStatus,
+                                )
+                              else if (msg['fileDeleted'] == true)
+                                Padding(
+                                  key: ValueKey('deleted-media-${msg['id']}'),
+                                  padding: const EdgeInsets.all(12),
+                                  child: const Text('הקובץ נמחק',
+                                      style: TextStyle(color: kSubtext)),
+                                )
+                              else if (msg['filterHidden'] == true)
+                                FilterHiddenImage(
+                                  key: ValueKey('hidden-${msg['id']}'),
+                                  api: kApi, token: widget.token,
+                                  messageId: msg['id'].toString(),
+                                  hiddenReason: msg['hiddenReason']?.toString(),
+                                  status: (msg['moderationStatus'] ?? msg['status'])
+                                      ?.toString(),
+                                  reason: msg['scanReason']?.toString(),
+                                  contentPurged: msg['contentPurged'] == true,
+                                  onRestored: () => _loadMessages(silent: true),
                                 )
                               else if (hideAnsweredGuidePrompt)
                                 const SizedBox.shrink()
@@ -25335,7 +26043,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               tooltip: 'אימוג׳י',
                               icon: const Icon(Icons.emoji_emotions_outlined,
                                   size: 19, color: kPrimary),
-                              onPressed: _recipientAllowsImages
+                              onPressed: _recipientAllowsText
                                   ? _showExpressions
                                   : null,
                               padding: const EdgeInsets.all(8),
@@ -25703,6 +26411,7 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
 // Opens a listing by its id fetched from the server.
 Future<void> _openListingLink(BuildContext context, String listingId,
     String token, Map<String, dynamic>? me) async {
+  final pictureRevision = _profilePicturesRevision;
   try {
     final res = await http.get(
       Uri.parse('$kApi/listings/$listingId'),
@@ -25710,6 +26419,7 @@ Future<void> _openListingLink(BuildContext context, String listingId,
     );
     if (res.statusCode == 200 && context.mounted) {
       final item = jsonDecode(res.body) as Map<String, dynamic>;
+      _approveProfilePictures(item, pictureRevision);
       final notification = _OpenListingNotification(item);
       notification.dispatch(context);
       if (notification.handledInDesktopPane) return;
@@ -27409,6 +28119,7 @@ class _DocumentClassificationSummary extends StatelessWidget {
 }
 
 bool _isGridImageMessage(Map<String, dynamic> message) {
+  if (message['filterHidden'] == true) return false;
   final fileUrl = message['fileUrl'] as String?;
   if (fileUrl == null) return false;
   final status = message['status']?.toString();
@@ -27873,7 +28584,7 @@ class _WebsiteLinkPreview extends StatelessWidget {
 }
 
 class _PrivateContactFilterEntry extends StatelessWidget {
-  final Map<String, bool> filter;
+  final Map<String, bool>? filter;
   final String recipientName;
   final String? recipientAvatarUrl;
   final VoidCallback onUpdate;
@@ -27886,8 +28597,6 @@ class _PrivateContactFilterEntry extends StatelessWidget {
   });
 
   static const _labels = <String, String>{
-    'text': 'טקסט',
-    'nonHumanImages': 'נוף או חפצים',
     'men': 'גברים',
     'women': 'נשים',
     'children': 'ילדים',
@@ -27897,11 +28606,11 @@ class _PrivateContactFilterEntry extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final allowed = _labels.entries
-        .where((entry) => filter[entry.key] == true)
+        .where((entry) => filter?[entry.key] == true)
         .map((entry) => entry.value)
         .join(', ');
     final blocked = _labels.entries
-        .where((entry) => filter[entry.key] != true)
+        .where((entry) => filter?[entry.key] != true)
         .map((entry) => entry.value)
         .join(', ');
     return Align(
@@ -27955,12 +28664,20 @@ class _PrivateContactFilterEntry extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 7),
-            Text('מותר: ${allowed.isEmpty ? "ללא" : allowed}',
-                textAlign: TextAlign.right),
-            const SizedBox(height: 3),
-            Text('חסום: ${blocked.isEmpty ? "ללא" : blocked}',
+            if (filter == null)
+              const Text('טוען את הסינון הנוכחי…', textAlign: TextAlign.right)
+            else ...[
+              Text(
+                'מותר: ${allowed.isEmpty ? "ללא" : allowed}',
                 textAlign: TextAlign.right,
-                style: const TextStyle(color: Color(0xFFB42318))),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                'חסום: ${blocked.isEmpty ? "ללא" : blocked}',
+                textAlign: TextAlign.right,
+                style: const TextStyle(color: Color(0xFFB42318)),
+              ),
+            ],
             Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(
@@ -27971,7 +28688,7 @@ class _PrivateContactFilterEntry extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             const Text(
-              'רק אני רואה את ההגדרה הזו',
+              'הסינון הנוכחי לקבלת תוכן חדש · רק אני רואה את ההגדרה הזו',
               textAlign: TextAlign.right,
               style: TextStyle(fontSize: 11, color: kSubtext),
             ),
@@ -28327,7 +29044,7 @@ class _MessageBubble extends StatelessWidget {
                       right: BorderSide(color: replyBorder, width: 3),
                     ),
                   ),
-                  child: Text(
+                  child: InlineEmojiText(
                     (message['replyTo'] as Map)['text'] as String,
                     style: TextStyle(fontSize: 12, color: timeColor),
                     maxLines: 1,
@@ -28392,6 +29109,7 @@ class _MessageBubble extends StatelessWidget {
                         context,
                         MaterialPageRoute(
                           builder: (_) => ImagePreviewScreen(
+                            filterToken: token, currentUserId: me?['id']?.toString(),
                             url: fileUrl,
                             filename: fileName,
                             urls: conversationImages
@@ -28413,7 +29131,11 @@ class _MessageBubble extends StatelessWidget {
                         ClipRRect(
                           borderRadius: BorderRadius.circular(10),
                           child: _PersistentMediaImage(
+                            key: ValueKey('chat-image-${message['id']}-$fileUrl'),
                             url: fileUrl,
+                            onDisplayed: () => reportFilterDisplay(
+                              api: kApi, token: token,
+                              messageId: message['id']?.toString() ?? '', event: 'displayed'),
                             width: 220,
                             height: 180,
                             fit: BoxFit.contain,
@@ -28593,7 +29315,7 @@ class _MessageBubble extends StatelessWidget {
                 onOpenUrl: (url) => _confirmAndOpenExternalLink(context, url),
               )
             else
-              Text(
+              InlineEmojiText(
                 displayText,
                 style: TextStyle(
                     fontSize: 14,
@@ -29242,6 +29964,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   bool _loading = true;
   String _query = '';
   String? _error;
+  bool _showStandardEmoji = false;
 
   @override
   void initState() {
@@ -29311,97 +30034,140 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     }
   }
 
+  Widget _buildHeader() => Column(
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+        child: Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'אימוג׳י',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: kPrimary,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'סגירה',
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close, size: 20, color: kSubtext),
+            ),
+          ],
+        ),
+      ),
+      const Padding(
+        padding: EdgeInsets.fromLTRB(12, 4, 12, 2),
+        child: Text(
+          'בחירת אימוג׳י מוסיפה אותו ליד הטקסט במיקום הסמן',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12, color: kSubtext),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          children: [
+            ChoiceChip(
+              key: const ValueKey('expression-custom-tab'),
+              label: const Text('של בתשובה'),
+              selected: !_showStandardEmoji,
+              showCheckmark: false,
+              onSelected: (_) {
+                if (!_showStandardEmoji) return;
+                setState(() {
+                  _showStandardEmoji = false;
+                  _query = '';
+                });
+              },
+            ),
+            ChoiceChip(
+              key: const ValueKey('expression-standard-tab'),
+              label: const Text('רגילים'),
+              selected: _showStandardEmoji,
+              showCheckmark: false,
+              onSelected: (_) => setState(() => _showStandardEmoji = true),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) {
-    final availableHeight = MediaQuery.sizeOf(context).height -
+    final availableHeight =
+        MediaQuery.sizeOf(context).height -
         MediaQuery.viewInsetsOf(context).bottom;
     final visible = _items
         .where(
-            (item) => (item['label']?.toString() ?? '').contains(_query.trim()))
+          (item) => (item['label']?.toString() ?? '').contains(_query.trim()),
+        )
         .toList();
     return SafeArea(
       child: Directionality(
         textDirection: TextDirection.rtl,
         child: SizedBox(
           height: math.min(560.0, math.max(0.0, availableHeight - 32)),
-          child: CustomScrollView(
-            slivers: [
-              SliverToBoxAdapter(
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-                      child: Row(
+          child: _showStandardEmoji
+              ? InlineEmojiPicker(
+                  header: _buildHeader(),
+                  primaryColor: kPrimary,
+                  onSelected: (emoji) => Navigator.pop(context, emoji),
+                )
+              : CustomScrollView(
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Column(
                         children: [
-                          const Expanded(
-                            child: Text(
-                              'אימוג׳י',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: kPrimary,
+                          _buildHeader(),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            child: TextField(
+                              onChanged: (value) =>
+                                  setState(() => _query = value),
+                              decoration: const InputDecoration(
+                                hintText: 'חיפוש אימוג׳י…',
+                                prefixIcon: Icon(Icons.search),
                               ),
                             ),
-                          ),
-                          IconButton(
-                            tooltip: 'סגירה',
-                            onPressed: () => Navigator.pop(context),
-                            icon: const Icon(Icons.close,
-                                size: 20, color: kSubtext),
                           ),
                         ],
                       ),
                     ),
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(12, 4, 12, 2),
-                      child: Text(
-                        'בחירת תמונה שולחת אותה כהודעה נפרדת',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 12, color: kSubtext),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      child: TextField(
-                        onChanged: (value) => setState(() => _query = value),
-                        decoration: const InputDecoration(
-                          hintText: 'חיפוש אימוג׳י…',
-                          prefixIcon: Icon(Icons.search),
+                    if (_loading)
+                      const SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: Center(
+                          child: CircularProgressIndicator(color: kPrimary),
                         ),
-                      ),
-                    ),
+                      )
+                    else if (_error != null)
+                      SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: Center(
+                          child: TextButton(
+                            onPressed: _loadExpressionCatalog,
+                            child: Text('$_error — נסו שוב'),
+                          ),
+                        ),
+                      )
+                    else if (visible.isEmpty)
+                      const SliverFillRemaining(
+                        hasScrollBody: false,
+                        child: Center(child: Text('לא נמצאו תמונות מתאימות')),
+                      )
+                    else
+                      _RemoteExpressionGrid(items: visible),
                   ],
                 ),
-              ),
-              if (_loading)
-                const SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(
-                    child: CircularProgressIndicator(color: kPrimary),
-                  ),
-                )
-              else if (_error != null)
-                SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(
-                    child: TextButton(
-                      onPressed: _loadExpressionCatalog,
-                      child: Text('$_error — נסו שוב'),
-                    ),
-                  ),
-                )
-              else if (visible.isEmpty)
-                const SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: Center(child: Text('לא נמצאו תמונות מתאימות')),
-                )
-              else
-                _RemoteExpressionGrid(items: visible),
-            ],
-          ),
         ),
       ),
     );
@@ -29773,6 +30539,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
 
   Future<void> _loadGroups() async {
     final generation = _groupsLoadGeneration;
+    final pictureRevision = _profilePicturesRevision;
     try {
       final res = await http.get(
         Uri.parse('$kApi/groups'),
@@ -29781,6 +30548,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
       if (!mounted || generation != _groupsLoadGeneration) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
+        _approveProfilePictures(data, pictureRevision);
         setState(() {
           _groups = data.cast<Map<String, dynamic>>();
           _loading = false;
@@ -30073,7 +30841,7 @@ class GroupChatScreen extends StatefulWidget {
 class _GroupChatScreenState extends State<GroupChatScreen> {
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
-  final _msgCtrl = TextEditingController();
+  final _msgCtrl = InlineEmojiController();
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
@@ -30120,8 +30888,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             (message) => _selectedMessageKeys.contains(_selectionKey(message)))
         .toList();
     if (selected.isEmpty) return;
-    await forwardChatMessages(context, widget.token, widget.socket, selected);
-    if (mounted) setState(_selectedMessageKeys.clear);
+    final selectedKeys = selected.map(_selectionKey).toList();
+    final result =
+        await forwardChatMessages(context, widget.token, widget.socket, selected);
+    if (mounted && result.completedMessageIndexes.isNotEmpty) {
+      setState(() {
+        for (final index in result.completedMessageIndexes) {
+          _selectedMessageKeys.remove(selectedKeys[index]);
+        }
+      });
+    }
   }
 
   final AudioRecorder _audioRecorder = AudioRecorder();
@@ -30133,9 +30909,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Timer? _messageRefreshTimer;
   String? _serverMessagesFingerprint;
   int _historyGeneration = 0;
+  int _historyRequestSerial = 0;
   DateTime? _clearedAt;
   late final StreamSubscription<ConversationChange> _cleanupSubscription;
   late final void Function(dynamic) _conversationChangedHandler;
+  late final StreamSubscription<String> _receivingFilterSubscription;
+  late final void Function(dynamic) _receivingFilterSocketHandler;
 
   void _listenForConversationChanges() {
     _cleanupSubscription = conversationChanges.stream.listen((change) {
@@ -30289,6 +31068,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void initState() {
     super.initState();
     _listenForConversationChanges();
+    _receivingFilterSubscription = receivingFilterChanges.stream.listen((token) {
+      if (token == widget.token) _refreshReceivingFilter();
+    });
+    _receivingFilterSocketHandler = (_) => receivingFilterChanges.add(widget.token);
+    widget.socket?.on('filter:changed', _receivingFilterSocketHandler);
     if (widget.group['conversation_hidden'] == true) {
       reopenConversation(
           api: kApi,
@@ -30395,12 +31179,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _loadGroupReceivingFilter() async {
+    final generation = _historyGeneration;
     try {
       final response = await http.get(
         Uri.parse('$kApi/groups/$_groupId/filter-settings'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (!mounted || response.statusCode != 200) return;
+      if (!mounted || generation != _historyGeneration || response.statusCode != 200) return;
       final body = jsonDecode(response.body);
       final raw = body is Map ? body['filter'] : null;
       if (raw is! Map) return;
@@ -30484,19 +31269,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       context,
       groupFilter: _groupReceivingFilter ?? const <String, bool>{},
       initialFilter:
-          _acceptedFilterNotice ?? _outgoingFilter ?? const <String, bool>{},
+          _outgoingFilter ?? const <String, bool>{},
       counterpart: widget.group['name']?.toString() ?? 'הקבוצה',
       groupName: widget.group['name']?.toString(),
     );
     if (selected == null || !mounted) return;
-    final response = await http.put(
-      Uri.parse('$kApi/groups/$_groupId/personal-filter'),
-      headers: {
-        'Authorization': 'Bearer ${widget.token}',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode({'filter': selected}),
-    );
+    final response = await saveReceivingFilter(context: context, api: kApi,
+      token: widget.token, path: '/groups/$_groupId/personal-filter',
+      body: {'filter': selected});
+    if (response == null) return;
     if (!mounted) return;
     if (response.statusCode != 200) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -30515,6 +31296,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _membersLoad ??= _fetchMembers().whenComplete(() => _membersLoad = null);
 
   Future<void> _fetchMembers() async {
+    final pictureRevision = _profilePicturesRevision;
     try {
       final res = await http.get(
         Uri.parse('$kApi/groups/$_groupId'),
@@ -30522,6 +31304,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (res.statusCode == 200 && mounted) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
+        _approveProfilePictures(data, pictureRevision);
         final members = (data['members'] as List).cast<Map<String, dynamic>>();
         setState(() {
           _members
@@ -30577,7 +31360,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isMe': isMe,
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
       'isFile': isFile,
-      'fileUrl': map['file_url'],
+      'fileDeleted': map['file_deleted'] == true,
+      'filterHidden': map['filter_hidden'] == true,
+      'hiddenReason': map['hidden_reason'],
+      'moderationStatus': map['moderation_status'],
+      'status': map['message_status'],
+      'scanReason': map['scan_reason'],
+      'contentPurged': map['content_purged_at'] != null,
+      'filterKept': map['filter_kept'] == true,
+      'fileUrl': map['filter_hidden'] == true ? null : map['file_url'],
       'fileName': map['file_name'],
       'fileType': _normalizeIncomingFileType(map['type'] as String?,
           fileUrl: map['file_url'] as String?,
@@ -30800,6 +31591,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _showAddMemberDialog() async {
+    final pictureRevision = _profilePicturesRevision;
     // Browser builds cannot read the device contact book, but registered app
     // users must still be available for selection.
     bool granted = false;
@@ -30827,6 +31619,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (res.statusCode == 200) {
         allUsers = (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+        _approveProfilePictures(allUsers, pictureRevision);
       }
     } catch (_) {}
 
@@ -31296,17 +32089,35 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return 'צפה ב־${viewed.day.toString().padLeft(2, '0')}/${viewed.month.toString().padLeft(2, '0')} ${viewed.hour.toString().padLeft(2, '0')}:${viewed.minute.toString().padLeft(2, '0')}';
   }
 
+  Future<void> _refreshReceivingFilter() async {
+    if (!mounted) return;
+    _historyGeneration++;
+    _serverMessagesFingerprint = null;
+    setState(() {
+      // Recheck every image, including our own sends, against current visibility.
+      _messages.removeWhere((message) => message['fileType'] == 'image');
+      _selectedMessageKeys.clear();
+      _outgoingFilter = null;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_groupMessagesCacheKey(widget.me?['id'], _groupId));
+    if (!mounted) return;
+    await Future.wait([_loadGroupReceivingFilter(), _loadMessages(silent: true)]);
+  }
+
   Future<void> _loadMessages({bool silent = false}) async {
     final generation = _historyGeneration;
+    final requestSerial = ++_historyRequestSerial;
     final cacheKey = _groupMessagesCacheKey(widget.me?['id'], _groupId);
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (!mounted || generation != _historyGeneration) return;
+      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
       final cached = prefs.getString(cacheKey);
       if (!silent && cached != null && mounted) {
         final list = (jsonDecode(cached) as List)
             .cast<Map<String, dynamic>>()
+            .where((message) => message['fileType'] != 'image')
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
         setState(() {
@@ -31324,7 +32135,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         Uri.parse('$kApi/groups/$_groupId/messages'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (!mounted || generation != _historyGeneration) return;
+      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         final normalized = data
@@ -31362,7 +32173,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _scrollToBottom();
         // Save to cache
         final prefs = await SharedPreferences.getInstance();
-        if (!mounted || generation != _historyGeneration) return;
+        if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
         final toCache = normalized.length > 50
             ? normalized.sublist(normalized.length - 50)
             : normalized;
@@ -31370,7 +32181,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       } else {
         if (res.statusCode == 403 || res.statusCode == 404) {
           await _clearGroupMessagesCache(widget.me?['id'], _groupId);
-          if (!mounted || generation != _historyGeneration) return;
+          if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
           setState(() {
             _messages.clear();
             _loading = false;
@@ -31380,7 +32191,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
       }
     } catch (_) {
-      if (mounted && generation == _historyGeneration) {
+      if (mounted && generation == _historyGeneration && requestSerial == _historyRequestSerial) {
         setState(() => _loading = false);
       }
     }
@@ -31422,7 +32233,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (map['delivery_summary'] != null)
         'deliverySummary': map['delivery_summary'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
-      'fileUrl': map['file_url'],
+      'fileDeleted': map['file_deleted'] == true,
+      'filterHidden': map['filter_hidden'] == true,
+      'hiddenReason': map['hidden_reason'],
+      'moderationStatus': map['moderation_status'],
+      'filterKept': map['filter_kept'] == true,
+      'fileUrl': map['filter_hidden'] == true ? null : map['file_url'],
       'fileName': map['file_name'],
       'fileType': _normalizeIncomingFileType(map['type'] as String?,
           fileUrl: map['file_url'] as String?,
@@ -31460,6 +32276,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final fileName = data['fileName'] as String?;
       final fileType = _normalizeIncomingFileType(data['fileType'] as String?,
           fileUrl: fileUrl, fileName: fileName);
+      if (fileType == 'image' || data['filter_hidden'] == true) {
+        setState(() => _messages.removeWhere((message) =>
+            message['id'] == data['id'] ||
+            (fileUrl != null && message['fileUrl'] == fileUrl &&
+                message['status'] == 'pending_scan')));
+        _serverMessagesFingerprint = null;
+        _loadMessages(silent: true);
+        return;
+      }
       final sticker = fileType == 'sticker'
           ? _avielStickerById(data['stickerId'] ?? data['text'])
           : null;
@@ -31538,6 +32363,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (!mounted || data is! Map || data['groupId'] != _groupId) return;
       final fileUrl = data['fileUrl'] as String?;
       if (fileUrl == null) return;
+      if (_isSenderFilterRejection(data)) {
+        setState(() => _messages.removeWhere((message) =>
+            message['fileUrl'] == fileUrl &&
+            const ['pending_scan', 'uploading', 'rejected_scan']
+                .contains(message['status'])));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(_senderFilterRejectionMessage(data)),
+            backgroundColor: Colors.red));
+        return;
+      }
       final index = _messages.indexWhere((message) =>
           message['status'] == 'pending_scan' && message['fileUrl'] == fileUrl);
       if (index == -1) return;
@@ -31591,8 +32426,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               (message) => message['id']?.toString() == clientMessageId));
         }
       }
+      if (_isSenderFilterRejection(data)) {
+        final rejectedUrl = data['fileUrl']?.toString();
+        if (rejectedUrl != null) {
+          setState(() => _messages.removeWhere((message) =>
+              message['fileUrl'] == rejectedUrl &&
+              const ['pending_scan', 'uploading', 'rejected_scan']
+                  .contains(message['status'])));
+        }
+      }
       ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
-          data['reason']?.toString() ?? 'ההודעה נחסמה'));
+          _isSenderFilterRejection(data)
+              ? _senderFilterRejectionMessage(data)
+              : data['reason']?.toString() ?? 'ההודעה נחסמה'));
     };
     widget.socket?.on('message:rejected', _messageRejectedSocketHandler);
 
@@ -31659,6 +32505,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void dispose() {
     _cleanupSubscription.cancel();
+    _receivingFilterSubscription.cancel();
+    widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
     widget.socket?.off('conversation:changed', _conversationChangedHandler);
     unregisterAppScreenshotMenu(this);
     final screenshotDestination =
@@ -31797,7 +32645,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> _send({String? stickerId}) async {
     final sticker = _avielStickerById(stickerId);
-    final text = sticker?.id ?? _msgCtrl.text.trim();
+    final text = sticker?.id ?? encodeInlineEmojiText(_msgCtrl.text.trim());
     if (text.isEmpty) return;
     if (sticker == null) _msgHistory.record(text);
 
@@ -32052,29 +32900,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (choice == null || !mounted) return;
     if (choice.startsWith(_remoteExpressionPrefix)) {
       final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
-      try {
-        final response = await http.get(Uri.parse(remoteUrl), headers: {
-          'Authorization': 'Bearer ${widget.token}',
-        });
-        if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
-          throw Exception('הקובץ אינו זמין כרגע');
-        }
-        final extension =
-            Uri.parse(remoteUrl).path.toLowerCase().endsWith('.gif')
-                ? 'gif'
-                : 'png';
-        final fileName = 'betshuva_${Uri.parse(remoteUrl).pathSegments.last}';
-        final file = XFile.fromData(response.bodyBytes,
-            name: fileName, mimeType: 'image/$extension');
-        await _uploadGroupFile(file, fileName, 'image', extraFields: const {
-          'builtinExpression': 'true',
-        });
-      } catch (error) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('לא ניתן לשלוח את המדבקה: $error')));
-        }
+      final emojiId = inlineEmojiIdFromUrl(remoteUrl);
+      if (emojiId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('האימוג׳י אינו זמין כרגע')));
+        return;
       }
+      _insertExpressionText(
+          _msgCtrl, inlineEmojiCharacter(emojiId), beforePicker);
+      _msgFocusNode.requestFocus();
       return;
     }
     if (choice.startsWith(_originalExpressionPrefix)) {
@@ -32771,7 +33605,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             result.outcome = _FileUploadOutcome.failed;
             result.error =
                 sendData['error']?.toString() ?? 'הקובץ הועלה אך לא נשלח';
-            if (showNotice && mounted) {
+            if ((showNotice || _isSenderFilterRejection(sendData)) && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                   content: Text(result.error!), backgroundColor: Colors.red));
             }
@@ -33562,8 +34396,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               itemCount: matches.length,
                               itemBuilder: (_, i) => ListTile(
                                 dense: true,
-                                title:
-                                    Text(matches[i]['text'] as String? ?? ''),
+                                title: InlineEmojiText(
+                                    matches[i]['text'] as String? ?? ''),
                                 subtitle: Text(
                                     matches[i]['senderName'] as String? ?? ''),
                                 trailing:
@@ -33586,9 +34420,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   static const _groupFilterLabels = <String, String>{
-    'text': 'הודעות טקסט',
     'video': 'סרטוני וידאו',
-    'nonHumanImages': 'תמונות נוף או חפצים',
     'men': 'תמונות גברים',
     'women': 'תמונות נשים',
     'children': 'תמונות ילדים',
@@ -33662,35 +34494,37 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       setDialogState(() => saving = true);
                       try {
                         if (groupDirty) {
-                          final response = await http.put(
-                            Uri.parse('$kApi/groups/$_groupId/filter-settings'),
-                            headers: {
-                              'Authorization': 'Bearer ${widget.token}',
-                              'Content-Type': 'application/json',
-                            },
-                            body: jsonEncode({'filter': groupDraft}),
-                          );
+                          final response = await saveReceivingFilter(context: dialogContext,
+                            api: kApi, token: widget.token,
+                            path: '/groups/$_groupId/filter-settings',
+                            body: {'filter': groupDraft});
+                          if (response == null) {
+                            if (dialogContext.mounted) setDialogState(() => saving = false);
+                            return;
+                          }
                           if (response.statusCode != 200) throw Exception();
                         }
                         if (personalDirty) {
-                          final response = await http.put(
-                            Uri.parse('$kApi/groups/$_groupId/personal-filter'),
-                            headers: {
-                              'Authorization': 'Bearer ${widget.token}',
-                              'Content-Type': 'application/json',
-                            },
-                            body: jsonEncode({'filter': personalDraft}),
-                          );
+                          if (!dialogContext.mounted) return;
+                          final response = await saveReceivingFilter(context: dialogContext,
+                            api: kApi, token: widget.token,
+                            path: '/groups/$_groupId/personal-filter',
+                            body: {'filter': personalDraft});
+                          if (response == null) {
+                            if (dialogContext.mounted) setDialogState(() => saving = false);
+                            return;
+                          }
                           if (response.statusCode != 200) throw Exception();
                         }
                         if (!mounted) return;
                         setState(() {
                           _groupReceivingFilter = Map.from(groupDraft);
-                          _outgoingFilter = Map.from(personalDraft);
+                          _outgoingFilter = null;
                         });
                         if (personalDirty) {
                           await _saveAcceptedFilterNotice(personalDraft);
                         }
+                        await _loadGroupReceivingFilter();
                         if (dialogContext.mounted) {
                           Navigator.pop(dialogContext);
                         }
@@ -33772,7 +34606,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Widget _acceptedFilterMessage() {
-    final filter = _acceptedFilterNotice!;
+    if (_outgoingFilter == null) {
+      return const Padding(padding: EdgeInsets.all(12),
+        child: Text('טוען את הסינון הנוכחי…'));
+    }
+    final filter = _outgoingFilter!;
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
@@ -34230,6 +35068,28 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             final messageIndex = i - (hasFilterNotice ? 1 : 0);
                             final msg = _messages[messageIndex];
                             final isMe = msg['isMe'] == true;
+                            if (msg['fileDeleted'] == true) {
+                              return Padding(
+                                key: ValueKey('deleted-media-${msg['id']}'),
+                                padding: const EdgeInsets.all(12),
+                                child: const Text('הקובץ נמחק',
+                                    style: TextStyle(color: kSubtext)),
+                              );
+                            }
+                            if (msg['filterHidden'] == true) {
+                              return Align(alignment: Alignment.centerRight,
+                                child: FilterHiddenImage(
+                                  key: ValueKey('hidden-${msg['id']}'),
+                                  api: kApi, token: widget.token,
+                                  messageId: msg['id'].toString(),
+                                  hiddenReason: msg['hiddenReason']?.toString(),
+                                  status: (msg['moderationStatus'] ?? msg['status'])
+                                      ?.toString(),
+                                  reason: msg['scanReason']?.toString(),
+                                  contentPurged: msg['contentPurged'] == true,
+                                  onRestored: () => _loadMessages(silent: true),
+                                ));
+                            }
                             final groupText = msg['text'] as String? ?? '';
                             final uploadStatus = msg['status']?.toString();
                             final uploadFileType = _normalizeIncomingFileType(
@@ -34727,6 +35587,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                 context,
                                                                 MaterialPageRoute(
                                                                     builder: (_) => ImagePreviewScreen(
+                                                                        filterToken: widget.token,
+                                                                        currentUserId: widget.me?['id']?.toString(),
                                                                         url: msg['fileUrl']
                                                                             as String,
                                                                         filename:
@@ -34753,9 +35615,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                               8),
                                                                   child:
                                                                       _PersistentMediaImage(
+                                                                    key: ValueKey('group-image-${msg['id']}'),
                                                                     url: msg[
                                                                             'fileUrl']
                                                                         as String,
+                                                                    onDisplayed: () => reportFilterDisplay(
+                                                                      api: kApi, token: widget.token,
+                                                                      messageId: msg['id']?.toString() ?? '', event: 'displayed'),
                                                                     width: 200,
                                                                     height: 160,
                                                                     fit: BoxFit
@@ -35153,7 +36019,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                             me: widget.me,
                                                           )
                                                         else
-                                                          Text(
+                                                          InlineEmojiText(
                                                             msg['text']
                                                                     as String? ??
                                                                 '',
@@ -35289,7 +36155,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 color: Colors.orange,
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold)),
-                        Text(_editingMsg!['text'] as String? ?? '',
+                        InlineEmojiText(_editingMsg!['text'] as String? ?? '',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style:
@@ -35597,7 +36463,8 @@ class _ContentFilterSettingsScreenState
         _generalFilter =
             Map<String, dynamic>.from(data['generalFilter'] as Map? ?? {});
         for (final key in _filter.keys) {
-          _filter[key] = raw[key] == true;
+          _filter[key] =
+              key == 'text' || key == 'nonHumanImages' || raw[key] == true;
         }
         _loading = false;
       });
@@ -35624,14 +36491,16 @@ class _ContentFilterSettingsScreenState
               ? (_inherit ? {'inherit': true} : {'filter': _filter})
               : {..._filter, 'enforceGeneralFilter': _enforceGeneralFilter};
       if (_isContact) body.addAll(_phoneChoice.confirmationPayload);
-      final response = await http.put(Uri.parse('$kApi$path'),
-          headers: {
-            'Authorization': 'Bearer ${widget.token}',
-            'Content-Type': 'application/json'
-          },
-          body: jsonEncode(body));
+      final response = await saveReceivingFilter(context: context, api: kApi,
+          token: widget.token, path: path, body: body);
+      if (response == null) return;
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode != 200) throw Exception(data['error'] ?? 'שגיאה');
+      if (!_isContact && !_isGroup) {
+        _profilePicturesRevision++;
+        _approvedProfilePictures.value = <String>{};
+        _profilePictureFilterChanges.add(widget.token);
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('הגדרות הסינון נשמרו')),
@@ -36182,10 +37051,6 @@ class _ContentFilterSettingsScreenState
                       ),
                     ),
                   _option(
-                      'text', 'טקסט', 'הודעות טקסט רגילות', Icons.text_fields),
-                  _option('nonHumanImages', 'תמונות נוף או חפצים',
-                      'חפצים, נוף, צמחים ובעלי חיים', Icons.landscape_outlined),
-                  _option(
                       'men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
                   _option('women', 'נשים', 'תמונות שסווגו כתמונות נשים',
                       Icons.woman),
@@ -36248,7 +37113,11 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   bool _onlyDeletable = false;
   bool _advancedFilters = false;
   bool _selecting = false;
+  bool _selectingAll = false;
+  int _selectionGeneration = 0;
   bool _deleting = false;
+  bool _forwarding = false;
+  int _visibilityGeneration = 0;
   bool _catalogLoading = true;
   String? _catalogError;
   String? _moreError;
@@ -36256,7 +37125,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   int _loadGeneration = 0;
   int _catalogGeneration = 0;
   int _totalBytes = 0;
-  final Set<String> _selectedIds = {};
+  final Map<String, Map<String, dynamic>> _selectedItems = {};
   String _type = 'all';
   String _scope = 'all';
   String _sort = 'date_desc';
@@ -36274,9 +37143,92 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   String? _error;
   int _total = 0;
   final Set<String> _busyMediaIds = {};
+  late final StreamSubscription<String> _receivingFilterSubscription;
+  bool _mediaFilterPending = false;
 
-  Map<String, String> get _headers =>
-      {'Authorization': 'Bearer ${widget.token}'};
+  bool _mediaHidden(Map<String, dynamic> item) {
+    if (_mediaFilterPending || item['filterHidden'] == true) return true;
+    final index = _items.indexWhere((current) => current['id'] == item['id']);
+    final current =
+        index >= 0 ? _items[index] : _selectedItems[item['id'].toString()];
+    return current == null || current['filterHidden'] == true;
+  }
+
+  void _reportMediaDisplay(Map<String, dynamic> item) {
+    final messageId = item['sourceMessageId']?.toString();
+    if (messageId == null || messageId.isEmpty || _mediaHidden(item)) return;
+    reportFilterDisplay(
+      api: kApi,
+      token: widget.token,
+      messageId: messageId,
+      event: 'displayed',
+    );
+  }
+
+  List<Map<String, dynamic>>? _libraryPreviewMessages(
+    Map<String, dynamic> item,
+  ) {
+    final messageId = item['sourceMessageId']?.toString();
+    if (messageId == null || messageId.isEmpty) return null;
+    return [
+      {'id': messageId, 'from': 'received-library'},
+    ];
+  }
+
+  Widget _hiddenMediaPreview(Map<String, dynamic> item, {bool small = false}) {
+    final message = hiddenImageMessage(
+      hiddenReason: item['hiddenReason']?.toString(),
+      status: item['moderationStatus']?.toString(),
+      reason: item['scanReason']?.toString(),
+      contentPurged: item['contentPurged'] == true,
+    );
+    final hiddenByFilter = isContentFilterHiddenImage(
+      hiddenReason: item['hiddenReason']?.toString(),
+      status: item['moderationStatus']?.toString(),
+      contentPurged: item['contentPurged'] == true,
+    );
+    final placeholder = Tooltip(
+      message: hiddenByFilter
+          ? '$message. אפשר להחזיר אותה מתוך השיחה.'
+          : message,
+      child: Container(
+        color: const Color(0xFFF0F5F9),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.visibility_off_outlined,
+              color: kSubtext,
+              size: small ? 25 : 32,
+            ),
+            if (!small)
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+    final messageId = item['sourceMessageId']?.toString();
+    return !hiddenByFilter || messageId == null || messageId.isEmpty
+        ? placeholder
+        : FilterHiddenObservation(
+            api: kApi,
+            token: widget.token,
+            messageId: messageId,
+            child: placeholder,
+          );
+  }
+
+  Map<String, String> get _headers => {
+        'Authorization': 'Bearer ${widget.token}',
+      };
 
   static const _filters = <String, String>{
     'all': 'הכול',
@@ -36327,6 +37279,18 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   @override
   void initState() {
     super.initState();
+    _receivingFilterSubscription = receivingFilterChanges.stream.listen((
+      token,
+    ) {
+      if (!mounted || token != widget.token) return;
+      setState(() {
+        _visibilityGeneration++;
+        _mediaFilterPending = true;
+        _items.clear();
+        _selectedItems.clear();
+      });
+      _refresh();
+    });
     _refresh();
   }
 
@@ -36337,15 +37301,16 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     _filterDebounce?.cancel();
     _loadGeneration++;
     _catalogGeneration++;
+    _visibilityGeneration++;
     _items.clear();
     _summary = {};
     _destinations = [];
-    _selectedIds.clear();
+    _selectedItems.clear();
     _busyMediaIds.clear();
     _destinationKind = _destinationId = _destinationLabel = null;
     _type = _scope = _moderation = _backup = _classification = 'all';
     _sort = 'date_desc';
-    _onlyDeletable = _selecting = _deleting = false;
+    _onlyDeletable = _selecting = _deleting = _forwarding = false;
     _dateFrom = _dateTo = null;
     _searchCtrl.clear();
     _minSizeCtrl.clear();
@@ -36400,6 +37365,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
 
   @override
   void dispose() {
+    _receivingFilterSubscription.cancel();
     _filterDebounce?.cancel();
     _searchCtrl.dispose();
     _minSizeCtrl.dispose();
@@ -36411,8 +37377,12 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     _filterDebounce?.cancel();
     // Invalidate the old request immediately, including during the debounce.
     _loadGeneration++;
-    _filterDebounce =
-        Timer(const Duration(milliseconds: 350), () => _load(reset: true));
+    _selectionGeneration++;
+    if (_selectingAll) setState(() => _selectingAll = false);
+    _filterDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () => _load(reset: true),
+    );
   }
 
   Future<void> _load({required bool reset}) async {
@@ -36420,22 +37390,25 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     final generation = ++_loadGeneration;
     final token = widget.token;
     if (reset) {
+      _selectionGeneration++;
       _filterDebounce?.cancel();
       setState(() {
+        _selectingAll = false;
         _loading = true;
         _loadingMore = false;
         _error = null;
         _moreError = null;
-        _selectedIds.clear();
       });
     } else {
       setState(() => _loadingMore = true);
     }
     try {
-      final minimum =
-          double.tryParse(_minSizeCtrl.text.trim().replaceAll(',', '.'));
-      final maximum =
-          double.tryParse(_maxSizeCtrl.text.trim().replaceAll(',', '.'));
+      final minimum = double.tryParse(
+        _minSizeCtrl.text.trim().replaceAll(',', '.'),
+      );
+      final maximum = double.tryParse(
+        _maxSizeCtrl.text.trim().replaceAll(',', '.'),
+      );
       final invalidSize = (_minSizeCtrl.text.trim().isNotEmpty &&
               (minimum == null || !minimum.isFinite || minimum < 0)) ||
           (_maxSizeCtrl.text.trim().isNotEmpty &&
@@ -36454,32 +37427,31 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         return;
       }
       final offset = reset ? 0 : _items.length;
-      final query = Uri(queryParameters: {
-        'type': _type,
-        'scope': _scope,
-        'sort': _sort,
-        'limit': '40',
-        'offset': '$offset',
-        if (_searchCtrl.text.trim().isNotEmpty)
-          'search': _searchCtrl.text.trim(),
-        'moderation': _moderation,
-        'backup': _backup,
-        'classification': _classification,
-        if (_destinationKind != null) 'destinationKind': _destinationKind!,
-        if (_destinationId != null) 'destinationId': _destinationId!,
-        if (_onlyDeletable) 'deletable': 'true',
-        if (_dateFrom != null)
-          'dateFrom': _dateFrom!.toIso8601String().split('T').first,
-        if (_dateTo != null)
-          'dateTo': _dateTo!.toIso8601String().split('T').first,
-        if (minimum != null) 'minSize': '${(minimum * 1048576).round()}',
-        if (maximum != null) 'maxSize': '${(maximum * 1048576).round()}',
-      }).query;
+      final query = Uri(
+        queryParameters: {
+          'type': _type,
+          'scope': _scope,
+          'sort': _sort,
+          'limit': '40',
+          'offset': '$offset',
+          if (_searchCtrl.text.trim().isNotEmpty)
+            'search': _searchCtrl.text.trim(),
+          'moderation': _moderation,
+          'backup': _backup,
+          'classification': _classification,
+          if (_destinationKind != null) 'destinationKind': _destinationKind!,
+          if (_destinationId != null) 'destinationId': _destinationId!,
+          if (_onlyDeletable) 'deletable': 'true',
+          if (_dateFrom != null)
+            'dateFrom': _dateFrom!.toIso8601String().split('T').first,
+          if (_dateTo != null)
+            'dateTo': _dateTo!.toIso8601String().split('T').first,
+          if (minimum != null) 'minSize': '${(minimum * 1048576).round()}',
+          if (maximum != null) 'maxSize': '${(maximum * 1048576).round()}',
+        },
+      ).query;
       final response = await http
-          .get(
-            Uri.parse('$kApi/media-library?$query'),
-            headers: _headers,
-          )
+          .get(Uri.parse('$kApi/media-library?$query'), headers: _headers)
           .timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) throw Exception('load failed');
       final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -36490,9 +37462,43 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         return;
       }
       setState(() {
-        if (reset) _items.clear();
-        final knownIds = _items.map((row) => row['id']).toSet();
-        _items.addAll(rows.where((row) => knownIds.add(row['id'])));
+        if (reset) {
+          _items.clear();
+          _mediaFilterPending = false;
+        }
+        for (final row in rows) {
+          final id = row['id'].toString();
+          final index = _items.indexWhere(
+            (current) => current['id'].toString() == id,
+          );
+          if (index < 0) {
+            _items.add(row);
+          } else {
+            _items[index] = row;
+          }
+          final aliases = {
+            id,
+            ...(row['duplicateIds'] as List? ?? []).map(
+              (value) => value.toString(),
+            ),
+          };
+          final selectedAliases = _selectedItems.entries
+              .where(
+                (entry) =>
+                    aliases.contains(entry.key) ||
+                    (entry.value['duplicateIds'] as List? ?? []).any(
+                      (value) => aliases.contains(value.toString()),
+                    ),
+              )
+              .map((entry) => entry.key)
+              .toList();
+          if (selectedAliases.isNotEmpty) {
+            for (final key in selectedAliases) {
+              _selectedItems.remove(key);
+            }
+            _selectedItems[id] = Map<String, dynamic>.from(row);
+          }
+        }
         _total = (body['total'] as num?)?.toInt() ?? _items.length;
         _totalBytes = (body['totalBytes'] as num?)?.toInt() ?? 0;
         _loading = false;
@@ -36581,8 +37587,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           ? 'שייך אל: $first ועוד $remaining'
           : 'שייך אל: $first';
     }
-    final usages =
-        Map<String, dynamic>.from(item['usages'] as Map? ?? const {});
+    final usages = Map<String, dynamic>.from(
+      item['usages'] as Map? ?? const {},
+    );
     const labels = {
       'messages': 'הודעות',
       'profile': 'פרופיל',
@@ -36596,7 +37603,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       final count = (usages[entry.key] as num?)?.toInt() ?? 0;
       if (count > 0) active.add('${entry.value}: $count');
     }
-    return active.isEmpty ? 'אינו בשימוש וניתן למחיקה' : active.join(' • ');
+    return active.isEmpty ? 'ללא שימוש' : active.join(' • ');
   }
 
   IconData _destinationIcon(String? kind) => switch (kind) {
@@ -36617,14 +37624,16 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   }
 
   Future<void> _openDestination(
-      Map<String, dynamic> destination, Map<String, dynamic> item) async {
+    Map<String, dynamic> destination,
+    Map<String, dynamic> item,
+  ) async {
     final kind = destination['kind']?.toString();
     final targetId = destination['targetId']?.toString();
     if (targetId == null || targetId.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('המיקום המקורי אינו זמין עוד'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('המיקום המקורי אינו זמין עוד')),
+        );
       }
       return;
     }
@@ -36704,13 +37713,16 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         );
         return;
       }
-      if (kind == 'gif' && mounted) {
+      if (kind == 'gif' && mounted && !_mediaHidden(item)) {
         await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => ImagePreviewScreen(
+              filterToken: widget.token,
+              messages: _libraryPreviewMessages(item),
               url: item['url']?.toString() ?? '',
               filename: item['name']?.toString(),
+              onRename: (url, filename) => _rename(item),
             ),
           ),
         );
@@ -36719,10 +37731,13 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       throw Exception('destination unavailable');
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'לא ניתן לפתוח את המיקום. ייתכן שהוא נמחק או שאינך מורשה לצפות בו.'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'לא ניתן לפתוח את המיקום. ייתכן שהוא נמחק או שאינך מורשה לצפות בו.',
+            ),
+          ),
+        );
       }
     }
   }
@@ -36739,9 +37754,11 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         content: SizedBox(
           width: 420,
           child: destinations.isEmpty
-              ? Text(item['canDelete'] == true
-                  ? 'הקובץ אינו משויך וניתן למחיקה.'
-                  : 'הקובץ נמצא בשימוש מוגן שאינו מוצג מטעמי פרטיות.')
+              ? Text(
+                  (item['referenceCount'] as num? ?? 0) == 0
+                      ? 'הקובץ אינו משויך.'
+                      : 'הקובץ משמש גם במקומות שפרטיהם אינם מוצגים כאן.',
+                )
               : ListView.separated(
                   shrinkWrap: true,
                   itemCount: destinations.length,
@@ -36751,7 +37768,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                     return ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(
-                          _destinationIcon(destination['kind']?.toString())),
+                        _destinationIcon(destination['kind']?.toString()),
+                      ),
                       title: Text(destination['label']?.toString() ?? 'יעד'),
                       subtitle: Text(_date(destination['date'])),
                       trailing: const Icon(Icons.open_in_new, size: 18),
@@ -36765,123 +37783,177 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('סגור')),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('סגור'),
+          ),
         ],
       ),
     );
   }
 
-  Future<void> _delete(Map<String, dynamic> item) async {
-    if (_deleting) return;
-    if (item['canDelete'] != true) {
-      final uploading = item['backupStatus'] == 'uploading';
-      final showUsage = await showDialog<bool>(
-          context: context,
-          useRootNavigator: false,
-          builder: (dialogContext) => AlertDialog(
-                  title: Text(
-                      uploading ? 'גיבוי הקובץ בתהליך' : 'הקובץ מוגן ממחיקה'),
-                  content: Text(uploading
-                      ? 'אפשר למחוק את הקובץ לאחר סיום הגיבוי. נסה שוב בעוד מעט זמן.'
-                      : 'הקובץ עדיין מופיע בשיחה או במקום נוסף. כדי למחוק אותו, יש להסיר אותו מהמקומות המקושרים תחילה.'),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(dialogContext, false),
-                        child: const Text('סגור')),
-                    if (!uploading)
-                      FilledButton(
-                          onPressed: () => Navigator.pop(dialogContext, true),
-                          child: const Text('הצג שימושים'))
-                  ]));
-      if (showUsage == true && mounted) await _showDestinations(item);
-      return;
-    }
-    await _confirmDeleteItems([item]);
-  }
+  Future<void> _delete(Map<String, dynamic> item) => _confirmDeleteItems([item]);
 
   Future<void> _confirmDeleteItems(List<Map<String, dynamic>> items) async {
-    if (_deleting || items.isEmpty) return;
+    if (_deleting || _forwarding || _selectingAll || items.isEmpty) return;
     final token = widget.token;
-    final eligible = items.where((item) => item['canDelete'] == true).toList();
-    if (eligible.isEmpty) return;
-    final bytes = eligible.fold<int>(
-        0, (sum, item) => sum + ((item['size'] as num?)?.toInt() ?? 0));
-    final hasBackup = eligible.any((item) => item['backupStatus'] != null);
-    final confirmed = await showDialog<bool>(
-        context: context,
-        useRootNavigator: false,
-        builder: (dialogContext) => AlertDialog(
-                title: const Text('מחיקה לצמיתות'),
-                content: Text(
-                    '${eligible.length == 1 ? 'למחוק את „${eligible.first['name']}”' : 'למחוק ${eligible.length} קבצים שנבחרו'} ולפנות ${_size(bytes)}?'
-                    '${hasBackup ? '\nגם העותק המוצפן ב־Google Drive יימחק.' : ''}\nלא ניתן לבטל פעולה זו.'),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(dialogContext, false),
-                      child: const Text('ביטול')),
-                  FilledButton(
-                      style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFFAF5157)),
-                      onPressed: () => Navigator.pop(dialogContext, true),
-                      child: const Text('מחק לצמיתות'))
-                ]));
-    if (confirmed != true || !mounted || token != widget.token) return;
+    final chosen = items.map(Map<String, dynamic>.from).toList();
+    List<String> copyIds(Map<String, dynamic> item) =>
+        (item['duplicateIds'] as List? ?? [item['id']])
+            .map((id) => id.toString()).toSet().toList();
     setState(() => _deleting = true);
-    var deleted = 0;
-    var deletedBytes = 0;
-    final errors = <String>[];
     try {
-      for (final item in eligible) {
-        if (!mounted || token != widget.token) break;
-        try {
-          final response = await http
-              .delete(Uri.parse('$kApi/media-library/${item['id']}'), headers: {
-            'Authorization': 'Bearer $token',
-            'Content-Type': 'application/json'
-          });
-          final body = jsonDecode(response.body) as Map<String, dynamic>;
-          if (response.statusCode == 200) {
-            deleted++;
-            deletedBytes += (body['deletedBytes'] as num?)?.toInt() ?? 0;
-          } else {
-            errors.add(body['error']?.toString() ?? 'מחיקת הקובץ נכשלה');
+      final result = await confirmPersonalMediaDeletion(
+        context: context,
+        api: kApi,
+        token: token,
+        ids: chosen.expand(copyIds).toSet().toList(),
+        isCurrent: () => mounted && token == widget.token,
+      );
+      if (result == null || !mounted || token != widget.token) return;
+      setState(() {
+        for (final item in chosen) {
+          final oldId = item['id'].toString();
+          final selected = _selectedItems.remove(oldId);
+          final remaining = copyIds(item)
+              .where((id) => !result.deletedIds.contains(id)).toList();
+          if (selected != null && remaining.isNotEmpty) {
+            _selectedItems[remaining.first] = {
+              ...selected,
+              'id': remaining.first,
+              'duplicateIds': remaining,
+              'duplicateCount': remaining.length,
+              if (!remaining.contains(oldId)) 'filterHidden': true,
+            };
           }
-        } catch (_) {
-          errors.add('שגיאת תקשורת. לא התקבל אישור מחיקה');
         }
-      }
-      if (!mounted || token != widget.token) return;
+      });
       await _refresh();
       if (!mounted || token != widget.token) return;
-      final notice = deleted == 0
+      final errors = result.failed.map((row) =>
+          row['error']?.toString() ?? 'מחיקת הקובץ נכשלה').toSet().toList();
+      final count = result.deletedIds.length;
+      final notice = count == 0
           ? (errors.firstOrNull ?? 'לא נמחקו קבצים')
-          : '${deleted == 1 ? 'הקובץ נמחק' : '$deleted קבצים נמחקו'} ופונו ${_size(deletedBytes)}'
-              '${errors.isEmpty ? '' : '. ${errors.length == 1 ? 'קובץ אחד לא נמחק' : '${errors.length} קבצים לא נמחקו'}: ${errors.first}'}';
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(notice)));
+          : '${count == 1 ? 'הקובץ נמחק' : '$count קבצים נמחקו'}'
+              '${result.deletedBytes > 0 ? ' ופונו ${_size(result.deletedBytes)}' : ''}'
+              '${result.cleanupPendingCount > 0 ? '. פינוי האחסון והגיבוי של ${result.cleanupPendingCount} קבצים יושלם בהמשך' : ''}'
+              '${errors.isEmpty ? '' : '. ${result.failed.length} קבצים לא נמחקו: ${errors.first}'}';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(notice)));
     } finally {
       if (mounted && token == widget.token) setState(() => _deleting = false);
     }
   }
 
+  bool _canForwardMedia(Map<String, dynamic> item) =>
+      !_mediaHidden(item) &&
+      item['moderationStatus'] == 'approved' &&
+      (item['url']?.toString().isNotEmpty ?? false);
+
+  Map<String, dynamic> _forwardPayload(Map<String, dynamic> item) => {
+        'fileUrl': item['url']?.toString(),
+        'fileName': item['name']?.toString(),
+        'fileType': item['fileType']?.toString() ?? 'document',
+        'status': item['moderationStatus']?.toString(),
+      };
+
   Future<void> _send(Map<String, dynamic> item) async {
-    final moderationStatus = item['moderationStatus']?.toString();
-    if (moderationStatus != 'approved') {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(moderationStatus == 'rejected'
-            ? 'לא ניתן לשלוח קובץ שנחסם בסריקה'
-            : 'ניתן לשלוח את הקובץ רק לאחר אישור הסריקה'),
-      ));
-      return;
+    await _sendItems([item]);
+  }
+
+  Future<void> _sendItems(List<Map<String, dynamic>> items) async {
+    if (_forwarding || _deleting) return;
+    final eligible = items
+        .where(_canForwardMedia)
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+    if (eligible.isEmpty) return;
+    final token = widget.token;
+    final visibilityGeneration = _visibilityGeneration;
+    bool canForward() =>
+        mounted &&
+        token == widget.token &&
+        visibilityGeneration == _visibilityGeneration &&
+        !_mediaFilterPending;
+    setState(() => _forwarding = true);
+    try {
+      final result = await forwardChatMessages(
+        context,
+        token,
+        null,
+        eligible.map(_forwardPayload).toList(),
+        canForward: canForward,
+      );
+      if (!canForward()) return;
+      setState(() {
+        for (final index in result.completedMessageIndexes) {
+          if (index >= 0 && index < eligible.length) {
+            _selectedItems.remove(eligible[index]['id'].toString());
+          }
+        }
+      });
+      if (result.sentCount > 0 || result.pendingCount > 0) await _refresh();
+    } finally {
+      if (mounted && token == widget.token) setState(() => _forwarding = false);
     }
-    await _forwardChatMessage(context, widget.token, null, {
-      'fileUrl': item['url']?.toString(),
-      'fileName': item['name']?.toString(),
-      'fileType': item['fileType']?.toString() ?? 'document',
-      'status': moderationStatus,
-    });
-    if (mounted) await _load(reset: true);
+  }
+
+  Future<String?> _rename(Map<String, dynamic> item) async {
+    final id = item['id'].toString();
+    if (_busyMediaIds.contains(id) || _forwarding || _deleting || _selectingAll) return null;
+    final token = widget.token;
+    final current = _items.where((row) => row['id'].toString() == id).firstOrNull ?? item;
+    final oldName = current['name']?.toString() ?? '';
+    final name = await showMediaRenameDialog(context, filename: oldName);
+    if (name == null || name == oldName || !mounted || token != widget.token) {
+      return null;
+    }
+    setState(() => _busyMediaIds.add(id));
+    try {
+      final response = await http.patch(
+        Uri.parse('$kApi/media-library/$id'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'name': name}),
+      );
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!mounted || token != widget.token) return null;
+      if (response.statusCode == 200 && body['item'] is Map) {
+        final updated = Map<String, dynamic>.from(body['item'] as Map);
+        setState(() {
+          final index = _items.indexWhere(
+            (current) => current['id'].toString() == id,
+          );
+          if (index >= 0) _items[index] = updated;
+          if (_selectedItems.containsKey(id)) _selectedItems[id] = updated;
+        });
+        await _load(reset: true);
+        if (!mounted || token != widget.token) return null;
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('שם הקובץ עודכן')));
+        return updated['name']?.toString() ?? name;
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              body['error']?.toString() ?? 'לא ניתן לשנות את שם הקובץ',
+            ),
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted && token == widget.token) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שגיאת תקשורת. שם הקובץ לא עודכן')),
+        );
+      }
+    } finally {
+      if (mounted && token == widget.token) {
+        setState(() => _busyMediaIds.remove(id));
+      }
+    }
+    return null;
   }
 
   Future<void> _reclassify(Map<String, dynamic> item) async {
@@ -36900,20 +37972,25 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text(body['status'] == 'rejected'
+            content: Text(
+              body['status'] == 'rejected'
                   ? 'התמונה נחסמה בסריקה הנוספת והוסרה מהמקומות שבהם הופיעה'
-                  : 'הסריקה הנוספת הושלמה והתמונה אושרה')),
+                  : 'הסריקה הנוספת הושלמה והתמונה אושרה',
+            ),
+          ),
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(body['error']?.toString() ?? 'הסריקה הנוספת נכשלה'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(body['error']?.toString() ?? 'הסריקה הנוספת נכשלה'),
+          ),
+        );
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('שגיאת תקשורת בסריקה הנוספת'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שגיאת תקשורת בסריקה הנוספת')),
+        );
       }
     } finally {
       if (mounted) setState(() => _busyMediaIds.remove(id));
@@ -36961,19 +38038,23 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       if (!mounted) return;
       if (response.statusCode == 201) {
         setState(() => item['appealStatus'] = 'pending');
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('הערעור נשלח לבדיקה. נעדכן אותך לאחר סיום הבירור.'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('הערעור נשלח לבדיקה. נעדכן אותך לאחר סיום הבירור.'),
+          ),
+        );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(body['error']?.toString() ?? 'שליחת הערעור נכשלה'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(body['error']?.toString() ?? 'שליחת הערעור נכשלה'),
+          ),
+        );
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('שגיאת תקשורת. הערעור לא נשלח'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('שגיאת תקשורת. הערעור לא נשלח')),
+        );
       }
     } finally {
       if (mounted) setState(() => _busyMediaIds.remove(id));
@@ -36981,30 +38062,48 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   }
 
   Widget _preview(Map<String, dynamic> item) {
+    if (_mediaHidden(item)) {
+      return SizedBox(
+        width: 72,
+        height: 72,
+        child: _hiddenMediaPreview(item, small: true),
+      );
+    }
     final type = item['fileType']?.toString();
     final url = item['url']?.toString() ?? '';
     final name = item['name']?.toString() ?? '';
     if (type == 'image') {
       return InkWell(
         onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ImagePreviewScreen(
-                  url: url, filename: item['name']?.toString()),
-            )),
+          context,
+          MaterialPageRoute(
+            builder: (_) => ImagePreviewScreen(
+              filterToken: widget.token,
+              messages: _libraryPreviewMessages(item),
+              url: url,
+              filename: item['name']?.toString(),
+              onRename: (url, filename) => _rename(item),
+            ),
+          ),
+        ),
         child: _PersistentMediaImage(
+          key: ValueKey(
+            'library-image-${item['id']}-${item['sourceMessageId']}',
+          ),
           url: url,
+          onDisplayed: () => _reportMediaDisplay(item),
           width: 72,
           height: 72,
           fit: BoxFit.cover,
           loadingBuilder: (_) =>
               const Center(child: CircularProgressIndicator(strokeWidth: 2)),
           errorBuilder: (_) => Icon(
-              item['releasedAt'] != null
-                  ? Icons.cloud_download_outlined
-                  : _fileIcon(type),
-              size: 38,
-              color: kSubtext),
+            item['releasedAt'] != null
+                ? Icons.cloud_download_outlined
+                : _fileIcon(type),
+            size: 38,
+            color: kSubtext,
+          ),
         ),
       );
     }
@@ -37032,11 +38131,12 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       height: 72,
       color: kBg,
       child: Icon(
-          item['releasedAt'] != null
-              ? Icons.cloud_done_outlined
-              : _fileIcon(type),
-          size: 38,
-          color: kPrimary),
+        item['releasedAt'] != null
+            ? Icons.cloud_done_outlined
+            : _fileIcon(type),
+        size: 38,
+        color: kPrimary,
+      ),
     );
   }
 
@@ -37045,23 +38145,27 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   Widget _card(Map<String, dynamic> item) => Card(
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
         clipBehavior: Clip.antiAlias,
-        child: Row(children: [
-          _preview(item),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: Column(
+        child: Row(
+          children: [
+            _preview(item),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(item['name']?.toString() ?? 'קובץ',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                    Text(
+                      item['name']?.toString() ?? 'קובץ',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
                     const SizedBox(height: 5),
                     Text(
-                        '${_size(item['size'])} • ${_date(item['createdAt'])} • ${_moderationLabel(item['moderationStatus']?.toString())}',
-                        style: const TextStyle(fontSize: 12, color: kSubtext)),
+                      '${_size(item['size'])} • ${_date(item['createdAt'])} • ${_moderationLabel(item['moderationStatus']?.toString())}',
+                      style: const TextStyle(fontSize: 12, color: kSubtext),
+                    ),
                     if (item['classification'] is Map) ...[
                       const SizedBox(height: 5),
                       _ImageClassificationBadges(
@@ -37073,116 +38177,163 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                       onTap: () => _showDestinations(item),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Row(children: [
-                          Icon(
-                              item['canDelete'] == true
+                        child: Row(
+                          children: [
+                            Icon(
+                              (item['referenceCount'] as num? ?? 0) == 0
                                   ? Icons.check_circle_outline
                                   : Icons.link_outlined,
                               size: 14,
-                              color: item['canDelete'] == true
+                              color: (item['referenceCount'] as num? ?? 0) == 0
                                   ? Colors.green.shade700
-                                  : Colors.orange.shade800),
-                          const SizedBox(width: 4),
-                          Expanded(
-                            child: Text(_usageText(item),
+                                  : Colors.orange.shade800,
+                            ),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                _usageText(item),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                    fontSize: 11,
-                                    color: item['canDelete'] == true
-                                        ? Colors.green.shade700
-                                        : Colors.orange.shade800)),
-                          ),
-                        ]),
+                                  fontSize: 11,
+                                  color: (item['referenceCount'] as num? ?? 0) == 0
+                                      ? Colors.green.shade700
+                                      : Colors.orange.shade800,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                     if (item['backupStatus'] != null)
                       Text(
-                          item['releasedAt'] != null
-                              ? 'זמין בגיבוי הענן'
-                              : 'גיבוי: ${item['backupStatus']}',
-                          style:
-                              const TextStyle(fontSize: 11, color: kPrimary)),
-                  ]),
+                        item['releasedAt'] != null
+                            ? 'זמין בגיבוי הענן'
+                            : 'גיבוי: ${item['backupStatus']}',
+                        style: const TextStyle(fontSize: 11, color: kPrimary),
+                      ),
+                  ],
+                ),
+              ),
             ),
-          ),
-          PopupMenuButton<String>(
-            onSelected: (value) {
-              if (value == 'screenshot') {
-                openAppScreenshot(context, token: widget.token);
-              }
-              if (value == 'send') _send(item);
-              if (value == 'view') {
-                _openOfficeInsideApp(context, item['url'].toString(),
-                    item['name']?.toString(), widget.token);
-              }
-              if (value == 'reclassify') _reclassify(item);
-              if (value == 'appeal') _appealClassification(item);
-              if (value == 'download') {
-                _downloadChatFile(
-                    context, item['url'].toString(), item['name']?.toString(),
-                    token: widget.token);
-              }
-              if (value == 'destinations') _showDestinations(item);
-              if (value == 'delete') _delete(item);
-            },
-            itemBuilder: (_) => [
-              const PopupMenuItem(
-                value: 'screenshot',
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.screenshot_monitor_outlined),
-                  title: Text('צילום מסך'),
-                ),
-              ),
-              if (_isOfficePreviewFile(item['name']?.toString()))
-                const PopupMenuItem(value: 'view', child: Text('צפייה במסמך')),
-              PopupMenuItem(
-                value: 'send',
-                enabled: item['moderationStatus'] == 'approved',
-                child: const ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.send_outlined, color: kPrimary),
-                  title: Text('שליחה לחבר או לקבוצה'),
-                ),
-              ),
-              if (item['fileType'] == 'image')
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                if (value == 'screenshot') {
+                  openAppScreenshot(context, token: widget.token);
+                }
+                if (_mediaHidden(item) &&
+                    const [
+                      'send',
+                      'view',
+                      'download',
+                      'reclassify',
+                      'appeal',
+                    ].contains(value)) {
+                  return;
+                }
+                if (value == 'send') _send(item);
+                if (value == 'rename') _rename(item);
+                if (value == 'view') {
+                  _openOfficeInsideApp(
+                    context,
+                    item['url'].toString(),
+                    item['name']?.toString(),
+                    widget.token,
+                  );
+                }
+                if (value == 'reclassify') _reclassify(item);
+                if (value == 'appeal') _appealClassification(item);
+                if (value == 'download') {
+                  _downloadChatFile(
+                    context,
+                    item['url'].toString(),
+                    item['name']?.toString(),
+                    token: widget.token,
+                  );
+                }
+                if (value == 'destinations') _showDestinations(item);
+                if (value == 'delete') _delete(item);
+              },
+              itemBuilder: (_) => [
                 const PopupMenuItem(
-                  value: 'reclassify',
-                  child: Text('סריקה נוספת'),
+                  value: 'screenshot',
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.screenshot_monitor_outlined),
+                    title: Text('צילום מסך'),
+                  ),
                 ),
-              if (item['fileType'] == 'image')
                 PopupMenuItem(
-                  value: 'appeal',
-                  enabled: item['appealStatus'] != 'pending',
-                  child: Text(item['appealStatus'] == 'pending'
-                      ? 'הערעור ממתין לבדיקה'
-                      : 'ערעור על הסיווג'),
+                  value: 'rename',
+                  enabled: !_busyMediaIds.contains(item['id'].toString()) &&
+                      !_forwarding &&
+                      !_deleting,
+                  child: const Text('שינוי שם הקובץ'),
                 ),
-              const PopupMenuItem(value: 'download', child: Text('הורדה')),
-              PopupMenuItem(
-                value: 'destinations',
-                child: const Text('לאן שייך?'),
-              ),
-              PopupMenuItem(
-                value: 'delete',
-                child: Text(item['canDelete'] == true
-                    ? 'מחיקה לצמיתות'
-                    : 'בדיקת אפשרות מחיקה'),
-              ),
-            ],
-          ),
-        ]),
+                if (_isOfficePreviewFile(item['name']?.toString()))
+                  const PopupMenuItem(
+                      value: 'view', child: Text('צפייה במסמך')),
+                PopupMenuItem(
+                  value: 'send',
+                  enabled: !_mediaHidden(item) &&
+                      item['moderationStatus'] == 'approved',
+                  child: const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.send_outlined, color: kPrimary),
+                    title: Text('שליחה לחבר או לקבוצה'),
+                  ),
+                ),
+                if (item['fileType'] == 'image' && !_mediaHidden(item))
+                  const PopupMenuItem(
+                    value: 'reclassify',
+                    child: Text('סריקה נוספת'),
+                  ),
+                if (item['fileType'] == 'image' && !_mediaHidden(item))
+                  PopupMenuItem(
+                    value: 'appeal',
+                    enabled: item['appealStatus'] != 'pending',
+                    child: Text(
+                      item['appealStatus'] == 'pending'
+                          ? 'הערעור ממתין לבדיקה'
+                          : 'ערעור על הסיווג',
+                    ),
+                  ),
+                PopupMenuItem(
+                  value: 'download',
+                  enabled: !_mediaHidden(item),
+                  child: const Text('הורדה'),
+                ),
+                PopupMenuItem(
+                  value: 'destinations',
+                  child: const Text('לאן שייך?'),
+                ),
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Text(
+                    'מחיקה לצמיתות',
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       );
 
-  Widget _tableText(String text,
-          {Color? color, FontWeight? weight, int maxLines = 2}) =>
+  Widget _tableText(
+    String text, {
+    Color? color,
+    FontWeight? weight,
+    int maxLines = 2,
+  }) =>
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-        child: Text(text,
-            maxLines: maxLines,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: color, fontWeight: weight)),
+        child: Text(
+          text,
+          maxLines: maxLines,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 12, color: color, fontWeight: weight),
+        ),
       );
 
   Widget _tableActions(Map<String, dynamic> item) => PopupMenuButton<String>(
@@ -37191,50 +38342,80 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           if (value == 'screenshot') {
             openAppScreenshot(context, token: widget.token);
           }
+          if (_mediaHidden(item) &&
+              const [
+                'send',
+                'view',
+                'download',
+                'reclassify',
+                'appeal',
+              ].contains(value)) {
+            return;
+          }
           if (value == 'send') _send(item);
+          if (value == 'rename') _rename(item);
           if (value == 'view') {
-            _openOfficeInsideApp(context, item['url'].toString(),
-                item['name']?.toString(), widget.token);
+            _openOfficeInsideApp(
+              context,
+              item['url'].toString(),
+              item['name']?.toString(),
+              widget.token,
+            );
           }
           if (value == 'reclassify') _reclassify(item);
           if (value == 'appeal') _appealClassification(item);
           if (value == 'download') {
             _downloadChatFile(
-                context, item['url'].toString(), item['name']?.toString(),
-                token: widget.token);
+              context,
+              item['url'].toString(),
+              item['name']?.toString(),
+              token: widget.token,
+            );
           }
           if (value == 'destinations') _showDestinations(item);
           if (value == 'delete') _delete(item);
         },
         itemBuilder: (_) => [
           const PopupMenuItem(value: 'screenshot', child: Text('צילום מסך')),
+          PopupMenuItem(
+            value: 'rename',
+            enabled: !_busyMediaIds.contains(item['id'].toString()) &&
+                !_forwarding &&
+                !_deleting,
+            child: const Text('שינוי שם הקובץ'),
+          ),
           if (_isOfficePreviewFile(item['name']?.toString()))
             const PopupMenuItem(value: 'view', child: Text('צפייה במסמך')),
           PopupMenuItem(
             value: 'send',
-            enabled: item['moderationStatus'] == 'approved',
+            enabled:
+                !_mediaHidden(item) && item['moderationStatus'] == 'approved',
             child: const Text('שליחה לחבר או לקבוצה'),
           ),
-          if (item['fileType'] == 'image')
+          if (item['fileType'] == 'image' && !_mediaHidden(item))
             const PopupMenuItem(
-              value: 'reclassify',
-              child: Text('סריקה נוספת'),
-            ),
-          if (item['fileType'] == 'image')
+                value: 'reclassify', child: Text('סריקה נוספת')),
+          if (item['fileType'] == 'image' && !_mediaHidden(item))
             PopupMenuItem(
               value: 'appeal',
               enabled: item['appealStatus'] != 'pending',
-              child: Text(item['appealStatus'] == 'pending'
-                  ? 'הערעור ממתין לבדיקה'
-                  : 'ערעור על הסיווג'),
+              child: Text(
+                item['appealStatus'] == 'pending'
+                    ? 'הערעור ממתין לבדיקה'
+                    : 'ערעור על הסיווג',
+              ),
             ),
-          const PopupMenuItem(value: 'download', child: Text('הורדה')),
+          PopupMenuItem(
+            value: 'download',
+            enabled: !_mediaHidden(item),
+            child: const Text('הורדה'),
+          ),
           const PopupMenuItem(value: 'destinations', child: Text('לאן שייך?')),
           PopupMenuItem(
             value: 'delete',
-            child: Text(item['canDelete'] == true
-                ? 'מחיקה לצמיתות'
-                : 'בדיקת אפשרות מחיקה'),
+            child: Text(
+              'מחיקה לצמיתות',
+            ),
           ),
         ],
       );
@@ -37273,13 +38454,15 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
 
   Future<void> _showExcelFilter(String column) async {
     final first = TextEditingController(
-        text: column == 'name'
-            ? _searchCtrl.text
-            : column == 'size'
-                ? _minSizeCtrl.text
-                : '');
-    final second =
-        TextEditingController(text: column == 'size' ? _maxSizeCtrl.text : '');
+      text: column == 'name'
+          ? _searchCtrl.text
+          : column == 'size'
+              ? _minSizeCtrl.text
+              : '',
+    );
+    final second = TextEditingController(
+      text: column == 'size' ? _maxSizeCtrl.text : '',
+    );
     var selected = switch (column) {
       'type' => _type,
       'scope' => _scope,
@@ -37302,16 +38485,18 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) => AlertDialog(
-          title: Text('סינון: ${{
-            'name': 'שם הקובץ',
-            'type': 'סוג',
-            'size': 'גודל',
-            'date': 'תאריך העלאה',
-            'scope': 'שייך אל',
-            'moderation': 'מצב סריקה',
-            'classification': 'סיווג',
-            'backup': 'מצב גיבוי'
-          }[column]}'),
+          title: Text(
+            'סינון: ${{
+              'name': 'שם הקובץ',
+              'type': 'סוג',
+              'size': 'גודל',
+              'date': 'תאריך העלאה',
+              'scope': 'שייך אל',
+              'moderation': 'מצב סריקה',
+              'classification': 'סיווג',
+              'backup': 'מצב גיבוי'
+            }[column]}',
+          ),
           content: SizedBox(
             width: 330,
             child: column == 'name'
@@ -37324,63 +38509,79 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                     ),
                   )
                 : column == 'size'
-                    ? Column(mainAxisSize: MainAxisSize.min, children: [
-                        TextField(
-                          controller: first,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(labelText: 'מ־MB'),
-                        ),
-                        const SizedBox(height: 10),
-                        TextField(
-                          controller: second,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(labelText: 'עד MB'),
-                        ),
-                      ])
+                    ? Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextField(
+                            controller: first,
+                            keyboardType: TextInputType.number,
+                            decoration:
+                                const InputDecoration(labelText: 'מ־MB'),
+                          ),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: second,
+                            keyboardType: TextInputType.number,
+                            decoration:
+                                const InputDecoration(labelText: 'עד MB'),
+                          ),
+                        ],
+                      )
                     : column == 'date'
-                        ? Column(mainAxisSize: MainAxisSize.min, children: [
-                            ListTile(
-                              leading: const Icon(Icons.date_range),
-                              title: Text(from == null
-                                  ? 'מתאריך'
-                                  : _date(from).split(' ').first),
-                              onTap: () async {
-                                final picked = await showDatePicker(
-                                  context: dialogContext,
-                                  initialDate: from ?? DateTime.now(),
-                                  firstDate: DateTime(2020),
-                                  lastDate: DateTime.now(),
-                                );
-                                if (picked != null) {
-                                  setDialogState(() => from = picked);
-                                }
-                              },
-                            ),
-                            ListTile(
-                              leading: const Icon(Icons.event),
-                              title: Text(to == null
-                                  ? 'עד תאריך'
-                                  : _date(to).split(' ').first),
-                              onTap: () async {
-                                final picked = await showDatePicker(
-                                  context: dialogContext,
-                                  initialDate: to ?? DateTime.now(),
-                                  firstDate: DateTime(2020),
-                                  lastDate: DateTime.now(),
-                                );
-                                if (picked != null) {
-                                  setDialogState(() => to = picked);
-                                }
-                              },
-                            ),
-                          ])
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ListTile(
+                                leading: const Icon(Icons.date_range),
+                                title: Text(
+                                  from == null
+                                      ? 'מתאריך'
+                                      : _date(from).split(' ').first,
+                                ),
+                                onTap: () async {
+                                  final picked = await showDatePicker(
+                                    context: dialogContext,
+                                    initialDate: from ?? DateTime.now(),
+                                    firstDate: DateTime(2020),
+                                    lastDate: DateTime.now(),
+                                  );
+                                  if (picked != null) {
+                                    setDialogState(() => from = picked);
+                                  }
+                                },
+                              ),
+                              ListTile(
+                                leading: const Icon(Icons.event),
+                                title: Text(
+                                  to == null
+                                      ? 'עד תאריך'
+                                      : _date(to).split(' ').first,
+                                ),
+                                onTap: () async {
+                                  final picked = await showDatePicker(
+                                    context: dialogContext,
+                                    initialDate: to ?? DateTime.now(),
+                                    firstDate: DateTime(2020),
+                                    lastDate: DateTime.now(),
+                                  );
+                                  if (picked != null) {
+                                    setDialogState(() => to = picked);
+                                  }
+                                },
+                              ),
+                            ],
+                          )
                         : DropdownButtonFormField<String>(
                             initialValue: selected,
                             isExpanded: true,
                             decoration: const InputDecoration(labelText: 'הצג'),
                             items: values.entries
-                                .map((entry) => DropdownMenuItem(
-                                    value: entry.key, child: Text(entry.value)))
+                                .map(
+                                  (entry) => DropdownMenuItem(
+                                    value: entry.key,
+                                    child: Text(entry.value),
+                                  ),
+                                )
                                 .toList(),
                             onChanged: (value) {
                               if (value != null) {
@@ -37441,49 +38642,55 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
             : false;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
-      child: Row(children: [
-        Expanded(
-          child: Text(label,
-              style:
-                  const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-        ),
-        if (sortColumn != null)
-          Tooltip(
-            message: 'מיון',
-            child: InkWell(
-              onTap: () {
-                setState(() => _sort = sortColumn == 'size'
-                    ? (_sort == 'size_desc' ? 'size_asc' : 'size_desc')
-                    : (_sort == 'date_desc' ? 'date_asc' : 'date_desc'));
-                _load(reset: true);
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(3),
-                child: Icon(
-                  sorted && _sort.endsWith('asc')
-                      ? Icons.arrow_upward
-                      : Icons.arrow_downward,
-                  size: 16,
-                  color: sorted ? kPrimary : kSubtext,
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+          if (sortColumn != null)
+            Tooltip(
+              message: 'מיון',
+              child: InkWell(
+                onTap: () {
+                  setState(
+                    () => _sort = sortColumn == 'size'
+                        ? (_sort == 'size_desc' ? 'size_asc' : 'size_desc')
+                        : (_sort == 'date_desc' ? 'date_asc' : 'date_desc'),
+                  );
+                  _load(reset: true);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: Icon(
+                    sorted && _sort.endsWith('asc')
+                        ? Icons.arrow_upward
+                        : Icons.arrow_downward,
+                    size: 16,
+                    color: sorted ? kPrimary : kSubtext,
+                  ),
                 ),
               ),
             ),
-          ),
-        if (column != null)
-          Tooltip(
-            message: active ? 'סינון פעיל' : 'סנן עמודה',
-            child: InkWell(
-              onTap: () => _showExcelFilter(column),
-              child: Padding(
-                padding: const EdgeInsets.all(3),
-                child: Icon(
+          if (column != null)
+            Tooltip(
+              message: active ? 'סינון פעיל' : 'סנן עמודה',
+              child: InkWell(
+                onTap: () => _showExcelFilter(column),
+                child: Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: Icon(
                     active ? Icons.filter_alt : Icons.filter_alt_outlined,
                     size: 17,
-                    color: active ? kPrimary : kSubtext),
+                    color: active ? kPrimary : kSubtext,
+                  ),
+                ),
               ),
             ),
-          ),
-      ]),
+        ],
+      ),
     );
   }
 
@@ -37512,7 +38719,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
               TableRow(
                 decoration: const BoxDecoration(color: Color(0xFFEAF4FB)),
                 children: [
-                  _excelHeader('תצוגה', null),
+                  _excelHeader('בחירה', null),
                   _excelHeader('שם הקובץ', 'name'),
                   _excelHeader('סוג', 'type'),
                   _excelHeader('גודל', 'size', sortColumn: 'size'),
@@ -37524,63 +38731,87 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                   _excelHeader('פעולות', null),
                 ],
               ),
-              ..._items.map((item) => TableRow(
-                    decoration: BoxDecoration(
-                      color: _items.indexOf(item).isEven
-                          ? Colors.white
-                          : const Color(0xFFFAFCFD),
+              ..._items.map(
+                (item) => TableRow(
+                  decoration: BoxDecoration(
+                    color: _selectedItems.containsKey(item['id'].toString())
+                        ? const Color(0xFFE4F1FC)
+                        : _items.indexOf(item).isEven
+                            ? Colors.white
+                            : const Color(0xFFFAFCFD),
+                  ),
+                  children: [
+                    Column(children: [
+                      _selectionCheckbox(item),
+                      Padding(
+                        padding: const EdgeInsets.all(5),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(7),
+                          child: _preview(item),
+                        ),
+                      ),
+                    ]),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                      child: _renameName(item, fontSize: 12, maxLines: 2),
                     ),
-                    children: [
-                      Padding(
-                          padding: const EdgeInsets.all(5),
-                          child: ClipRRect(
-                              borderRadius: BorderRadius.circular(7),
-                              child: _preview(item))),
-                      _tableText(item['name']?.toString() ?? 'קובץ',
-                          weight: FontWeight.w600),
-                      _tableText(_filters[item['fileType']] ??
+                    _tableText(
+                      _filters[item['fileType']] ??
                           item['fileType']?.toString() ??
-                          'קובץ'),
-                      _tableText(_size(item['size'])),
-                      _tableText(_date(item['createdAt'])),
-                      InkWell(
-                        onTap: () => _showDestinations(item),
-                        child: _tableText(_usageText(item),
-                            color: item['canDelete'] == true
-                                ? Colors.green.shade700
-                                : Colors.orange.shade800),
+                          'קובץ',
+                    ),
+                    _tableText(_size(item['size'])),
+                    _tableText(_date(item['createdAt'])),
+                    InkWell(
+                      onTap: () => _showDestinations(item),
+                      child: _tableText(
+                        _usageText(item),
+                        color: (item['referenceCount'] as num? ?? 0) == 0
+                            ? Colors.green.shade700
+                            : Colors.orange.shade800,
                       ),
-                      _tableText(_moderationLabel(
-                          item['moderationStatus']?.toString())),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 7),
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(_classificationText(item),
-                                  style: const TextStyle(fontSize: 12)),
-                              if (item['classification'] is Map)
-                                _ImageClassificationBadges(message: {
-                                  'classification': item['classification']
-                                }),
-                            ]),
+                    ),
+                    _tableText(
+                      _moderationLabel(item['moderationStatus']?.toString()),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 7,
                       ),
-                      _tableText(
-                          item['releasedAt'] != null
-                              ? 'בענן בלבד'
-                              : item['backupStatus'] == 'verified'
-                                  ? 'מגובה'
-                                  : item['backupStatus'] == 'failed'
-                                      ? 'הגיבוי נכשל'
-                                      : item['backupStatus'] != null
-                                          ? 'ממתין לגיבוי'
-                                          : 'מקומי',
-                          color: kPrimary),
-                      _tableActions(item),
-                    ],
-                  )),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _classificationText(item),
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          if (item['classification'] is Map)
+                            _ImageClassificationBadges(
+                              message: {
+                                'classification': item['classification']
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                    _tableText(
+                      item['releasedAt'] != null
+                          ? 'בענן בלבד'
+                          : item['backupStatus'] == 'verified'
+                              ? 'מגובה'
+                              : item['backupStatus'] == 'failed'
+                                  ? 'הגיבוי נכשל'
+                                  : item['backupStatus'] != null
+                                      ? 'ממתין לגיבוי'
+                                      : 'מקומי',
+                      color: kPrimary,
+                    ),
+                    _tableActions(item),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -37602,8 +38833,10 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           isExpanded: true,
           decoration: InputDecoration(labelText: label),
           items: values.entries
-              .map((entry) =>
-                  DropdownMenuItem(value: entry.key, child: Text(entry.value)))
+              .map(
+                (entry) => DropdownMenuItem(
+                    value: entry.key, child: Text(entry.value)),
+              )
               .toList(),
           onChanged: (next) {
             if (next != null && next != value) onChanged(next);
@@ -37662,65 +38895,86 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         padding: EdgeInsets.all(compact ? 18 : 24),
         decoration: BoxDecoration(
           gradient: const LinearGradient(
-              colors: [Color(0xFF0D4F82), Color(0xFF287EB5)],
-              begin: Alignment.centerRight,
-              end: Alignment.bottomLeft),
+            colors: [Color(0xFF0D4F82), Color(0xFF287EB5)],
+            begin: Alignment.centerRight,
+            end: Alignment.bottomLeft,
+          ),
           borderRadius: BorderRadius.circular(22),
         ),
-        child: Row(children: [
-          Container(
+        child: Row(
+          children: [
+            Container(
               width: compact ? 50 : 66,
               height: compact ? 50 : 66,
               decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: .14),
-                  borderRadius: BorderRadius.circular(18)),
-              child: Icon(Icons.perm_media_outlined,
-                  color: Colors.white, size: compact ? 28 : 36)),
-          const SizedBox(width: 16),
-          Expanded(
+                color: Colors.white.withValues(alpha: .14),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Icon(
+                Icons.perm_media_outlined,
+                color: Colors.white,
+                size: compact ? 28 : 36,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
               child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text('כל הקבצים שלך, במקום אחד',
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'כל הקבצים שלך, במקום אחד',
                     style: TextStyle(
-                        color: Colors.white,
-                        fontSize: compact ? 17 : 23,
-                        fontWeight: FontWeight.w700)),
-                const SizedBox(height: 7),
-                if (_catalogLoading && _summary.isEmpty)
-                  const SizedBox(
+                      color: Colors.white,
+                      fontSize: compact ? 17 : 23,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  if (_catalogLoading && _summary.isEmpty)
+                    const SizedBox(
                       width: 120,
                       child: LinearProgressIndicator(
-                          color: Colors.white,
-                          backgroundColor: Color(0xFF6099BF),
-                          minHeight: 2))
-                else
-                  Text(
+                        color: Colors.white,
+                        backgroundColor: Color(0xFF6099BF),
+                        minHeight: 2,
+                      ),
+                    )
+                  else
+                    Text(
                       '${_summary['totalCount'] ?? 0} קבצים  ·  ${_size(_summary['totalBytes'])}',
                       key: const ValueKey('media-summary-total'),
                       style: const TextStyle(
-                          color: Color(0xFFD8EAF8), fontSize: 14)),
-                const SizedBox(height: 5),
-                Text(_backupText,
-                    style: const TextStyle(
-                        color: Color(0xFFD8EAF8), fontSize: 12)),
-              ])),
-          if (!compact) ...[
-            const SizedBox(width: 20),
-            OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  side: const BorderSide(color: Color(0xFF7BB2D5))),
-              onPressed: () {
-                setState(() => _onlyDeletable = !_onlyDeletable);
-                _load(reset: true);
-              },
-              icon: const Icon(Icons.cleaning_services_outlined, size: 19),
-              label:
-                  Text('${_summary['deletableCount'] ?? 0} קבצים שניתן למחוק'),
+                        color: Color(0xFFD8EAF8),
+                        fontSize: 14,
+                      ),
+                    ),
+                  const SizedBox(height: 5),
+                  Text(
+                    _backupText,
+                    style:
+                        const TextStyle(color: Color(0xFFD8EAF8), fontSize: 12),
+                  ),
+                ],
+              ),
             ),
+            if (!compact) ...[
+              const SizedBox(width: 20),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: Color(0xFF7BB2D5)),
+                ),
+                onPressed: () {
+                  setState(() => _onlyDeletable = !_onlyDeletable);
+                  _load(reset: true);
+                },
+                icon: const Icon(Icons.cleaning_services_outlined, size: 19),
+                label: Text(
+                    '${_summary['deletableCount'] ?? 0} קבצים ללא שימוש'),
+              ),
+            ],
           ],
-        ]),
+        ),
       );
 
   Widget _typeTile(String type, {double? width}) {
@@ -37734,149 +38988,205 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     final selected = type == _type;
     final color = _typeColor(type);
     return SizedBox(
-        width: width,
-        child: Material(
-          color: selected ? const Color(0xFFE4F1FC) : Colors.white,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(
-                  color: selected ? kPrimary : kBorder,
-                  width: selected ? 1.5 : 1)),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            key: ValueKey('media-type-$type'),
-            onTap: () {
-              setState(() => _type = type);
-              _load(reset: true);
-            },
-            child: Padding(
-                padding: const EdgeInsets.all(13),
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(children: [
-                        Icon(
-                            type == 'all'
-                                ? Icons.folder_copy_outlined
-                                : _fileIcon(type),
-                            size: 23,
-                            color: color),
-                        const Spacer(),
-                        Text(count?.toString() ?? '—',
-                            style: TextStyle(
-                                color: color,
-                                fontSize: 20,
-                                fontWeight: FontWeight.w700))
-                      ]),
-                      const SizedBox(height: 9),
-                      Text(_filters[type]!,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w600, color: kTextDark)),
-                      const SizedBox(height: 2),
-                      Text(_size(bytes),
-                          textDirection: TextDirection.ltr,
-                          style: const TextStyle(
-                              fontSize: 11, color: Color(0xFF5E7B92))),
-                    ])),
+      width: width,
+      child: Material(
+        color: selected ? const Color(0xFFE4F1FC) : Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: selected ? kPrimary : kBorder,
+            width: selected ? 1.5 : 1,
           ),
-        ));
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          key: ValueKey('media-type-$type'),
+          onTap: () {
+            setState(() => _type = type);
+            _load(reset: true);
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(13),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      type == 'all'
+                          ? Icons.folder_copy_outlined
+                          : _fileIcon(type),
+                      size: 23,
+                      color: color,
+                    ),
+                    const Spacer(),
+                    Text(
+                      count?.toString() ?? '—',
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 9),
+                Text(
+                  _filters[type]!,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: kTextDark,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _size(bytes),
+                  textDirection: TextDirection.ltr,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF5E7B92),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _typeTiles(double width) => width >= 620
       ? Row(
           children: _filters.keys
-              .map((type) => Expanded(
+              .map(
+                (type) => Expanded(
                   child: Padding(
-                      padding: EdgeInsetsDirectional.only(
-                          end: type == 'document' ? 0 : 10),
-                      child: _typeTile(type))))
-              .toList())
+                    padding: EdgeInsetsDirectional.only(
+                      end: type == 'document' ? 0 : 10,
+                    ),
+                    child: _typeTile(type),
+                  ),
+                ),
+              )
+              .toList(),
+        )
       : SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
-              children: _filters.keys
-                  .map((type) => Padding(
-                      padding: const EdgeInsetsDirectional.only(end: 8),
-                      child: _typeTile(type, width: 116)))
-                  .toList()));
+            children: _filters.keys
+                .map(
+                  (type) => Padding(
+                    padding: const EdgeInsetsDirectional.only(end: 8),
+                    child: _typeTile(type, width: 116),
+                  ),
+                )
+                .toList(),
+          ),
+        );
 
   Future<void> _chooseDestination() async {
     var query = '';
     final choice = await showDialog<Map<String, dynamic>>(
-        context: context,
-        useRootNavigator: false,
-        builder: (dialogContext) => StatefulBuilder(builder: (context, update) {
-              final filtered = _destinations
-                  .where((row) => (row['label']?.toString() ?? '')
-                      .toLowerCase()
-                      .contains(query.toLowerCase()))
-                  .toList();
-              return AlertDialog(
-                  title: const Text('מדיה לפי חבר או קבוצה'),
-                  content: SizedBox(
-                      width: 440,
-                      height: math.min(
-                          440, MediaQuery.sizeOf(context).height * .55),
-                      child: Column(children: [
-                        TextField(
-                            autofocus: true,
-                            onChanged: (value) => update(() => query = value),
-                            decoration: const InputDecoration(
-                                hintText: 'חיפוש שם חבר או קבוצה',
-                                prefixIcon: Icon(Icons.search))),
-                        const SizedBox(height: 10),
-                        Expanded(
-                            child: ListView(children: [
+      context: context,
+      useRootNavigator: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, update) {
+          final filtered = _destinations
+              .where(
+                (row) => (row['label']?.toString() ?? '')
+                    .toLowerCase()
+                    .contains(query.toLowerCase()),
+              )
+              .toList();
+          return AlertDialog(
+            title: const Text('מדיה לפי חבר או קבוצה'),
+            content: SizedBox(
+              width: 440,
+              height: math.min(440, MediaQuery.sizeOf(context).height * .55),
+              child: Column(
+                children: [
+                  TextField(
+                    autofocus: true,
+                    onChanged: (value) => update(() => query = value),
+                    decoration: const InputDecoration(
+                      hintText: 'חיפוש שם חבר או קבוצה',
+                      prefixIcon: Icon(Icons.search),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        ListTile(
+                          key: const ValueKey('media-destination-all'),
+                          leading: const Icon(
+                            Icons.folder_copy_outlined,
+                            color: kPrimary,
+                          ),
+                          title: const Text('כל החברים והקבוצות'),
+                          onTap: () =>
+                              Navigator.pop(dialogContext, <String, dynamic>{}),
+                        ),
+                        if (_catalogError != null)
+                          TextButton.icon(
+                            onPressed: () async {
+                              await _loadCatalog();
+                              if (context.mounted) update(() {});
+                            },
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('נסה לטעון שוב'),
+                          ),
+                        for (final destination in filtered)
                           ListTile(
-                              key: const ValueKey('media-destination-all'),
-                              leading: const Icon(Icons.folder_copy_outlined,
-                                  color: kPrimary),
-                              title: const Text('כל החברים והקבוצות'),
-                              onTap: () => Navigator.pop(
-                                  dialogContext, <String, dynamic>{})),
-                          if (_catalogError != null)
-                            TextButton.icon(
-                                onPressed: () async {
-                                  await _loadCatalog();
-                                  if (context.mounted) update(() {});
-                                },
-                                icon: const Icon(Icons.refresh),
-                                label: const Text('נסה לטעון שוב')),
-                          for (final destination in filtered)
-                            ListTile(
-                                key: ValueKey(
-                                    'media-destination-${destination['kind']}-${destination['id']}'),
-                                leading: CircleAvatar(
-                                    backgroundColor: kChatBg,
-                                    child: Icon(
-                                        destination['kind'] == 'group'
-                                            ? Icons.groups_outlined
-                                            : Icons.person_outline,
-                                        color: kPrimary)),
-                                title: Text(
-                                    destination['label']?.toString() ?? 'שיחה'),
-                                subtitle: Text(
-                                    '${destination['kind'] == 'group' ? 'קבוצה' : 'חבר'} · ${destination['count']} קבצים · ${_size(destination['bytes'])}'),
-                                trailing: _destinationId == destination['id'] &&
-                                        _destinationKind == destination['kind']
-                                    ? const Icon(Icons.check_circle,
-                                        color: kPrimary)
-                                    : null,
-                                onTap: () =>
-                                    Navigator.pop(dialogContext, destination)),
-                          if (filtered.isEmpty && _catalogError == null)
-                            const Padding(
-                                padding: EdgeInsets.all(20),
-                                child:
-                                    Text('לא נמצאו חברים או קבוצות עם מדיה')),
-                        ])),
-                      ])),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(dialogContext),
-                        child: const Text('סגור'))
-                  ]);
-            }));
+                            key: ValueKey(
+                              'media-destination-${destination['kind']}-${destination['id']}',
+                            ),
+                            leading: CircleAvatar(
+                              backgroundColor: kChatBg,
+                              child: Icon(
+                                destination['kind'] == 'group'
+                                    ? Icons.groups_outlined
+                                    : Icons.person_outline,
+                                color: kPrimary,
+                              ),
+                            ),
+                            title: Text(
+                              destination['label']?.toString() ?? 'שיחה',
+                            ),
+                            subtitle: Text(
+                              '${destination['kind'] == 'group' ? 'קבוצה' : 'חבר'} · ${destination['count']} קבצים · ${_size(destination['bytes'])}',
+                            ),
+                            trailing: _destinationId == destination['id'] &&
+                                    _destinationKind == destination['kind']
+                                ? const Icon(
+                                    Icons.check_circle,
+                                    color: kPrimary,
+                                  )
+                                : null,
+                            onTap: () =>
+                                Navigator.pop(dialogContext, destination),
+                          ),
+                        if (filtered.isEmpty && _catalogError == null)
+                          const Padding(
+                            padding: EdgeInsets.all(20),
+                            child: Text('לא נמצאו חברים או קבוצות עם מדיה'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('סגור'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
     if (choice == null || !mounted) return;
     setState(() {
       _destinationKind = choice['kind']?.toString();
@@ -37903,11 +39213,14 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   Widget _toolsPanel(double width) => Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: kBorder)),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          TextField(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: kBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
               key: const ValueKey('media-search'),
               controller: _searchCtrl,
               onChanged: (_) {
@@ -37915,135 +39228,176 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                 _debouncedLoad();
               },
               decoration: InputDecoration(
-                  hintText: 'חיפוש קובץ לפי שם…',
-                  labelText: 'שם הקובץ',
-                  prefixIcon: const Icon(Icons.search, color: kPrimary),
-                  suffixIcon: _searchCtrl.text.isEmpty
-                      ? null
-                      : IconButton(
-                          tooltip: 'נקה חיפוש',
-                          onPressed: () {
-                            setState(_searchCtrl.clear);
-                            _load(reset: true);
-                          },
-                          icon: const Icon(Icons.close)),
-                  filled: true,
-                  fillColor: const Color(0xFFF7FAFE))),
-          const SizedBox(height: 12),
-          Wrap(
+                hintText: 'חיפוש קובץ לפי שם…',
+                labelText: 'שם הקובץ',
+                prefixIcon: const Icon(Icons.search, color: kPrimary),
+                suffixIcon: _searchCtrl.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'נקה חיפוש',
+                        onPressed: () {
+                          setState(_searchCtrl.clear);
+                          _load(reset: true);
+                        },
+                        icon: const Icon(Icons.close),
+                      ),
+                filled: true,
+                fillColor: const Color(0xFFF7FAFE),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
               spacing: 8,
               runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 ConstrainedBox(
-                    constraints:
-                        BoxConstraints(maxWidth: math.max(160, width - 28)),
-                    child: OutlinedButton.icon(
-                        key: const ValueKey('media-destination-filter'),
-                        onPressed: _chooseDestination,
-                        icon: const Icon(Icons.people_outline, size: 18),
-                        label: Text(_destinationLabel ?? 'כל החברים והקבוצות',
-                            maxLines: 1, overflow: TextOverflow.ellipsis))),
+                  constraints:
+                      BoxConstraints(maxWidth: math.max(160, width - 28)),
+                  child: OutlinedButton.icon(
+                    key: const ValueKey('media-destination-filter'),
+                    onPressed: _chooseDestination,
+                    icon: const Icon(Icons.people_outline, size: 18),
+                    label: Text(
+                      _destinationLabel ?? 'כל החברים והקבוצות',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
                 OutlinedButton.icon(
-                    key: const ValueKey('media-advanced-filters'),
-                    onPressed: () =>
-                        setState(() => _advancedFilters = !_advancedFilters),
-                    icon: const Icon(Icons.tune, size: 18),
-                    label:
-                        Text(_advancedFilters ? 'סגור מסננים' : 'סינון מתקדם')),
+                  key: const ValueKey('media-advanced-filters'),
+                  onPressed: () =>
+                      setState(() => _advancedFilters = !_advancedFilters),
+                  icon: const Icon(Icons.tune, size: 18),
+                  label: Text(_advancedFilters ? 'סגור מסננים' : 'סינון מתקדם'),
+                ),
                 FilterChip(
-                    label: const Text('ניתנים למחיקה'),
-                    selected: _onlyDeletable,
-                    onSelected: (value) {
-                      setState(() => _onlyDeletable = value);
-                      _load(reset: true);
-                    }),
+                  label: const Text('ללא שימוש'),
+                  selected: _onlyDeletable,
+                  onSelected: (value) {
+                    setState(() => _onlyDeletable = value);
+                    _load(reset: true);
+                  },
+                ),
                 if (_activeFilters > 0)
                   TextButton.icon(
-                      onPressed: _clearColumnFilters,
-                      icon: const Icon(Icons.filter_alt_off_outlined, size: 17),
-                      label: Text('נקה מסננים ($_activeFilters)')),
-              ]),
-          if (_advancedFilters) ...[
-            const Padding(
+                    onPressed: _clearColumnFilters,
+                    icon: const Icon(Icons.filter_alt_off_outlined, size: 17),
+                    label: Text('נקה מסננים ($_activeFilters)'),
+                  ),
+              ],
+            ),
+            if (_advancedFilters) ...[
+              const Padding(
                 padding: EdgeInsets.symmetric(vertical: 10),
-                child: Divider(height: 1)),
-            Wrap(spacing: 10, runSpacing: 12, children: [
-              _filterDropdown(
-                  label: 'מיקום',
-                  value: _scope,
-                  values: _scopes,
-                  onChanged: (value) {
-                    setState(() => _scope = value);
-                    _load(reset: true);
-                  }),
-              _filterDropdown(
-                  label: 'מצב סריקה',
-                  value: _moderation,
-                  values: _moderationFilters,
-                  onChanged: (value) {
-                    setState(() => _moderation = value);
-                    _load(reset: true);
-                  }),
-              _filterDropdown(
-                  label: 'מצב גיבוי',
-                  value: _backup,
-                  values: _backupFilters,
-                  onChanged: (value) {
-                    setState(() => _backup = value);
-                    _load(reset: true);
-                  }),
-              _filterDropdown(
-                  label: 'סיווג',
-                  value: _classification,
-                  values: _classificationFilters,
-                  onChanged: (value) {
-                    setState(() => _classification = value);
-                    _load(reset: true);
-                  }),
-              SizedBox(
-                  width: 140,
-                  child: TextField(
+                child: Divider(height: 1),
+              ),
+              Wrap(
+                spacing: 10,
+                runSpacing: 12,
+                children: [
+                  _filterDropdown(
+                    label: 'מיקום',
+                    value: _scope,
+                    values: _scopes,
+                    onChanged: (value) {
+                      setState(() => _scope = value);
+                      _load(reset: true);
+                    },
+                  ),
+                  _filterDropdown(
+                    label: 'מצב סריקה',
+                    value: _moderation,
+                    values: _moderationFilters,
+                    onChanged: (value) {
+                      setState(() => _moderation = value);
+                      _load(reset: true);
+                    },
+                  ),
+                  _filterDropdown(
+                    label: 'מצב גיבוי',
+                    value: _backup,
+                    values: _backupFilters,
+                    onChanged: (value) {
+                      setState(() => _backup = value);
+                      _load(reset: true);
+                    },
+                  ),
+                  _filterDropdown(
+                    label: 'סיווג',
+                    value: _classification,
+                    values: _classificationFilters,
+                    onChanged: (value) {
+                      setState(() => _classification = value);
+                      _load(reset: true);
+                    },
+                  ),
+                  SizedBox(
+                    width: 140,
+                    child: TextField(
                       key: const ValueKey('media-min-size'),
                       controller: _minSizeCtrl,
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
                       onChanged: (_) => _debouncedLoad(),
                       decoration: const InputDecoration(
-                          labelText: 'גודל מינימלי (MB)'))),
-              SizedBox(
-                  width: 140,
-                  child: TextField(
+                        labelText: 'גודל מינימלי (MB)',
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 140,
+                    child: TextField(
                       key: const ValueKey('media-max-size'),
                       controller: _maxSizeCtrl,
-                      keyboardType:
-                          const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
                       onChanged: (_) => _debouncedLoad(),
-                      decoration:
-                          const InputDecoration(labelText: 'גודל מרבי (MB)'))),
-              OutlinedButton.icon(
-                  onPressed: () => _pickFilterDate(from: true),
-                  icon: const Icon(Icons.date_range, size: 18),
-                  label: Text(_dateFrom == null
-                      ? 'מתאריך'
-                      : _date(_dateFrom).split(' ').first)),
-              OutlinedButton.icon(
-                  onPressed: () => _pickFilterDate(from: false),
-                  icon: const Icon(Icons.event, size: 18),
-                  label: Text(_dateTo == null
-                      ? 'עד תאריך'
-                      : _date(_dateTo).split(' ').first)),
-            ]),
+                      decoration: const InputDecoration(
+                        labelText: 'גודל מרבי (MB)',
+                      ),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _pickFilterDate(from: true),
+                    icon: const Icon(Icons.date_range, size: 18),
+                    label: Text(
+                      _dateFrom == null
+                          ? 'מתאריך'
+                          : _date(_dateFrom).split(' ').first,
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _pickFilterDate(from: false),
+                    icon: const Icon(Icons.event, size: 18),
+                    label: Text(
+                      _dateTo == null
+                          ? 'עד תאריך'
+                          : _date(_dateTo).split(' ').first,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
-        ]),
+        ),
       );
 
   Future<void> _openMedia(Map<String, dynamic> item) async {
+    if (_mediaHidden(item)) return;
     if (item['moderationStatus'] != 'approved') {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(item['moderationStatus'] == 'rejected'
-              ? 'הקובץ נחסם בסריקה'
-              : 'הקובץ עדיין בבדיקה')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            item['moderationStatus'] == 'rejected'
+                ? 'הקובץ נחסם בסריקה'
+                : 'הקובץ עדיין בבדיקה',
+          ),
+        ),
+      );
       return;
     }
     final url = item['url']?.toString() ?? '';
@@ -38051,36 +39405,46 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     final type = item['fileType']?.toString();
     if (type == 'image') {
       await Navigator.push(
-          context,
-          MaterialPageRoute(
-              builder: (_) => ImagePreviewScreen(url: url, filename: name)));
+        context,
+        MaterialPageRoute(
+          builder: (_) => ImagePreviewScreen(
+            filterToken: widget.token,
+            messages: _libraryPreviewMessages(item),
+            url: url,
+            filename: name,
+            onRename: (url, filename) => _rename(item),
+          ),
+        ),
+      );
     } else if (name.toLowerCase().endsWith('.pdf')) {
       _openPdfInsideApp(context, url, name);
     } else if (_isOfficePreviewFile(name)) {
       _openOfficeInsideApp(context, url, name, widget.token);
     } else if (type == 'video' || type == 'audio') {
       await showDialog<void>(
-          context: context,
-          useRootNavigator: false,
-          builder: (dialogContext) => AlertDialog(
-                  title:
-                      Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  content: SizedBox(
-                      width: type == 'video' ? 640 : 400,
-                      child: type == 'video'
-                          ? AspectRatio(
-                              aspectRatio: 16 / 9,
-                              child: kIsWeb
-                                  ? NativeWebVideoPlayer(
-                                      url: _absoluteMediaUrl(url))
-                                  : _ChatVideoPlayer(url: url))
-                          : VoiceMessagePlayer(
-                              url: url, isMe: true, senderName: name)),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(dialogContext),
-                        child: const Text('סגור'))
-                  ]));
+        context: context,
+        useRootNavigator: false,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
+          content: SizedBox(
+            width: type == 'video' ? 640 : 400,
+            child: type == 'video'
+                ? AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: kIsWeb
+                        ? NativeWebVideoPlayer(url: _absoluteMediaUrl(url))
+                        : _ChatVideoPlayer(url: url),
+                  )
+                : VoiceMessagePlayer(url: url, isMe: true, senderName: name),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('סגור'),
+            ),
+          ],
+        ),
+      );
     } else {
       await _downloadChatFile(context, url, name, token: widget.token);
     }
@@ -38094,7 +39458,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         .toSet()
         .toList();
     if (names.isEmpty) {
-      return item['canDelete'] == true ? 'ללא שיוך לשיחה' : 'קובץ בשימוש';
+      return (item['referenceCount'] as num? ?? 0) == 0 ? 'ללא שיוך לשיחה' : 'קובץ בשימוש';
     }
     return names.length == 1
         ? names.first
@@ -38102,36 +39466,53 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   }
 
   Widget _thumbnail(Map<String, dynamic> item, {bool small = false}) {
+    if (_mediaHidden(item)) return _hiddenMediaPreview(item, small: small);
     final type = item['fileType']?.toString() ?? 'document';
     final approved = item['moderationStatus'] == 'approved';
     final color = _typeColor(type);
     return InkWell(
-        onTap: () => _selecting ? _toggleSelected(item) : _openMedia(item),
-        child: Container(
-          color: color.withValues(alpha: .075),
-          child: type == 'image' && approved
-              ? _PersistentMediaImage(
-                  key: ValueKey('media-image-${item['id']}-${item['url']}'),
-                  url: item['url']?.toString() ?? '',
-                  width: double.infinity,
-                  height: double.infinity,
-                  fit: BoxFit.cover,
-                  loadingBuilder: (_) => Center(
-                      child: Icon(Icons.image_outlined,
-                          size: 42, color: color.withValues(alpha: .4))),
-                  errorBuilder: (_) => Center(
-                      child: Icon(Icons.cloud_download_outlined,
-                          size: 40, color: color)))
-              : Center(
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(!approved ? Icons.shield_outlined : _fileIcon(type),
-                      size: small ? 28 : 40, color: color),
-                  if (!small) const SizedBox(height: 8),
-                  if (!small)
-                    Text(
+      onTap: () => _selecting ? _toggleSelected(item) : _openMedia(item),
+      child: Container(
+        color: color.withValues(alpha: .075),
+        child: type == 'image' && approved
+            ? _PersistentMediaImage(
+                key: ValueKey('media-image-${item['id']}-${item['url']}'),
+                url: item['url']?.toString() ?? '',
+                onDisplayed: () => _reportMediaDisplay(item),
+                width: double.infinity,
+                height: double.infinity,
+                fit: BoxFit.cover,
+                loadingBuilder: (_) => Center(
+                  child: Icon(
+                    Icons.image_outlined,
+                    size: 42,
+                    color: color.withValues(alpha: .4),
+                  ),
+                ),
+                errorBuilder: (_) => Center(
+                  child: Icon(
+                    Icons.cloud_download_outlined,
+                    size: 40,
+                    color: color,
+                  ),
+                ),
+              )
+            : Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      !approved ? Icons.shield_outlined : _fileIcon(type),
+                      size: small ? 28 : 40,
+                      color: color,
+                    ),
+                    if (!small) const SizedBox(height: 8),
+                    if (!small)
+                      Text(
                         !approved
                             ? _moderationLabel(
-                                item['moderationStatus']?.toString())
+                                item['moderationStatus']?.toString(),
+                              )
                             : type == 'video'
                                 ? 'נגן סרטון'
                                 : type == 'audio'
@@ -38145,438 +39526,682 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                            color: color,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500)),
-                ])),
-        ));
+                          color: color,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+      ),
+    );
   }
 
   void _toggleSelected(Map<String, dynamic> item) {
-    if (item['canDelete'] != true || _deleting) return;
+    if (_deleting || _forwarding || _selectingAll) return;
     final id = item['id'].toString();
     setState(() {
-      if (!_selectedIds.add(id)) _selectedIds.remove(id);
+      _selecting = true;
+      if (_selectedItems.containsKey(id)) {
+        _selectedItems.remove(id);
+      } else {
+        _selectedItems[id] = Map<String, dynamic>.from(item);
+      }
     });
   }
 
   Widget _selectionCheckbox(Map<String, dynamic> item) => Tooltip(
-      message:
-          item['canDelete'] == true ? 'בחירה למחיקה' : 'הקובץ עדיין בשימוש',
-      child: Checkbox(
+        message: 'בחירת קובץ',
+        child: Checkbox(
           key: ValueKey('media-select-${item['id']}'),
-          value: _selectedIds.contains(item['id'].toString()),
-          onChanged: item['canDelete'] == true && !_deleting
-              ? (_) => _toggleSelected(item)
-              : null));
+          value: _selectedItems.containsKey(item['id'].toString()),
+          onChanged:
+              !_deleting && !_forwarding && !_selectingAll
+                  ? (_) => _toggleSelected(item) : null,
+        ),
+      );
+
+  Widget _duplicateBadge(Map<String, dynamic> item) {
+    final count = (item['duplicateCount'] as num?)?.toInt() ?? 1;
+    if (count <= 1) return const SizedBox.shrink();
+    return Tooltip(
+      message: '$count עותקים זהים מוצגים כקובץ אחד. השיוכים לשיחות נשמרו.',
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFE4F1FC),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.copy_all_outlined, size: 14, color: kPrimary),
+              const SizedBox(width: 3),
+              Text(
+                '$count',
+                style: const TextStyle(fontSize: 11, color: kPrimary),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _deleteButton(Map<String, dynamic> item) => IconButton(
-      key: ValueKey('media-delete-${item['id']}'),
-      tooltip: item['canDelete'] == true ? 'מחיקת קובץ' : 'בדיקת אפשרות מחיקה',
-      visualDensity: VisualDensity.compact,
-      onPressed: _deleting || _busyMediaIds.contains(item['id'].toString())
-          ? null
-          : () => _delete(item),
-      icon: Icon(
-          item['canDelete'] == true ? Icons.delete_outline : Icons.lock_outline,
+        key: ValueKey('media-delete-${item['id']}'),
+        tooltip: 'מחיקת קובץ',
+        visualDensity: VisualDensity.compact,
+        onPressed: _deleting || _forwarding || _selectingAll ||
+                _busyMediaIds.contains(item['id'].toString())
+            ? null
+            : () => _delete(item),
+        icon: const Icon(
+          Icons.delete_outline,
           size: 19,
-          color: item['canDelete'] == true
-              ? const Color(0xFFAF5157)
-              : const Color(0xFF6D8A9F)));
+          color: Color(0xFFAF5157),
+        ),
+      );
+
+  Widget _renameName(Map<String, dynamic> item,
+      {double fontSize = 13, int maxLines = 1}) => Tooltip(
+        message: 'לחץ לשינוי שם הקובץ',
+        child: InkWell(
+          key: ValueKey('media-rename-${item['id']}'),
+          onTap: _deleting || _forwarding || _selectingAll ||
+                  _busyMediaIds.contains(item['id'].toString())
+              ? null : () => _rename(item),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(children: [
+              Expanded(child: Text(
+                item['name']?.toString() ?? 'קובץ',
+                maxLines: maxLines,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontWeight: FontWeight.w600,
+                    color: kTextDark, fontSize: fontSize),
+              )),
+              const SizedBox(width: 4),
+              const Icon(Icons.edit_outlined, size: 14, color: kSubtext),
+            ]),
+          ),
+        ),
+      );
 
   Widget _mediaCard(Map<String, dynamic> item) {
-    final selected = _selectedIds.contains(item['id'].toString());
+    final selected = _selectedItems.containsKey(item['id'].toString());
     return Material(
-        key: ValueKey('media-file-${item['id']}'),
-        color: Colors.white,
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(17),
-            side: BorderSide(
-                color: selected ? kPrimary : kBorder, width: selected ? 2 : 1)),
-        clipBehavior: Clip.antiAlias,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      key: ValueKey('media-file-${item['id']}'),
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(17),
+        side: BorderSide(
+          color: selected ? kPrimary : kBorder,
+          width: selected ? 2 : 1,
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Expanded(
-              child: Stack(fit: StackFit.expand, children: [
-            _thumbnail(item),
-            if (_selecting)
-              PositionedDirectional(
-                  top: 6,
-                  start: 6,
-                  child: Material(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _thumbnail(item),
+                PositionedDirectional(
+                  bottom: 7,
+                  end: 7,
+                  child: _duplicateBadge(item),
+                ),
+                PositionedDirectional(
+                    top: 6,
+                    start: 6,
+                    child: Material(
                       color: Colors.white,
                       shape: const CircleBorder(),
-                      child: _selectionCheckbox(item))),
-            if (item['backupStatus'] == 'verified')
-              const PositionedDirectional(
-                  top: 9,
-                  end: 9,
-                  child: Tooltip(
+                      child: _selectionCheckbox(item),
+                    ),
+                  ),
+                if (item['backupStatus'] == 'verified')
+                  const PositionedDirectional(
+                    top: 9,
+                    end: 9,
+                    child: Tooltip(
                       message: 'מגובה ב־Drive',
                       child: CircleAvatar(
-                          radius: 14,
-                          backgroundColor: Colors.white,
-                          child: Icon(Icons.cloud_done_outlined,
-                              color: kPrimary, size: 18)))),
-          ])),
+                        radius: 14,
+                        backgroundColor: Colors.white,
+                        child: Icon(
+                          Icons.cloud_done_outlined,
+                          color: kPrimary,
+                          size: 18,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           Padding(
-              padding: const EdgeInsets.fromLTRB(11, 10, 11, 0),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(item['name']?.toString() ?? 'קובץ',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: kTextDark,
-                            fontSize: 13)),
-                    const SizedBox(height: 4),
-                    Text(
-                        '${_size(item['size'])} · ${_date(item['createdAt']).split(' ').first}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 11, color: Color(0xFF637F95))),
-                  ])),
+            padding: const EdgeInsets.fromLTRB(11, 10, 11, 0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _renameName(item),
+                const SizedBox(height: 4),
+                Text(
+                  '${_size(item['size'])} · ${_date(item['createdAt']).split(' ').first}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF637F95),
+                  ),
+                ),
+              ],
+            ),
+          ),
           Padding(
-              padding: const EdgeInsetsDirectional.only(start: 8, end: 3),
-              child: Row(children: [
+            padding: const EdgeInsetsDirectional.only(start: 8, end: 3),
+            child: Row(
+              children: [
                 Expanded(
-                    child: InkWell(
-                        onTap: () => _showDestinations(item),
-                        child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            child: Text(_destinationSummary(item),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontSize: 11, color: kPrimary))))),
+                  child: InkWell(
+                    onTap: () => _showDestinations(item),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                        _destinationSummary(item),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11, color: kPrimary),
+                      ),
+                    ),
+                  ),
+                ),
                 _deleteButton(item),
                 _tableActions(item),
-              ])),
-        ]));
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _mediaListRow(Map<String, dynamic> item) => Container(
-      key: ValueKey('media-file-${item['id']}'),
-      margin: const EdgeInsets.only(bottom: 9),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
+        key: ValueKey('media-file-${item['id']}'),
+        margin: const EdgeInsets.only(bottom: 9),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: kBorder)),
-      child: Row(children: [
-        if (_selecting) _selectionCheckbox(item),
-        ClipRRect(
-            borderRadius: BorderRadius.circular(11),
-            child: SizedBox(
-                width: 58, height: 66, child: _thumbnail(item, small: true))),
-        const SizedBox(width: 12),
-        Expanded(
-            child: InkWell(
+          border: Border.all(
+            color: _selectedItems.containsKey(item['id'].toString())
+                ? kPrimary
+                : kBorder,
+          ),
+        ),
+        child: Row(
+          children: [
+            _selectionCheckbox(item),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: SizedBox(
+                width: 58,
+                height: 66,
+                child: _thumbnail(item, small: true),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: InkWell(
                 onTap: () =>
                     _selecting ? _toggleSelected(item) : _openMedia(item),
                 child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(item['name']?.toString() ?? 'קובץ',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w600, color: kTextDark)),
-                      const SizedBox(height: 4),
-                      Text(
-                          '${_size(item['size'])} · ${_date(item['createdAt']).split(' ').first}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 12, color: Color(0xFF637F95))),
-                      const SizedBox(height: 4),
-                      Text(_destinationSummary(item),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style:
-                              const TextStyle(fontSize: 12, color: kPrimary)),
-                    ]))),
-        _deleteButton(item),
-        _tableActions(item),
-      ]));
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _renameName(item, fontSize: 14),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${_size(item['size'])} · ${_date(item['createdAt']).split(' ').first}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF637F95),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _destinationSummary(item),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: kPrimary),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            _duplicateBadge(item),
+            _deleteButton(item),
+            _tableActions(item),
+          ],
+        ),
+      );
+
+  Future<void> _selectAll() async {
+    if (_selectingAll || _deleting || _forwarding || _loading || _loadingMore) return;
+    final token = widget.token;
+    final generation = ++_selectionGeneration;
+    bool current() => mounted && token == widget.token &&
+        generation == _selectionGeneration;
+    setState(() => _selectingAll = true);
+    try {
+      while (current() && _items.length < _total) {
+        final before = _items.length;
+        await _load(reset: false);
+        if (!mounted || !current()) return;
+        if (_moreError != null || _items.length <= before) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('לא ניתן היה לבחור את כל הקבצים. יש לנסות שוב.'),
+          ));
+          return;
+        }
+      }
+      if (!current()) return;
+      setState(() {
+        _selecting = true;
+        for (final item in _items) {
+          _selectedItems[item['id'].toString()] = Map<String, dynamic>.from(item);
+        }
+      });
+    } finally {
+      if (current()) setState(() => _selectingAll = false);
+    }
+  }
 
   Widget _viewToolbar(double width) {
     final selection = OutlinedButton.icon(
-        key: const ValueKey('media-select-mode'),
-        onPressed: _deleting
-            ? null
-            : () => setState(() {
-                  _selecting = !_selecting;
-                  _selectedIds.clear();
-                  if (_selecting && _view == 'table') _view = 'grid';
-                }),
-        icon: Icon(_selecting ? Icons.close : Icons.checklist, size: 17),
-        label: Text(_selecting ? 'ביטול בחירה' : 'בחירת קבצים'));
-    final count = Text('$_total קבצים · ${_size(_totalBytes)}',
-        key: const ValueKey('media-results-count'),
-        style: const TextStyle(color: kTextDark, fontWeight: FontWeight.w600));
+      key: const ValueKey('media-select-mode'),
+      onPressed: _deleting || _forwarding || _selectingAll
+          ? null
+          : () => setState(() {
+                _selecting = !_selecting;
+                _selectedItems.clear();
+              }),
+      icon: Icon(_selecting ? Icons.close : Icons.checklist, size: 17),
+      label: Text(_selecting ? 'ביטול בחירה' : 'בחירת קבצים'),
+    );
+    final selectAll = OutlinedButton.icon(
+      key: const ValueKey('media-select-all'),
+      onPressed: _deleting || _forwarding || _selectingAll ||
+              _loading || _loadingMore || _total == 0 ? null : _selectAll,
+      icon: _selectingAll
+          ? const SizedBox(width: 16, height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2))
+          : const Icon(Icons.select_all, size: 18),
+      label: Text(_selectingAll ? 'טוען קבצים…' : 'בחר הכול'),
+    );
+    final count = Text(
+      '$_total קבצים · ${_size(_totalBytes)}',
+      key: const ValueKey('media-results-count'),
+      style: const TextStyle(color: kTextDark, fontWeight: FontWeight.w600),
+    );
     final sorting = SizedBox(
-        width: 146,
-        child: DropdownButton<String>(
-            key: const ValueKey('media-sort'),
-            value: _sort,
-            isExpanded: true,
-            underline: const SizedBox.shrink(),
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(fontSize: 13, color: kPrimary),
-            items: _sorts.entries
-                .map((entry) => DropdownMenuItem(
-                    value: entry.key, child: Text(entry.value)))
-                .toList(),
-            onChanged: (value) {
-              if (value != null) {
-                setState(() => _sort = value);
-                _load(reset: true);
-              }
-            }));
-    final views = Row(mainAxisSize: MainAxisSize.min, children: [
-      for (final entry in {
-        'grid': Icons.grid_view_rounded,
-        'list': Icons.view_list_outlined,
-        'table': Icons.table_chart_outlined
-      }.entries)
-        IconButton(
+      width: 146,
+      child: DropdownButton<String>(
+        key: const ValueKey('media-sort'),
+        value: _sort,
+        isExpanded: true,
+        underline: const SizedBox.shrink(),
+        style: Theme.of(context)
+            .textTheme
+            .bodyMedium
+            ?.copyWith(fontSize: 13, color: kPrimary),
+        items: _sorts.entries
+            .map(
+              (entry) =>
+                  DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+            )
+            .toList(),
+        onChanged: (value) {
+          if (value != null) {
+            setState(() => _sort = value);
+            _load(reset: true);
+          }
+        },
+      ),
+    );
+    final views = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final entry in {
+          'grid': Icons.grid_view_rounded,
+          'list': Icons.view_list_outlined,
+          'table': Icons.table_chart_outlined,
+        }.entries)
+          IconButton(
             key: ValueKey('media-view-${entry.key}'),
             tooltip: {
               'grid': 'גלריה',
               'list': 'רשימה',
-              'table': 'טבלה מפורטת'
+              'table': 'טבלה מפורטת',
             }[entry.key],
             style: IconButton.styleFrom(
-                backgroundColor: _view == entry.key
-                    ? const Color(0xFFDAECFA)
-                    : Colors.transparent,
-                foregroundColor:
-                    _view == entry.key ? kPrimary : const Color(0xFF7A96AB)),
+              backgroundColor: _view == entry.key
+                  ? const Color(0xFFDAECFA)
+                  : Colors.transparent,
+              foregroundColor:
+                  _view == entry.key ? kPrimary : const Color(0xFF7A96AB),
+            ),
             onPressed: () => setState(() => _view = entry.key),
-            icon: Icon(entry.value, size: 20)),
-    ]);
+            icon: Icon(entry.value, size: 20),
+          ),
+      ],
+    );
     return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: width < 680
-            ? Column(children: [
-                Row(children: [
-                  Expanded(child: count),
-                  const SizedBox(width: 8),
-                  selection
-                ]),
-                const SizedBox(height: 4),
-                Row(children: [sorting, const Spacer(), views]),
-              ])
-            : Row(children: [
-                Expanded(child: count),
-                sorting,
-                const SizedBox(width: 8),
-                views,
-                const SizedBox(width: 14),
-                selection
-              ]));
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: SizedBox(
+        width: width,
+        child: Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            count,
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [sorting, views, selection, selectAll],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _emptyState() => Padding(
-      padding: const EdgeInsets.symmetric(vertical: 48),
-      child: Center(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const CircleAvatar(
-            radius: 35,
-            backgroundColor: Color(0xFFDDEDFB),
-            child: Icon(Icons.folder_open_outlined, size: 36, color: kPrimary)),
-        const SizedBox(height: 18),
-        Text(
-            _activeFilters > 0
-                ? 'לא נמצאו קבצים שמתאימים לסינון'
-                : 'המדיה שלך תופיע כאן',
-            style: const TextStyle(
-                color: kTextDark, fontSize: 17, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 8),
-        Text(
-            _activeFilters > 0
-                ? 'אפשר לשנות את החיפוש או לנקות את המסננים'
-                : 'תמונות, סרטונים וקבצים ששלחת או שקיבלת',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Color(0xFF637F95))),
-        if (_activeFilters > 0)
-          TextButton(
-              onPressed: _clearColumnFilters, child: const Text('נקה מסננים')),
-      ])));
+        padding: const EdgeInsets.symmetric(vertical: 48),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircleAvatar(
+                radius: 35,
+                backgroundColor: Color(0xFFDDEDFB),
+                child:
+                    Icon(Icons.folder_open_outlined, size: 36, color: kPrimary),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                _activeFilters > 0
+                    ? 'לא נמצאו קבצים שמתאימים לסינון'
+                    : 'המדיה שלך תופיע כאן',
+                style: const TextStyle(
+                  color: kTextDark,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _activeFilters > 0
+                    ? 'אפשר לשנות את החיפוש או לנקות את המסננים'
+                    : 'תמונות, סרטונים וקבצים ששלחת או שקיבלת',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xFF637F95)),
+              ),
+              if (_activeFilters > 0)
+                TextButton(
+                  onPressed: _clearColumnFilters,
+                  child: const Text('נקה מסננים'),
+                ),
+            ],
+          ),
+        ),
+      );
 
   Widget? _selectionBar() {
     if (!_selecting) return null;
-    final chosen = _items
-        .where((item) => _selectedIds.contains(item['id'].toString()))
-        .toList();
+    final chosen = _selectedItems.values.toList();
+    final forwardable = chosen.where(_canForwardMedia).toList();
+    final visibleIds = _items.map((item) => item['id'].toString()).toSet();
+    final outsideFilter =
+        _selectedItems.keys.where((id) => !visibleIds.contains(id)).length;
     final bytes = chosen.fold<int>(
-        0, (sum, item) => sum + ((item['size'] as num?)?.toInt() ?? 0));
+      0,
+      (sum, item) => sum + ((item['size'] as num?)?.toInt() ?? 0),
+    );
     return SafeArea(
-        top: false,
-        child: Container(
-            padding: const EdgeInsets.all(12),
-            decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(top: BorderSide(color: kBorder))),
-            child: Wrap(
-                spacing: 12,
-                runSpacing: 8,
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Text('${chosen.length} נבחרו · ${_size(bytes)}',
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
-                  FilledButton.icon(
-                      key: const ValueKey('media-delete-selected'),
-                      style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFFAF5157)),
-                      onPressed: chosen.isEmpty || _deleting
-                          ? null
-                          : () => _confirmDeleteItems(chosen),
-                      icon: _deleting
-                          ? const SizedBox(
-                              width: 17,
-                              height: 17,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white))
-                          : const Icon(Icons.delete_outline, size: 19),
-                      label: Text(_deleting ? 'מוחק…' : 'מחק נבחרים')),
-                ])));
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          border: Border(top: BorderSide(color: kBorder)),
+        ),
+        child: Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              '${chosen.length} נבחרו · ${_size(bytes)}'
+              '${outsideFilter > 0 ? ' · $outsideFilter מחוץ לסינון הנוכחי' : ''}',
+              key: const ValueKey('media-selection-count'),
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            FilledButton.icon(
+              key: const ValueKey('media-forward-selected'),
+              onPressed: forwardable.isEmpty || _deleting || _forwarding || _selectingAll
+                  ? null
+                  : () => _sendItems(forwardable),
+              icon: const Icon(Icons.forward, size: 19),
+              label: Text(
+                _forwarding ? 'מעביר…' : 'העבר נבחרים (${forwardable.length})',
+              ),
+            ),
+            OutlinedButton.icon(
+              key: const ValueKey('media-delete-selected'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFAF5157),
+              ),
+              onPressed: chosen.isEmpty || _deleting || _forwarding || _selectingAll
+                  ? null
+                  : () => _confirmDeleteItems(chosen),
+              icon: _deleting
+                  ? const SizedBox(
+                      width: 17,
+                      height: 17,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.delete_outline, size: 19),
+              label: Text(
+                _deleting ? 'מטפל במחיקה…' : 'מחק נבחרים (${chosen.length})',
+              ),
+            ),
+            TextButton(
+              key: const ValueKey('media-clear-selection'),
+              onPressed: _deleting || _forwarding || _selectingAll
+                  ? null : () => setState(_selectedItems.clear),
+              child: const Text('נקה בחירה'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) => Directionality(
-      textDirection: TextDirection.rtl,
-      child: Scaffold(
-        backgroundColor: const Color(0xFFF2F7FC),
-        appBar: AppBar(
+        textDirection: TextDirection.rtl,
+        child: Scaffold(
+          backgroundColor: const Color(0xFFF2F7FC),
+          appBar: AppBar(
             title: const Text('המדיה שלי'),
             backgroundColor: kHeader,
             foregroundColor: Colors.white,
             leading: IconButton(
-                tooltip: 'חזרה',
-                icon: const Icon(Icons.arrow_back),
-                onPressed: widget.onClose ?? () => Navigator.maybePop(context)),
+              tooltip: 'חזרה',
+              icon: const Icon(Icons.arrow_back),
+              onPressed: widget.onClose ?? () => Navigator.maybePop(context),
+            ),
             actions: [
               IconButton(
-                  tooltip: 'רענון המדיה',
-                  onPressed: _deleting ? null : _refresh,
-                  icon: const Icon(Icons.refresh)),
-              const SizedBox(width: 6)
-            ]),
-        bottomNavigationBar: _selectionBar(),
-        body: LayoutBuilder(builder: (context, constraints) {
-          final compact = constraints.maxWidth < 620;
-          final padding = compact ? 12.0 : 24.0;
-          final width = constraints.maxWidth - padding * 2;
-          final columns = width < 300 ? 1 : (width / 220).floor().clamp(2, 6);
-          return RefreshIndicator(
-              onRefresh: _refresh,
-              child: CustomScrollView(
-                key: const ValueKey('media-scroll'),
-                physics: const AlwaysScrollableScrollPhysics(),
-                slivers: [
-                  SliverPadding(
+                tooltip: 'רענון המדיה',
+                onPressed: _deleting ? null : _refresh,
+                icon: const Icon(Icons.refresh),
+              ),
+              const SizedBox(width: 6),
+            ],
+          ),
+          bottomNavigationBar: _selectionBar(),
+          body: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 620;
+              final padding = compact ? 12.0 : 24.0;
+              final width = constraints.maxWidth - padding * 2;
+              final columns =
+                  width < 300 ? 1 : (width / 220).floor().clamp(2, 6);
+              return RefreshIndicator(
+                onRefresh: _refresh,
+                child: CustomScrollView(
+                  key: const ValueKey('media-scroll'),
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverPadding(
                       padding:
                           EdgeInsets.fromLTRB(padding, padding, padding, 0),
                       sliver: SliverToBoxAdapter(
-                          child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             _summaryPanel(compact),
                             if (_catalogError != null)
                               Padding(
-                                  padding: const EdgeInsets.only(top: 6),
-                                  child: TextButton.icon(
-                                      onPressed: _loadCatalog,
-                                      icon: const Icon(Icons.refresh, size: 16),
-                                      label: Text(_catalogError!))),
+                                padding: const EdgeInsets.only(top: 6),
+                                child: TextButton.icon(
+                                  onPressed: _loadCatalog,
+                                  icon: const Icon(Icons.refresh, size: 16),
+                                  label: Text(_catalogError!),
+                                ),
+                              ),
                             const SizedBox(height: 16),
                             _typeTiles(width),
                             const SizedBox(height: 16),
                             _toolsPanel(width),
                             _viewToolbar(width),
-                          ]))),
-                  if (_loading)
-                    const SliverToBoxAdapter(
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (_loading)
+                      const SliverToBoxAdapter(
                         child: Padding(
-                            padding: EdgeInsets.all(48),
-                            child: Center(child: CircularProgressIndicator())))
-                  else if (_error != null)
-                    SliverToBoxAdapter(
+                          padding: EdgeInsets.all(48),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                      )
+                    else if (_error != null)
+                      SliverToBoxAdapter(
                         child: Padding(
-                            padding: const EdgeInsets.all(32),
-                            child: Column(children: [
-                              const Icon(Icons.cloud_off_outlined,
-                                  size: 36, color: kPrimary),
+                          padding: const EdgeInsets.all(32),
+                          child: Column(
+                            children: [
+                              const Icon(
+                                Icons.cloud_off_outlined,
+                                size: 36,
+                                color: kPrimary,
+                              ),
                               const SizedBox(height: 12),
                               Text(_error!),
                               TextButton(
-                                  onPressed: () => _load(reset: true),
-                                  child: const Text('נסה שוב'))
-                            ])))
-                  else if (_items.isEmpty)
-                    SliverToBoxAdapter(child: _emptyState())
-                  else if (_view == 'table')
-                    SliverPadding(
+                                onPressed: () => _load(reset: true),
+                                child: const Text('נסה שוב'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    else if (_items.isEmpty)
+                      SliverToBoxAdapter(child: _emptyState())
+                    else if (_view == 'table')
+                      SliverPadding(
                         padding: EdgeInsets.symmetric(horizontal: padding),
                         sliver: SliverToBoxAdapter(
-                            child: Material(
-                                color: Colors.white,
-                                clipBehavior: Clip.antiAlias,
-                                borderRadius: BorderRadius.circular(15),
-                                child: _mediaTable())))
-                  else if (_view == 'grid')
-                    SliverPadding(
+                          child: Material(
+                            color: Colors.white,
+                            clipBehavior: Clip.antiAlias,
+                            borderRadius: BorderRadius.circular(15),
+                            child: _mediaTable(),
+                          ),
+                        ),
+                      )
+                    else if (_view == 'grid')
+                      SliverPadding(
                         padding: EdgeInsets.symmetric(horizontal: padding),
                         sliver: SliverGrid(
-                            key: const ValueKey('media-grid'),
-                            gridDelegate:
-                                SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: columns,
-                                    crossAxisSpacing: compact ? 10 : 14,
-                                    mainAxisSpacing: compact ? 10 : 14,
-                                    mainAxisExtent: 246),
-                            delegate: SliverChildBuilderDelegate(
-                                (context, index) => _mediaCard(_items[index]),
-                                childCount: _items.length)))
-                  else
-                    SliverPadding(
+                          key: const ValueKey('media-grid'),
+                          gridDelegate:
+                              SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: columns,
+                            crossAxisSpacing: compact ? 10 : 14,
+                            mainAxisSpacing: compact ? 10 : 14,
+                            mainAxisExtent: 246,
+                          ),
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) => _mediaCard(_items[index]),
+                            childCount: _items.length,
+                          ),
+                        ),
+                      )
+                    else
+                      SliverPadding(
                         padding: EdgeInsets.symmetric(horizontal: padding),
                         sliver: SliverList(
-                            key: const ValueKey('media-list'),
-                            delegate: SliverChildBuilderDelegate(
-                                (context, index) =>
-                                    _mediaListRow(_items[index]),
-                                childCount: _items.length))),
-                  if (!_loading && _error == null && _items.length < _total)
-                    SliverToBoxAdapter(
+                          key: const ValueKey('media-list'),
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) => _mediaListRow(_items[index]),
+                            childCount: _items.length,
+                          ),
+                        ),
+                      ),
+                    if (!_loading && _error == null && _items.length < _total)
+                      SliverToBoxAdapter(
                         child: Padding(
-                            padding: const EdgeInsets.all(20),
-                            child: Center(
-                                child: _loadingMore
-                                    ? const CircularProgressIndicator()
-                                    : Column(children: [
-                                        if (_moreError != null)
-                                          Text(_moreError!),
-                                        OutlinedButton.icon(
-                                            key: const ValueKey(
-                                                'media-load-more'),
-                                            onPressed: () =>
-                                                _load(reset: false),
-                                            icon: const Icon(Icons.expand_more),
-                                            label: const Text('טען עוד')),
-                                      ])))),
-                  const SliverToBoxAdapter(child: SizedBox(height: 24)),
-                ],
-              ));
-        }),
-      ));
+                          padding: const EdgeInsets.all(20),
+                          child: Center(
+                            child: _loadingMore
+                                ? const CircularProgressIndicator()
+                                : Column(
+                                    children: [
+                                      if (_moreError != null) Text(_moreError!),
+                                      OutlinedButton.icon(
+                                        key: const ValueKey('media-load-more'),
+                                        onPressed: () => _load(reset: false),
+                                        icon: const Icon(Icons.expand_more),
+                                        label: const Text('טען עוד'),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                      ),
+                    const SliverToBoxAdapter(child: SizedBox(height: 24)),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      );
 }
 
 // ── Settings Screen ───────────────────────────────────────────────
@@ -40277,6 +41902,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     child: Stack(
                       children: [
                         UserAvatar(
+                          previewOwnPhoto: true,
                           picUrl: _picUrl,
                           name: _nameCtrl.text,
                           radius: 52,
@@ -40489,6 +42115,7 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen> {
   }
 
   Future<void> _load() async {
+    final pictureRevision = _profilePicturesRevision;
     try {
       final res = await http.get(
         Uri.parse('$kApi/blocked'),
@@ -40499,6 +42126,7 @@ class _BlockedUsersScreenState extends State<BlockedUsersScreen> {
         setState(() {
           _blocked =
               (jsonDecode(res.body) as List).cast<Map<String, dynamic>>();
+          _approveProfilePictures(_blocked, pictureRevision);
           _loading = false;
         });
       } else {
@@ -40704,6 +42332,14 @@ class _AdminScreenState extends State<AdminScreen>
       backgroundColor: kBg,
       appBar: AppBar(
         title: const Text('לוח ניהול'),
+        actions: [
+          IconButton(
+            tooltip: 'היסטוריית סינון ותמונות',
+            icon: const Icon(Icons.history),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => FilterAuditScreen(api: kApi, token: widget.token))),
+          ),
+        ],
         bottom: TabBar(
           controller: _tabs,
           labelColor: Colors.white,

@@ -17,8 +17,5 @@ test('published catalog contains only the 150 user stickers and all files decode
  const fallback=JSON.parse(await fs.readFile(path.join(root,'flutter_app/assets/stickers/user-catalog.json')));
  assert.equal(fallback.categories[0].labels.length,150);
 });
-test('group stickers download and upload media instead of inserting an internal URL into text',async()=>{
- const source=await fs.readFile(path.join(root,'flutter_app/lib/main.dart'),'utf8');
- const group=source.slice(source.indexOf('Future<void> _showGroupExpressions()'),source.indexOf('Future<void> _showAttachMenu()',source.indexOf('Future<void> _showGroupExpressions()')));
- assert.match(group,/choice.startsWith\(_remoteExpressionPrefix\)[\s\S]*?response.bodyBytes[\s\S]*?_uploadGroupFile\(file, fileName, 'image'/);
-});
+// Composer insertion and explicit text sending are exercised in
+// flutter_app/test/inline_emoji_chat_test.dart.

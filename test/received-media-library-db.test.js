@@ -19,7 +19,7 @@ test('received media appears once with its conversations and is retained until p
     await db.query(`CREATE TEMP TABLE stored_files(id uuid PRIMARY KEY,user_id uuid,original_name text,
         storage_path text,public_url text,mime_type text,file_type text,file_size bigint,
         moderation_status text,moderation_details jsonb,created_at timestamptz DEFAULT now(),
-        released_at timestamptz,release_scheduled_at timestamptz);
+        released_at timestamptz,release_scheduled_at timestamptz,content_sha256 text,content_purged_at timestamptz);
       CREATE TEMP TABLE messages(id uuid PRIMARY KEY,sender_id uuid,recipient_id uuid,group_id uuid,
         file_url text,created_at timestamptz DEFAULT now(),deleted_for_everyone boolean DEFAULT false,
         deleted_for_sender boolean DEFAULT false);
@@ -63,6 +63,7 @@ test('received media appears once with its conversations and is retained until p
     const end=source.indexOf('\nasync function loadStoredFileBytes',start);
     vm.runInNewContext(source.slice(start,end), {
       app:{get(_route,_auth,callback){handler=callback;}},auth(){},
+      projectFilterMediaLibrary:async(_db,_user,rows)=>rows,
       getPool:async()=>db,personalMessageVisible,messageAfterConversationClear,console,
     });
     const library=async(userId=owner,query={})=>{
@@ -75,6 +76,7 @@ test('received media appears once with its conversations and is retained until p
     const releaseStart=source.indexOf('async function runSafeReleaseQueue(');
     const releaseEnd=source.indexOf('\nasync function migrateMessageBodiesAtRest',releaseStart);
     const release=vm.runInNewContext(`${source.slice(releaseStart,releaseEnd)};runSafeReleaseQueue`,{
+      projectFilterMediaLibrary:async(_db,_user,rows)=>rows,
       getPool:async()=>db,personalMessageVisible,path,UPLOAD_ROOT:'/isolated-received-media',
       fs:{async unlink(file){removed.push(file);}},logActivity(){},console,
     });

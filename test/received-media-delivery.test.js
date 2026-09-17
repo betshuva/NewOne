@@ -8,11 +8,12 @@ const vm = require('node:vm');
 const contentPolicy = require('../server/content-filter-policy');
 const source = fs.readFileSync(path.join(__dirname, '../server/index.js'), 'utf8');
 
-function deliveryHelper(personalizeReceivedMessages, errors = []) {
+function deliveryHelper(personalizeReceivedMessages, errors = [], projectFilteredHistory = async (_db, _user, rows) => rows) {
   const start = source.indexOf('async function recipientMediaMessage(');
   const end = source.indexOf('\nfunction driveMediaCacheTtl(', start);
   return vm.runInNewContext(`(${source.slice(start, end).trim()})`, {
     personalizeReceivedMessages,
+    projectFilteredHistory,
     console: { error(...args) { errors.push(args); } },
   });
 }
@@ -36,7 +37,17 @@ function historyHandler(method, route, rowSets) {
     teenContactAllowed: async () => true,
     messageAfterConversationClear: () => 'TRUE',
     decryptAudioTranscript: () => null,
+    projectGuideFilterNotice: row => row,
+    SYSTEM_USER_ID: 'guide',
     ...contentPolicy,
+    async projectFilteredHistory(_db, userId, rows, options = {}) {
+      return rows.map(row => options.groupId && row.sender_id !== userId &&
+        row.image_classification?.category === 'women'
+        ? { ...row, file_url: null, filter_hidden: true } : row);
+    },
+    // Synthetic scan filtering has its own DB suite; these tests exercise the
+    // retention boundary and must provide the history route's dependency.
+    async projectOwnScans(_db, _userId, rows) { return rows; },
     async retainVisibleReceivedMessages(db, userId, rows) {
       assert.equal(db, pool);
       events.push({ kind: 'retain', userId, ids: rows.map(row => row.id) });
@@ -123,11 +134,13 @@ test('group history applies personal content filtering before retention and pres
   assert.equal(fixture.res.statusCode, 200);
   assert.deepEqual(fixture.events, [
     { kind: 'retain', userId: 'me', ids: ['allowed'] },
-    { kind: 'personalize', userId: 'me', ids: ['allowed'] },
+    { kind: 'personalize', userId: 'me', ids: ['allowed', 'blocked'] },
   ]);
-  assert.deepEqual(fixture.res.body.map(row => row.id), ['allowed', 'scan_rejected']);
+  assert.deepEqual(fixture.res.body.map(row => row.id), ['allowed', 'blocked', 'scan_rejected']);
+  assert.equal(fixture.res.body[1].file_url, null);
+  assert.equal(fixture.res.body[1].filter_hidden, true);
   assert.equal(fixture.res.body[0].file_url, '/personal/me/allowed');
-  assert.equal(fixture.res.body[1].file_url, '/own-scan');
+  assert.equal(fixture.res.body[2].file_url, '/own-scan');
 });
 
 test('a nonmember cannot trigger group media retention', async () => {
@@ -159,4 +172,21 @@ test('accepting a group invitation retains only missed messages permitted by the
   assert.deepEqual(fixture.res.body.missedMessages.map(row => row.id), ['allowed']);
   assert.equal(fixture.res.body.missedMessages[0].file_url, '/personal/me/allowed');
   assert.equal(notifications.length, 1);
+});
+
+
+test('a filter lookup failure never exposes the source image', async () => {
+  const message={id:'photo',fileUrl:'/sender/photo'};
+  const fn=deliveryHelper(async()=>assert.fail('personal copy lookup must not run'),[],
+    async()=>{throw new Error('policy unavailable');});
+  const result=await fn({},'recipient',message);
+  assert.equal(result.fileUrl,null);assert.equal(result.filter_hidden,true);
+});
+
+test('a failed personal copy lookup preserves a hidden image decision', async () => {
+  const message={id:'photo',fileUrl:'/sender/photo'};
+  const fn=deliveryHelper(async()=>{throw new Error('copy unavailable');},[],
+    async()=>[{...message,fileUrl:null,filter_hidden:true}]);
+  const result=await fn({},'recipient',message);
+  assert.equal(result.fileUrl,null);assert.equal(result.filter_hidden,true);
 });

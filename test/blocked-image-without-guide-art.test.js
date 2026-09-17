@@ -10,13 +10,13 @@ test('blocked images hide Israel artwork while other warnings keep it', () => {
   assert.match(source,
     /showBlockedArtwork: fileType != 'image'/);
   assert.match(source,
-    /showBlockedArtwork:\s*uploadFileType != 'image'/);
+    /showBlockedArtwork:\s*uploadFileType !=\s*'image'/);
   assert.match(source,
     /if \(!isImageFile\)[\s\S]*?_SystemContentWarningArtwork/);
   assert.match(source,
-    /uploadFileType != 'image'\)[\s\S]*?_SystemContentWarningArtwork/);
+    /uploadFileType !=\s*'image'\)[\s\S]*?_SystemContentWarningArtwork/);
   assert.match(source,
-    /else if \(uploadStatus ==\s*'blocked_content'\)\s*const SizedBox\.shrink\(\)/);
+    /else if \(uploadStatus ==\s*'blocked_content'\)\s*const SizedBox\s*\.shrink\(\)/);
   assert.match(source,
     /class _DocumentModerationCard[\s\S]*?_SystemContentWarningArtwork/);
 });

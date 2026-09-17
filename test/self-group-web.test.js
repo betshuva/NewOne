@@ -17,5 +17,10 @@ test('the web group form allows creating a group without invited members', () =>
   assert.doesNotMatch(form, /יש לבחור לפחות חבר אחד לקבוצה/);
   assert.match(form, /תיווצר קבוצה לעצמי/);
   assert.match(form, /צור קבוצה לעצמי/);
-  assert.match(form, /group\['member_count'\] = _selectedIds\.length \+ 1/);
+  assert.match(form, /'is_self': _selectedIds\.isEmpty/);
+  assert.match(form, /final group = Map<String, dynamic>\.from\(decoded\)/);
+  assert.match(form, /Future\.wait\(_selectedIds\.map\([\s\S]*?\/members/);
+  // Invitations stay pending, so the server's active-member count is authoritative.
+  assert.doesNotMatch(form, /group\['member_count'\]\s*=/);
+  assert.match(form, /Navigator\.pop\(context, group\)/);
 });

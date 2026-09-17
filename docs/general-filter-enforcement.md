@@ -21,3 +21,13 @@ Validation:
 No existing account was opted into enforcement. No support messages were sent. This does not erase previously downloaded/cached content from a device; scope overrides and current delivery are evaluated using the saved policy.
 
 Web release deployed and public build ID verified. Signed Android APK 1.3.19+239 built and published after signature and version checks. Version API points to the new APK.
+
+
+Web display correction — 17 September 2026: the shared invitation/contact/group
+comparison table renders only the six supported content categories. Internal
+policy fields such as `enforceGeneralFilter` are no longer rendered as editable
+content rows. The underlying flag and filter-edit callbacks are preserved.
+Validation: 29 existing Flutter tests and four focused table/call-site checks
+passed; targeted Flutter analysis reported no issues.
+Web release `20260916223439` deployed; public HTML/bootstrap keys and JavaScript
+hash match the local build. No Git operations or APK builds were performed.
