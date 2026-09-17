@@ -8,7 +8,6 @@ import 'guide_table_text.dart';
 import 'safe_information_text.dart';
 import 'phone_sharing.dart';
 import 'phone_sharing_privacy.dart';
-import 'inline_emoji_picker.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -25302,10 +25301,10 @@ class _ChatScreenState extends State<ChatScreen> {
                                 size: 16, color: kPrimary),
                             const SizedBox(width: 6),
                             IconButton(
-                              tooltip: 'אימוג׳י ומדבקות',
+                              tooltip: 'אימוג׳י',
                               icon: const Icon(Icons.emoji_emotions_outlined,
                                   size: 19, color: kPrimary),
-                              onPressed: _recipientAllowsText
+                              onPressed: _recipientAllowsImages
                                   ? _showExpressions
                                   : null,
                               padding: const EdgeInsets.all(8),
@@ -29076,10 +29075,7 @@ class _ExpressionPickerSheet extends StatefulWidget {
   State<_ExpressionPickerSheet> createState() => _ExpressionPickerSheetState();
 }
 
-class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabs;
-  bool _catalogRequested = false;
+class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
   String _query = '';
@@ -29088,22 +29084,10 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
-    _tabs.addListener(_tabChanged);
-  }
-
-  void _tabChanged() {
-    if (_tabs.index == 1 && !_catalogRequested) _loadExpressionCatalog();
-  }
-
-  @override
-  void dispose() {
-    _tabs.dispose();
-    super.dispose();
+    _loadExpressionCatalog();
   }
 
   Future<void> _loadExpressionCatalog() async {
-    _catalogRequested = true;
     if (mounted) {
       setState(() {
         _loading = true;
@@ -29113,12 +29097,10 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet>
     try {
       Map<String, dynamic> payload;
       try {
-        final response = await http
-            .get(
-              Uri.parse('$kApi/expressions/catalog'),
-              headers: {'Authorization': 'Bearer ${widget.token}'},
-            )
-            .timeout(const Duration(seconds: 12));
+        final response = await http.get(
+          Uri.parse('$kApi/expressions/catalog'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        ).timeout(const Duration(seconds: 12));
         if (response.statusCode != 200) throw Exception('catalog unavailable');
         payload = jsonDecode(response.body) as Map<String, dynamic>;
         if ((payload['version'] as num? ?? 0) < 3) {
@@ -29161,7 +29143,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet>
         });
       }
     } catch (_) {
-      if (mounted) setState(() => _error = 'לא ניתן לטעון את המדבקות כרגע');
+      if (mounted) setState(() => _error = 'לא ניתן לטעון את התמונות כרגע');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -29169,107 +29151,93 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet>
 
   @override
   Widget build(BuildContext context) {
-    final availableHeight =
-        MediaQuery.sizeOf(context).height -
+    final availableHeight = MediaQuery.sizeOf(context).height -
         MediaQuery.viewInsetsOf(context).bottom;
     final visible = _items
         .where(
-          (item) => (item['label']?.toString() ?? '').contains(_query.trim()),
-        )
+            (item) => (item['label']?.toString() ?? '').contains(_query.trim()))
         .toList();
     return SafeArea(
       child: Directionality(
         textDirection: TextDirection.rtl,
         child: SizedBox(
           height: math.min(560.0, math.max(0.0, availableHeight - 32)),
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-                child: Row(
+          child: CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Column(
                   children: [
-                    const Expanded(
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                      child: Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'אימוג׳י',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: kPrimary,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'סגירה',
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.close,
+                                size: 20, color: kSubtext),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(12, 4, 12, 2),
                       child: Text(
-                        'אימוג׳י ומדבקות',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: kPrimary,
+                        'בחירת תמונה שולחת אותה כהודעה נפרדת',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: kSubtext),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      child: TextField(
+                        onChanged: (value) => setState(() => _query = value),
+                        decoration: const InputDecoration(
+                          hintText: 'חיפוש אימוג׳י…',
+                          prefixIcon: Icon(Icons.search),
                         ),
                       ),
                     ),
-                    IconButton(
-                      tooltip: 'סגירה',
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close, size: 20, color: kSubtext),
-                    ),
                   ],
                 ),
               ),
-              TabBar(
-                controller: _tabs,
-                labelColor: kPrimary,
-                unselectedLabelColor: kSubtext,
-                indicatorColor: kPrimary,
-                tabs: const [
-                  Tab(text: 'אימוג׳י'),
-                  Tab(text: 'מדבקות'),
-                ],
-              ),
-              Expanded(
-                child: TabBarView(
-                  controller: _tabs,
-                  children: [
-                    InlineEmojiPicker(
-                      primaryColor: kPrimary,
-                      onSelected: (emoji) => Navigator.pop(context, emoji),
+              if (_loading)
+                const SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(
+                    child: CircularProgressIndicator(color: kPrimary),
+                  ),
+                )
+              else if (_error != null)
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(
+                    child: TextButton(
+                      onPressed: _loadExpressionCatalog,
+                      child: Text('$_error — נסו שוב'),
                     ),
-                    Column(
-                      children: [
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(12, 10, 12, 2),
-                          child: Text(
-                            'מדבקה נשלחת כהודעה נפרדת',
-                            style: TextStyle(fontSize: 12, color: kSubtext),
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 6,
-                          ),
-                          child: TextField(
-                            onChanged: (value) =>
-                                setState(() => _query = value),
-                            decoration: const InputDecoration(
-                              hintText: 'חיפוש מדבקה…',
-                              prefixIcon: Icon(Icons.search),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: _loading
-                              ? const Center(
-                                  child: CircularProgressIndicator(
-                                    color: kPrimary,
-                                  ),
-                                )
-                              : _error != null
-                              ? Center(
-                                  child: TextButton(
-                                    onPressed: _loadExpressionCatalog,
-                                    child: Text('$_error — נסו שוב'),
-                                  ),
-                                )
-                              : visible.isEmpty
-                              ? const Center(child: Text('לא נמצאו מדבקות'))
-                              : _RemoteExpressionGrid(items: visible),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+                  ),
+                )
+              else if (visible.isEmpty)
+                const SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(child: Text('לא נמצאו תמונות מתאימות')),
+                )
+              else
+                _RemoteExpressionGrid(items: visible),
             ],
           ),
         ),
@@ -29288,65 +29256,72 @@ class _RemoteExpressionGrid extends StatelessWidget {
       : '${kServerUri.origin}${value.startsWith('/') ? value : '/$value'}';
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-      builder: (context, constraints) => GridView.builder(
-            padding: const EdgeInsets.all(12),
+  Widget build(BuildContext context) => SliverLayoutBuilder(
+        builder: (context, constraints) => SliverPadding(
+          padding: const EdgeInsets.all(12),
+          sliver: SliverGrid(
+            key: const ValueKey('expression-image-grid'),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: constraints.maxWidth < 500 ? 3 : 4,
+              crossAxisCount: constraints.crossAxisExtent < 500 ? 3 : 4,
               mainAxisSpacing: 8,
               crossAxisSpacing: 8,
               childAspectRatio: 0.9,
             ),
-            itemCount: items.length,
-            itemBuilder: (_, index) {
-              final item = items[index];
-              final url = _absoluteUrl(item['url']?.toString() ?? '');
-              return Material(
-                color: const Color(0xFFF0F6FC),
-                borderRadius: BorderRadius.circular(15),
-                child: InkWell(
+            delegate: SliverChildBuilderDelegate(
+              (_, index) {
+                final item = items[index];
+                final url = _absoluteUrl(item['url']?.toString() ?? '');
+                return Material(
+                  color: const Color(0xFFF0F6FC),
                   borderRadius: BorderRadius.circular(15),
-                  onTap: url.isEmpty
-                      ? null
-                      : () => Navigator.pop(
-                          context, '$_remoteExpressionPrefix$url'),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(5, 7, 5, 5),
-                    child: Column(children: [
-                      Expanded(
-                        child: Center(
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(
-                                maxWidth: 150, maxHeight: 150),
-                            child: Image.network(
-                              url,
-                              fit: BoxFit.contain,
-                              filterQuality: FilterQuality.medium,
-                              errorBuilder: (_, __, ___) => const Icon(
-                                  Icons.broken_image_outlined,
-                                  color: kSubtext),
+                  child: InkWell(
+                    key: ValueKey('expression-image-$url'),
+                    borderRadius: BorderRadius.circular(15),
+                    onTap: url.isEmpty
+                        ? null
+                        : () => Navigator.pop(
+                            context, '$_remoteExpressionPrefix$url'),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(5, 7, 5, 5),
+                      child: Column(children: [
+                        Expanded(
+                          child: Center(
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(
+                                  maxWidth: 150, maxHeight: 150),
+                              child: Image.network(
+                                url,
+                                fit: BoxFit.contain,
+                                filterQuality: FilterQuality.medium,
+                                errorBuilder: (_, __, ___) => const Icon(
+                                    Icons.broken_image_outlined,
+                                    color: kSubtext),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        item['label']?.toString() ?? '',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: kPrimary,
-                          fontSize: 9.5,
-                          fontWeight: FontWeight.w600,
+                        const SizedBox(height: 3),
+                        Text(
+                          item['label']?.toString() ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: kPrimary,
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      ),
-                    ]),
+                      ]),
+                    ),
                   ),
-                ),
-              );
-            },
-          ));
+                );
+              },
+              childCount: items.length,
+            ),
+          ),
+        ),
+      );
 }
 
 // Legacy expression picker retained for messages created before the catalog API.
@@ -35194,7 +35169,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   child: Row(
                     children: [
                       IconButton(
-                        tooltip: 'אימוג׳י ומדבקות',
+                        tooltip: 'אימוג׳י',
                         icon: const Icon(Icons.emoji_emotions_outlined,
                             color: kPrimary),
                         onPressed: _showGroupExpressions,

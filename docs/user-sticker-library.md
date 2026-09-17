@@ -1,6 +1,6 @@
 # Emoji and user sticker library
 
-The expression picker opens on a local Unicode emoji tab, with a separate tab for the user's supplied sticker collection. Emoji selection inserts into the current message draft at its saved cursor or selection; sending remains an explicit composer action. The 171 approved emoji and their SVG picker thumbnails are bundled locally, with Hebrew search and category filters. The sticker catalog loads only when the sticker tab is selected and retains its existing image-send behavior. Historical message assets remain available so existing conversations can still display their images.
+The composer emoji button opens the user's 150 supplied images immediately in one searchable grid. There are no category selectors, library folders, or emoji/sticker tabs. Selecting an image sends it as a separate image message through the existing upload flow in both private and group conversations, preserving the message draft. The catalog is fetched when the picker opens, with the bundled user catalog as a fallback. Historical message assets remain available so existing conversations can still display their images.
 
 Emoji-only text uses the same font size and message bubble as other text in private and group conversations. Actual image stickers and historical built-in sticker messages retain their media rendering. The previous AI, smile, family and animation catalogs remain excluded from the picker.
 
@@ -29,3 +29,9 @@ The displayed application version and support issue metadata now match the relea
 Validation: eight picker tests, ten private/group integration tests, ten existing chat/rendering checks, and seven Node asset/catalog/moderation checks passed. Three additional render checks cover desktop, mobile, and an open mobile keyboard with enlarged text. Native-device installation is not part of this validation.
 
 Release verification: web build `20260910184856` matches the published JavaScript, and its emoji catalog and SVG files are accessible. Android package `com.betshuva.app` has versionName `1.3.23`, versionCode `243`, and the same signing certificate as the preceding release. Both public APK downloads match SHA-256 `05a54e6910f0d28892efda153e7fc9929c2003e3b30150d9664edb218fab6c44` (136,351,512 bytes). `/api/version` advertises the versioned APK after publication.
+
+## Single image picker — September 17, 2026
+
+All 150 user-supplied PNGs now replace the Unicode picker in one flat, searchable list. The header and image grid scroll together so an open keyboard also fits short landscape screens. Private-chat access follows the recipient's image permission. Existing text drafts and historical assets are preserved.
+
+Validation: 12 private/group widget tests passed, covering all 150 images, bundled-catalog fallback, first/last image delivery without duplicate sends, draft preservation, image permissions, and three keyboard-open mobile viewports including landscape. Six existing Node catalog/moderation checks passed, and all 150 public PNG URLs returned HTTP 200 with matching file sizes. Flutter analysis passed. Published as a web update; no Android APK rebuild is included.
