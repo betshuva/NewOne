@@ -229,7 +229,7 @@ test('the first outgoing message to a saved contact requires a receiving-filter 
   assert.match(source, /recipientAvatarUrl:/);
   assert.match(source, /UserAvatar\(/);
   assert.match(source, /safe-information-ai\.png/);
-  assert.match(source, /Text\('עדכון הסינון'\)/);
+  assert.match(source, /Text\(\s*'עדכון הסינון'(?:\s*,|\s*\))/);
   assert.match(source, /onUpdate: _showContactFilterStatus/);
   assert.match(source, /await _loadMessages\(silent: true\)/);
   assert.match(source, /body\['counterpartFilterAvailable'\] == true/);

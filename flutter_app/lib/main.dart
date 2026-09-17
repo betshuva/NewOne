@@ -1,3 +1,4 @@
+import 'blocked_image_notice.dart';
 import 'location_autocomplete.dart';
 import 'calendar.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -1797,7 +1798,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.26';
+const kVersion = '1.3.27';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2210,9 +2211,14 @@ class _BlockedImagePreview extends StatefulWidget {
   final String url;
   final String token;
   final DateTime expiresAt;
+  final Widget Function(Widget image, String status)? builder;
 
-  const _BlockedImagePreview(
-      {required this.url, required this.token, required this.expiresAt});
+  const _BlockedImagePreview({
+    required this.url,
+    required this.token,
+    required this.expiresAt,
+    this.builder,
+  });
 
   @override
   State<_BlockedImagePreview> createState() => _BlockedImagePreviewState();
@@ -2224,7 +2230,9 @@ class _BlockedImagePreviewState extends State<_BlockedImagePreview> {
   Timer? _expiryTimer;
 
   int get _secondsLeft => math.max(
-      0, widget.expiresAt.difference(DateTime.now().toUtc()).inSeconds);
+    0,
+    widget.expiresAt.difference(DateTime.now().toUtc()).inSeconds,
+  );
 
   @override
   void initState() {
@@ -2243,10 +2251,12 @@ class _BlockedImagePreviewState extends State<_BlockedImagePreview> {
 
   Future<void> _load() async {
     try {
-      final response = await http.get(Uri.parse(_absoluteMediaUrl(widget.url)),
-          headers: {'Authorization': 'Bearer ${widget.token}'}).timeout(
-        const Duration(seconds: 30),
-      );
+      final response = await http
+          .get(
+            Uri.parse(_absoluteMediaUrl(widget.url)),
+            headers: {'Authorization': 'Bearer ${widget.token}'},
+          )
+          .timeout(const Duration(seconds: 30));
       if (!mounted) return;
       setState(() {
         _bytes = response.statusCode == 200 && response.bodyBytes.isNotEmpty
@@ -2268,35 +2278,54 @@ class _BlockedImagePreviewState extends State<_BlockedImagePreview> {
   @override
   Widget build(BuildContext context) {
     if (_secondsLeft <= 0) {
-      return const Text('תצוגת התמונה הסתיימה והקובץ נמחק',
-          textAlign: TextAlign.right,
-          textDirection: TextDirection.rtl,
-          style: TextStyle(fontSize: 11, color: Colors.red));
+      const status = 'תצוגת התמונה הסתיימה והקובץ נמחק';
+      if (widget.builder != null) {
+        return widget.builder!(
+          const ColoredBox(
+            color: Color(0xFFF2F4F7),
+            child: Center(child: Icon(Icons.image_not_supported_outlined)),
+          ),
+          status,
+        );
+      }
+      return const Text(
+        status,
+        textAlign: TextAlign.right,
+        textDirection: TextDirection.rtl,
+        style: TextStyle(fontSize: 11, color: Colors.red),
+      );
     }
     final minutes = _secondsLeft ~/ 60;
     final seconds = (_secondsLeft % 60).toString().padLeft(2, '0');
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      Container(
-        width: double.infinity,
-        height: 180,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: const Color(0xFFF2F4F7),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: _loading
-            ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
-            : _bytes == null
-                ? const Center(child: Icon(Icons.broken_image_outlined))
-                : Image.memory(_bytes!,
-                    fit: BoxFit.contain, gaplessPlayback: true),
+    final status = 'מוצגת רק לך ותימחק בעוד $minutes:$seconds';
+    final image = Container(
+      width: double.infinity,
+      height: 180,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF2F4F7),
+        borderRadius: BorderRadius.circular(10),
       ),
-      const SizedBox(height: 5),
-      Text('מוצגת רק לך ותימחק בעוד $minutes:$seconds',
+      child: _loading
+          ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          : _bytes == null
+          ? const Center(child: Icon(Icons.broken_image_outlined))
+          : Image.memory(_bytes!, fit: BoxFit.contain, gaplessPlayback: true),
+    );
+    if (widget.builder != null) return widget.builder!(image, status);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        image,
+        const SizedBox(height: 5),
+        Text(
+          status,
           textAlign: TextAlign.right,
           textDirection: TextDirection.rtl,
-          style: const TextStyle(fontSize: 10, color: Colors.red)),
-    ]);
+          style: const TextStyle(fontSize: 10, color: Colors.red),
+        ),
+      ],
+    );
   }
 }
 
@@ -25030,6 +25059,8 @@ class _ChatScreenState extends State<ChatScreen> {
                               !_sameMessageDay(
                                   msg, _messages[messageIndex - 1]);
                           return Column(
+                            textDirection: TextDirection.rtl,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               if (showDate)
                                 _DateDivider(label: _messageDateLabel(msg)),
@@ -25428,7 +25459,8 @@ class _DateDivider extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Center(
+      child: Align(
+        alignment: Alignment.centerRight,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
           decoration: BoxDecoration(
@@ -25436,8 +25468,10 @@ class _DateDivider extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: kBorder),
           ),
-          child: Text(label,
-              style: const TextStyle(fontSize: 11, color: kSubtext)),
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 11, color: kSubtext),
+          ),
         ),
       ),
     );
@@ -25477,25 +25511,30 @@ class _UnreadMessagesDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(children: [
-          const Expanded(child: Divider(color: kPrimaryMid)),
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 10),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            decoration: BoxDecoration(
-              color: const Color(0xFFDCEEFF),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: const Text('הודעות שלא נקראו',
-                style: TextStyle(
-                    color: kPrimary,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600)),
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: Row(
+      textDirection: TextDirection.rtl,
+      children: [
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFFDCEEFF),
+            borderRadius: BorderRadius.circular(14),
           ),
-          const Expanded(child: Divider(color: kPrimaryMid)),
-        ]),
-      );
+          child: const Text(
+            'הודעות שלא נקראו',
+            style: TextStyle(
+              color: kPrimary,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        const Expanded(child: Divider(color: kPrimaryMid)),
+      ],
+    ),
+  );
 }
 
 class _GroupInviteCard extends StatefulWidget {
@@ -26784,10 +26823,10 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
     final typeLabel = widget.fileType == 'video'
         ? 'הווידאו'
         : widget.fileType == 'document'
-            ? 'המסמך'
-            : widget.fileType == 'audio'
-                ? 'ההקלטה'
-                : 'התמונה';
+        ? 'המסמך'
+        : widget.fileType == 'audio'
+        ? 'ההקלטה'
+        : 'התמונה';
     return AnimatedBuilder(
       animation: _controller,
       builder: (_, __) {
@@ -26802,52 +26841,69 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: const Color(0xFFB9D8ED)),
           ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Row(children: [
-              RotationTransition(
-                turns: _controller,
-                child:
-                    const Icon(Icons.auto_awesome, color: kPrimary, size: 25),
+          child: Column(
+            textDirection: TextDirection.rtl,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  RotationTransition(
+                    turns: _controller,
+                    child: const Icon(
+                      Icons.auto_awesome,
+                      color: kPrimary,
+                      size: 25,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.scanning
+                              ? 'סורק את $typeLabel'
+                              : 'מעלה ואחר כך סורק את $typeLabel',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        Text(
+                          widget.fileName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, color: kSubtext),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '$elapsed שנ׳',
+                    style: const TextStyle(
+                      color: kPrimary,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                        widget.scanning
-                            ? 'סורק את $typeLabel'
-                            : 'מעלה ואחר כך סורק את $typeLabel',
-                        style: const TextStyle(fontWeight: FontWeight.w800)),
-                    Text(widget.fileName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11, color: kSubtext)),
-                  ],
-                ),
+              const SizedBox(height: 11),
+              LinearProgressIndicator(
+                value: _controller.value,
+                minHeight: 5,
+                borderRadius: BorderRadius.circular(5),
+                color: kPrimary,
+                backgroundColor: const Color(0xFFD7EAF6),
               ),
-              const SizedBox(width: 8),
-              Text('$elapsed שנ׳',
-                  style: const TextStyle(
-                      color: kPrimary, fontWeight: FontWeight.bold)),
-            ]),
-            const SizedBox(height: 11),
-            LinearProgressIndicator(
-              value: _controller.value,
-              minHeight: 5,
-              borderRadius: BorderRadius.circular(5),
-              color: kPrimary,
-              backgroundColor: const Color(0xFFD7EAF6),
-            ),
-            const SizedBox(height: 7),
-            Text(
+              const SizedBox(height: 7),
+              Text(
                 widget.scanning
                     ? 'הקובץ שמור וממתין לאישור הסריקה לפני שליחה'
                     : elapsed >= 45
-                        ? 'הקובץ נשמר; בדיקת הבטיחות עדיין מתבצעת'
-                        : 'קודם העלאה לאחסון, אחריה בדיקת בטיחות וסינון',
-                style: const TextStyle(fontSize: 10, color: kSubtext)),
-          ]),
+                    ? 'הקובץ נשמר; בדיקת הבטיחות עדיין מתבצעת'
+                    : 'קודם העלאה לאחסון, אחריה בדיקת בטיחות וסינון',
+                style: const TextStyle(fontSize: 10, color: kSubtext),
+              ),
+            ],
+          ),
         );
       },
     );
@@ -26938,166 +26994,264 @@ class _UploadResultCard extends StatelessWidget {
   final String? authToken;
   final DateTime? previewExpiresAt;
   final bool showBlockedArtwork;
-  const _UploadResultCard(
-      {required this.blocked,
-      required this.title,
-      required this.reason,
-      this.imageUrl,
-      this.fileName,
-      this.recipientName,
-      this.destinationFilterRejected = false,
-      this.transcript,
-      this.blockedPreviewUrl,
-      this.authToken,
-      this.previewExpiresAt,
-      this.showBlockedArtwork = true,
-      this.contentPurged = false,
-      this.onlyYouText = 'התמונה מוצגת רק לך ולא נשלחה'});
+  final VoidCallback? onMoreActions;
+  const _UploadResultCard({
+    required this.blocked,
+    required this.title,
+    required this.reason,
+    this.imageUrl,
+    this.fileName,
+    this.recipientName,
+    this.destinationFilterRejected = false,
+    this.transcript,
+    this.blockedPreviewUrl,
+    this.authToken,
+    this.previewExpiresAt,
+    this.showBlockedArtwork = true,
+    this.onMoreActions,
+    this.contentPurged = false,
+    this.onlyYouText = 'התמונה מוצגת רק לך ולא נשלחה',
+  });
+
+  Widget _imageNotice(Widget image, {String? expiryText}) => BlockedImageNotice(
+    image: image,
+    title: title,
+    reason: reason,
+    fileName: fileName,
+    recipientName: destinationFilterRejected ? recipientName : null,
+    onlyYouText: contentPurged
+        ? '$onlyYouText\nהקובץ והתמלול נמחקו. אירוע החסימה נשמר למעקב בטיחות.'
+        : onlyYouText,
+    expiryText: expiryText,
+    previewExpiresAt: previewExpiresAt,
+    onMoreActions: onMoreActions,
+  );
 
   @override
-  Widget build(BuildContext context) => Container(
-        width: 300,
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: blocked ? const Color(0xFFFFF2F2) : const Color(0xFFFFF8E8),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-              color:
-                  blocked ? const Color(0xFFF0B8B8) : const Color(0xFFF2D28B)),
-        ),
-        child:
-            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (blocked && showBlockedArtwork) ...[
-            const Center(child: _SystemContentWarningArtwork()),
-            const SizedBox(height: 10),
-          ],
-          if (blocked && transcript != null && transcript!.isNotEmpty) ...[
-            Tooltip(
-              message: transcript!,
-              child: SelectableText('תמלול שנבדק: $transcript',
-                  textDirection: TextDirection.rtl,
-                  style: const TextStyle(fontSize: 12, color: kTextDark)),
-            ),
-            const SizedBox(height: 8),
-          ],
-          if (blocked && contentPurged) ...[
-            const Text('הקובץ והתמלול נמחקו. אירוע החסימה נשמר למעקב בטיחות.',
-                textDirection: TextDirection.rtl,
-                style: TextStyle(fontSize: 11, color: Colors.red)),
-            const SizedBox(height: 8),
-          ],
-          if (blocked &&
-              blockedPreviewUrl != null &&
-              authToken != null &&
-              previewExpiresAt != null) ...[
-            _BlockedImagePreview(
-              url: blockedPreviewUrl!,
-              token: authToken!,
-              expiresAt: previewExpiresAt!,
-            ),
-            if (fileName != null) ...[
-              const SizedBox(height: 5),
-              Text(fileName!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(fontSize: 10, color: kSubtext)),
-            ],
-            const SizedBox(height: 10),
-          ],
-          if (blocked && imageUrl != null && blockedPreviewUrl == null) ...[
-            GestureDetector(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ImagePreviewScreen(
-                    url: imageUrl!,
-                    filename: fileName,
-                  ),
-                ),
+  Widget build(BuildContext context) {
+    if (blocked && !showBlockedArtwork) {
+      if (blockedPreviewUrl != null &&
+          authToken != null &&
+          previewExpiresAt != null) {
+        return _BlockedImagePreview(
+          url: blockedPreviewUrl!,
+          token: authToken!,
+          expiresAt: previewExpiresAt!,
+          builder: (image, status) => _imageNotice(image, expiryText: status),
+        );
+      }
+      if (blocked &&
+          imageUrl != null &&
+          blockedPreviewUrl == null &&
+          !contentPurged) {
+        return _imageNotice(
+          GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    ImagePreviewScreen(url: imageUrl!, filename: fileName),
               ),
-              child: Container(
+            ),
+            child: ColoredBox(
+              color: const Color(0xFFF2F4F7),
+              child: _PersistentMediaImage(
+                url: imageUrl!,
                 width: double.infinity,
                 height: 180,
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF2F4F7),
-                  borderRadius: BorderRadius.circular(10),
+                fit: BoxFit.contain,
+                loadingBuilder: (_) => const Center(
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    _PersistentMediaImage(
-                      url: imageUrl!,
-                      width: double.infinity,
-                      height: 180,
-                      fit: BoxFit.contain,
-                      loadingBuilder: (_) => const Center(
-                          child: CircularProgressIndicator(strokeWidth: 2)),
-                      errorBuilder: (_) => const Center(
-                          child: Icon(Icons.broken_image_outlined)),
-                    ),
-                    Positioned(
-                      left: 7,
-                      top: 7,
-                      child: Container(
-                        padding: const EdgeInsets.all(5),
-                        decoration: const BoxDecoration(
-                          color: Colors.black54,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.zoom_in,
-                            size: 20, color: Colors.white),
-                      ),
-                    ),
-                  ],
-                ),
+                errorBuilder: (_) =>
+                    const Center(child: Icon(Icons.broken_image_outlined)),
               ),
             ),
-            if (fileName != null) ...[
-              const SizedBox(height: 5),
-              Text(fileName!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(fontSize: 10, color: kSubtext)),
-            ],
-            const SizedBox(height: 10),
+          ),
+        );
+      }
+      return _imageNotice(
+        const ColoredBox(
+          color: Color(0xFFF2F4F7),
+          child: Center(child: Icon(Icons.image_not_supported_outlined)),
+        ),
+      );
+    }
+    return _standardCard(context);
+  }
+
+  Widget _standardCard(BuildContext context) => Container(
+    width: 300,
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: blocked ? const Color(0xFFFFF2F2) : const Color(0xFFFFF8E8),
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(
+        color: blocked ? const Color(0xFFF0B8B8) : const Color(0xFFF2D28B),
+      ),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (blocked && showBlockedArtwork) ...[
+          const Center(child: _SystemContentWarningArtwork()),
+          const SizedBox(height: 10),
+        ],
+        if (blocked && transcript != null && transcript!.isNotEmpty) ...[
+          Tooltip(
+            message: transcript!,
+            child: SelectableText(
+              'תמלול שנבדק: $transcript',
+              textDirection: TextDirection.rtl,
+              style: const TextStyle(fontSize: 12, color: kTextDark),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (blocked && contentPurged) ...[
+          const Text(
+            'הקובץ והתמלול נמחקו. אירוע החסימה נשמר למעקב בטיחות.',
+            textDirection: TextDirection.rtl,
+            style: TextStyle(fontSize: 11, color: Colors.red),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (blocked &&
+            blockedPreviewUrl != null &&
+            authToken != null &&
+            previewExpiresAt != null) ...[
+          _BlockedImagePreview(
+            url: blockedPreviewUrl!,
+            token: authToken!,
+            expiresAt: previewExpiresAt!,
+          ),
+          if (fileName != null) ...[
+            const SizedBox(height: 5),
+            Text(
+              fileName!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 10, color: kSubtext),
+            ),
           ],
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Icon(blocked ? Icons.gpp_bad_outlined : Icons.error_outline,
-                color: blocked ? Colors.red.shade700 : Colors.orange.shade800),
+          const SizedBox(height: 10),
+        ],
+        if (blocked && imageUrl != null && blockedPreviewUrl == null) ...[
+          GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    ImagePreviewScreen(url: imageUrl!, filename: fileName),
+              ),
+            ),
+            child: Container(
+              width: double.infinity,
+              height: 180,
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF2F4F7),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _PersistentMediaImage(
+                    url: imageUrl!,
+                    width: double.infinity,
+                    height: 180,
+                    fit: BoxFit.contain,
+                    loadingBuilder: (_) => const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    errorBuilder: (_) =>
+                        const Center(child: Icon(Icons.broken_image_outlined)),
+                  ),
+                  Positioned(
+                    left: 7,
+                    top: 7,
+                    child: Container(
+                      padding: const EdgeInsets.all(5),
+                      decoration: const BoxDecoration(
+                        color: Colors.black54,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.zoom_in,
+                        size: 20,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (fileName != null) ...[
+            const SizedBox(height: 5),
+            Text(
+              fileName!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 10, color: kSubtext),
+            ),
+          ],
+          const SizedBox(height: 10),
+        ],
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              blocked ? Icons.gpp_bad_outlined : Icons.error_outline,
+              color: blocked ? Colors.red.shade700 : Colors.orange.shade800,
+            ),
             const SizedBox(width: 10),
             Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                  Text(title,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontWeight: FontWeight.w800)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    title,
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
                   if (destinationFilterRejected &&
                       recipientName?.trim().isNotEmpty == true) ...[
                     const SizedBox(height: 5),
-                    Text('נמען: ${recipientName!.trim()}',
-                        textAlign: TextAlign.right,
-                        textDirection: TextDirection.rtl,
-                        style: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w700)),
+                    Text(
+                      'נמען: ${recipientName!.trim()}',
+                      textAlign: TextAlign.right,
+                      textDirection: TextDirection.rtl,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ],
                   const SizedBox(height: 5),
-                  Text(reason,
-                      textAlign: TextAlign.right,
-                      textDirection: TextDirection.rtl,
-                      style: const TextStyle(fontSize: 12, height: 1.45)),
+                  Text(
+                    reason,
+                    textAlign: TextAlign.right,
+                    textDirection: TextDirection.rtl,
+                    style: const TextStyle(fontSize: 12, height: 1.45),
+                  ),
                   const SizedBox(height: 5),
-                  Text(onlyYouText,
-                      textAlign: TextAlign.right,
-                      textDirection: TextDirection.rtl,
-                      style: TextStyle(fontSize: 10, color: kSubtext)),
-                ])),
-          ]),
-        ]),
-      );
+                  Text(
+                    onlyYouText,
+                    textAlign: TextAlign.right,
+                    textDirection: TextDirection.rtl,
+                    style: TextStyle(fontSize: 10, color: kSubtext),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
 }
 
 String _imageBlockTitle(Object? reason) {
@@ -27750,8 +27904,10 @@ class _PrivateContactFilterEntry extends StatelessWidget {
         .where((entry) => filter[entry.key] != true)
         .map((entry) => entry.value)
         .join(', ');
-    return Center(
+    return Align(
+      alignment: Alignment.centerRight,
       child: Container(
+        key: const ValueKey('private-contact-filter-entry'),
         constraints: const BoxConstraints(maxWidth: 520),
         margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -27761,10 +27917,12 @@ class _PrivateContactFilterEntry extends StatelessWidget {
           border: Border.all(color: const Color(0xFFAED4EE)),
         ),
         child: Column(
+          textDirection: TextDirection.rtl,
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Center(
+            Align(
+              alignment: Alignment.centerRight,
               child: Image.asset(
                 'assets/guide/safe-information-ai.png',
                 width: 64,
@@ -27775,7 +27933,8 @@ class _PrivateContactFilterEntry extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+              textDirection: TextDirection.rtl,
+              mainAxisAlignment: MainAxisAlignment.start,
               children: [
                 UserAvatar(
                   picUrl: recipientAvatarUrl,
@@ -27807,13 +27966,13 @@ class _PrivateContactFilterEntry extends StatelessWidget {
               child: TextButton.icon(
                 onPressed: onUpdate,
                 icon: const Icon(Icons.edit_outlined, size: 17),
-                label: const Text('עדכון הסינון'),
+                label: const Text('עדכון הסינון', textAlign: TextAlign.right),
               ),
             ),
             const SizedBox(height: 6),
             const Text(
               'רק אני רואה את ההגדרה הזו',
-              textAlign: TextAlign.center,
+              textAlign: TextAlign.right,
               style: TextStyle(fontSize: 11, color: kSubtext),
             ),
           ],
@@ -27988,6 +28147,9 @@ class _MessageBubble extends StatelessWidget {
           child: _UploadResultCard(
             blocked: true,
             showBlockedArtwork: fileType != 'image',
+            onMoreActions: onMessageOptions == null
+                ? null
+                : () => onMessageOptions!(message),
             title: fileType == 'audio'
                 ? 'ההקלטה נחסמה ולא נשלחה'
                 : fileType == 'video'
@@ -34234,6 +34396,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                     showBlockedArtwork:
                                                         uploadFileType !=
                                                             'image',
+                                                    onMoreActions: () =>
+                                                        _showMessageOptions(msg),
+                                                    blockedPreviewUrl: msg[
+                                                            'blockedPreviewUrl']
+                                                        ?.toString(),
+                                                    authToken: widget.token,
+                                                    previewExpiresAt:
+                                                        DateTime.tryParse(msg[
+                                                                    'previewExpiresAt']
+                                                                ?.toString() ??
+                                                            ''),
                                                     title: uploadStatus ==
                                                             'rejected_scan'
                                                         ? uploadFileType ==
@@ -34777,7 +34950,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                               child: Column(
                                                                 crossAxisAlignment:
                                                                     CrossAxisAlignment
-                                                                        .end,
+                                                                        .start,
                                                                 children: [
                                                                   const Row(
                                                                     mainAxisSize:

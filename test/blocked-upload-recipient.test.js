@@ -11,7 +11,7 @@ const source = fs.readFileSync(
 test('only destination-filtered private uploads identify the recipient', () => {
   assert.match(source, /final String\? recipientName/);
   assert.match(source, /final bool destinationFilterRejected/);
-  assert.match(source, /Text\('נמען: \$\{recipientName!\.trim\(\)\}'/);
+  assert.match(source, /Text\(\s*'נמען: \$\{recipientName!\.trim\(\)\}'/);
   assert.match(source,
     /if \(destinationFilterRejected &&[\s\S]*?recipientName\?\.trim\(\)\.isNotEmpty == true\)/);
   assert.match(source,
