@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:betshuva/native_video_capture.dart';
+import 'package:clock/clock.dart';
 // ignore: depend_on_referenced_packages
 import 'package:camera_platform_interface/camera_platform_interface.dart';
 import 'package:flutter/material.dart';
@@ -10,11 +11,13 @@ import 'package:flutter_test/flutter_test.dart';
 class _Recording extends XFile {
   _Recording(super.path);
   String? savedPath;
+  final attemptedPaths = <String>[];
   int saves = 0, saveFailures = 0;
 
   @override
   Future<void> saveTo(String path) async {
     saves++;
+    attemptedPaths.add(path);
     if (saveFailures > 0) {
       saveFailures--;
       throw StateError('Temporary copy failure');
@@ -88,14 +91,15 @@ class _Camera extends CameraPlatform {
 }
 
 Future<void> _openCapture(WidgetTester tester,
-    {void Function(XFile?)? onResult}) async {
+    {void Function(XFile?)? onResult, String creatorId = 'creator-id'}) async {
   await tester.pumpWidget(MaterialApp(
       home: Builder(
           builder: (context) => Scaffold(
               body: TextButton(
                   onPressed: () async {
                     final result = await captureNativeVideo(context,
-                        maxDuration: const Duration(seconds: 30));
+                        maxDuration: const Duration(seconds: 30),
+                        creatorId: creatorId);
                     onResult?.call(result);
                   },
                   child: const Text('open'))))));
@@ -110,6 +114,29 @@ void _installCamera(_Camera camera) {
 }
 
 void main() {
+  testWidgets('video filename retains the recording start time through saving',
+      (tester) async {
+    final recording = _Recording('/tmp/capture.mp4');
+    final camera = _Camera(recording);
+    _installCamera(camera);
+    XFile? result;
+    await _openCapture(tester,
+        creatorId: 'start-time-id', onResult: (file) => result = file);
+    await withClock(Clock.fixed(DateTime(2026, 9, 23, 14, 7, 36, 429)),
+        () async {
+      await tester.tap(find.text('התחל צילום'));
+      await tester.pump();
+    });
+    await tester.pump(const Duration(seconds: 12));
+    await tester.tap(find.text('עצור ושלח'));
+    await tester.pumpAndSettle();
+    expect(result?.path,
+        '/tmp/betshuva-video-2026-09-23_14-07-36-42-ID-start-time-id.mp4');
+    expect(recording.savedPath, result?.path);
+    expect(camera.stops, 1);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final extension in ['mp4', 'mov', 'temp']) {
     for (final stopEarly in [false, true]) {
       testWidgets(
@@ -127,7 +154,8 @@ void main() {
                     body: TextButton(
                         onPressed: () async {
                           result = await captureNativeVideo(context,
-                              maxDuration: const Duration(seconds: 30));
+                              maxDuration: const Duration(seconds: 30),
+                              creatorId: 'creator-id');
                         },
                         child: const Text('open'))))));
         await tester.tap(find.text('open'));
@@ -145,15 +173,16 @@ void main() {
         }
         await tester.pumpAndSettle();
         expect(camera.stops, 1);
-        if (extension == 'temp') {
-          expect(recording.savedPath, '/tmp/capture.mp4');
-          expect(result?.path, '/tmp/capture.mp4');
-          expect(result?.name, 'capture.mp4');
-          expect(result?.mimeType, 'video/mp4');
-        } else {
-          expect(recording.savedPath, isNull);
-          expect(result, same(recording));
-        }
+        final outputExtension = extension == 'temp' ? 'mp4' : extension;
+        expect(recording.saves, 1);
+        expect(result?.path, recording.savedPath);
+        expect(
+            result?.name,
+            matches(RegExp(
+                r'^betshuva-video-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{2}-ID-creator-id(?:_\d+)?\.'
+                '$outputExtension\$')));
+        expect(result?.mimeType,
+            extension == 'mov' ? 'video/quicktime' : 'video/mp4');
         await tester.pump(const Duration(seconds: 40));
         expect(camera.stops, 1);
         expect(tester.takeException(), isNull);
@@ -194,7 +223,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(camera.starts, 2);
     expect(camera.stops, 2);
-    expect(result, same(recording));
+    expect(result?.path, recording.savedPath);
+    expect(result?.name, startsWith('betshuva-video-'));
     expect(tester.takeException(), isNull);
   });
 
@@ -223,8 +253,8 @@ void main() {
     await tester.tap(find.text('נסה שוב'));
     await tester.pumpAndSettle();
     expect(recording.saves, 2);
-    expect(recording.savedPath, '/tmp/capture.mp4');
-    expect(result?.path, '/tmp/capture.mp4');
+    expect(recording.attemptedPaths[1], recording.attemptedPaths[0]);
+    expect(result?.path, recording.savedPath);
     expect(result?.mimeType, 'video/mp4');
     expect(camera.starts, 1);
     expect(camera.stops, 1);
@@ -260,7 +290,7 @@ void main() {
 
     stop.complete(recording);
     await tester.pumpAndSettle();
-    expect(result, same(recording));
+    expect(result?.path, recording.savedPath);
     expect(camera.stops, 1);
     expect(camera.disposals, 1);
     expect(tester.takeException(), isNull);

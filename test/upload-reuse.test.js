@@ -23,11 +23,12 @@ const FINGERPRINT = { algorithm: 'ahash16+dhash16-v1', aspect: 0.666667,
 let fixtureId = 0;
 
 function harness({ classification = MEN, result, scanDelay = false,
-  fingerprint = null, trustedBuiltinExpression = false } = {}) {
+  fingerprint = null, trustedBuiltinExpression = false, conversionError = null,
+  audioDuration = 10 } = {}) {
   const state = { files: [], queries: [], blobs: [], scans: 0, audits: [], reports: [],
     pending: [], gifs: [], senderReads: [], recipientReads: [], senderAllowed: true,
     recipientFilter: { ...ALL }, groupFilter: { ...ALL }, member: { role: 'member', send_permission: 'all' },
-    failNextScan: false, owner: `owner-${++fixtureId}` };
+    failNextScan: false, owner: `owner-${++fixtureId}`, audioConversions: [], audioProbes: [] };
   const clone = value => JSON.parse(JSON.stringify(value));
   const isExempt = details => details?.source === 'builtin-expression' || details?.scanSkipped === true;
   const assertScannedOnly = statement => {
@@ -123,7 +124,16 @@ function harness({ classification = MEN, result, scanDelay = false,
     normalizeUploadFileName: value => value,
     resolveAllowedUpload: file => ({ dbType: file.mimetype.startsWith('audio/') ? 'audio' : 'image',
       mime: file.mimetype, maxMB: 10 }),
-    probeAudio: async () => ({ durationSeconds: 10 }),
+    probeAudio: async (buffer, name) => {
+      state.audioProbes.push({ buffer, name }); return { durationSeconds: audioDuration };
+    },
+    convertRecordedAudio: async (buffer, name, type) => {
+      state.audioConversions.push({ buffer, name, type });
+      if (conversionError) throw Object.assign(new Error('test conversion failure'), { code: conversionError });
+      const converted = Buffer.from('encoded MP3 recording');
+      return { buffer: converted, originalname: name.replace(/\.[^.]+$/, '.mp3'),
+        mimetype: 'audio/mpeg', size: converted.length, durationSeconds: audioDuration };
+    },
     crypto, getPool: async () => pool, acquireUploadLock, findReusableUpload,
     isTrustedBuiltinExpression: async () => trustedBuiltinExpression,
     builtinExpressionResult: vm.runInNewContext(source.slice(
@@ -376,6 +386,80 @@ test('reused GIF still applies explicit rights and title, and scan bot still rec
   assert.equal(report.body.url, first.body.url);
   assert.equal(api.state.reports.length, 1);
   assert.equal(api.state.blobs.length, 1);
+});
+
+test('new voice recordings are converted before hashing, storage, and pending moderation', async () => {
+  const api = harness();
+  const name = 'betshuva-audio-2026-09-23_14-07-36-25-ID-742_2.webm';
+  const result = await api.upload({ name, mime: 'audio/webm', bytes: 'original WebM recording',
+    body: { recordedAudio: 'true', toUserId: 'friend' } });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.status, 'pending');
+  assert.equal(api.state.audioConversions.length, 1);
+  assert.equal(api.state.audioProbes.length, 0);
+  const file = api.state.files[0];
+  assert.equal(file.original_name, name.replace('.webm', '.mp3'));
+  assert.equal(file.mime_type, 'audio/mpeg');
+  assert.equal(file.file_type, 'audio');
+  assert.equal(file.file_size, Buffer.byteLength('encoded MP3 recording'));
+  assert.equal(file.content_sha256, crypto.createHash('sha256').update('encoded MP3 recording').digest('hex'));
+  assert.ok(file.public_url.endsWith('.mp3'));
+  assert.equal(file.moderation_status, 'pending');
+  assert.equal(api.state.pending.length, 1, 'conversion never replaces moderation');
+  assert.ok(api.state.pending[0].values.includes(file.original_name));
+  assert.ok(api.state.pending[0].values.includes('audio/mpeg'));
+  assert.equal(api.state.recipientReads.length, 1);
+});
+
+test('selected/imported audio preserves its original bytes, extension, and content type', async () => {
+  for (const [mime, name, body] of [
+    ['audio/wav', 'original.wav', {}],
+    ['audio/webm', 'original.webm', { recordedAudio: 'false' }],
+    ['audio/mpeg', 'original.mp3', {}],
+  ]) {
+    const api = harness();
+    const result = await api.upload({ name, mime, bytes: 'original audio', body });
+    assert.equal(result.statusCode, 200);
+    assert.equal(api.state.audioConversions.length, 0);
+    assert.equal(api.state.audioProbes.length, 1);
+    const file = api.state.files[0];
+    assert.equal(file.original_name, name);
+    assert.equal(file.mime_type, mime);
+    assert.equal(file.content_sha256, crypto.createHash('sha256').update('original audio').digest('hex'));
+  }
+});
+
+test('recording flag does not convert a non-audio upload', async () => {
+  const api = harness();
+  const result = await api.upload({ body: { recordedAudio: 'true' } });
+  assert.equal(result.statusCode, 400);
+  assert.equal(result.body.code, 'INVALID_AUDIO');
+  assert.equal(api.state.audioConversions.length, 0);
+  assert.equal(api.state.files.length, 0);
+});
+
+test('recording failures and duration excess cannot create storage or moderation records', async () => {
+  for (const [conversionError, status] of [
+    ['INVALID_AUDIO', 400],
+    ['AUDIO_DURATION_EXCEEDED', 400],
+    ['AUDIO_CONVERSION_BUSY', 503],
+    ['AUDIO_CONVERSION_UNAVAILABLE', 503],
+  ]) {
+    const api = harness({ conversionError });
+    const result = await api.upload({ name: 'voice.wav', mime: 'audio/wav',
+      body: { recordedAudio: 'true' } });
+    assert.equal(result.statusCode, status);
+    assert.equal(result.body.code, conversionError);
+    assert.equal(api.state.files.length, 0);
+    assert.equal(api.state.blobs.length, 0);
+    assert.equal(api.state.pending.length, 0);
+  }
+  const api = harness({ audioDuration: 121 });
+  const result = await api.upload({ name: 'voice.wav', mime: 'audio/wav',
+    body: { recordedAudio: 'true' } });
+  assert.equal(result.statusCode, 400);
+  assert.equal(result.body.code, 'AUDIO_DURATION_EXCEEDED');
+  assert.equal(api.state.files.length, 0);
 });
 
 test('matching upload locks queue fairly, release once, and do not block other hashes or owners', async () => {

@@ -27,7 +27,8 @@ test('explicit audio type wins over the ambiguous webm extension', () => {
 test('audio and real video still use their dedicated players', () => {
   assert.match(source, /if \(isAudioFile\)[\s\S]*?VoiceMessagePlayer\(/);
   assert.match(source, /else if \(isVideoFile\)[\s\S]*?NativeWebVideoPlayer\(/);
-  assert.match(source, /_voiceFileName = 'voice_message\.webm'/);
+  assert.match(source, /extension = 'webm'/);
+  assert.match(source, /_voiceFileName = captureFileNames\.create\(/);
 });
 
 test('voice player animates while loading and supports retry', () => {
@@ -37,4 +38,9 @@ test('voice player animates while loading and supports retry', () => {
   assert.match(source, /onPressed: _loading[\s\S]*?_loadFailed[\s\S]*?_prepareSource/);
   assert.match(source, /טוען הקלטה\.\.\./);
   assert.match(source, /הטעינה נכשלה — לחצו לניסיון חוזר/);
+});
+
+test('web voice playback uses MP3 MIME and ignores URL query parameters', () => {
+  assert.match(source, /final lowerUrl = Uri\.parse\(widget\.url\)\.path\.toLowerCase\(\)/);
+  assert.match(source, /lowerUrl\.endsWith\('\.mp3'\)\s*\? 'audio\/mpeg'/);
 });

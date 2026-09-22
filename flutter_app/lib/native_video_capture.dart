@@ -2,17 +2,20 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'capture_file_name.dart';
 import 'video_recording_limit.dart';
 
 Future<XFile?> captureNativeVideo(BuildContext context,
-        {required Duration maxDuration}) =>
+        {required Duration maxDuration, required String creatorId}) =>
     Navigator.of(context).push<XFile>(MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => _VideoCapture(maxDuration: maxDuration)));
+        builder: (_) =>
+            _VideoCapture(maxDuration: maxDuration, creatorId: creatorId)));
 
 class _VideoCapture extends StatefulWidget {
   final Duration maxDuration;
-  const _VideoCapture({required this.maxDuration});
+  final String creatorId;
+  const _VideoCapture({required this.maxDuration, required this.creatorId});
   @override
   State<_VideoCapture> createState() => _VideoCaptureState();
 }
@@ -22,6 +25,7 @@ class _VideoCaptureState extends State<_VideoCapture>
   CameraController? _camera;
   Future<void>? _closingCamera;
   XFile? _pendingVideo;
+  String? _recordingFileName;
   late final VideoRecordingLimit _limit;
   Timer? _ticker;
   final _clock = Stopwatch();
@@ -135,6 +139,8 @@ class _VideoCaptureState extends State<_VideoCapture>
     });
     if (kDebugMode) debugPrint('[video-capture] Starting recording');
     try {
+      _recordingFileName = captureFileNames.create(
+          kind: 'video', extension: 'mp4', creatorId: widget.creatorId);
       await camera.startVideoRecording();
       if (kDebugMode) debugPrint('[video-capture] Recording started');
       if (!mounted) return;
@@ -182,15 +188,23 @@ class _VideoCaptureState extends State<_VideoCapture>
       // Retain a completed recording if copying it fails, so retry never records
       // or stops the native camera a second time.
       _pendingVideo ??= await camera!.stopVideoRecording();
-      var file = _pendingVideo!;
+      final recording = _pendingVideo!;
       // Older CameraX versions write MP4 with a .temp suffix and no MIME type.
-      // XFile ignores `name` on native platforms, so save with the real suffix
-      // before passing the recording to playback and upload.
-      if (file.path.toLowerCase().endsWith('.temp')) {
-        final path = '${file.path.substring(0, file.path.length - 5)}.mp4';
-        await file.saveTo(path);
-        file = XFile(path, mimeType: 'video/mp4');
-      }
+      // XFile ignores `name` on native platforms, so the actual saved path must
+      // carry the descriptive name and real container suffix.
+      final originalExtension = recording.name.split('.').last.toLowerCase();
+      final extension = originalExtension == 'temp' ? 'mp4' : originalExtension;
+      final reservedName = _recordingFileName!;
+      final name =
+          '${reservedName.substring(0, reservedName.length - 3)}$extension';
+      final path = Uri.file(recording.path).resolve(name).toFilePath();
+      await recording.saveTo(path);
+      final mimeType = extension == 'mp4'
+          ? 'video/mp4'
+          : extension == 'mov'
+              ? 'video/quicktime'
+              : recording.mimeType;
+      final file = XFile(path, mimeType: mimeType);
       if (kDebugMode) debugPrint('[video-capture] Recording saved');
       if (mounted) Navigator.of(context).pop(file);
     } catch (error, stackTrace) {

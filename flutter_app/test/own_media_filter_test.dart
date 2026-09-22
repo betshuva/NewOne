@@ -47,6 +47,9 @@ class TestImageFile extends XFile {
 
   @override
   Future<int> length() async => png.length;
+
+  @override
+  Future<DateTime> lastModified() async => DateTime(2026, 9, 23, 14, 7, 36, 420);
 }
 
 class TestImagePicker extends ImagePickerPlatform {

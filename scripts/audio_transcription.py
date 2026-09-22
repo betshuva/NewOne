@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+from fractions import Fraction
 
 import av
 
@@ -15,6 +16,15 @@ def audio_duration(path: str) -> float:
         if not streams:
             raise ValueError("no audio stream")
         stream = streams[0]
+        # MP3 container duration includes encoder padding. Decoded samples honor
+        # gapless metadata, keeping an exact two-minute recording within its limit.
+        if stream.codec_context.name in {"mp3", "mp3float"}:
+            duration = Fraction(0)
+            for frame in container.decode(stream):
+                duration += Fraction(frame.samples, frame.sample_rate)
+                if duration > 120:
+                    break
+            return float(duration)
         if stream.duration is not None and stream.time_base is not None:
             return float(stream.duration * stream.time_base)
         if container.duration is not None:

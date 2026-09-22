@@ -70,6 +70,7 @@ test('private and group camera actions use the in-app web preview', () => {
     mainSource.indexOf('class _GroupChatScreenState'),
     mainSource.indexOf('class ContentFilterSettingsScreen'));
   assert.match(group, /label: 'מצלמה'[\s\S]{0,500}_capturePhoto\(\)/);
-  assert.match(group, /photo = kIsWeb\s*\? await captureWebPhoto\(context\)/);
-  assert.match(group, /await _uploadGroupFile\(photo, photo\.name, 'image'\)/);
+  assert.match(group, /photo = kIsWeb\s*\? await captureWebPhoto\(context, creatorId: creatorId\)/);
+  assert.match(group, /await capturedPhotoFileName\(photo, creatorId: creatorId\)/);
+  assert.match(group, /await _uploadGroupFile\(photo, name, 'image'\)/);
 });

@@ -8,6 +8,8 @@ import 'dart:ui_web' as ui_web;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'capture_file_name.dart';
+
 Future<Uint8List> _blobBytes(html.Blob blob) async {
   final reader = html.FileReader()..readAsArrayBuffer(blob);
   await reader.onLoad.first;
@@ -15,19 +17,26 @@ Future<Uint8List> _blobBytes(html.Blob blob) async {
   return result is ByteBuffer ? Uint8List.view(result) : result as Uint8List;
 }
 
-Future<XFile?> captureWebPhoto(BuildContext context) => showDialog<XFile>(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => const _WebCameraDialog(videoMode: false));
+Future<XFile?> captureWebPhoto(BuildContext context,
+        {required String creatorId}) =>
+    showDialog<XFile>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            _WebCameraDialog(videoMode: false, creatorId: creatorId));
 
-Future<XFile?> captureWebVideo(BuildContext context) => showDialog<XFile>(
-    context: context,
-    barrierDismissible: false,
-    builder: (_) => const _WebCameraDialog(videoMode: true));
+Future<XFile?> captureWebVideo(BuildContext context,
+        {required String creatorId}) =>
+    showDialog<XFile>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            _WebCameraDialog(videoMode: true, creatorId: creatorId));
 
 class _WebCameraDialog extends StatefulWidget {
   final bool videoMode;
-  const _WebCameraDialog({required this.videoMode});
+  final String creatorId;
+  const _WebCameraDialog({required this.videoMode, required this.creatorId});
   @override
   State<_WebCameraDialog> createState() => _WebCameraDialogState();
 }
@@ -118,15 +127,15 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
     try {
       final canvas = html.CanvasElement(
           width: _preview.videoWidth, height: _preview.videoHeight);
+      final name = captureFileNames.create(
+          kind: 'photo', extension: 'jpg', creatorId: widget.creatorId);
       canvas.context2D.drawImage(_preview, 0, 0);
       final bytes = await _blobBytes(await canvas.toBlob('image/jpeg', 0.9));
       if (!mounted) return;
       if (bytes.isEmpty) throw Exception('empty camera image');
       Navigator.pop(
         context,
-        XFile.fromData(bytes,
-            name: 'camera-${DateTime.now().millisecondsSinceEpoch}.jpg',
-            mimeType: 'image/jpeg'),
+        XFile.fromData(bytes, name: name, mimeType: 'image/jpeg'),
       );
     } catch (_) {
       if (mounted) {
@@ -162,6 +171,8 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
       final recorder = mime == null
           ? html.MediaRecorder(_stream!)
           : html.MediaRecorder(_stream!, {'mimeType': mime});
+      final name = captureFileNames.create(
+          kind: 'video', extension: 'webm', creatorId: widget.creatorId);
       _recorder = recorder;
       recorder.addEventListener('dataavailable', (event) {
         final data = (event as dynamic).data as html.Blob?;
@@ -213,8 +224,7 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
         Navigator.pop(
             context,
             XFile.fromData(bytes,
-                name: 'camera-${DateTime.now().millisecondsSinceEpoch}.webm',
-                mimeType: outputMime.split(';').first));
+                name: name, mimeType: outputMime.split(';').first));
       });
       // A single final MediaRecorder blob is the most interoperable WebM.
       // Concatenating timed chunks can produce an invalid container in some

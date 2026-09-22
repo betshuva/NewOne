@@ -350,7 +350,9 @@ test('voice recordings use web opus, reject empty data, and preload duration', (
   const privateVoiceEnd = source.indexOf('Future<void> _send(', privateVoiceStart);
   const privateVoiceSource = source.slice(privateVoiceStart, privateVoiceEnd);
   assert.match(privateVoiceSource, /AudioEncoder\.opus/);
-  assert.match(privateVoiceSource, /voice_message\.webm/);
+  assert.match(privateVoiceSource, /extension = 'webm'/);
+  assert.match(privateVoiceSource, /_voiceFileName = captureFileNames\.create\(/);
+  assert.match(privateVoiceSource, /'recordedAudio': 'true'/);
   assert.match(privateVoiceSource, /recordedSeconds < 1/);
   assert.match(privateVoiceSource, /bytes\.length < 256/);
   assert.match(privateVoiceSource, /await _audioRecorder\.isRecording\(\)/);

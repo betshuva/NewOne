@@ -58,6 +58,7 @@ const {
   transcriptDigest,
   isAudioTranscriptionBusy,
 } = require('./audio-moderation');
+const { convertRecordedAudio } = require('./recorded-audio');
 const { encryptMessageText, decryptMessageText } = require('./message-at-rest');
 const { inlineEmojiModerationText, inlineEmojiPlainText } = require('./inline-custom-emoji');
 const {
@@ -8719,6 +8720,11 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
 
   const allowed = resolveAllowedUpload(file);
   if (!allowed) return res.status(400).json({ error: 'סוג קובץ לא נתמך' });
+  const recordedAudio = req.body.recordedAudio === 'true';
+  if (recordedAudio && allowed.dbType !== 'audio')
+    return res.status(400).json({
+      error: 'המרה ל-MP3 זמינה להקלטות קול בלבד', code: 'INVALID_AUDIO',
+    });
   // Browsers sometimes upload selected videos as application/octet-stream.
   // Only whitelisted extensions reach this point, so use the canonical MIME.
   file.mimetype = allowed.mime;
@@ -8747,14 +8753,28 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
   if (allowed.dbType === 'audio') {
     try {
-      const audio = await probeAudio(file.buffer, file.originalname);
+      const audio = recordedAudio
+        ? await convertRecordedAudio(file.buffer, file.originalname, file.mimetype)
+        : await probeAudio(file.buffer, file.originalname);
       if (audio.durationSeconds > MAX_AUDIO_SECONDS)
         return res.status(400).json({
           error: 'אורך ההקלטה המרבי הוא 2 דקות',
           code: 'AUDIO_DURATION_EXCEEDED',
         });
+      if (recordedAudio) {
+        Object.assign(file, { buffer: audio.buffer, originalname: audio.originalname,
+          mimetype: audio.mimetype, size: audio.size });
+      }
     } catch (error) {
       console.warn('[audio-moderation] audio probe failed:', error.message);
+      if (error.code === 'AUDIO_DURATION_EXCEEDED')
+        return res.status(400).json({
+          error: 'אורך ההקלטה המרבי הוא 2 דקות', code: error.code,
+        });
+      if (['AUDIO_CONVERSION_BUSY', 'AUDIO_CONVERSION_UNAVAILABLE'].includes(error.code))
+        return res.status(503).json({
+          error: 'עיבוד ההקלטה אינו זמין כרגע. נסו שוב בעוד רגע', code: error.code,
+        });
       return res.status(400).json({
         error: 'לא ניתן לקרוא את קובץ הקול או לזהות את משכו',
         code: 'INVALID_AUDIO',

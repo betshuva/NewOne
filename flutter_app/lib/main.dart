@@ -32,6 +32,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'google_web_sign_in_button.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:record/record.dart';
@@ -63,11 +64,22 @@ import 'message_hover.dart';
 import 'document_scanner.dart';
 import 'image_clipboard.dart';
 import 'native_video_capture.dart';
+import 'capture_file_name.dart';
+import 'captured_photo_name.dart';
 import 'image_paste_menu.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 const _sharedContactPrefix = 'betshuva://contact/';
 const _maxVideoDuration = Duration(seconds: 30);
+
+String? _captureCreatorId(BuildContext context, Map<String, dynamic>? me) {
+  final id = normalizeCaptureCreatorId(me?['id']?.toString() ?? '');
+  if (id != null) return id;
+  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+    content: Text('פרטי המשתמש עדיין נטענים. נסה שוב בעוד רגע'),
+  ));
+  return null;
+}
 
 bool _isPersonalPhoneContact(String? id, String? myId) =>
     id != null && id.isNotEmpty && id != myId &&
@@ -1838,7 +1850,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.31';
+const kVersion = '1.3.32';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -3883,18 +3895,16 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     await _verifyOtp();
   }
 
-  Future<void> _signInWithGoogle() async {
+  Future<void> _signInWithGoogle({GoogleSignInAccount? webAccount}) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      await _googleSignIn.signOut();
-      final account = kIsWeb
-          ? await _googleSignIn.signInSilently()
-          : await _googleSignIn.signIn();
+      if (!kIsWeb) await _googleSignIn.signOut();
+      final account = kIsWeb ? webAccount : await _googleSignIn.signIn();
       if (account == null) {
-        setState(() => _loading = false);
+        if (mounted) setState(() => _loading = false);
         return;
       }
       final idToken = (await account.authentication).idToken;
@@ -3916,6 +3926,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
             }),
           )
           .timeout(const Duration(seconds: 30));
+      if (!mounted) return;
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
         setState(() {
@@ -3949,6 +3960,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
       }
     } catch (e) {
       debugPrint('Google sign-in failed: $e');
+      if (!mounted) return;
       setState(() {
         _error = 'כניסה עם Google נכשלה: $e';
         _loading = false;
@@ -4259,27 +4271,34 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
                       const SizedBox(height: 14),
                       SizedBox(
                         width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: _loading ? null : _signInWithGoogle,
-                          icon: Image.network(
-                            'https://developers.google.com/static/identity/images/g-logo.png',
-                            width: 18,
-                            height: 18,
-                            errorBuilder: (_, __, ___) =>
-                                const SizedBox(width: 18, height: 18),
-                          ),
-                          label: const Text('המשך עם Google',
-                              style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                  color: kTextDark)),
-                          style: OutlinedButton.styleFrom(
-                            side: const BorderSide(color: kBorder, width: 1.5),
-                            padding: const EdgeInsets.symmetric(vertical: 13),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                          ),
-                        ),
+                        child: kIsWeb
+                            ? GoogleWebSignInButton(
+                                googleSignIn: _googleSignIn,
+                                enabled: !_loading,
+                                onSignedIn: (account) =>
+                                    _signInWithGoogle(webAccount: account),
+                              )
+                            : OutlinedButton.icon(
+                                onPressed: _loading ? null : _signInWithGoogle,
+                                icon: Image.network(
+                                  'https://developers.google.com/static/identity/images/g-logo.png',
+                                  width: 18,
+                                  height: 18,
+                                  errorBuilder: (_, __, ___) =>
+                                      const SizedBox(width: 18, height: 18),
+                                ),
+                                label: const Text('המשך עם Google',
+                                    style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                        color: kTextDark)),
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(color: kBorder, width: 1.5),
+                                  padding: const EdgeInsets.symmetric(vertical: 13),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12)),
+                                ),
+                              ),
                       ),
                       const SizedBox(height: 8),
                       _androidDownloadLink(),
@@ -4470,20 +4489,18 @@ class _AuthScreenState extends State<AuthScreen> {
     _emailCtrl.text = widget.initialEmail ?? '';
   }
 
-  Future<void> _signInWithGoogle() async {
+  Future<void> _signInWithGoogle({GoogleSignInAccount? webAccount}) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      String? idToken = _googleRegistrationIdToken;
+      String? idToken = webAccount == null ? _googleRegistrationIdToken : null;
       if (idToken == null) {
-        await _googleSignIn.signOut();
-        final account = kIsWeb
-            ? await _googleSignIn.signInSilently()
-            : await _googleSignIn.signIn();
+        if (!kIsWeb) await _googleSignIn.signOut();
+        final account = kIsWeb ? webAccount : await _googleSignIn.signIn();
         if (account == null) {
-          setState(() => _loading = false);
+          if (mounted) setState(() => _loading = false);
           return;
         }
         idToken = (await account.authentication).idToken;
@@ -4507,6 +4524,7 @@ class _AuthScreenState extends State<AuthScreen> {
             }),
           )
           .timeout(const Duration(seconds: 30));
+      if (!mounted) return;
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
         setState(() {
@@ -4540,6 +4558,7 @@ class _AuthScreenState extends State<AuthScreen> {
       }
     } catch (e) {
       debugPrint('Google sign-in failed: $e');
+      if (!mounted) return;
       setState(() {
         _error = 'כניסה עם Google נכשלה: $e';
         _loading = false;
@@ -4767,7 +4786,8 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  Future<void> _selectRegistrationMethod(String method) async {
+  Future<void> _selectRegistrationMethod(String method,
+      {GoogleSignInAccount? webAccount}) async {
     setState(() {
       _registrationMethod = method;
       _verificationMethod = method == 'phone' ? 'phone' : 'email';
@@ -4782,10 +4802,8 @@ class _AuthScreenState extends State<AuthScreen> {
     if (method != 'google') return;
     setState(() => _loading = true);
     try {
-      await _googleSignIn.signOut();
-      final account = kIsWeb
-          ? await _googleSignIn.signInSilently()
-          : await _googleSignIn.signIn();
+      if (!kIsWeb) await _googleSignIn.signOut();
+      final account = kIsWeb ? webAccount : await _googleSignIn.signIn();
       if (account == null) {
         if (mounted) setState(() => _loading = false);
         return;
@@ -5078,7 +5096,15 @@ class _AuthScreenState extends State<AuthScreen> {
               textAlign: TextAlign.center,
               style: TextStyle(color: kSubtext, fontSize: 12.5)),
           const SizedBox(height: 20),
-          _registrationMethodCard(
+          if (kIsWeb)
+            GoogleWebSignInButton(
+              googleSignIn: _googleSignIn,
+              enabled: !_loading,
+              onSignedIn: (account) =>
+                  _selectRegistrationMethod('google', webAccount: account),
+            )
+          else
+            _registrationMethodCard(
               method: 'google',
               icon: Icons.g_mobiledata_rounded,
               title: 'הרשמה באמצעות Google',
@@ -5900,27 +5926,34 @@ class _AuthScreenState extends State<AuthScreen> {
                     const SizedBox(height: 14),
                     SizedBox(
                       width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: _loading ? null : _signInWithGoogle,
-                        icon: Image.network(
-                          'https://developers.google.com/static/identity/images/g-logo.png',
-                          width: 18,
-                          height: 18,
-                          errorBuilder: (_, __, ___) =>
-                              const SizedBox(width: 18, height: 18),
-                        ),
-                        label: const Text('המשך עם Google',
-                            style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                                color: kTextDark)),
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: kBorder, width: 1.5),
-                          padding: const EdgeInsets.symmetric(vertical: 13),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
+                      child: kIsWeb
+                          ? GoogleWebSignInButton(
+                              googleSignIn: _googleSignIn,
+                              enabled: !_loading,
+                              onSignedIn: (account) =>
+                                  _signInWithGoogle(webAccount: account),
+                            )
+                          : OutlinedButton.icon(
+                              onPressed: _loading ? null : _signInWithGoogle,
+                              icon: Image.network(
+                                'https://developers.google.com/static/identity/images/g-logo.png',
+                                width: 18,
+                                height: 18,
+                                errorBuilder: (_, __, ___) =>
+                                    const SizedBox(width: 18, height: 18),
+                              ),
+                              label: const Text('המשך עם Google',
+                                  style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                      color: kTextDark)),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: kBorder, width: 1.5),
+                                padding: const EdgeInsets.symmetric(vertical: 13),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
                     ),
                     const SizedBox(height: 8),
                     _androidDownloadLink(),
@@ -22619,7 +22652,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _cameraCaptureOpen = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
-  String _voiceFileName = 'voice_message.webm';
+  String _voiceFileName = '';
   Map<String, bool>? _recipientReceivingFilter;
   Map<String, bool>? _outgoingFilter;
   bool _counterpartFilterAvailable = false;
@@ -23334,7 +23367,8 @@ class _ChatScreenState extends State<ChatScreen> {
           if (bytes.length < 256) {
             throw Exception('ההקלטה ריקה ולא נשלחה');
           }
-          await _uploadAndSend(recording, _voiceFileName, 'audio');
+          await _uploadAndSend(recording, _voiceFileName, 'audio',
+              extraFields: const {'recordedAudio': 'true'});
         } finally {
           _voiceSubmissionInProgress = false;
         }
@@ -23347,19 +23381,24 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         return;
       }
-      final path = kIsWeb
-          ? ''
-          : '${(await getTemporaryDirectory()).path}/voice_${DateTime.now().millisecondsSinceEpoch}.wav';
+      if (!mounted) return;
+      final creatorId = _captureCreatorId(context, widget.me);
+      if (creatorId == null) return;
       var encoder = AudioEncoder.wav;
-      _voiceFileName = 'voice_message.wav';
+      var extension = 'wav';
       if (kIsWeb) {
         if (await _audioRecorder.isEncoderSupported(AudioEncoder.opus)) {
           encoder = AudioEncoder.opus;
-          _voiceFileName = 'voice_message.webm';
+          extension = 'webm';
         } else if (!await _audioRecorder.isEncoderSupported(AudioEncoder.wav)) {
           throw Exception('הדפדפן אינו תומך בהקלטת אודיו');
         }
       }
+      final directory = kIsWeb ? null : await getTemporaryDirectory();
+      _voiceFileName = captureFileNames.create(
+        kind: 'audio', extension: extension, creatorId: creatorId,
+      );
+      final path = directory == null ? '' : '${directory.path}/$_voiceFileName';
       await _audioRecorder.start(
           RecordConfig(
               encoder: encoder,
@@ -24772,16 +24811,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final picked = await picker.pickImage(
         source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
-    if (picked != null) await _uploadAndSend(picked, picked.name, 'image');
+    if (picked != null) {
+      if (!mounted) return;
+      final creatorId = _captureCreatorId(context, widget.me);
+      if (creatorId == null) return;
+      final name = await capturedPhotoFileName(picked, creatorId: creatorId);
+      await _uploadAndSend(picked, name, 'image');
+    }
   }
 
   Future<void> _capturePhoto() async {
     if (_cameraCaptureOpen) return;
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return;
     _cameraCaptureOpen = true;
     XFile? photo;
     try {
       photo = kIsWeb
-          ? await captureWebPhoto(context)
+          ? await captureWebPhoto(context, creatorId: creatorId)
           : await ImagePicker().pickImage(
               source: ImageSource.camera,
               maxWidth: 1920,
@@ -24792,15 +24839,20 @@ class _ChatScreenState extends State<ChatScreen> {
       _cameraCaptureOpen = false;
     }
     if (photo == null) return;
-    await _uploadAndSend(photo, photo.name, 'image');
+    final name = kIsWeb
+        ? photo.name
+        : await capturedPhotoFileName(photo, creatorId: creatorId);
+    await _uploadAndSend(photo, name, 'image');
   }
 
   Future<XFile?> _captureDocumentPage() async {
     if (_cameraCaptureOpen) return null;
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return null;
     _cameraCaptureOpen = true;
     try {
       return kIsWeb
-          ? await captureWebPhoto(context)
+          ? await captureWebPhoto(context, creatorId: creatorId)
           : await ImagePicker().pickImage(
               source: ImageSource.camera,
               maxWidth: 1920,
@@ -24927,9 +24979,12 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _recordVideo() async {
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return;
     final video = kIsWeb
-        ? await captureWebVideo(context)
-        : await captureNativeVideo(context, maxDuration: _maxVideoDuration);
+        ? await captureWebVideo(context, creatorId: creatorId)
+        : await captureNativeVideo(context,
+            maxDuration: _maxVideoDuration, creatorId: creatorId);
     if (video == null || !mounted) return;
     if (!await _videoWithinDurationLimit(context, video)) return;
     if (!mounted) return;
@@ -25042,6 +25097,8 @@ class _ChatScreenState extends State<ChatScreen> {
     bool refreshScanBot = true,
   }) async {
     final data = result.data;
+    final storedName = data['fileName']?.toString().trim();
+    if (storedName != null && storedName.isNotEmpty) fileName = storedName;
     final fileUrl = data['url'] as String?;
     switch (result.outcome) {
       case _FileUploadOutcome.failed:
@@ -27006,12 +27063,14 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
         if (response.statusCode != 200 || response.bodyBytes.length < 256) {
           throw Exception('audio download failed');
         }
-        final lowerUrl = widget.url.toLowerCase();
+        final lowerUrl = Uri.parse(widget.url).path.toLowerCase();
         final mimeType = lowerUrl.endsWith('.webm')
             ? 'audio/webm'
             : lowerUrl.endsWith('.wav')
                 ? 'audio/wav'
-                : 'audio/mp4';
+                : lowerUrl.endsWith('.mp3')
+                    ? 'audio/mpeg'
+                    : 'audio/mp4';
         await _player
             .setSource(BytesSource(response.bodyBytes, mimeType: mimeType));
       } else {
@@ -31049,7 +31108,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
-  String _voiceFileName = 'voice_message.webm';
+  String _voiceFileName = '';
   Map<String, bool>? _groupReceivingFilter;
   Map<String, bool>? _outgoingFilter;
   Map<String, bool>? _invitationPersonalFilter;
@@ -32632,7 +32691,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           if (bytes.length < 256) {
             throw Exception('ההקלטה ריקה ולא נשלחה');
           }
-          await _uploadGroupFile(recording, _voiceFileName, 'audio');
+          await _uploadGroupFile(recording, _voiceFileName, 'audio',
+              extraFields: const {'recordedAudio': 'true'});
         } finally {
           _voiceSubmissionInProgress = false;
         }
@@ -32645,19 +32705,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
         return;
       }
-      final path = kIsWeb
-          ? ''
-          : '${(await getTemporaryDirectory()).path}/voice_${DateTime.now().millisecondsSinceEpoch}.wav';
+      if (!mounted) return;
+      final creatorId = _captureCreatorId(context, widget.me);
+      if (creatorId == null) return;
       var encoder = AudioEncoder.wav;
-      _voiceFileName = 'voice_message.wav';
+      var extension = 'wav';
       if (kIsWeb) {
         if (await _audioRecorder.isEncoderSupported(AudioEncoder.opus)) {
           encoder = AudioEncoder.opus;
-          _voiceFileName = 'voice_message.webm';
+          extension = 'webm';
         } else if (!await _audioRecorder.isEncoderSupported(AudioEncoder.wav)) {
           throw Exception('הדפדפן אינו תומך בהקלטת אודיו');
         }
       }
+      final directory = kIsWeb ? null : await getTemporaryDirectory();
+      _voiceFileName = captureFileNames.create(
+        kind: 'audio', extension: extension, creatorId: creatorId,
+      );
+      final path = directory == null ? '' : '${directory.path}/$_voiceFileName';
       await _audioRecorder.start(
           RecordConfig(
               encoder: encoder,
@@ -33328,17 +33393,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final picked = await picker.pickImage(
         source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
     if (picked != null) {
-      await _uploadGroupFile(picked, picked.name, 'image');
+      if (!mounted) return;
+      final creatorId = _captureCreatorId(context, widget.me);
+      if (creatorId == null) return;
+      final name = await capturedPhotoFileName(picked, creatorId: creatorId);
+      await _uploadGroupFile(picked, name, 'image');
     }
   }
 
   Future<void> _capturePhoto() async {
     if (_cameraCaptureOpen) return;
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return;
     _cameraCaptureOpen = true;
     XFile? photo;
     try {
       photo = kIsWeb
-          ? await captureWebPhoto(context)
+          ? await captureWebPhoto(context, creatorId: creatorId)
           : await ImagePicker().pickImage(
               source: ImageSource.camera,
               maxWidth: 1920,
@@ -33349,15 +33420,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _cameraCaptureOpen = false;
     }
     if (photo == null) return;
-    await _uploadGroupFile(photo, photo.name, 'image');
+    final name = kIsWeb
+        ? photo.name
+        : await capturedPhotoFileName(photo, creatorId: creatorId);
+    await _uploadGroupFile(photo, name, 'image');
   }
 
   Future<XFile?> _captureDocumentPage() async {
     if (_cameraCaptureOpen) return null;
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return null;
     _cameraCaptureOpen = true;
     try {
       return kIsWeb
-          ? await captureWebPhoto(context)
+          ? await captureWebPhoto(context, creatorId: creatorId)
           : await ImagePicker().pickImage(
               source: ImageSource.camera,
               maxWidth: 1920,
@@ -33475,9 +33551,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _recordVideo() async {
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return;
     final video = kIsWeb
-        ? await captureWebVideo(context)
-        : await captureNativeVideo(context, maxDuration: _maxVideoDuration);
+        ? await captureWebVideo(context, creatorId: creatorId)
+        : await captureNativeVideo(context,
+            maxDuration: _maxVideoDuration, creatorId: creatorId);
     if (video == null || !mounted) return;
     if (!await _videoWithinDurationLimit(context, video)) return;
     if (!mounted) return;
@@ -33564,6 +33643,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _applyGroupUploadResult(_FileUploadResult result,
       String fileName, String fileType, bool showNotice) async {
     final data = result.data;
+    final storedName = data['fileName']?.toString().trim();
+    if (storedName != null && storedName.isNotEmpty) fileName = storedName;
     final fileUrl = data['url'] as String?;
     switch (result.outcome) {
       case _FileUploadOutcome.failed:
