@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const sharp = require('sharp');
 const {
   parseOpenAIDecision,
   verifyPersonClassification,
@@ -18,6 +19,70 @@ const noObjects = async () => ({ available: true, personDetected: false,
   maxPersonScore: 0, persons: [] });
 const noFaces = async () => ({ available: true, faceDetected: false,
   faceCount: 0, faces: [] });
+
+test('blank video frames resolve without repeating an uncertain model review', async () => {
+  const frame = await sharp({ create: { width: 64, height: 48, channels: 3,
+    background: { r: 2, g: 3, b: 4 } } }).png().toBuffer();
+  const result = await verifyPersonClassification(frame, {
+    category: null, detectedCategories: [], uncertain: true,
+  }, {
+    videoFrame: true, scanObjects: noObjects, scanFaces: noFaces,
+    classifyOpenAI: async () => assert.fail('Blank frame needs no model review'),
+  });
+  assert.equal(result.classification.category, 'nonHumanImages');
+  assert.equal(result.classification.uncertain, false);
+  assert.equal(result.verification.decision, 'non_human_blank_video_frame');
+  assert.equal(result.verification.providers.videoFramePixels.maximum, 4);
+});
+
+test('blank-frame handling does not erase evidence or approve other uncertain media', async t => {
+  const black = await sharp({ create: { width: 64, height: 48, channels: 3,
+    background: { r: 0, g: 0, b: 0 } } }).png().toBuffer();
+  const pixels = Buffer.alloc(64 * 48 * 3, 0);
+  pixels[0] = 20;
+  const detailed = await sharp(pixels, { raw: { width: 64, height: 48, channels: 3 } })
+    .png().toBuffer();
+  for (const scenario of [
+    { name: 'still image', buffer: black, videoFrame: false },
+    { name: 'one visible pixel', buffer: detailed },
+    { name: 'invalid image', buffer: Buffer.from('invalid') },
+    { name: 'local person evidence', buffer: black, classification: localFalsePositive },
+    { name: 'Google unavailable', buffer: black,
+      scanFaces: async () => ({ available: false }) },
+  ]) {
+    await t.test(scenario.name, async () => {
+      let reviews = 0;
+      const result = await verifyPersonClassification(scenario.buffer,
+        scenario.classification || { category: null, detectedCategories: [], uncertain: true }, {
+          videoFrame: scenario.videoFrame ?? true,
+          scanObjects: noObjects, scanFaces: scenario.scanFaces || noFaces,
+          classifyOpenAI: async () => {
+            reviews++;
+            return { available: true, decision: 'uncertain', confidence: 0.8 };
+          },
+        });
+      assert.equal(reviews, 1);
+      assert.equal(result.classification.uncertain, true);
+      assert.equal(result.verification.decision, 'uncertain');
+    });
+  }
+});
+
+test('Google person evidence takes precedence over blank video frame handling', async () => {
+  const frame = await sharp({ create: { width: 64, height: 48, channels: 3,
+    background: { r: 0, g: 0, b: 0 } } }).png().toBuffer();
+  const result = await verifyPersonClassification(frame, {
+    category: null, detectedCategories: [], uncertain: true,
+  }, {
+    videoFrame: true,
+    scanObjects: async () => ({ available: true, personDetected: true, persons: [{}] }),
+    scanFaces: noFaces,
+    classifyOpenAI: async () => ({ available: true, decision: 'person',
+      personCategories: ['men'], confidence: 0.95 }),
+  });
+  assert.deepEqual(result.classification.detectedCategories, ['men']);
+  assert.equal(result.verification.providers.videoFramePixels, undefined);
+});
 
 test('negative Google detections never erase local people when OpenAI is unavailable', async () => {
   const result = await verifyPersonClassification(Buffer.from('image'),

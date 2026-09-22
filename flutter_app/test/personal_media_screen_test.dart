@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:betshuva/main.dart';
+import 'package:betshuva/compatible_video_player.dart';
 import 'package:betshuva/filter_history.dart';
+import 'package:betshuva/video_thumbnail.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -205,6 +207,40 @@ class _MediaBackend {
 
 Finder _key(String key) => find.byKey(ValueKey(key));
 
+Map<String, Object?> _video(String id, {String extension = 'mp4'}) => {
+      ..._file(id, name: '$id.$extension'),
+      'url': '/uploads/$id.$extension',
+      'fileType': 'video',
+      'mimeType': extension == 'webm' ? 'video/webm' : 'video/mp4',
+    };
+
+class _NativeVideoHarness {
+  static const channel = MethodChannel('com.betshuva.app/media');
+  final calls = <MethodCall>[];
+  final playback = <Completer<bool>>[];
+
+  _NativeVideoHarness() {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call);
+      if (call.method == 'videoThumbnail') return null;
+      if (call.method == 'playVideo') {
+        final result = Completer<bool>();
+        playback.add(result);
+        return result.future;
+      }
+      throw MissingPluginException();
+    });
+    addTearDown(() {
+      for (final result in playback) {
+        if (!result.isCompleted) result.complete(true);
+      }
+      messenger.setMockMethodCallHandler(channel, null);
+    });
+  }
+}
+
 Future<void> _withLibrary(
   WidgetTester tester,
   Future<void> Function(_MediaBackend backend, ValueNotifier<String> token)
@@ -273,6 +309,102 @@ void main() {
       ..addFont(rootBundle.load('assets/fonts/NotoSansHebrew.ttf'));
     await font.load();
   });
+
+  for (final extension in ['mp4', 'webm']) {
+    testWidgets('Android $extension opens directly and returns to the library',
+        (tester) async {
+      final native = _NativeVideoHarness();
+      final backend = _MediaBackend()
+        ..items = [_video('direct-$extension', extension: extension)];
+      await _withLibrary(tester, (backend, _) async {
+        final thumbnail = find.byType(VideoThumbnail);
+        expect(thumbnail, findsOneWidget);
+        expect(
+            native.calls
+                .singleWhere((call) => call.method == 'videoThumbnail')
+                .arguments,
+            {
+              'url': Uri.parse(kServer)
+                  .resolve('/uploads/direct-$extension.$extension')
+                  .toString(),
+            });
+        await _search(tester, 'direct');
+        await _tapVisible(tester, _key('media-view-list'));
+        await tester.ensureVisible(thumbnail);
+        // Two taps before the new route is drawn must open only one player.
+        final position = tester.getCenter(thumbnail);
+        await tester.tapAt(position);
+        await tester.tapAt(position);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(find.byType(CompatibleVideoPlayer), findsOneWidget);
+        expect(native.playback, hasLength(1));
+        expect(
+            native.calls
+                .singleWhere((call) => call.method == 'playVideo')
+                .arguments,
+            {
+              'url': Uri.parse(kServer)
+                  .resolve('/uploads/direct-$extension.$extension')
+                  .toString(),
+            });
+
+        native.playback.single.complete(true);
+        await tester.pumpAndSettle();
+        expect(find.byType(CompatibleVideoPlayer), findsNothing);
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(_key('media-list'), findsOneWidget);
+        expect(tester.widget<TextField>(_key('media-search')).controller!.text,
+            'direct');
+        await tester.tap(thumbnail);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        expect(native.playback, hasLength(2));
+        native.playback.last.complete(true);
+        await tester.pumpAndSettle();
+      }, backend: backend);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android), skip: kIsWeb);
+  }
+
+  testWidgets('video selection never starts playback', (tester) async {
+    final native = _NativeVideoHarness();
+    final backend = _MediaBackend()..items = [_video('select-video')];
+    await _withLibrary(tester, (backend, _) async {
+      await _tapVisible(tester, _key('media-select-mode'));
+      await _tapVisible(tester, find.byType(VideoThumbnail));
+      expect(native.playback, isEmpty);
+      expect(tester.widget<Checkbox>(_key('media-select-select-video')).value,
+          isTrue);
+      expect(find.byType(CompatibleVideoPlayer), findsNothing);
+    }, backend: backend);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android), skip: kIsWeb);
+
+  for (final status in ['pending', 'rejected', 'approved']) {
+    for (final hidden in [false, true]) {
+      if (status == 'approved' && !hidden) continue;
+      testWidgets('$status hidden=$hidden video cannot preview or play',
+          (tester) async {
+        final native = _NativeVideoHarness();
+        final backend = _MediaBackend()
+          ..items = [
+            {
+              ..._video('restricted-$status-$hidden'),
+              'moderationStatus': status,
+              'filterHidden': hidden,
+            },
+          ];
+        await _withLibrary(tester, (backend, _) async {
+          expect(find.byType(VideoThumbnail), findsNothing);
+          // Restricted media remains selectable but cannot reach the native API.
+          await _tapVisible(tester,
+              _key('media-select-restricted-$status-$hidden'));
+          expect(native.calls, isEmpty);
+          expect(find.byType(CompatibleVideoPlayer), findsNothing);
+        }, backend: backend);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.android), skip: kIsWeb);
+    }
+  }
 
   for (final width in [375.0, 1280.0]) {
     testWidgets('media library fits ${width.toInt()}px and uses global counts',

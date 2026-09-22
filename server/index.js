@@ -31,6 +31,7 @@ const {
   scanGoogleSafeSearch,
 } = require('./google-vision');
 const { verifyPersonClassification } = require('./person-verification');
+const { videoDetectedCategories } = require('./video-classification');
 const { classifyOpenAIModesty } = require('./modesty-verification');
 const { classifyGeminiModesty } = require('./gemini-modesty-verification');
 const { recordProviderCall } = require('./provider-usage-log');
@@ -685,30 +686,6 @@ const VIDEO_MODERATION_URL = process.env.VIDEO_MODERATION_URL ||
   'http://127.0.0.1:8080';
 const MAX_VIDEO_SECONDS = 30;
 
-function hasStableVideoEvidence(label, labels, findings) {
-  const maximum = Number(labels[label] || 0);
-  if (maximum >= 0.95) return true;
-  const observations = findings
-    .filter(item => item?.label === label)
-    .map(item => ({ confidence: Number(item.confidence || 0),
-      timestamp: Number(item.timestamp_seconds || 0) }));
-  return observations.some(primary => primary.confidence >= 0.80 &&
-    observations.some(support => support !== primary &&
-      support.confidence >= 0.65 &&
-      Math.abs(support.timestamp - primary.timestamp) <= 3));
-}
-
-function videoDetectedCategories(labels, findings) {
-  const categories = ['video'];
-  if (hasStableVideoEvidence('man', labels, findings)) categories.push('men');
-  if (hasStableVideoEvidence('woman', labels, findings)) categories.push('women');
-  if (hasStableVideoEvidence('child', labels, findings)) categories.push('children');
-  if (Number(labels.people || 0) >= 0.55) categories.push('people');
-  if (Number(labels.landscape || 0) >= 0.55 && !categories.includes('people'))
-    categories.push('landscape');
-  return categories;
-}
-
 async function scanVideo(buffer, fileName, mimeType, options = {}) {
   try {
     const form = new FormData();
@@ -741,7 +718,6 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
     const labels = result.labels && typeof result.labels === 'object'
       ? result.labels : {};
     const findings = Array.isArray(result.findings) ? result.findings : [];
-    const detectedCategorySet = new Set(videoDetectedCategories(labels, findings));
     const frameSamples = Array.isArray(result.frame_samples)
       ? result.frame_samples.slice(0, 90) : [];
     const frameResults = new Array(frameSamples.length);
@@ -764,7 +740,9 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
         ...options.tracking,
         operationContext: `video_frame_${index + 1}`,
       } : undefined;
-      const frameResult = await scanStaticImage(imageBuffer, { tracking: frameTracking });
+      const frameResult = await scanStaticImage(imageBuffer, {
+        tracking: frameTracking, videoFrame: true,
+      });
       const timestampSeconds = Number(sample.timestamp_seconds || 0);
         frameResults[index] = { timestampSeconds,
         blocked: frameResult.blocked === true,
@@ -786,16 +764,15 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
     // for many minutes while keeping provider concurrency under control.
     const frameWorkerCount = Math.min(8, frameSamples.length);
     await Promise.all(Array.from({ length: frameWorkerCount }, scanFrame));
+    const detectedCategories = videoDetectedCategories(frameResults);
     for (const frameResult of frameResults) {
-      for (const category of frameResult?.classification?.detectedCategories || [])
-        detectedCategorySet.add(category);
       if (frameResult?.blocked) {
         return {
           blocked: true, pending: false,
           blockedBy: `video_frame:${frameResult.blockedBy || 'image_moderation'}`,
           reason: `הסרטון נחסם בבדיקת התוכן בשנייה ${frameResult.timestampSeconds.toFixed(1)} — ${frameResult.reason || 'התמונה שנדגמה לא אושרה'}`,
           classification: { category: 'video',
-            detectedCategories: [...detectedCategorySet], uncertain: false,
+            detectedCategories, uncertain: false,
             labels, findings, sampledFrames: result.sampled_frames,
             fullyScannedFrames: frameResults.filter(Boolean).length, durationSeconds },
           frameResults,
@@ -806,7 +783,7 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
           blocked: false, pending: true,
           reason: `בדיקת הסרטון ממתינה להשלמת סריקת התמונה בשנייה ${frameResult.timestampSeconds.toFixed(1)}`,
           classification: { category: 'video',
-            detectedCategories: [...detectedCategorySet], uncertain: true,
+            detectedCategories, uncertain: true,
             labels, findings, sampledFrames: result.sampled_frames,
             fullyScannedFrames: frameResults.length, durationSeconds },
           frameResults,
@@ -815,7 +792,6 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
     }
     if (frameSamples.length < 1)
       throw new Error('video moderation returned no frame samples');
-    const detectedCategories = [...detectedCategorySet];
     const classification = {
       category: 'video', detectedCategories,
       uncertain: false, labels,
@@ -2009,6 +1985,7 @@ async function scanStaticImage(buffer, options = {}) {
       scanFaces: value => scanGoogleFaceDetection(value,
         { tracking: options.tracking }),
       tracking: options.tracking,
+      videoFrame: options.videoFrame === true,
     });
     classification = verified.classification;
     personVerification = verified.verification;
@@ -2185,7 +2162,7 @@ async function scanStaticImage(buffer, options = {}) {
 
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
-const MODERATION_CACHE_VERSION = '2026-09-17-illustrated-person-verification-14';
+const MODERATION_CACHE_VERSION = '2026-09-22-verified-video-frames-15';
 
 async function scanImage(buffer, options = {}) {
   // Recognize exact library bytes before invoking any content-analysis provider.

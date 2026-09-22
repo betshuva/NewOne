@@ -48,6 +48,8 @@ import 'media_cache.dart';
 import 'media_delete_dialog.dart';
 import 'media_rename.dart';
 import 'native_video_player.dart';
+import 'compatible_video_player.dart';
+import 'video_thumbnail.dart';
 import 'voice_call.dart';
 import 'web_push.dart';
 import 'web_capture_picker.dart';
@@ -1836,7 +1838,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.30';
+const kVersion = '1.3.31';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -27150,6 +27152,8 @@ class _ChatVideoPlayer extends StatefulWidget {
 class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
   late VideoPlayerController _controller;
   late Future<void> _initialization;
+  int _generation = 0;
+  bool _openingCompatible = false;
 
   @override
   void initState() {
@@ -27158,12 +27162,19 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
   }
 
   void _createController() {
-    _controller = VideoPlayerController.networkUrl(
+    final generation = ++_generation;
+    _openingCompatible = false;
+    final controller = VideoPlayerController.networkUrl(
       Uri.parse(_absoluteMediaUrl(widget.url)),
     );
-    _initialization = _controller.initialize().then((_) {
-      _controller.setLooping(false);
-      if (mounted) setState(() {});
+    _controller = controller;
+    controller.addListener(() {
+      if (mounted && generation == _generation) setState(() {});
+    });
+    _initialization = controller.initialize().then((_) async {
+      if (!mounted || generation != _generation) return;
+      await controller.setLooping(false);
+      if (mounted && generation == _generation) setState(() {});
     });
   }
 
@@ -27190,9 +27201,28 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
   }
 
   Future<void> _retry() async {
+    final generation = ++_generation;
     await _controller.dispose();
-    if (!mounted) return;
+    if (!mounted || generation != _generation) return;
     setState(_createController);
+  }
+
+  Future<void> _openCompatible() async {
+    if (_openingCompatible) return;
+    final generation = ++_generation;
+    final url = Uri.parse(_absoluteMediaUrl(widget.url));
+    setState(() => _openingCompatible = true);
+    try {
+      await _controller.dispose();
+      if (!mounted || generation != _generation) return;
+      await Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => CompatibleVideoPlayer(url: url),
+      ));
+    } finally {
+      if (mounted && generation == _generation) {
+        setState(() => _openingCompatible = false);
+      }
+    }
   }
 
   Future<void> _openExternally() async {
@@ -27207,6 +27237,7 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
 
   @override
   void dispose() {
+    _generation++;
     _controller.dispose();
     super.dispose();
   }
@@ -27216,7 +27247,26 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
     return FutureBuilder<void>(
       future: _initialization,
       builder: (context, snapshot) {
-        if (snapshot.hasError) {
+        final error = snapshot.error ??
+            (_controller.value.hasError
+                ? PlatformException(
+                    code: 'VideoError',
+                    message: _controller.value.errorDescription)
+                : null);
+        if (supportsCompatibleVideoPlayback(error)) {
+          return Container(
+            width: 280,
+            height: 150,
+            color: Colors.black87,
+            alignment: Alignment.center,
+            child: FilledButton.icon(
+              onPressed: _openingCompatible ? null : _openCompatible,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('הפעל וידאו'),
+            ),
+          );
+        }
+        if (error != null) {
           return Container(
             width: 280,
             constraints: const BoxConstraints(minHeight: 150),
@@ -37131,6 +37181,7 @@ class PersonalMediaScreen extends StatefulWidget {
 }
 
 class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
+  bool _openingVideo = false;
   final List<Map<String, dynamic>> _items = [];
   Map<String, dynamic> _summary = {};
   List<Map<String, dynamic>> _destinations = [];
@@ -39447,6 +39498,20 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       _openPdfInsideApp(context, url, name);
     } else if (_isOfficePreviewFile(name)) {
       _openOfficeInsideApp(context, url, name, widget.token);
+    } else if (type == 'video' &&
+        !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android) {
+      if (_openingVideo) return;
+      _openingVideo = true;
+      try {
+        await Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => CompatibleVideoPlayer(
+            url: Uri.parse(_absoluteMediaUrl(url)),
+          ),
+        ));
+      } finally {
+        _openingVideo = false;
+      }
     } else if (type == 'video' || type == 'audio') {
       await showDialog<void>(
         context: context,
@@ -39497,6 +39562,43 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     final type = item['fileType']?.toString() ?? 'document';
     final approved = item['moderationStatus'] == 'approved';
     final color = _typeColor(type);
+    final placeholder = Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            !approved ? Icons.shield_outlined : _fileIcon(type),
+            size: small ? 28 : 40,
+            color: color,
+          ),
+          if (!small) const SizedBox(height: 8),
+          if (!small)
+            Text(
+              !approved
+                  ? _moderationLabel(
+                      item['moderationStatus']?.toString(),
+                    )
+                  : type == 'video'
+                      ? 'נגן סרטון'
+                      : type == 'audio'
+                          ? 'האזנה להקלטה'
+                          : (item['name']
+                                  ?.toString()
+                                  .split('.')
+                                  .last
+                                  .toUpperCase() ??
+                              'קובץ'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+        ],
+      ),
+    );
     return InkWell(
       onTap: () => _selecting ? _toggleSelected(item) : _openMedia(item),
       child: Container(
@@ -39524,43 +39626,14 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                   ),
                 ),
               )
-            : Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      !approved ? Icons.shield_outlined : _fileIcon(type),
-                      size: small ? 28 : 40,
-                      color: color,
-                    ),
-                    if (!small) const SizedBox(height: 8),
-                    if (!small)
-                      Text(
-                        !approved
-                            ? _moderationLabel(
-                                item['moderationStatus']?.toString(),
-                              )
-                            : type == 'video'
-                                ? 'נגן סרטון'
-                                : type == 'audio'
-                                    ? 'האזנה להקלטה'
-                                    : (item['name']
-                                            ?.toString()
-                                            .split('.')
-                                            .last
-                                            .toUpperCase() ??
-                                        'קובץ'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: color,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+            : type == 'video' && approved
+                ? VideoThumbnail(
+                    key: ValueKey('media-video-${item['id']}-${item['url']}'),
+                    url: _absoluteMediaUrl(item['url']?.toString() ?? ''),
+                    small: small,
+                    fallback: placeholder,
+                  )
+                : placeholder,
       ),
     );
   }

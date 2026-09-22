@@ -1,6 +1,7 @@
 'use strict';
 
 const { recordProviderCall } = require('./provider-usage-log');
+const sharp = require('sharp');
 
 function hasLocalPeople(classification) {
   return Array.isArray(classification?.detectedCategories) &&
@@ -197,6 +198,30 @@ async function verifyPersonClassification(buffer, classification, options) {
       classification: nonHumanClassification(classification, verification),
       verification,
     };
+  }
+
+  // A covered video lens can produce only black pixels plus compression noise.
+  // Inspect every pixel, without resizing; a dark scene with visible detail
+  // must still receive the normal person review.
+  if (options.videoFrame === true && googleAvailable &&
+      !hasLocalPeople(classification)) {
+    const pixels = await sharp(buffer).removeAlpha().stats().catch(() => null);
+    if (pixels?.channels.length &&
+        pixels.channels.every(channel => channel.max <= 4)) {
+      providers.videoFramePixels = {
+        available: true,
+        maximum: Math.max(...pixels.channels.map(channel => channel.max)),
+        blackThreshold: 4,
+      };
+      const verification = {
+        required: true, decision: 'non_human_blank_video_frame',
+        confidence: 1, providers,
+      };
+      return {
+        classification: nonHumanClassification(classification, verification),
+        verification,
+      };
+    }
   }
 
   // Face/object detection can miss recognizable human drawings. Negative

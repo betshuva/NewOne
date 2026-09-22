@@ -1,7 +1,7 @@
 name: betshuva
 description: BETSHUVA Messenger - אפליקציית מסרים לקהילה הישראלית
 publish_to: 'none'
-version: 1.3.30+250
+version: 1.3.31+251
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -15,7 +15,9 @@ dependencies:
   http: ^1.2.0
   shared_preferences: ^2.2.2
   socket_io_client: ^2.0.3+1
-  camera: 0.11.0+1
+  camera: 0.12.0+2
+  # Includes the fix for stale recordings after camera disposal.
+  camera_android_camerax: 0.7.4+8
   image_picker: ^1.1.2
   file_picker: ^8.3.7
   firebase_core: ^3.3.0

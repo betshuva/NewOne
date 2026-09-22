@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import io.flutter.plugin.common.BinaryMessenger
@@ -18,13 +19,31 @@ import java.util.concurrent.Executors
 class NativeMediaBridge(private val activity: Activity, messenger: BinaryMessenger) {
     private val channel = MethodChannel(messenger, "com.betshuva.app/media")
     private val worker = Executors.newSingleThreadExecutor()
+    private val videoThumbnailer = VideoThumbnailer()
     private var pendingSave: Pair<ByteArray, MethodChannel.Result>? = null
+    private var pendingVideo: MethodChannel.Result? = null
     private val maxBytes = 50 * 1024 * 1024
 
     init {
         channel.setMethodCallHandler { call, result ->
             try {
                 when (call.method) {
+                    "videoThumbnail" -> videoThumbnailer.generate(call.argument<String>("url"), result)
+                    "playVideo" -> {
+                        check(pendingVideo == null)
+                        val uri = Uri.parse(requireNotNull(call.argument<String>("url")))
+                        require(uri.scheme in setOf("https", "http") && !uri.host.isNullOrBlank())
+                        pendingVideo = result
+                        try {
+                            activity.startActivityForResult(
+                                Intent(activity, VideoPlaybackActivity::class.java).setData(uri),
+                                VIDEO_REQUEST
+                            )
+                        } catch (error: Exception) {
+                            pendingVideo = null
+                            throw error
+                        }
+                    }
                     "copyImage" -> {
                         val bytes = call.argument<ByteArray>("bytes")!!
                         val mime = call.argument<String>("mimeType")!!
@@ -98,6 +117,14 @@ class NativeMediaBridge(private val activity: Activity, messenger: BinaryMesseng
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode == VIDEO_REQUEST) {
+            val pending = pendingVideo
+            pendingVideo = null
+            // singleTask launches clear the player with RESULT_CANCELED even
+            // when playback succeeded. Only explicit player errors are failures.
+            pending?.success(resultCode != VideoPlaybackActivity.RESULT_PLAYBACK_ERROR)
+            return true
+        }
         if (requestCode != SAVE_REQUEST) return false
         val pending = pendingSave ?: return true
         pendingSave = null
@@ -118,10 +145,16 @@ class NativeMediaBridge(private val activity: Activity, messenger: BinaryMesseng
 
     fun dispose() {
         channel.setMethodCallHandler(null)
+        videoThumbnailer.dispose()
         pendingSave?.second?.success(false)
         pendingSave = null
+        pendingVideo?.success(false)
+        pendingVideo = null
         worker.shutdown()
     }
 
-    companion object { private const val SAVE_REQUEST = 42871 }
+    companion object {
+        private const val SAVE_REQUEST = 42871
+        private const val VIDEO_REQUEST = 42872
+    }
 }
