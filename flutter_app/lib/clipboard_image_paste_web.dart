@@ -60,6 +60,8 @@ class ClipboardImagePasteListener {
     }
   }
 
+  Future<bool> pasteImage() async => false;
+
   void dispose() {
     html.document.removeEventListener('paste', _listener);
   }

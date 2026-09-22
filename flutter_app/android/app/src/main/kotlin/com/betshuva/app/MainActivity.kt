@@ -19,6 +19,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 class MainActivity: FlutterActivity() {
+    private var mediaBridge: NativeMediaBridge? = null
     private var channel: MethodChannel? = null
     private val pendingShares = ArrayDeque<Map<String, Any?>>()
     private val shareWorker = Executors.newSingleThreadExecutor()
@@ -27,6 +28,7 @@ class MainActivity: FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        mediaBridge = NativeMediaBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.betshuva.app/share")
         channel?.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -75,6 +77,8 @@ class MainActivity: FlutterActivity() {
     }
 
     override fun onDestroy() {
+        mediaBridge?.dispose()
+        mediaBridge = null
         channel?.setMethodCallHandler(null)
         channel = null
         shareWorker.shutdown()
@@ -85,6 +89,11 @@ class MainActivity: FlutterActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         acceptShare(intent)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (mediaBridge?.onActivityResult(requestCode, resultCode, data) == true) return
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun acceptShare(source: Intent?) {

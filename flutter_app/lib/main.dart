@@ -60,6 +60,8 @@ import 'message_reactions.dart';
 import 'message_hover.dart';
 import 'document_scanner.dart';
 import 'image_clipboard.dart';
+import 'native_video_capture.dart';
+import 'image_paste_menu.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 const _sharedContactPrefix = 'betshuva://contact/';
@@ -77,7 +79,10 @@ Future<bool> _videoWithinDurationLimit(
         ? VideoPlayerController.networkUrl(Uri.parse(video.path))
         : VideoPlayerController.file(File(video.path));
     await controller.initialize().timeout(const Duration(seconds: 12));
-    if (controller.value.duration <= _maxVideoDuration) return true;
+    if (controller.value.duration <=
+        _maxVideoDuration + const Duration(milliseconds: 250)) {
+      return true;
+    }
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('ניתן לשלוח סרטון באורך של עד 30 שניות',
@@ -1831,7 +1836,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.28';
+const kVersion = '1.3.30';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -24426,6 +24431,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   const SizedBox(height: 8),
                   _AttachGrid(
                     children: [
+                      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+                        _AttachOption(
+                          icon: Icons.paste,
+                          label: 'הדבק תמונה',
+                          color: kPrimary,
+                          onTap: () {
+                            Navigator.of(dialogContext).pop();
+                            pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
+                          },
+                        ),
                       _AttachOption(
                         icon: Icons.screenshot_monitor_outlined,
                         label: 'צילום מסך',
@@ -24841,7 +24856,7 @@ class _ChatScreenState extends State<ChatScreen> {
         token: widget.token,
         fields: {
           'toUserId': widget.recipient['id'].toString(),
-          if (kIsWeb) 'scanReport': 'true',
+          'scanReport': 'true',
         },
       ),
       completed,
@@ -24912,11 +24927,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _recordVideo() async {
     final video = kIsWeb
         ? await captureWebVideo(context)
-        : await ImagePicker().pickVideo(
-            source: ImageSource.camera,
-            maxDuration: const Duration(seconds: 30),
-          );
-    if (video == null) return;
+        : await captureNativeVideo(context, maxDuration: _maxVideoDuration);
+    if (video == null || !mounted) return;
+    if (!await _videoWithinDurationLimit(context, video)) return;
+    if (!mounted) return;
     await _uploadAndSend(video, video.name, 'video');
   }
 
@@ -25000,7 +25014,7 @@ class _ChatScreenState extends State<ChatScreen> {
       token: widget.token,
       fields: {
         'toUserId': widget.recipient['id'].toString(),
-        if (kIsWeb && !isLibrarySticker) 'scanReport': 'true',
+        if (!isLibrarySticker) 'scanReport': 'true',
         ...extraFields,
       },
     );
@@ -26058,6 +26072,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                 child: TextField(
                                   controller: _msgCtrl,
                                   focusNode: _msgFocusNode,
+                                  contextMenuBuilder: (context, state) => buildImagePasteMenu(
+                                      context, state, _clipboardImagePasteListener.pasteImage),
                                   enabled: _recipientAllowsText,
                                   textDirection: TextDirection.rtl,
                                   maxLines: 4,
@@ -28945,7 +28961,7 @@ class _MessageBubble extends StatelessWidget {
     final issueDraft = _decodeGuideIssueDraft(issueDraftMatch?.group(1));
     final messageDraftRegex =
         RegExp(r'betshuva://message-draft/([A-Za-z0-9_-]+)');
-    final messageDraft = kIsWeb && !isFile && message['from'] == kSystemGuideId
+    final messageDraft = !isFile && message['from'] == kSystemGuideId
         ? decodeGuideMessageDraft(
             messageDraftRegex.firstMatch(rawText)?.group(1))
         : null;
@@ -33019,6 +33035,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             const SizedBox(height: 20),
             _AttachGrid(
               children: [
+                if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+                  _AttachOption(
+                    icon: Icons.paste,
+                    label: 'הדבק תמונה',
+                    color: kPrimary,
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
+                    },
+                  ),
                 _AttachOption(
                   icon: Icons.screenshot_monitor_outlined,
                   label: 'צילום מסך',
@@ -33401,11 +33427,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _recordVideo() async {
     final video = kIsWeb
         ? await captureWebVideo(context)
-        : await ImagePicker().pickVideo(
-            source: ImageSource.camera,
-            maxDuration: const Duration(seconds: 30),
-          );
-    if (video == null) return;
+        : await captureNativeVideo(context, maxDuration: _maxVideoDuration);
+    if (video == null || !mounted) return;
+    if (!await _videoWithinDurationLimit(context, video)) return;
+    if (!mounted) return;
     await _uploadGroupFile(video, video.name, 'video');
   }
 
@@ -36226,6 +36251,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           child: TextField(
                             controller: _msgCtrl,
                             focusNode: _msgFocusNode,
+                            contextMenuBuilder: (context, state) => buildImagePasteMenu(
+                                context, state, _clipboardImagePasteListener.pasteImage),
                             textDirection: TextDirection.rtl,
                             minLines: 1,
                             maxLines: 4,
