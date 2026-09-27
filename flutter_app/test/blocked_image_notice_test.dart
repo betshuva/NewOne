@@ -166,15 +166,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('preview tap remains available including beneath blocked badge',
+  testWidgets('preview opens the image while the blocked badge opens its reason',
       (tester) async {
     var imageTaps = 0;
     await _pumpNotice(tester, onImageTap: () => imageTaps++);
     await tester.tapAt(tester.getCenter(_preview));
     await tester.tapAt(tester.getCenter(_marker));
     await tester.pump();
-    expect(imageTaps, 2);
-    expect(_details, findsNothing);
+    expect(imageTaps, 1);
+    expect(_details, findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

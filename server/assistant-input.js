@@ -1,8 +1,10 @@
 'use strict';
 
-async function resolveAssistantInput({ text, fileUrl, fileName }, {
+async function resolveAssistantInput({ text, fileUrl, fileName, trustedStickerId }, {
   loadApprovedFile, decryptTranscript,
 }) {
+  if (!fileUrl && trustedStickerId) return { question: trustedStickerId,
+    file: { type: 'sticker', silent: true } };
   if (!fileUrl) {
     if (!String(text || '').trim()) throw Object.assign(new Error('לא נשלח תוכן'), { status: 400 });
     return { question: String(text).slice(0, 2000), file: null };
@@ -20,6 +22,8 @@ async function resolveAssistantInput({ text, fileUrl, fileName }, {
   }
   return { question: question.slice(0, 2000), file: {
     url: fileUrl, name: file.original_name || fileName, type: file.file_type,
+    ...(file.moderation_details?.source === 'builtin-expression' &&
+      file.moderation_details?.scanSkipped === true ? { silent: true } : {}),
   } };
 }
 module.exports = { resolveAssistantInput };

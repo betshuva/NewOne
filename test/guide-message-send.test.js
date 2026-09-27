@@ -6,7 +6,7 @@ const { generateGuideAnswer, localGuideAnswer } = require('../server/system-guid
 const source = '11111111-1111-4111-8111-111111111111';
 const recipient = '22222222-2222-4222-8222-222222222222';
 
-function harness({ owned = true, contact = true, blocked = false, failed = false } = {}) {
+function harness({ owned = true, contact = true, blocked = false, failed = false, teen = false } = {}) {
   const routes = {};
   const queries = [];
   let receipt;
@@ -28,6 +28,14 @@ function harness({ owned = true, contact = true, blocked = false, failed = false
     post(path, ...handlers) { routes[`POST ${path}`] = handlers.at(-1); } }, {
     auth() {}, rateLimit() {}, getPool: async () => ({ ...client, connect: async () => client }),
     systemUserId: 'guide', safeInformationUserId: 'safe', scanBotId: 'scan',
+    sendGroupMessage: async (req, res) => {
+      assert.equal(req.messagePool, client);
+      assert.equal(req.params.id, recipient);
+      assert.deepEqual(Object.keys(req.body), ['text']);
+      sends++;
+      req.messageEffects.push(() => { assert.equal(queries.at(-1), 'COMMIT'); effects++; });
+      return failed ? res.status(403).json({error:'not a member'}) : res.json({id:'group-saved'});
+    },
     sendMessage: async (req, res) => {
       assert.equal(req.messagePool, client);
       assert.deepEqual(Object.keys(req.body).sort(), ['text', 'toUserId']);
@@ -42,7 +50,7 @@ function harness({ owned = true, contact = true, blocked = false, failed = false
     async send(body = { toUserId: recipient, text: 'שלום', confirmed: true }) {
       const result = { code: 200, value: null, status(code) { this.code = code; return this; },
         json(value) { this.value = value; return this; } };
-      await routes['POST /api/guide-message-drafts/:id/send']({ user: { id: 'owner' }, params: { id: source }, body }, result);
+      await routes['POST /api/guide-message-drafts/:id/send']({ user: { id: 'owner', isTeen: teen }, params: { id: source }, body }, result);
       return result;
     },
   };
@@ -100,4 +108,20 @@ test('guide creates a draft, ignoring model claims of sending and without perfor
 test('offline guide drafts an explicit send command but not how-to questions', () => {
   assert.match(localGuideAnswer('שלח לנאור: שלום'), /message-draft\//);
   assert.doesNotMatch(localGuideAnswer('איך שולחים הודעה?'), /message-draft\//);
+});
+
+test('group drafts require one destination and explicit approval, and never duplicate delivery', async () => {
+  const h=harness();
+  assert.equal((await h.send({toUserId:recipient,groupId:recipient,text:'hello',confirmed:true})).code,400);
+  assert.equal((await h.send({groupId:recipient,text:'hello'})).code,400);
+  for(let i=0;i<2;i++) assert.equal((await h.send({groupId:recipient,text:'hello',confirmed:true})).code,200);
+  assert.equal(h.sends,1);assert.equal(h.effects,1);
+});
+test('teen or group policy rejection cannot persist a guide receipt or publish delivery', async () => {
+  for(const options of [{teen:true},{failed:true}]) {
+    const h=harness(options);
+    assert.equal((await h.send({groupId:recipient,text:'hello',confirmed:true})).code,403);
+    assert.equal(h.effects,0);
+    assert.ok(!h.queries.some(q=>q.includes('INSERT INTO guide_message_sends')));
+  }
 });

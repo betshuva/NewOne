@@ -8,7 +8,7 @@ const DATA_PLAN_SCHEMA = {
     requests: { type: 'array', maxItems: 5, items: {
       type: 'object', additionalProperties: false,
       properties: {
-        kind: { type: 'string', enum: ['contacts', 'groups', 'members'] },
+        kind: { type: 'string', enum: ['contacts', 'groups', 'members', 'media'] },
         group_query: { type: 'string', maxLength: 120 },
         group_scope: { type: 'string', enum: ['named', 'all'] },
         contact_filter: { type: 'string', enum: ['all', 'saved', 'not_saved'] },
@@ -27,7 +27,7 @@ const DATA_PLAN_INSTRUCTIONS = `
 בקשות למידע אישי באפליקציה:
 פרש בקשות בשפה חופשית, גם עם שגיאות כתיב, כמה בקשות במשפט והודעות המשך. אין צורך בניסוח קבוע.
 כאשר המשתמש מבקש לקבל נתונים שלו בפועל, מלא data_plan וקבע in_scope=true, issue_type=none ו-message_requested=false. השאר answer ריק: השרת ישלוף ויציג את הנתונים בעצמו. אין למלא שמות, מספרים או נתונים משוערים בתשובה.
-הנתונים הזמינים: contacts — אנשי הקשר השמורים של המשתמש; groups — הקבוצות שבהן הוא חבר פעיל; members — חברים בקבוצה מסוימת או בכל הקבוצות של המשתמש. בשמות אדם אפשר לבקש name, phone, city (עיר מגורים בלבד); בקבוצה אפשר לבקש name בלבד; role ו-groups (שמות הקבוצות המשותפות שבהן האדם נמצא) זמינים רק לחברי קבוצה.
+הנתונים הזמינים: media — ספירת הקבצים בספריית המדיה האישית לפי סוג, רק format=count, fields=[name], group_query ריק; contacts — אנשי הקשר השמורים של המשתמש; groups — הקבוצות שבהן הוא חבר פעיל; members — חברים בקבוצה מסוימת או בכל הקבוצות של המשתמש. בשמות אדם אפשר לבקש name, phone, city (עיר מגורים בלבד); בקבוצה אפשר לבקש name בלבד; role ו-groups (שמות הקבוצות המשותפות שבהן האדם נמצא) זמינים רק לחברי קבוצה.
 השרת בודק חברות, חשבון נוער, חסימות וחשיפת טלפון ועיר; אל תחליט שמותר לראות פרט, ואל תבקש מזהה משתמש, סיסמה או קוד. אין גישה לאנשי קשר של אדם אחר. בקשה כזאת, או בקשה לשדה שאינו זמין (למשל אימייל, כתובת רחוב או מיקום מדויק), מסומנת action=unsupported עם requests ריק. גם כאשר הבקשה מעורבת בשדות נתמכים אל תשמיט בשקט את השדה הלא נתמך. "איפה הם גרים" מבקש city, ללא כתובת או קואורדינטות.
 format=count עבור שאלת כמות; table עבור טבלה בתוך השיחה; excel כאשר התבקש קובץ Excel/אקסל/XLSX, יצוא טבלה לקובץ, הורדת טבלה או קישור לקובץ הטבלה; list אחרת. בקשת טבלה בלבד אינה בקשת קובץ. excel הוא יכולת קיימת: השרת ייצור קובץ אמיתי מנתונים עדכניים המותרים למשתמש, ישמור אותו במדיה האישית ובשיחה ויחזיר קישור. אל תציע פנייה למפתח ואל תמציא קישור או טענה שהקובץ כבר נשמר. כאשר מופעל גיבוי אישי ל-Drive, הקובץ נכלל בגיבוי בהתאם להגדרות המשתמש; אל תבטיח שהעלאה ל-Drive כבר הסתיימה. fields מכיל רק שדות שהתבקשו, בסדר שהתבקשו; ברירת המחדל name. admins_only=true רק אם התבקשו מנהלי הקבוצה. לשאלה על מספר חברים וקבוצות של המשתמש, צור שתי בקשות נפרדות (contacts ו-groups) ב-format=count.
 group_scope=named לקבוצה מסוימת; all כאשר המשתמש מבקש בכל הקבוצות שלו, או שואל באופן מצרפי על אנשים בקבוצות שלו. group_query הוא שם הקבוצה שנאמר או מזהה קבוצה שהוצג בשיחה בלבד; ב-all השאר אותו ריק. העתק את השם בלי לכלול את בקשת העמודות, ובלי להמציא קבוצה. אם מדובר בקבוצה מסוימת שלא זוהתה, השאר group_query ריק והשרת יבקש אותו. "בדוק בכל הקבוצות" הוא scope=all ואינו דורש שם קבוצה.
@@ -48,7 +48,7 @@ function validateDataPlan(value) {
   for (const request of value.requests) {
     if (!request || typeof request !== 'object' || Array.isArray(request) ||
         Object.keys(request).some(key => !['kind', 'group_query', 'group_scope', 'contact_filter', 'fields', 'format', 'admins_only'].includes(key)) ||
-        !['contacts', 'groups', 'members'].includes(request.kind) ||
+        !['contacts', 'groups', 'members', 'media'].includes(request.kind) ||
         typeof request.group_query !== 'string' || request.group_query.length > 120 ||
         !['list', 'table', 'count', 'excel'].includes(request.format) ||
         typeof request.admins_only !== 'boolean' ||
@@ -62,6 +62,7 @@ function validateDataPlan(value) {
         new Set(request.fields).size !== request.fields.length ||
         (request.kind !== 'members' && (request.group_query || request.admins_only ||
           request.fields.includes('role') || request.fields.includes('groups'))) ||
+        (request.kind === 'media' && (request.format !== 'count' || request.fields.some(field => field !== 'name'))) ||
         (request.kind === 'groups' && request.fields.some(field => field !== 'name'))) return null;
     requests.push({ ...request, fields: [...request.fields] });
   }

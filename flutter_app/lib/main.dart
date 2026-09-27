@@ -1,3 +1,4 @@
+import 'scan_explanation.dart';
 import 'contact_request_status.dart';
 import 'chat_attachment_menu.dart';
 import 'chat_attachment_files.dart';
@@ -1892,7 +1893,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.34';
+const kVersion = '1.3.35';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -27842,6 +27843,7 @@ class _AudioScanBadge extends StatelessWidget {
 
 class _UploadResultCard extends StatelessWidget {
   final bool blocked;
+  final Map<String, dynamic>? classification;
   final String title;
   final String reason;
   final String? imageUrl;
@@ -27858,6 +27860,7 @@ class _UploadResultCard extends StatelessWidget {
   final VoidCallback? onMoreActions;
   const _UploadResultCard({
     required this.blocked,
+    this.classification,
     required this.title,
     required this.reason,
     this.imageUrl,
@@ -27878,6 +27881,7 @@ class _UploadResultCard extends StatelessWidget {
     image: image,
     title: title,
     reason: reason,
+    classification: classification,
     fileName: fileName,
     recipientName: destinationFilterRejected ? recipientName : null,
     onlyYouText: contentPurged
@@ -28178,13 +28182,15 @@ class _ImageClassificationBadges extends StatelessWidget {
     }
     categories = categories.where(_icons.containsKey).toSet().toList();
     if (categories.isEmpty) return const SizedBox.shrink();
-    return Row(
+    return GestureDetector(
+      onTap: () => showScanExplanation(context, message),
+      child: Row(
       mainAxisSize: MainAxisSize.min,
       children: categories
           .map((category) => Padding(
                 padding: const EdgeInsets.only(left: 3),
                 child: Tooltip(
-                  message: _labels[category]!,
+                  message: '${_labels[category]} — לחץ לפרטי הסריקה',
                   child: Container(
                     width: 27,
                     height: 27,
@@ -28200,7 +28206,7 @@ class _ImageClassificationBadges extends StatelessWidget {
                 ),
               ))
           .toList(),
-    );
+    ));
   }
 }
 
@@ -29051,6 +29057,7 @@ class _MessageBubble extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadResultCard(
             blocked: true,
+            classification: message['classification'] is Map ? Map<String, dynamic>.from(message['classification']) : null,
             showBlockedArtwork: fileType != 'image',
             onMoreActions: onMessageOptions == null
                 ? null
@@ -35153,6 +35160,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                         DateTime.now(),
                                                   )
                                                 : _UploadResultCard(
+                                                    classification: msg['classification'] is Map ? Map<String, dynamic>.from(msg['classification']) : null,
                                                     blocked: uploadStatus ==
                                                         'rejected_scan',
                                                     showBlockedArtwork:

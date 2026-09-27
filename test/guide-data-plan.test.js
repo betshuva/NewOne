@@ -183,7 +183,7 @@ test('Responses request requires a strict data_plan schema with bounded allowlis
       assert.equal(item.additionalProperties, false);
       assert.deepEqual(item.required, ['kind', 'group_query', 'group_scope', 'contact_filter',
         'fields', 'format', 'admins_only']);
-      assert.deepEqual(item.properties.kind.enum, ['contacts', 'groups', 'members']);
+      assert.deepEqual(item.properties.kind.enum, ['contacts', 'groups', 'members', 'media']);
       assert.deepEqual(item.properties.group_scope.enum, ['named', 'all']);
       assert.deepEqual(item.properties.contact_filter.enum, ['all', 'saved', 'not_saved']);
       assert.deepEqual(item.properties.fields.items.enum, ['name', 'phone', 'city', 'role', 'groups']);

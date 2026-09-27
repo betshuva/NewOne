@@ -1,3 +1,4 @@
+import 'scan_explanation.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -12,6 +13,7 @@ class BlockedImageNotice extends StatelessWidget {
     required this.title,
     required this.reason,
     required this.onlyYouText,
+    this.classification,
     this.recipientName,
     this.fileName,
     this.expiryText,
@@ -19,6 +21,7 @@ class BlockedImageNotice extends StatelessWidget {
     this.onMoreActions,
   });
 
+  final Map<String, dynamic>? classification;
   final Widget image;
   final String title;
   final String reason;
@@ -81,7 +84,12 @@ class BlockedImageNotice extends StatelessWidget {
                     ],
                   ]),
                   const SizedBox(height: 7),
-                  _frame([_textLine(reason)]),
+                  _frame([
+                    _textLine(reason),
+                    if (classification != null)
+                      _textLine(
+                          'זוהו: ${scanClassificationText(classification)}')
+                  ]),
                   const SizedBox(height: 7),
                   _frame([
                     _textLine(onlyYouText, size: 11),
@@ -146,7 +154,8 @@ class BlockedImageNotice extends StatelessWidget {
                             Positioned(
                               right: 6,
                               top: 6,
-                              child: IgnorePointer(
+                              child: GestureDetector(
+                                onTap: () => _showDetails(context),
                                 child: Tooltip(
                                   message: 'התמונה נחסמה',
                                   child: Container(

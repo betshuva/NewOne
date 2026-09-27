@@ -3435,10 +3435,13 @@ async function rejectedUploadContext(pool, userId, question) {
 
 async function generateSystemAnswer(pool, userId, question, currentMessageId = null) {
   const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  const loadMediaCounts = async ownerId => (await pool.query(
+    `WITH owned AS (${mediaLibraryOwnedSql()}) SELECT file_type,COUNT(*)::int AS count
+     FROM owned GROUP BY file_type`, [ownerId])).rows;
   // Keyword matching is an offline fallback only. With the model available,
   // every request is interpreted with the conversation and selected fields.
   if (!apiKey) {
-    const personalAnswer = await answerUserDataQuestion(pool, userId, question);
+    const personalAnswer = await answerUserDataQuestion(pool, userId, question, { loadMediaCounts });
     if (personalAnswer !== null) return personalAnswer;
   }
   const uploadContext = await rejectedUploadContext(pool, userId, question);
@@ -3462,7 +3465,7 @@ async function generateSystemAnswer(pool, userId, question, currentMessageId = n
     }));
     if (!apiKey) {
       const followupAnswer = await answerUserDataQuestion(pool, userId, question, {
-        history: messages.filter(message => message.id !== currentMessageId),
+        history: messages.filter(message => message.id !== currentMessageId), loadMediaCounts,
       });
       if (followupAnswer !== null) return followupAnswer;
     }
@@ -3474,7 +3477,7 @@ async function generateSystemAnswer(pool, userId, question, currentMessageId = n
       question,
       history: messages,
       uploadContext: contextText,
-      resolveDataPlan: plan => executeGuideDataPlan(pool, userId, plan, {
+      resolveDataPlan: plan => executeGuideDataPlan(pool, userId, plan, { loadMediaCounts,
         exportTables: ({ answer, ...spreadsheet }) => ({ answer, spreadsheet }),
       }),
       resolveSpreadsheetRequest: table => ({ spreadsheet: { title: table.title,
@@ -3728,6 +3731,8 @@ async function createSystemExchange(pool, userId, question, file = null,
      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,created_at`,
     [userId, assistantId, file?.type || 'text', safeQuestion,
      file?.url || null, file?.name || null, ...auditIds()]);
+  if (assistantId === SYSTEM_USER_ID && file?.silent === true)
+    return { sent: sent.rows[0], reply: null, answer: null };
   const generated = assistantId === SAFE_INFORMATION_USER_ID
       ? await generateSafeInformationSystemAnswer(pool, userId, question)
       : await generateSystemAnswer(pool, userId, question, sent.rows[0].id);
@@ -4588,7 +4593,7 @@ io.on('connection', async (socket) => {
       if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
         let input;
         try { input = await resolveSystemInput(pool, socket.user.id, toUserId,
-          { text, fileUrl, fileName }); }
+          { text, fileUrl, fileName, trustedStickerId: normalizedStickerId }); }
         catch (error) {
           if (error.code === 'SENDER_CONTENT_FILTERED')
             await notifyRejectedSend(pool, { userId: socket.user.id, toUserId, fileUrl, error });
@@ -4596,6 +4601,10 @@ io.on('connection', async (socket) => {
         }
         const exchange = await createSystemExchange(
           pool, socket.user.id, input.question, input.file, toUserId);
+        if (!exchange.reply) {
+          socket.emit('message:delivered', { id: exchange.sent.id });
+          return;
+        }
         socket.emit('chat:message', {
           id: exchange.reply.id, fromUserId: toUserId,
           fromName: toUserId === SYSTEM_USER_ID ? SYSTEM_USER_NAME
@@ -6091,7 +6100,7 @@ async function sendPrivateHttpMessage(req, res) {
     if ([SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId)) {
       let input;
       try { input = await resolveSystemInput(pool, senderId, toUserId,
-        { text, fileUrl, fileName }); }
+        { text, fileUrl, fileName, trustedStickerId: normalizedStickerId }); }
       catch (error) {
         if (error.code === 'SENDER_CONTENT_FILTERED')
           await notifyRejectedSend(await getPool(), { userId: senderId, toUserId, fileUrl, error });
@@ -6099,6 +6108,8 @@ async function sendPrivateHttpMessage(req, res) {
       }
       const exchange = await createSystemExchange(
         pool, senderId, input.question, input.file, toUserId);
+      if (!exchange.reply) return res.json({ id: exchange.sent.id,
+        createdAt: exchange.sent.created_at, status: 'read' });
       const sid = onlineUsers.get(senderId);
       if (sid) io.to(sid).emit('chat:message', {
         id: exchange.reply.id, fromUserId: toUserId,
@@ -6246,7 +6257,7 @@ app.post('/api/messages', auth, messageRateLimit, withPrivateMessageReceipt({
 }));
 registerGuideMessageSend(app, { auth, rateLimit: messageRateLimit, getPool,
   systemUserId: SYSTEM_USER_ID, safeInformationUserId: SAFE_INFORMATION_USER_ID, scanBotId: SCAN_BOT_ID,
-  sendMessage: sendPrivateHttpMessage });
+  sendMessage: sendPrivateHttpMessage, sendGroupMessage: sendGroupHttpMessage });
 
 app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
   try {
@@ -9689,7 +9700,8 @@ app.put('/api/groups/:id/personal-filter', auth, async (req, res) => {
 });
 
 // ── Groups: messages ──────────────────────────────────────────────
-app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) => {
+app.post('/api/groups/:id/messages', auth, messageRateLimit, sendGroupHttpMessage);
+async function sendGroupHttpMessage(req, res) {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'קבוצות אינן זמינות עדיין בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const groupId = req.params.id;
@@ -9711,7 +9723,7 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
   if (!text && !fileUrl)
     return res.status(400).json({ error: 'חסר תוכן להודעה' });
   try {
-    const pool = await getPool();
+    const pool = req.messagePool || await getPool();
     const access = await pool.query(
       `SELECT gm.role, g.send_permission, g.name AS group_name,
               betshuva_effective_filter(creator.content_filter, g.content_filter) AS content_filter
@@ -9763,7 +9775,9 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
       pool, groupId, senderId, type, classification, { messageId: row.id, fileUrl });
     await pool.query('UPDATE messages SET delivery_summary=$1 WHERE id=$2',
       [JSON.stringify(deliveryPlan.summary), row.id]);
-    await notifyGroupFilterBlocks(pool, { userId: senderId, groupId, fileUrl, deliveryPlan });
+    const notifyBlocks = () => notifyGroupFilterBlocks(pool, { userId: senderId, groupId, fileUrl, deliveryPlan });
+    if (req.messageEffects) req.messageEffects.push(notifyBlocks);
+    else await notifyBlocks();
     const payload = {
       id: row.id,
       groupId,
@@ -9784,16 +9798,17 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
     delete recipientPayload.deliverySummary;
     // Notify the sender too, so its conversation list refreshes the persisted
     // preview and timestamp immediately after an HTTP file send.
-    relay(senderId, 'group:message', payload);
+    const effect = callback => req.messageEffects ? req.messageEffects.push(callback) : callback();
+    effect(() => relay(senderId, 'group:message', payload));
     for (const recipient of deliveryPlan.delivered) {
-        relay(recipient.id, 'group:message',
-          await recipientMediaMessage(pool, recipient.id, recipientPayload));
-        sendPush(recipient.id, `${member.group_name} • ${req.user.name}`,
-          pushBody, { type: 'group', groupId });
+        const visible = await recipientMediaMessage(pool, recipient.id, recipientPayload);
+        effect(() => relay(recipient.id, 'group:message', visible));
+        effect(() => sendPush(recipient.id, `${member.group_name} • ${req.user.name}`,
+          pushBody, { type: 'group', groupId }));
     }
-    logActivity(senderId, fileUrl ? 'send_file' : 'send_group_message', {
+    effect(() => logActivity(senderId, fileUrl ? 'send_file' : 'send_group_message', {
       groupId, messageId: row.id, fileName: fileName || null,
-    }, req.ip);
+    }, req.ip));
     res.json({ id: row.id, createdAt: row.created_at, status: 'sent',
       classification, deliverySummary: deliveryPlan.summary });
   } catch (e) {
@@ -9803,7 +9818,7 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
     res.status(e.status || 500).json({ error: e.message, code: e.code,
       ...(e.code === 'SENDER_CONTENT_FILTERED' ? { blockedBy: 'sender_filter' } : {}) });
   }
-});
+}
 
 app.get('/api/groups/:id/messages', auth, async (req, res) => {
   if (req.user.isTeen)

@@ -117,7 +117,9 @@ class _GuideMessageDraftCardState extends State<GuideMessageDraftCard> {
       _dismissed = prefs.getBool(_dismissKey) == true;
       if (_sent || _dismissed) return;
       final recipients = await _client
-          .get(Uri.parse('${widget.api}/guide-message-recipients'),
+          .get(
+              Uri.parse(
+                  '${widget.api}/guide-message-recipients?includeGroups=1'),
               headers: _headers)
           .timeout(const Duration(seconds: 20));
       if (recipients.statusCode != 200) {
@@ -140,7 +142,10 @@ class _GuideMessageDraftCardState extends State<GuideMessageDraftCard> {
   Future<void> _send() async {
     if (!_canSend) return;
     final approved = {
-      'toUserId': _selected!['id'],
+      if (_selected!['kind'] == 'group')
+        'groupId': _selected!['id']
+      else
+        'toUserId': _selected!['id'],
       'text': _text.text.trim(),
       'confirmed': true,
     };
@@ -208,14 +213,15 @@ class _GuideMessageDraftCardState extends State<GuideMessageDraftCard> {
           controller: _search,
           enabled: _ready && !_busy,
           textDirection: TextDirection.rtl,
-          decoration: const InputDecoration(labelText: 'חיפוש איש קשר שמור'),
+          decoration:
+              const InputDecoration(labelText: 'חיפוש איש קשר או קבוצה'),
           onChanged: (_) => setState(_selectUniqueMatch),
         ),
         if (_ready) ...[
           const SizedBox(height: 8),
           if (matches.isEmpty)
             const Text(
-                'לא נמצאו אנשי קשר. אפשר לשנות את החיפוש או לשמור איש קשר במסך השיחות.')
+                'לא נמצאו נמענים. אפשר לשנות את החיפוש; מוצגות רק קבוצות שמותר לך לשלוח אליהן.')
           else ...[
             if (_selected == null) const Text('בחר את הנמען לשליחה'),
             ConstrainedBox(
@@ -227,7 +233,11 @@ class _GuideMessageDraftCardState extends State<GuideMessageDraftCard> {
                           dense: true,
                           contentPadding: EdgeInsets.zero,
                           title: Text(contact['name']?.toString() ?? ''),
-                          subtitle: Text([contact['phone'], contact['email']]
+                          subtitle: Text([
+                            if (contact['kind'] == 'group') 'קבוצה',
+                            contact['phone'],
+                            contact['email']
+                          ]
                               .where((value) =>
                                   value != null && value.toString().isNotEmpty)
                               .join(' · ')),

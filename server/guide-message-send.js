@@ -5,7 +5,7 @@ const { phoneSelect } = require('./contact-phone-privacy');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
-  safeInformationUserId, scanBotId, sendMessage }) {
+  safeInformationUserId, scanBotId, sendMessage, sendGroupMessage }) {
   app.get('/api/guide-message-recipients', auth, async (req, res) => {
     try {
       const pool = await getPool();
@@ -16,6 +16,15 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
             WHERE (b.blocker_id=$1 AND b.blocked_id=u.id)
                OR (b.blocker_id=u.id AND b.blocked_id=$1))
         ORDER BY u.name,u.id`, [req.user.id, [systemUserId,safeInformationUserId,scanBotId]]);
+      if (req.query?.includeGroups === '1' && !req.user.isTeen) {
+        const groups = await pool.query(`SELECT g.id,g.name,'group' AS kind
+          FROM groups g JOIN group_members gm ON gm.group_id=g.id
+          JOIN users u ON u.id=gm.user_id
+          WHERE gm.user_id=$1 AND gm.status='member'
+            AND u.birth_date<=CURRENT_DATE-INTERVAL '18 years'
+            AND (g.send_permission<>'admin' OR gm.role='admin') ORDER BY g.name,g.id`, [req.user.id]);
+        return res.json([...result.rows, ...groups.rows]);
+      }
       return res.json(result.rows);
     } catch (_) { return res.status(500).json({ error: 'לא ניתן לטעון אנשי קשר' }); }
   });
@@ -37,11 +46,13 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
     } catch (_) { return res.status(500).json({ error: 'לא ניתן לבדוק את מצב הטיוטה' }); }
   });
   app.post('/api/guide-message-drafts/:id/send', auth, rateLimit, async (req, res) => {
-    const { toUserId, text, confirmed } = req.body || {};
-    if (confirmed !== true || !UUID.test(toUserId || '') ||
+    const { toUserId, groupId, text, confirmed } = req.body || {};
+    if (confirmed !== true || Boolean(toUserId) === Boolean(groupId) || !UUID.test(groupId || toUserId || '') ||
         [systemUserId, safeInformationUserId, scanBotId].includes(toUserId) ||
         typeof text !== 'string' || !text.trim() || text.length > 2000)
       return res.status(400).json({ error: 'יש לבחור נמען ולאשר את תוכן ההודעה' });
+    if (groupId && (req.user.isTeen || !sendGroupMessage))
+      return res.status(403).json({ error: 'שליחה לקבוצה אינה זמינה בחשבון זה' });
     const pool = await getPool();
     const client = await pool.connect();
     try {
@@ -59,23 +70,30 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
         await client.query('COMMIT');
         return res.json(saved.rows[0].result);
       }
-      const contact = await client.query(`SELECT 1 FROM user_contacts
-        WHERE owner_id=$1 AND contact_id=$2`, [req.user.id, toUserId]);
-      const blocked = await client.query(`SELECT 1 FROM blocked_users
-        WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1)`,
-      [req.user.id, toUserId]);
-      if (!contact.rows.length || blocked.rows.length) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'יש לבחור איש קשר שמור שאינו חסום' });
+      if (!groupId) {
+        const contact = await client.query(`SELECT 1 FROM user_contacts
+          WHERE owner_id=$1 AND contact_id=$2`, [req.user.id, toUserId]);
+        const blocked = await client.query(`SELECT 1 FROM blocked_users
+          WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1)`,
+        [req.user.id, toUserId]);
+        if (!contact.rows.length || blocked.rows.length) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({ error: 'יש לבחור איש קשר שמור שאינו חסום' });
+        }
       }
       let status = 200;
       let result;
       const capture = { status(code) { status = code; return this; },
         json(value) { result = value; return this; } };
-      req.body = { toUserId, text: text.trim() };
+      req.body = groupId ? { text: text.trim() } : { toUserId, text: text.trim() };
+      const draftId = req.params.id;
       req.messagePool = client;
       req.messageEffects = [];
-      await sendMessage(req, capture);
+      if (groupId) {
+        req.params = { ...req.params, id: groupId };
+        try { await sendGroupMessage(req, capture); }
+        finally { req.params = { ...req.params, id: draftId }; }
+      } else await sendMessage(req, capture);
       if (status >= 400 || !result?.id) {
         await client.query('ROLLBACK');
         return res.status(status >= 400 ? status : 500).json(result || { error: 'השליחה לא הושלמה' });
@@ -84,7 +102,7 @@ function registerGuideMessageSend(app, { auth, rateLimit, getPool, systemUserId,
         VALUES($1,$2,$3::jsonb)`, [req.params.id, req.user.id, JSON.stringify(result)]);
       await client.query('COMMIT');
       for (const effect of req.messageEffects) {
-        try { effect(); } catch (error) { console.error('guide send notification:', error.message); }
+        try { await effect(); } catch (error) { console.error('guide send notification:', error.message); }
       }
       return res.json(result);
     } catch (error) {

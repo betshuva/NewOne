@@ -66,11 +66,23 @@ class _DraftApi {
 }
 
 Finder get _confirm => find.widgetWithText(FilledButton, 'אישור ושליחה');
-Finder get _search => find.widgetWithText(TextField, 'חיפוש איש קשר שמור');
+Finder get _search => find.widgetWithText(TextField, 'חיפוש איש קשר או קבוצה');
 Finder get _message => find.widgetWithText(TextField, 'תוכן ההודעה שתישלח');
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  testWidgets('group confirmation sends only the selected group ID', (tester) async {
+    final api = _DraftApi(contacts: [{'id': 'g1', 'name': 'המטיילים', 'kind': 'group'}]);
+    addTearDown(api.client.close);
+    await tester.pumpWidget(api.app(query: 'המטיילים'));
+    await tester.pumpAndSettle();
+    expect(find.text('קבוצה'), findsOneWidget);
+    expect(api.writes, isEmpty);
+    await tester.tap(_confirm);
+    await tester.pumpAndSettle();
+    expect(api.writes.single, {'groupId': 'g1', 'text': 'שלום', 'confirmed': true});
+  });
 
   testWidgets('a unique recipient can be sent with one inline confirmation',
       (tester) async {

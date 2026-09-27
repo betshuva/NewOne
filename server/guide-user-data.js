@@ -19,6 +19,8 @@ const cleanGroupName = value => String(value || '').trim()
 function personalDataRequest(question) {
   const q = normalize(question);
   const countOnly = /(?:^|\s)(?:[וב]?כמה|מספר|ספור|תספור)(?:\s|$)/.test(q);
+  if (countOnly && /קבצים|קובצי|מדיה|תמונות|סרטונים|הקלטות|מסמכים/.test(q) &&
+      !/שלו|שלה|שלהם|של משתמש|של אדם|של חבר/.test(q)) return { kind: 'media', countOnly: true };
   // Singular group references identify a specific group's members. A mention
   // of plural "groups" in an account summary must never take this branch.
   if (/(?:מי|רשימ[הת]|הצג|תציג|תראה|הראה|כמה|אילו|מספר|ספור).*(?:^|\s)(?:ב|ל|ה)?קבוצ(?:ה|ת)(?=\s|[?؟!.]|$)/.test(q) &&
@@ -142,7 +144,7 @@ async function allGroupMembers(pool, userId, request) {
   return `${label}${filterLabel} (${result.rows.length}; כל אדם מופיע פעם אחת):\n${formatDataRows(result.rows, request)}`;
 }
 
-async function executeGuideDataPlan(pool, userId, input, { exportTables } = {}) {
+async function executeGuideDataPlan(pool, userId, input, { exportTables, loadMediaCounts } = {}) {
   const plan = validateDataPlan(input);
   if (!plan) return 'לא ניתן לבצע את בקשת הנתונים הזו. נסה לנסח אותה שוב.';
   if (plan.action === 'unsupported')
@@ -153,7 +155,7 @@ async function executeGuideDataPlan(pool, userId, input, { exportTables } = {}) 
   let exportFailed = false;
   for (const item of plan.requests) {
     const itemTables = [];
-    const answer = await answerUserDataQuestion(pool, userId, '', { request: {
+    const answer = await answerUserDataQuestion(pool, userId, '', { loadMediaCounts, request: {
       kind: item.kind, name: normalize(item.group_query), fields: item.fields,
       countOnly: item.format === 'count', format: item.format, adminsOnly: item.admins_only,
       groupScope: item.group_scope || 'named', contactFilter: item.contact_filter || 'all',
@@ -173,12 +175,22 @@ async function executeGuideDataPlan(pool, userId, input, { exportTables } = {}) 
   return answers.join('\n\n');
 }
 
-async function answerUserDataQuestion(pool, userId, question, { history = [], request: suppliedRequest } = {}) {
+async function answerUserDataQuestion(pool, userId, question, { history = [], request: suppliedRequest, loadMediaCounts } = {}) {
   const request = suppliedRequest || personalDataRequest(question) || followupDataRequest(question, history);
   if (!request) return null;
   if (!userId) return 'יש להתחבר כדי להציג את הנתונים שלך.';
   try {
     const answers = [];
+    if (request.kind === 'media') {
+      if (!loadMediaCounts) return 'ספירת המדיה אינה זמינה כרגע. נסה שוב בעוד רגע.';
+      const rows = await loadMediaCounts(userId);
+      const labels = { image: 'תמונות', video: 'סרטונים', audio: 'הקלטות שמע', document: 'מסמכים' };
+      const counts = Object.fromEntries(rows.map(row => [row.file_type, Number(row.count)]));
+      const total = rows.reduce((sum, row) => sum + Number(row.count), 0);
+      return `בספריית המדיה האישית שלך יש ${total} קבצים:\n` +
+        Object.entries(labels).map(([type, label]) => `${label}: ${counts[type] || 0}`).join('\n') +
+        '\nהספירה תואמת לספריית המדיה, כולל קבצים חסומים או ממתינים שמופיעים בה; עותקים מאוחדים נספרים פעם אחת.';
+    }
     if (request.kind === 'contacts' || request.kind === 'overview') {
       const result = await pool.query(`SELECT ${request.countOnly ? 'COUNT(*)::int AS count'
         : `u.name${profileColumns(request)}`} FROM user_contacts c

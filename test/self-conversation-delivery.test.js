@@ -21,6 +21,7 @@ async function deliver(body, { contentAllowed = true, approved = true } = {}) {
   }};
   vm.runInNewContext(source.slice(start,end), {
     ...require('./helpers/system-audit-stubs'),
+    sendGroupHttpMessage() {},
     withPrivateMessageReceipt: require('../server/private-message-receipts').withPrivateMessageReceipt,
     app:{post: (...args) => { handler = args.at(-1); }},
     auth:()=>{}, messageRateLimit:()=>{}, registerGuideMessageSend:()=>{}, SCAN_BOT_ID:'scan',
