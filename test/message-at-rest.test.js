@@ -35,3 +35,12 @@ test('database message fields are decrypted only after query completion', () => 
   assert.equal(result.rows[0].last_message, 'שלום');
   assert.equal(result.rows[0].unrelated, body);
 });
+
+test('filenames encrypted by legacy deferred delivery are readable', () => {
+  const result = decryptMessageRows({ rows: [
+    { file_name: encryptMessageText('document.pdf') },
+    { file_name: 'ordinary.pdf' },
+  ] });
+  assert.equal(result.rows[0].file_name, 'document.pdf');
+  assert.equal(result.rows[1].file_name, 'ordinary.pdf');
+});

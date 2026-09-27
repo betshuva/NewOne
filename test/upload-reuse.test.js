@@ -24,7 +24,8 @@ let fixtureId = 0;
 
 function harness({ classification = MEN, result, scanDelay = false,
   fingerprint = null, trustedBuiltinExpression = false, conversionError = null,
-  audioDuration = 10 } = {}) {
+  audioDuration = 10, onScan, realSenderGuard = false } = {}) {
+  const activeUploadFileIds = new Set();
   const state = { files: [], queries: [], blobs: [], scans: 0, audits: [], reports: [],
     pending: [], gifs: [], senderReads: [], recipientReads: [], senderAllowed: true,
     recipientFilter: { ...ALL }, groupFilter: { ...ALL }, member: { role: 'member', send_permission: 'all' },
@@ -38,6 +39,10 @@ function harness({ classification = MEN, result, scanDelay = false,
   const pool = { async query(sql, values = []) {
     state.queries.push({ sql, values });
     const statement = sql.trim();
+    if (statement === 'SELECT short_id FROM users WHERE id=$1') {
+      assert.deepEqual(values, [state.owner]);
+      return { rows: [{ short_id: '742' }] };
+    }
     if (statement.startsWith('SELECT moderation_details FROM stored_files')) {
       assertScannedOnly(statement);
       const found = [...state.files].reverse().find(file =>
@@ -75,7 +80,9 @@ function harness({ classification = MEN, result, scanDelay = false,
     if (statement.startsWith('INSERT INTO stored_files')) {
       const names = ['user_id', 'original_name', 'storage_path', 'public_url', 'mime_type',
         'file_type', 'file_size', 'context_type', 'context_id', 'content_sha256', 'visual_fingerprint'];
-      const file = { id: `file-${state.files.length + 1}`, moderation_status: 'pending' };
+      const file = { id: values[11], moderation_status: 'pending' };
+      assert.deepEqual([...values.slice(12)], [null, null]);
+      assert.ok(activeUploadFileIds.has(file.id), 'reserve ownership before inserting the file');
       names.forEach((name, index) => { file[name] = values[index]; });
       if (file.visual_fingerprint) file.visual_fingerprint = JSON.parse(file.visual_fingerprint);
       state.files.push(file);
@@ -112,17 +119,20 @@ function harness({ classification = MEN, result, scanDelay = false,
   let handler;
   const scan = async () => {
     state.scans++;
+    await onScan?.({ state, activeUploadFileIds });
     if (scanDelay) await new Promise(resolve => setImmediate(resolve));
     if (state.failNextScan) { state.failNextScan = false; throw new Error('scan failed'); }
     return clone(result || { blocked: false, classification, faces: [] });
   };
   vm.runInNewContext(source.slice(routeStart, routeEnd), {
+    ...require('./helpers/system-audit-stubs'),
     app: { post(_route, ...handlers) { handler = handlers.at(-1); } },
     auth() {}, uploadRateLimit() {}, upload: { single() {} },
     BLOCKED_TYPES: [], MODERATION_CACHE_VERSION: VERSION, SCAN_BOT_ID: 'scan-bot',
     MAX_AUDIO_SECONDS: 120,
     normalizeUploadFileName: value => value,
-    resolveAllowedUpload: file => ({ dbType: file.mimetype.startsWith('audio/') ? 'audio' : 'image',
+    resolveAllowedUpload: file => ({ dbType: file.mimetype.startsWith('audio/') ? 'audio'
+      : file.mimetype.startsWith('video/') ? 'video' : 'image',
       mime: file.mimetype, maxMB: 10 }),
     probeAudio: async (buffer, name) => {
       state.audioProbes.push({ buffer, name }); return { durationSeconds: audioDuration };
@@ -134,7 +144,8 @@ function harness({ classification = MEN, result, scanDelay = false,
       return { buffer: converted, originalname: name.replace(/\.[^.]+$/, '.mp3'),
         mimetype: 'audio/mpeg', size: converted.length, durationSeconds: audioDuration };
     },
-    crypto, getPool: async () => pool, acquireUploadLock, findReusableUpload,
+    shortenCapturedFileName: require('../server/user-short-id').shortenCapturedFileName,
+    crypto, getPool: async () => pool, acquireUploadLock, findReusableUpload, activeUploadFileIds,
     isTrustedBuiltinExpression: async () => trustedBuiltinExpression,
     builtinExpressionResult: vm.runInNewContext(source.slice(
       source.indexOf('function builtinExpressionResult()'),
@@ -147,9 +158,11 @@ function harness({ classification = MEN, result, scanDelay = false,
     },
     getGroupContentFilter: async () => state.groupFilter,
     async uploadToBlob(_buffer, key) { state.blobs.push(key); return `/uploads/${key}`; },
-    scanImage: scan, recordProviderCall: async () => {},
+    scanImage: scan, recordProviderCheck: async () => {},
+    saveAuditScanPreview: async () => null,
     async assertSenderMediaAllowed(_pool, options) {
       state.senderReads.push(options);
+      if (realSenderGuard) return require('../server/sender-content-filter').assertSenderMediaAllowed(_pool, options);
       if (!state.senderAllowed) throw Object.assign(new Error('sender blocked'), {
         code: 'SENDER_CONTENT_FILTERED',
       });
@@ -166,7 +179,7 @@ function harness({ classification = MEN, result, scanDelay = false,
     },
     requestPendingScanRetry() {}, logActivity() {}, console: { log() {}, error() {}, warn() {} },
   });
-  return { state, async upload({ body = {}, owner = state.owner, name = 'photo.png',
+  return { state, activeUploadFileIds, async upload({ body = {}, owner = state.owner, name = 'photo.png',
     bytes = 'same content', mime = 'image/png' } = {}) {
     const buffer = Buffer.from(bytes);
     const res = { statusCode: 200, status(code) { this.statusCode = code; return this; },
@@ -176,6 +189,32 @@ function harness({ classification = MEN, result, scanDelay = false,
     return res;
   } };
 }
+
+test('live scans stay owned until completion, including errors', async () => {
+  const api = harness({ onScan({ state, activeUploadFileIds }) {
+    assert.equal(activeUploadFileIds.size, 1);
+    assert.ok(activeUploadFileIds.has(state.files.at(-1).id));
+  } });
+  assert.equal((await api.upload()).statusCode, 200);
+  assert.equal(api.activeUploadFileIds.size, 0);
+  api.state.failNextScan = true;
+  assert.equal((await api.upload({ bytes: 'different file' })).statusCode, 500);
+  assert.equal(api.activeUploadFileIds.size, 0);
+});
+
+test('uncached videos enter the durable queue without scanning inside the upload request', async () => {
+  const api = harness();
+  const response = await api.upload({ name: 'clip.mp4', mime: 'video/mp4',
+    bytes: '0000ftypisom', body: { toUserId: 'friend' } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, 'pending');
+  assert.equal(api.state.scans, 0);
+  assert.equal(api.state.pending.length, 1);
+  assert.equal(api.state.pending[0].values[1], 'friend');
+  assert.equal(api.state.files[0].moderation_status, 'pending');
+  assert.equal(api.state.files[0].moderation_details.pending, true);
+  assert.equal(api.activeUploadFileIds.size, 0);
+});
 
 test('repeat upload reuses approved owner file and preserves a renamed library entry', async () => {
   const api = harness();
@@ -411,6 +450,20 @@ test('new voice recordings are converted before hashing, storage, and pending mo
   assert.equal(api.state.recipientReads.length, 1);
 });
 
+test('legacy recordings store and return the assigned short creator number after MP3 conversion', async () => {
+  const api = harness();
+  api.state.owner = 'c519a188-fcca-4aaa-bd69-c0d227ca7959';
+  const stem = 'betshuva-audio-2026-09-23_14-07-36-25-ID-';
+  const result = await api.upload({ name: `${stem}${api.state.owner}_2.webm`,
+    mime: 'audio/webm', bytes: 'original recording',
+    body: { recordedAudio: 'true', toUserId: 'friend' } });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.fileName, `${stem}742_2.mp3`);
+  assert.equal(api.state.files[0].original_name, result.body.fileName);
+  assert.ok(api.state.blobs[0].endsWith(`${stem}742_2.mp3`));
+  assert.ok(api.state.pending[0].values.includes(result.body.fileName));
+});
+
 test('selected/imported audio preserves its original bytes, extension, and content type', async () => {
   for (const [mime, name, body] of [
     ['audio/wav', 'original.wav', {}],
@@ -560,4 +613,27 @@ test('PostgreSQL exact and visual moderation caches exclude unscanned library ex
       assert.equal(visual.rows.length, expected, `visual cache: ${JSON.stringify(exemption)}`);
     }
   } finally { await db.end(); }
+});
+
+
+test('real upload sender guard permits new/cached outgoing media and still applies the recipient filter', async () => {
+  for (const body of [{toUserId:'friend'}, {groupId:'group'}]) {
+    const api = harness({realSenderGuard:true});
+    api.state.senderAllowed=false;
+    const first=await api.upload({body});
+    assert.equal(first.statusCode,200);assert.ok(first.body.url);assert.equal(api.state.files[0].moderation_status,'approved');
+    const cached=await api.upload({body});
+    assert.equal(cached.statusCode,200);assert.equal(cached.body.url,first.body.url);
+    assert.equal(api.state.scans,1);
+    api.state.recipientFilter={...ALL,men:false};api.state.groupFilter={...ALL,men:false};
+    const rejected=await api.upload({body});
+    assert.equal(rejected.body.status,'rejected');assert.equal(rejected.body.forwardAllowed,true);
+    assert.ok(!rejected.body.reason.includes('שלך'));
+  }
+});
+
+test('recipient-only upload policy does not bypass a failed safety scan', async () => {
+  const api=harness({realSenderGuard:true,result:{blocked:true,reason:'unsafe-test-content',classification:MEN}});
+  const result=await api.upload({body:{toUserId:'friend'}});
+  assert.equal(result.body.status,'rejected');assert.equal(result.body.reason,'unsafe-test-content');
 });

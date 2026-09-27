@@ -1,9 +1,10 @@
+import 'package:file_picker/file_picker.dart';
+import 'helpers/attachment_picker.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:betshuva/filter_history.dart';
 import 'package:betshuva/main.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -76,13 +77,13 @@ Widget chat(bool group, {io.Socket? socket}) => MaterialApp(
     home: group
         ? GroupChatScreen(
             token: 'token',
-            me: {'id': 'viewer', 'name': 'אני'},
+            me: {'id': 'viewer', 'short_id': '742', 'name': 'אני'},
             group: groupData,
             socket: socket,
             embedded: true)
         : ChatScreen(
             token: 'token',
-            me: {'id': 'viewer', 'name': 'אני'},
+            me: {'id': 'viewer', 'short_id': '742', 'name': 'אני'},
             recipient: {'id': 'friend', 'name': 'חבר'},
             socket: socket,
             embedded: true));
@@ -135,6 +136,7 @@ void size(WidgetTester tester) {
 Finder image(bool group) => find.byKey(
     ValueKey(group ? 'group-image-own-image' : 'chat-image-own-image-$url'));
 void main() {
+  FilePicker.platform = AttachmentPicker([]);
   TestWidgetsFlutterBinding.ensureInitialized();
   for (final group in [false, true]) {
     final scope = group ? 'group' : 'private';
@@ -273,10 +275,10 @@ void main() {
           (tester) async {
         size(tester);
         SharedPreferences.setMockInitialValues({});
-        final oldPicker = ImagePickerPlatform.instance;
-        final picker = TestImagePicker();
-        ImagePickerPlatform.instance = picker;
-        addTearDown(() => ImagePickerPlatform.instance = oldPicker);
+        final oldPicker = FilePicker.platform;
+        final picker = AttachmentPicker([MemoryPickedFile('own-image.png', png)]);
+        FilePicker.platform = picker;
+        addTearDown(() => FilePicker.platform = oldPicker);
         var uploads = 0;
         var sends = 0;
         final response = {
@@ -293,16 +295,9 @@ void main() {
           await tester.pumpAndSettle();
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
-          // Web camera capture uses the browser directly, outside the mocked
-          // image picker. Select the same single PNG through gallery on web.
-          await tester.tap(find.text(kIsWeb
-              ? 'גלריה (עד 10)'
-              : group
-                  ? 'מצלמה'
-                  : 'צלם תמונה'));
+          await tester.tap(find.text('העלאת קבצים'));
           await tester.pumpAndSettle();
-          expect(picker.requestedSources,
-              [kIsWeb ? ImageSource.gallery : ImageSource.camera]);
+          expect(picker.calls, 1);
           expect(uploads, 1);
           expect(sends, rejection == 'send-403' ? 1 : 0);
           expect(find.text(senderBlocked), findsOneWidget);

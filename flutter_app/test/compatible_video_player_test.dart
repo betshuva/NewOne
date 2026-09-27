@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:betshuva/compatible_video_player.dart';
 import 'package:betshuva/main.dart' show ChatScreen;
+import 'package:betshuva/video_thumbnail.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -28,9 +29,14 @@ final _decoderError = PlatformException(
 
 class _NativePlayback {
   final calls = <MethodCall>[];
+  final thumbnails = <MethodCall>[];
   final replies = <Future<bool> Function()>[];
 
-  Future<bool> respond(MethodCall call) async {
+  Future<Object?> respond(MethodCall call) async {
+    if (call.method == 'videoThumbnail') {
+      thumbnails.add(call);
+      return null;
+    }
     calls.add(call);
     expect(call.method, 'playVideo');
     if (replies.isEmpty) return false;
@@ -421,9 +427,12 @@ void main() {
       expect(
           inline.creations.single.viewType, platform.VideoViewType.textureView);
       expect(native.calls, isEmpty);
-      expect(find.text('הפעל וידאו'), findsOneWidget);
+      expect(native.thumbnails.single.arguments, {'url': _videoUrl.toString()});
+      expect(find.byType(VideoThumbnail), findsOneWidget);
+      expect(tester.getSize(find.byType(VideoThumbnail)), const Size(280, 150));
+      expect(find.byTooltip('הפעל וידאו'), findsOneWidget);
 
-      await tester.tap(find.text('הפעל וידאו'));
+      await tester.tap(find.byTooltip('הפעל וידאו'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.byType(CompatibleVideoPlayer), findsOneWidget);
@@ -433,7 +442,7 @@ void main() {
       closed.complete(true);
       await tester.pumpAndSettle();
       expect(find.byType(CompatibleVideoPlayer), findsNothing);
-      expect(find.text('הפעל וידאו'), findsOneWidget);
+      expect(find.byTooltip('הפעל וידאו'), findsOneWidget);
       await _unmount(tester);
     }, () => MockClient(_chatResponse));
   }, skip: kIsWeb);
@@ -451,7 +460,8 @@ void main() {
       expect(
           inline.creations.single.viewType, platform.VideoViewType.textureView);
       expect(find.text('נסה שוב'), findsOneWidget);
-      expect(find.text('הפעל וידאו'), findsNothing);
+      expect(find.byTooltip('הפעל וידאו'), findsNothing);
+      expect(native.thumbnails, isEmpty);
       expect(find.byType(CompatibleVideoPlayer), findsNothing);
       expect(native.calls, isEmpty);
       await _unmount(tester);

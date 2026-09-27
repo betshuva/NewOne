@@ -111,7 +111,7 @@ async function snapshot(db, userId, ids) {
   const pending = (await db.query(`
     SELECT 'request' AS kind,mr.id::text AS id,mr.recipient_id AS user_id,NULL::uuid AS group_id,
       mr.file_url,u.name AS name,NULL::text AS group_name
-    FROM message_requests mr LEFT JOIN users u ON u.id=mr.recipient_id WHERE mr.file_url=ANY($1::text[])
+    FROM message_requests mr LEFT JOIN users u ON u.id=mr.recipient_id WHERE mr.file_url=ANY($1::text[]) AND mr.status='pending'
     UNION ALL
     SELECT 'scan',ps.id::text,ps.to_user_id,ps.group_id,ps.file_url,u.name,g.name
     FROM pending_scans ps LEFT JOIN users u ON u.id=ps.to_user_id LEFT JOIN groups g ON g.id=ps.group_id

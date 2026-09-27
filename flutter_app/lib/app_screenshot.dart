@@ -73,6 +73,7 @@ Future<void> openAppScreenshot(
   BuildContext context, {
   String? token,
   AppScreenshotDestination? destination,
+  Future<dynamic>? beforeCapture,
 }) async {
   final authToken = token ?? appScreenshotToken.value;
   if (appScreenshotBusy.value) return;
@@ -96,6 +97,7 @@ Future<void> openAppScreenshot(
       captured =
           await captureCurrentAppScreen().timeout(const Duration(seconds: 45));
     } else {
+      await beforeCapture;
       await WidgetsBinding.instance.endOfFrame;
       final boundary = appScreenshotBoundaryKey.currentContext
           ?.findRenderObject() as RenderRepaintBoundary?;
@@ -111,11 +113,18 @@ Future<void> openAppScreenshot(
     if (!context.mounted) return;
     final navigator = appScreenshotNavigatorKey.currentState;
     if (navigator == null) throw StateError('app navigator unavailable');
+    final codec = await ui.instantiateImageCodec(captured);
+    final frame = await codec.getNextFrame();
+    final aspectRatio = frame.image.width / frame.image.height;
+    frame.image.dispose();
+    codec.dispose();
+    if (!context.mounted) return;
     final resolvedDestination = destination ?? appScreenshotDestination.value;
     final edited = await navigator.push<_ScreenshotResult>(MaterialPageRoute(
       fullscreenDialog: true,
       builder: (_) => _ScreenshotEditor(
         bytes: captured,
+        aspectRatio: aspectRatio,
         sendsToIsrael: resolvedDestination.kind == 'user' &&
             resolvedDestination.id == _israelId,
       ),
@@ -365,7 +374,11 @@ enum _EditTool { crop, blur, mark, text }
 class _ScreenshotEditor extends StatefulWidget {
   final Uint8List bytes;
   final bool sendsToIsrael;
-  const _ScreenshotEditor({required this.bytes, required this.sendsToIsrael});
+  final double aspectRatio;
+  const _ScreenshotEditor(
+      {required this.bytes,
+      required this.sendsToIsrael,
+      required this.aspectRatio});
   @override
   State<_ScreenshotEditor> createState() => _ScreenshotEditorState();
 }
@@ -651,8 +664,14 @@ class _ScreenshotEditorState extends State<_ScreenshotEditor> {
         Expanded(
           child: Center(
             child: LayoutBuilder(builder: (context, constraints) {
-              final width = math.min(constraints.maxWidth - 24, 1100.0);
-              final height = math.min(constraints.maxHeight - 24, width * .62);
+              final size = applyBoxFit(
+                BoxFit.contain,
+                Size(widget.aspectRatio * visibleWidth / visibleHeight, 1),
+                Size(math.max(1, math.min(constraints.maxWidth - 24, 1100.0)),
+                    math.max(1, constraints.maxHeight - 24)),
+              ).destination;
+              final width = size.width;
+              final height = size.height;
               return RepaintBoundary(
                 key: _outputKey,
                 child: SizedBox(

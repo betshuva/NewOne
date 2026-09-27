@@ -47,6 +47,7 @@ test('data reset preserves login identity and a usable saved session', async () 
   let reset;
   let registrationStatus;
   const context = vm.createContext({
+    ...require('./helpers/system-audit-stubs'),
     app: {
       delete(_path, _auth, handler) { reset = handler; },
       get(_path, handler) { registrationStatus = handler; },

@@ -22,6 +22,7 @@ const sharp      = require('sharp');
 const { cert, getApps, initializeApp } = require('firebase-admin/app');
 const { getMessaging } = require('firebase-admin/messaging');
 const { getPool } = require('./db');
+const { REQUEST_SCHEMA, lockContactRequests, queueContactRequest, settleContactRequests } = require('./contact-message-requests');
 const calendarService = require('./calendar');
 const {
   googleSafeSearchConfigured,
@@ -33,8 +34,14 @@ const {
 const { verifyPersonClassification } = require('./person-verification');
 const { videoDetectedCategories } = require('./video-classification');
 const { classifyOpenAIModesty } = require('./modesty-verification');
+const { openAIModerationEnabled, openAIModerationRequired, moderationProviderPolicy,
+  disabledModerationProviderResult } = require('./moderation-provider-policy');
 const { classifyGeminiModesty } = require('./gemini-modesty-verification');
-const { recordProviderCall } = require('./provider-usage-log');
+const { recordProviderCheck } = require('./provider-usage-log');
+const { ensureVideoScanBudgetSchema } = require('./video-scan-budget');
+const { ensureAuditScanPreviewSchema, saveAuditScanPreview, purgeExpiredAuditScanPreviews,
+  registerAuditScanPreviewRoutes } = require('./audit-scan-previews');
+const { runBoundedVideoScan, stoppedVideoResult, videoProviderStop } = require('./video-scan-controller');
 const { createVisualFingerprint, visuallyEquivalent } =
   require('./visual-fingerprint');
 const {
@@ -59,6 +66,7 @@ const {
   isAudioTranscriptionBusy,
 } = require('./audio-moderation');
 const { convertRecordedAudio } = require('./recorded-audio');
+const { SHORT_USER_ID_SCHEMA, shortenCapturedFileName } = require('./user-short-id');
 const { encryptMessageText, decryptMessageText } = require('./message-at-rest');
 const { inlineEmojiModerationText, inlineEmojiPlainText } = require('./inline-custom-emoji');
 const {
@@ -66,23 +74,28 @@ const {
   NEW_ACCOUNT_CONTENT_FILTER,
   contentAllowedByFilter,
   imageAllowedByFilter,
+  isUnfilteredAssistantConversation,
   normalizeContentFilter,
   resolveScopedContentFilter,
 } = require('./content-filter-policy');
 const { projectProfileImages } = require('./profile-image-policy');
 const { assertSenderMediaAllowed } = require('./sender-content-filter');
 const { initializeFilterAudit, registerFilterAuditRoutes, recordFilterEvent, recordFilterDecision } = require('./filter-audit');
+const { ensureSystemAuditSchema, registerSystemAuditRoutes, getAuditContext, recordAuditEvent, runWithAuditContext } = require('./system-audit');
+const { auditIds, createRequestAudit, restoreRequestAuditContext, uploadAuditDetails, mirrorActivity, observeAudit,
+  emitDispatchRejection, auditedSocketHandler, withPendingAudit, auditedMediaQuery, setAuditTransactionContext } = require('./system-audit-context');
 const { FILTER_MEDIA_SCHEMA, lockFilterOwner, prepareFilterHistoryChange,
   finishFilterHistoryChange, projectFilteredHistory, projectFilterMediaLibrary, projectOwnScans, registerFilterHistoryRoutes } = require('./filter-media-history');
 const { registerMessageReactions } = require('./message-reactions');
 const { CONVERSATION_SCHEMA, messageAfterConversationClear, personalMessageVisible, registerConversationHistory } = require('./conversation-history');
 const { createReceivedMediaService, personalizeReceivedMessages,
-  retainVisibleReceivedMessages, migrateReceivedMedia } = require('./received-media');
+  retainVisibleReceivedMessages, migrateReceivedMedia, readSourceMedia } = require('./received-media');
 const { resolveAssistantInput } = require('./assistant-input');
 const { imageClassificationOutcome } = require('./image-classification-outcome');
 const { generateGuideAnswer, localGuideAnswer } = require('./system-guide-ai');
 const { answerUserDataQuestion, executeGuideDataPlan } = require('./guide-user-data');
 const { registerGuideMessageSend } = require('./guide-message-send');
+const { withPrivateMessageReceipt } = require('./private-message-receipts');
 const { notifyGuideFilterBlock, shortFilterReason, formatGroupFilterNotice,
   projectGuideFilterNotice } = require('./guide-filter-notice');
 const { notifyGuideRejectedSend } = require('./guide-rejection-notice');
@@ -602,7 +615,12 @@ async function sendPush(userId, title, body, data = {}) {
        JOIN users u ON u.id=f.user_id
        WHERE f.user_id=$1 AND u.notifications_enabled=TRUE`, [userId]);
     const tokens = result.rows.map(row => row.token).filter(Boolean);
-    if (!tokens.length) return;
+    if (!tokens.length) {
+      await observeAudit(getAuditContext()?.transactionDb || pool, { kind: 'push_skipped',
+        status: 'skipped', reasonCode: 'no_enabled_device',
+        targetType: 'user', targetId: userId });
+      return;
+    }
     const response = await getFirebaseMessaging().sendEachForMulticast({
       tokens,
       notification: { title: title || 'בתשובה', body: inlineEmojiPlainText(body) },
@@ -621,6 +639,12 @@ async function sendPush(userId, title, body, data = {}) {
       },
       apns: { payload: { aps: { badge: 1, sound: 'default' } } },
     });
+    await observeAudit(getAuditContext()?.transactionDb || pool, { kind: 'push_provider_result',
+      executorType: 'provider', executorId: 'fcm', source: 'push',
+      status: response.failureCount ? (response.successCount ? 'partial' : 'failed') : 'completed',
+      reasonCode: 'provider_acceptance_not_delivery', targetType: 'user', targetId: userId,
+      details: { recipientCount: tokens.length, acceptedCount: response.successCount,
+        failedCount: response.failureCount } });
     for (let index = 0; index < response.responses.length; index++) {
       const errorCode = response.responses[index].error?.code;
       if (errorCode === 'messaging/registration-token-not-registered' ||
@@ -628,7 +652,16 @@ async function sendPush(userId, title, body, data = {}) {
         pool.query('DELETE FROM fcm_tokens WHERE token=$1', [tokens[index]]).catch(() => {});
       }
     }
-  } catch (e) { console.error('sendPush:', e.message); }
+  } catch (e) {
+    console.error('sendPush:', e.message);
+    if (getAuditContext()?.operationId) {
+      try {
+        await observeAudit(getAuditContext().transactionDb || await getPool(), {
+          kind: 'push_failed', status: 'failed', reasonCode: 'provider_error',
+          targetType: 'user', targetId: userId });
+      } catch (_) {}
+    }
+  }
 }
 
 // ── File upload setup ─────────────────────────────────────────────
@@ -692,9 +725,11 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
     const form = new FormData();
     form.append('video', new Blob([buffer], { type: mimeType }), fileName);
     form.append('sample_interval_seconds',
-      process.env.VIDEO_SAMPLE_INTERVAL_SECONDS || '0.5');
+      '5');
     const response = await fetch(`${VIDEO_MODERATION_URL}/analyze`, {
-      method: 'POST', body: form, signal: AbortSignal.timeout(180000),
+      method: 'POST', body: form, signal: options.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(180000)])
+        : AbortSignal.timeout(180000),
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 300);
@@ -720,11 +755,16 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
       ? result.labels : {};
     const findings = Array.isArray(result.findings) ? result.findings : [];
     const frameSamples = Array.isArray(result.frame_samples)
-      ? result.frame_samples.slice(0, 90) : [];
+      ? result.frame_samples : [];
+    if (options.freezeFrames) {
+      const stopped = await options.freezeFrames(frameSamples, result.sampled_frames);
+      if (stopped) return stopped;
+    } else if (frameSamples.length > 90) throw new Error('too many video frames');
     const frameResults = new Array(frameSamples.length);
     let nextFrameIndex = 0;
+    let stopReason = null;
     const scanFrame = async () => {
-      while (nextFrameIndex < frameSamples.length) {
+      while (!stopReason && !options.signal?.aborted && nextFrameIndex < frameSamples.length) {
         const index = nextFrameIndex++;
         const sample = frameSamples[index];
       let imageBuffer;
@@ -740,10 +780,16 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
       const frameTracking = options.tracking ? {
         ...options.tracking,
         operationContext: `video_frame_${index + 1}`,
+        ...(options.tracking.videoBudget ? { videoBudget: {
+          ...options.tracking.videoBudget, frameIndex: index,
+          timestampSeconds: Number(sample.timestamp_seconds || 0),
+        } } : {}),
       } : undefined;
       const frameResult = await scanStaticImage(imageBuffer, {
-        tracking: frameTracking, videoFrame: true,
+        tracking: frameTracking, videoFrame: true, signal: options.signal,
       });
+      if (options.tracking?.videoBudget && (frameResult.scanStopped || frameResult.pending))
+        stopReason = frameResult.reasonCode || 'scan_incomplete';
       const timestampSeconds = Number(sample.timestamp_seconds || 0);
         frameResults[index] = { timestampSeconds,
         blocked: frameResult.blocked === true,
@@ -765,6 +811,8 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
     // for many minutes while keeping provider concurrency under control.
     const frameWorkerCount = Math.min(8, frameSamples.length);
     await Promise.all(Array.from({ length: frameWorkerCount }, scanFrame));
+    if (stopReason || options.signal?.aborted)
+      return stoppedVideoResult(stopReason || 'deadline_exceeded', undefined, { frameResults });
     const detectedCategories = videoDetectedCategories(frameResults);
     for (const frameResult of frameResults) {
       if (frameResult?.blocked) {
@@ -1072,14 +1120,15 @@ function redactHarmfulLanguageForDisplay(value) {
   return String(value || '').replace(/טמבל(?:ים|ית)?/giu, 'מילה פוגענית');
 }
 
-async function scanAudio(buffer, fileName) {
+async function scanAudio(buffer, fileName, options = {}) {
+  let auditResult;
   try {
     const result = await transcribeAudio(buffer, fileName);
     const durationSeconds = Number(result.durationSeconds);
     if (!Number.isFinite(durationSeconds) || durationSeconds <= 0)
       throw new Error('invalid audio duration');
     if (durationSeconds > MAX_AUDIO_SECONDS) {
-      return {
+      return auditResult = {
         blocked: true,
         pending: false,
         blockedBy: 'audio_duration',
@@ -1089,7 +1138,7 @@ async function scanAudio(buffer, fileName) {
     }
     const transcript = String(result.transcript || '').trim();
     const moderation = moderateChatText(transcript);
-    return {
+    return auditResult = {
       blocked: moderation.blocked === true,
       pending: false,
       blockedBy: moderation.blocked ? 'audio_transcript' : null,
@@ -1109,12 +1158,19 @@ async function scanAudio(buffer, fileName) {
     };
   } catch (error) {
     console.error('[audio-moderation] transcription failed:', error.message);
-    return {
+    return auditResult = {
       blocked: false,
       pending: true,
       reason: 'סריקת ההקלטה ממתינה לעיבוד מקומי',
       audio: { source: 'local-whisper-small', error: 'transcription_unavailable' },
     };
+  } finally {
+    await recordProviderCheck({ provider: 'local', operation: 'audio_transcription',
+      tracking: options.tracking,
+      result: { ...auditResult, available: !auditResult?.audio?.error,
+        findings: [auditResult?.audio?.speechDetected === true ? 'speech_detected'
+          : auditResult?.audio?.speechDetected === false ? 'no_speech_detected' : null,
+        auditResult?.blockedBy === 'audio_transcript' ? 'harmful_text' : null].filter(Boolean) } });
   }
 }
 
@@ -1159,6 +1215,8 @@ async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
      LEFT JOIN user_contacts c ON c.owner_id=u.id AND c.contact_id=$2
      WHERE u.id=$1`, [recipientId, senderId]);
   if (!result.rows.length) return null;
+  if (isUnfilteredAssistantConversation(recipientId, senderId))
+    return { isContact: true, filter: { ...DEFAULT_CONTENT_FILTER } };
   return {
     isContact: String(recipientId) === String(senderId) || !!result.rows[0].filter_override || (await pool.query(
       'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
@@ -1188,7 +1246,7 @@ async function buildGroupDeliveryPlan(pool, groupId, senderId, type, classificat
     if (groupAllows && contentAllowedByFilter(member.content_filter, type, classification))
       delivered.push(target);
     else {
-      blocked.push(target);
+      blocked.push({...target,reasonCode:groupAllows?'recipient_content_filter':'group_content_filter',reason:shortFilterReason({filter:groupAllows?member.content_filter:groupPolicy,fileType:type,classification})});
       blockedNotices.push({ ...target, filter: groupAllows ? member.content_filter : groupPolicy,
         fileType: type, classification });
       await recordFilterDecision(pool, { userId: member.user_id, actorId: senderId,
@@ -1236,8 +1294,8 @@ async function notifyDestinationFilterBlock(pool, {
     };
     const file = await loadFile(pool);
     if (!file || !['image', 'video', 'audio', 'document'].includes(file.file_type)) return null;
-    // General/guide visibility remains separate from the rejected destination.
-    if (!await validateApprovedFile(pool, userId, fileUrl, 'general', null)) return null;
+    // Check the actual guide destination independently of the rejected target.
+    if (!await validateApprovedFile(pool, userId, fileUrl, 'chat', SYSTEM_USER_ID)) return null;
     const target = await pool.query(groupId
       ? 'SELECT name FROM groups WHERE id=$1'
       : 'SELECT name FROM users WHERE id=$1', [groupId || toUserId]);
@@ -1258,7 +1316,7 @@ async function notifyDestinationFilterBlock(pool, {
         if (!current || current.id !== file.id || current.file_type !== file.file_type ||
             JSON.stringify(current.moderation_details?.classification || null) !==
               JSON.stringify(classification)) return false;
-        return validateApprovedFile(client, userId, fileUrl, 'general', null);
+        return validateApprovedFile(client, userId, fileUrl, 'chat', SYSTEM_USER_ID);
       },
       relay: async (recipientId, event, message) => relay(recipientId, event,
         await recipientMediaMessage(pool, recipientId, message)),
@@ -1362,12 +1420,7 @@ async function validateApprovedFile(pool, userId, fileUrl, contextType, contextI
        AND sg.status='active'`, [fileUrl]);
   if (!shared.rows.length) return false;
   await assertSenderFileAllowed(pool, userId, fileUrl, contextType, contextId, 'shared_gif_send');
-  if (contextType === 'chat') {
-    const policy = await getEffectiveRecipientFilter(pool, contextId, userId);
-    if (!policy?.isContact) return false;
-    return imageAllowedByFilter(
-      policy.filter, shared.rows[0].moderation_details?.classification);
-  }
+  // Recipient policy is checked by the caller, or upon contact approval.
   return true;
 }
 
@@ -1391,10 +1444,18 @@ async function assertSenderFileAllowed(db, userId, fileUrl, contextType, context
 
 async function writeSenderFilteredMedia(pool, options, write) {
   if (!options.fileUrl) return write(pool);
+  // Idempotent private sends already own a transaction. Keep file validation
+  // and the insert inside it so the receipt and message commit together.
+  if (typeof pool.connect !== 'function') {
+    await pool.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [options.userId]);
+    await assertSenderFileAllowed(pool, options.userId, options.fileUrl,
+      options.contextType, options.contextId, 'sender_persist');
+    return write(pool);
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // The preference writer takes FOR UPDATE; hold this snapshot through INSERT.
+    // Keep the account stable through file validation and INSERT.
     await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [options.userId]);
     await assertSenderFileAllowed(client, options.userId, options.fileUrl,
       options.contextType, options.contextId, 'sender_persist');
@@ -1471,6 +1532,10 @@ function formatScanBotReport(fileName, scanResult, status) {
   }
   const addModestyReview = (provider, review) => {
     if (!review) return;
+    if (review.status === 'disabled') {
+      lines.push(`${provider} — בדיקת צניעות: כבוי בהגדרות המערכת`);
+      return;
+    }
     if (review.required === false) {
       lines.push(`${provider} — בדיקת צניעות: לא נדרשה`);
       return;
@@ -1871,6 +1936,13 @@ function isPotentiallyAnimatedImage(buffer) {
 
 
 async function scanStaticImage(buffer, options = {}) {
+  if (options.tracking?.storedFileId && !options.tracking.scanPreviewId && getAuditContext()?.operationId) {
+    const scanPreviewId = await saveAuditScanPreview(await getPool(), {
+      storedFileId: options.tracking.storedFileId, buffer,
+    });
+    if (scanPreviewId) options = { ...options,
+      tracking: { ...options.tracking, scanPreviewId } };
+  }
   const localSafetyPromise = classifyLocalSafety(buffer);
   const capture = promise => promise.then(
     value => ({ ok: true, value }),
@@ -1902,7 +1974,7 @@ async function scanStaticImage(buffer, options = {}) {
   }));
   // Local zero-shot clothing scores are not reliable enough to approve or
   // reject modesty. Keep this field explicit for reports and old clients, but
-  // leave clothing decisions exclusively to the independent OpenAI review.
+  // leave clothing decisions to the configured multimodal reviewers.
   const strictModesty = {
     available: false,
     checked: false,
@@ -1948,6 +2020,17 @@ async function scanStaticImage(buffer, options = {}) {
     adultScore >= 0.75 || nudityScore >= 0.65
   );
   const localBlockedBy = localExplicitContent ? 'localExplicitContent' : null;
+  await Promise.all([
+    recordProviderCheck({ provider: 'local', operation: 'local_explicit_content',
+      tracking: options.tracking, result: { available: scoresResult.ok, blocked: localExplicitContent } }),
+    recordProviderCheck({ provider: 'local', operation: 'local_classification',
+      tracking: options.tracking, durationMs: classification?.totalDurationMs,
+      result: { available: classificationResult.ok, classification,
+        findings: classification?.detectedCategories || [] } }),
+    recordProviderCheck({ provider: 'local', operation: 'local_safety',
+      tracking: options.tracking, durationMs: localSafety?.durationMs,
+      result: { ...localSafety, findings: ['comparison_only'] } }),
+  ]);
   if (localBlockedBy) {
     return {
       ...common(googleNotRun('skipped_local_block')),
@@ -1967,6 +2050,9 @@ async function scanStaticImage(buffer, options = {}) {
     };
   }
 
+  if (options.tracking?.videoBudget && options.signal?.aborted)
+    return stoppedVideoResult('deadline_exceeded');
+
   const priorGoogleSafeSearch = options.googleSafeSearch;
   const canReuseGoogle = googleConfigured && priorGoogleSafeSearch?.available &&
     priorGoogleSafeSearch.provider === 'google-cloud-vision' &&
@@ -1974,9 +2060,12 @@ async function scanStaticImage(buffer, options = {}) {
   const googleSafeSearch = canReuseGoogle
     ? { ...priorGoogleSafeSearch, reused: true, durationMs: 0 }
     : await scanGoogleSafeSearch(buffer, { tracking: options.tracking });
-  if (canReuseGoogle) await recordProviderCall({ provider: 'cache',
-    operation: 'google_safe_search_reuse', tracking: options.tracking,
-    status: 'completed', cacheHit: true, usageReported: true });
+  if (options.tracking?.videoBudget && videoProviderStop(googleSafeSearch))
+    return stoppedVideoResult(videoProviderStop(googleSafeSearch), undefined,
+      common(googleSafeSearch));
+  if (canReuseGoogle) await recordProviderCheck({ provider: 'cache',
+    operation: 'safe_search', tracking: options.tracking,
+    result: googleSafeSearch, cacheHit: true });
   const localClassification = classification;
   let personVerification = null;
   if (classificationResult.ok && classification) {
@@ -1991,6 +2080,9 @@ async function scanStaticImage(buffer, options = {}) {
     classification = verified.classification;
     personVerification = verified.verification;
   }
+  if (options.tracking?.videoBudget && videoProviderStop(personVerification))
+    return stoppedVideoResult(videoProviderStop(personVerification), undefined,
+      { ...common(googleSafeSearch), personVerification });
   const verificationProviders = personVerification?.providers || {};
   const googleObjects = verificationProviders.googleObjectLocalization || {};
   const googleFaces = verificationProviders.googleFaceDetection || {};
@@ -2029,21 +2121,42 @@ async function scanStaticImage(buffer, options = {}) {
     googleObjectDurationMs: Number(googleObjects.durationMs || 0),
     googleFaceDurationMs: Number(googleFaces.durationMs || 0),
     openAIUsed: verificationProviders.openai?.available === true,
+    geminiPersonUsed: verificationProviders.gemini?.available === true,
     modestyDisagreement: false,
   };
   const verifiedPeople = (classification?.detectedCategories || [])
     .some(category => ['men', 'women', 'children', 'people'].includes(category)) ||
-    ['person_confirmed', 'person_confirmed_by_openai', 'demographics_reviewed_by_openai']
+    ['person_confirmed', 'person_confirmed_by_openai', 'demographics_reviewed_by_openai',
+      'person_confirmed_by_gemini', 'demographics_reviewed_by_gemini']
       .includes(personVerification?.decision);
+  const useOpenAI = openAIModerationEnabled();
+  const requireOpenAI = openAIModerationRequired();
+  // A person fallback already consumed this frame's optional OpenAI attempt.
+  const skippedOpenAI = useOpenAI && !requireOpenAI && verificationProviders.gemini
+    ? { required: false, available: false, status: 'skipped',
+      reasonCode: verificationProviders.openai?.providerSuspended ? 'provider_suspended' : 'fallback_review_used' }
+    : null;
   const [modestyVerification, geminiModestyVerification] = verifiedPeople
     ? await Promise.all([
-      classifyOpenAIModesty(buffer, { tracking: options.tracking }),
+      skippedOpenAI || (useOpenAI ? classifyOpenAIModesty(buffer, { tracking: options.tracking })
+        : disabledModerationProviderResult()),
       classifyGeminiModesty(buffer, { tracking: options.tracking }),
     ])
     : [
-      { required: false, available: true, status: 'not_needed', decision: 'modest' },
+      useOpenAI ? { required: false, available: true, status: 'not_needed', decision: 'modest' }
+        : disabledModerationProviderResult(),
       { required: false, available: true, status: 'not_needed', decision: 'modest' },
     ];
+  if (!useOpenAI || skippedOpenAI && verifiedPeople) await recordProviderCheck({ provider: 'openai', operation: 'modesty',
+    tracking: options.tracking, result: modestyVerification });
+  if (!verifiedPeople) {
+    await Promise.all([
+      ...(useOpenAI ? [recordProviderCheck({ provider: 'openai', operation: 'modesty', tracking: options.tracking,
+        result: { ...modestyVerification, findings: ['no_person_detected'] } })] : []),
+      recordProviderCheck({ provider: 'gemini', operation: 'modesty', tracking: options.tracking,
+        result: { ...geminiModestyVerification, findings: ['no_person_detected'] } }),
+    ]);
+  }
   const finalCommon = {
     ...common(googleSafeSearch),
     personVerification,
@@ -2051,6 +2164,12 @@ async function scanStaticImage(buffer, options = {}) {
     modestyVerification,
     geminiModestyVerification,
   };
+  const requiredModestyReviews = requireOpenAI
+    ? [modestyVerification, geminiModestyVerification] : [geminiModestyVerification];
+  if (options.tracking?.videoBudget &&
+      videoProviderStop(...requiredModestyReviews))
+    return stoppedVideoResult(videoProviderStop(...requiredModestyReviews),
+      undefined, finalCommon);
   const reviewExplanation = () => {
     const describe = (name, review) => {
       if (!review?.available) return `${name}: הבדיקה אינה זמינה`;
@@ -2058,34 +2177,35 @@ async function scanStaticImage(buffer, options = {}) {
         : review.decision === 'non_modest' ? 'לא צנוע' : 'לא ודאי';
       return `${name}: ${decision}${review.reason ? ` — ${review.reason}` : ''}`;
     };
-    return [describe('OpenAI', modestyVerification),
+    return [...(useOpenAI ? [describe('OpenAI', modestyVerification)] : []),
       describe('Gemini', geminiModestyVerification)].join(' · ');
   };
 
-  // A clothing violation requires explicit visible evidence and agreement by
-  // both independent reviewers. A single claim, ambiguity or provider outage
-  // stays pending for another review and can never become an immediate block.
+  // Require actual evidence from every reviewer enabled by this policy.
+  const activeModestyReviews = useOpenAI && (requireOpenAI || modestyVerification.available === true)
+    ? [modestyVerification, geminiModestyVerification] : [geminiModestyVerification];
   const enforceableViolation = review => review?.available &&
     review.decision === 'non_modest' &&
     (review.status === 'safety_blocked' ||
       review.violationClearlyVisible === true && review.confidence >= 0.85);
-  if (verifiedPeople && enforceableViolation(modestyVerification) &&
-      enforceableViolation(geminiModestyVerification)) {
+  if (verifiedPeople && activeModestyReviews.every(enforceableViolation)) {
     return {
       ...finalCommon,
       blocked: true,
-      blockedBy: 'dualModesty',
+      blockedBy: activeModestyReviews.length === 2 ? 'dualModesty' : 'geminiModesty',
       reason: `התמונה נחסמה — ${reviewExplanation()}`,
     };
   }
   const safetyConsensusClean = googleSafeSearch.available === true &&
     googleSafeSearch.blocked !== true && googleSafeSearch.uncertain !== true &&
     localSafety?.available === true && localSafety.wouldBlock !== true;
-  const modestyReviewsDisagree = verifiedPeople &&
+  const modestyReviewsDisagree = useOpenAI && verifiedPeople &&
+    (requireOpenAI || modestyVerification.available === true) &&
     (!modestyVerification.available || !geminiModestyVerification.available ||
       modestyVerification.decision !== 'modest' ||
       geminiModestyVerification.decision !== 'modest');
-  if (modestyReviewsDisagree && safetyConsensusClean &&
+  if (modestyReviewsDisagree && (requireOpenAI || geminiModestyVerification.available === true &&
+      geminiModestyVerification.decision === 'modest') && safetyConsensusClean &&
       classification?.category && classification.uncertain !== true) {
     classificationStats.modestyDisagreement = true;
     return {
@@ -2101,20 +2221,23 @@ async function scanStaticImage(buffer, options = {}) {
       reason: `התמונה אושרה לאחר מחלוקת מסווגי צניעות; בדיקות הבטיחות נקיות · ${reviewExplanation()}`,
     };
   }
-  if (verifiedPeople && [modestyVerification, geminiModestyVerification]
+  if (verifiedPeople && activeModestyReviews
     .some(review => !review.available)) {
     return {
       ...finalCommon,
       pending: true,
-      reason: 'אחת מבדיקות הצניעות אינה זמינה כרגע — הסריקה תתבצע שוב',
+      reason: useOpenAI ? 'אחת מבדיקות הצניעות אינה זמינה כרגע — הסריקה תתבצע שוב'
+        : 'בדיקת הצניעות של Gemini אינה זמינה כרגע',
     };
   }
-  if (verifiedPeople && [modestyVerification, geminiModestyVerification]
+  if (verifiedPeople && activeModestyReviews
     .some(review => review.decision !== 'modest')) {
     return {
       ...finalCommon,
       pending: true,
-      reason: `בדיקות הצניעות אינן מסכימות או שאין ראיה חזותית ברורה — תתבצע בדיקה נוספת · ${reviewExplanation()}`,
+      reason: useOpenAI
+        ? `בדיקות הצניעות אינן מסכימות או שאין ראיה חזותית ברורה — תתבצע בדיקה נוספת · ${reviewExplanation()}`
+        : `בדיקת הצניעות של Gemini אינה ודאית או שאין ראיה חזותית ברורה · ${reviewExplanation()}`,
     };
   }
 
@@ -2150,7 +2273,7 @@ async function scanStaticImage(buffer, options = {}) {
   // quota/auth error or incomplete response can never approve an image; the
   // retry queue will run the scan again. Available results are
   // reused on retry so a separate local uncertainty does not create charges.
-  if (googleSafeSearch.configured && !googleSafeSearch.available) {
+  if ((googleSafeSearch.configured || !requireOpenAI) && !googleSafeSearch.available) {
     return {
       ...finalCommon,
       pending: true,
@@ -2163,7 +2286,7 @@ async function scanStaticImage(buffer, options = {}) {
 
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
-const MODERATION_CACHE_VERSION = '2026-09-22-verified-video-frames-15';
+const MODERATION_CACHE_VERSION = `2026-09-27-visible-clothing-17:${moderationProviderPolicy()}`;
 
 async function scanImage(buffer, options = {}) {
   // Recognize exact library bytes before invoking any content-analysis provider.
@@ -2211,7 +2334,7 @@ async function scanImage(buffer, options = {}) {
         error: error.message,
       };
     }
-    const result = await scanStaticImage(frame);
+    const result = await scanStaticImage(frame, options);
     frameResults.push(result);
     if (result.blocked) return {
       ...result,
@@ -2236,11 +2359,16 @@ async function scanImage(buffer, options = {}) {
   };
 }
 
-async function scanDocument(buffer, mimetype) {
-  return scanDocumentContent(buffer, mimetype, {
-    scanImage,
-    blockedWords: BLOCKED_WORDS,
-  });
+async function scanDocument(buffer, mimetype, options = {}) {
+  let result;
+  try {
+    result = await scanDocumentContent(buffer, mimetype, {
+      scanImage: bytes => scanImage(bytes, options), blockedWords: BLOCKED_WORDS });
+    return result;
+  } finally {
+    await recordProviderCheck({ provider: 'local', operation: 'document_content',
+      tracking: options.tracking, result: result || { available: false } });
+  }
 }
 
 const mailer = nodemailer.createTransport({
@@ -2366,6 +2494,7 @@ async function migrateDatabase() {
       )`);
 
     // ── Users – new columns ────────────────────────────────────────
+    await pool.query(SHORT_USER_ID_SCHEMA);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -2769,6 +2898,7 @@ async function migrateDatabase() {
       )`);
     await pool.query(`ALTER TABLE message_requests
       DROP CONSTRAINT IF EXISTS message_requests_sender_id_recipient_id_key`);
+    await pool.query(REQUEST_SCHEMA);
     // A contact request to the same account is never meaningful. Clean up any
     // legacy rows and enforce this invariant at the database boundary too.
     await pool.query('DELETE FROM message_requests WHERE sender_id=recipient_id');
@@ -2826,6 +2956,17 @@ async function migrateDatabase() {
       result JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+
+    await pool.query(`CREATE TABLE IF NOT EXISTS private_message_sends (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      client_message_id TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY(user_id,client_message_id)
+    )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS private_message_sends_result_idx
+      ON private_message_sends(user_id,(result->>'id'))`);
 
     // ── Open issues confirmed by users through Israel ────────────
     await pool.query(`
@@ -3583,10 +3724,10 @@ async function createSystemExchange(pool, userId, question, file = null,
     assistantId = SYSTEM_USER_ID) {
   const safeQuestion = redactHarmfulLanguageForDisplay(question);
   const sent = await pool.query(
-    `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name)
-     VALUES($1,$2,$3,$4,$5,$6) RETURNING id,created_at`,
+    `INSERT INTO messages(sender_id,recipient_id,type,body,file_url,file_name,audit_operation_id,audit_parent_event_id)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,created_at`,
     [userId, assistantId, file?.type || 'text', safeQuestion,
-     file?.url || null, file?.name || null]);
+     file?.url || null, file?.name || null, ...auditIds()]);
   const generated = assistantId === SAFE_INFORMATION_USER_ID
       ? await generateSafeInformationSystemAnswer(pool, userId, question)
       : await generateSystemAnswer(pool, userId, question, sent.rows[0].id);
@@ -3601,16 +3742,16 @@ async function createSystemExchange(pool, userId, question, file = null,
       console.error('guide spreadsheet:', error.code || error.name);
       const answer = error.name === 'SpreadsheetValidationError' ? error.message
         : 'לא ניתן ליצור ולשמור את קובץ ה־Excel כרגע. נסה שוב בעוד רגע.';
-      const reply = await pool.query(`INSERT INTO messages(sender_id,recipient_id,type,body)
-        VALUES($1,$2,'text',$3) RETURNING id,created_at`, [assistantId, userId, answer]);
+      const reply = await pool.query(`INSERT INTO messages(sender_id,recipient_id,type,body,audit_operation_id,audit_parent_event_id)
+        VALUES($1,$2,'text',$3,$4,$5) RETURNING id,created_at`, [assistantId, userId, answer, ...auditIds()]);
       return { sent: sent.rows[0], reply: reply.rows[0], answer };
     }
   }
   const answer = redactHarmfulLanguageForDisplay(generated);
   const reply = await pool.query(
-    `INSERT INTO messages(sender_id,recipient_id,type,body)
-     VALUES($1,$2,'text',$3) RETURNING id,created_at`,
-    [assistantId, userId, answer]);
+    `INSERT INTO messages(sender_id,recipient_id,type,body,audit_operation_id,audit_parent_event_id)
+     VALUES($1,$2,'text',$3,$4,$5) RETURNING id,created_at`,
+    [assistantId, userId, answer, ...auditIds()]);
   return { sent: sent.rows[0], reply: reply.rows[0], answer };
 }
 
@@ -3622,6 +3763,8 @@ async function logActivity(userId, action, details = {}, ip = null) {
       `INSERT INTO activity_log (user_id, action, details, ip) VALUES ($1, $2, $3, $4)`,
       [userId || null, action, JSON.stringify(details), ip || null]);
   } catch (_) {}
+  try { await mirrorActivity(await getPool(), userId, action, details); }
+  catch (error) { console.error('[system-audit:activity]', error.code || 'write_failed'); }
 }
 
 const allowedOrigins = new Set((process.env.CORS_ORIGINS ||
@@ -3703,12 +3846,15 @@ const serveReleasedDriveMedia = async (req, res, next) => {
     const fileState = moderation.rows[0];
     const destinationFilterRejected =
       fileState?.moderation_details?.destinationFilterRejected === true;
-    if (fileState?.moderation_status === 'pending' ||
+    if (fileState?.moderation_status === 'stopped' ||
+        fileState?.moderation_status === 'pending' ||
         (fileState?.moderation_status === 'rejected' &&
           !destinationFilterRejected)) {
       res.set('Cache-Control', 'private, no-store');
       return res.status(423).json({
-        error: fileState.moderation_status === 'pending'
+        error: fileState.moderation_status === 'stopped'
+          ? 'סריקת הקובץ נעצרה והוא אינו זמין לפתיחה או להורדה'
+          : fileState.moderation_status === 'pending'
           ? 'הקובץ עדיין בבדיקה ואינו זמין לפתיחה או להורדה'
           : 'הקובץ נחסם ואינו זמין לפתיחה או להורדה',
       });
@@ -3939,6 +4085,8 @@ async function teenContactAllowed(pool, firstId, secondId) {
   return mutual.rows.length > 0;
 }
 
+const requestAudit = createRequestAudit({ getPool });
+
 async function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
@@ -3962,7 +4110,7 @@ async function auth(req, res, next) {
       return res.status(403).json({ error: 'יש להשלים אימות טלפון או אימייל', code: 'VERIFICATION_REQUIRED' });
     req.user.birthDate = result.rows[0].birth_date;
     req.user.isTeen = result.rows[0].is_teen === true;
-    next();
+    return requestAudit(req, res, next);
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין — נא להתחבר מחדש' });
   }
@@ -4069,7 +4217,7 @@ async function authWithDbCheck(req, res, next) {
       return res.status(403).json({ error: 'יש להשלים אימות טלפון או אימייל', code: 'VERIFICATION_REQUIRED' });
     req.user.birthDate = exists.rows[0].birth_date;
     req.user.isTeen = exists.rows[0].is_teen === true;
-    next();
+    return requestAudit(req, res, next);
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין' });
   }
@@ -4405,22 +4553,25 @@ io.on('connection', async (socket) => {
     for (const { group_id } of grps.rows) socket.join(`group:${group_id}`);
   } catch (_) {}
 
-  socket.on('chat:message', async ({ toUserId, text, replyToId, fileUrl, fileName, fileType, stickerId }) => {
+  socket.on('chat:message', auditedSocketHandler({ getPool, userId: socket.user.id,
+    action: 'send_message', onError: code => socket.emit('message:rejected', { code }),
+    accept: payload => payload?.toUserId && (payload.text || payload.fileUrl || payload.stickerId) &&
+      allowSocketEvent(socket, 'message', 120, 60 * 1000) },
+  async ({ toUserId, text, replyToId, fileUrl, fileName, fileType, stickerId }) => {
     const requestedSticker = stickerId != null;
     const normalizedStickerId = normalizeBuiltinStickerId(stickerId);
     if (requestedSticker && !normalizedStickerId) {
-      socket.emit('message:rejected', { toUserId, reason: 'המדבקה אינה מוכרת' });
+      await emitDispatchRejection(getPool,socket, { toUserId, reason: 'המדבקה אינה מוכרת' });
       return;
     }
     if (normalizedStickerId) text = normalizedStickerId;
     if (!toUserId || (!text && !fileUrl)) return;
-    if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
     if (![SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(toUserId) &&
         !normalizedStickerId && text &&
         moderateChatText(text).blocked) {
       recordBlockedChat(socket.user.id, 'private_socket', text, toUserId,
         socket.handshake.address);
-      socket.emit('message:rejected', { toUserId,
+      await emitDispatchRejection(getPool,socket, { toUserId,
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
         code: 'CHAT_CONTENT_BLOCKED' });
       return;
@@ -4428,7 +4579,7 @@ io.on('connection', async (socket) => {
     if (text && !normalizedStickerId) {
       try { await verifyMessageLinks(text); } catch (error) {
         console.warn('Blocked private link:', error.message);
-        socket.emit('message:rejected', { toUserId, reason: LINK_BLOCKED_MESSAGE });
+        await emitDispatchRejection(getPool,socket, { toUserId, reason: LINK_BLOCKED_MESSAGE });
         return;
       }
     }
@@ -4441,7 +4592,7 @@ io.on('connection', async (socket) => {
         catch (error) {
           if (error.code === 'SENDER_CONTENT_FILTERED')
             await notifyRejectedSend(pool, { userId: socket.user.id, toUserId, fileUrl, error });
-          socket.emit('message:rejected', { toUserId, reason: error.message }); return;
+          await emitDispatchRejection(getPool,socket, { toUserId, reason: error.message }); return;
         }
         const exchange = await createSystemExchange(
           pool, socket.user.id, input.question, input.file, toUserId);
@@ -4457,15 +4608,20 @@ io.on('connection', async (socket) => {
         return;
       }
       if (!await teenContactAllowed(pool, socket.user.id, toUserId)) {
-        socket.emit('message:rejected', { toUserId,
+        await emitDispatchRejection(getPool,socket, { toUserId,
           reason: 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים' });
         return;
       }
       // Check if blocked
       const blocked = await pool.query(
         'SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [toUserId, socket.user.id]);
-      if (blocked.rows.length) return;
-      const msgType = (() => {
+      if (blocked.rows.length) {
+        await emitDispatchRejection(getPool, socket, { toUserId, reason: 'נחסמת על ידי הנמען', code: 'RECIPIENT_BLOCKED_SENDER' });
+        return;
+      }
+      const storedType = fileUrl ? (await pool.query(
+        'SELECT file_type FROM stored_files WHERE public_url=$1', [fileUrl])).rows[0]?.file_type : null;
+      const msgType = storedType || (() => {
         if (normalizedStickerId) return 'sticker';
         if (fileType && fileType !== 'text') return fileType;
         if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
@@ -4474,9 +4630,9 @@ io.on('connection', async (socket) => {
       })();
       const classification = fileUrl
         ? await getStoredImageClassification(pool, fileUrl) : null;
-      const recipientPolicy = await getEffectiveRecipientFilter(
+      let recipientPolicy = await getEffectiveRecipientFilter(
         pool, toUserId, socket.user.id);
-      if (!contentAllowedByFilter(
+      if (recipientPolicy?.isContact && !contentAllowedByFilter(
           recipientPolicy?.filter, msgType === 'sticker' ? 'text' : msgType, classification)) {
         await recordFilterDecision(pool, { userId: toUserId, actorId: socket.user.id,
           scopeType: 'contact', scopeId: socket.user.id, messageType: msgType,
@@ -4484,60 +4640,51 @@ io.on('connection', async (socket) => {
           source: 'direct_socket_send' });
         await notifyDestinationFilterBlock(pool, { userId: socket.user.id, toUserId,
           fileUrl, filter: recipientPolicy?.filter });
-        socket.emit('message:rejected', { toUserId,
+        await emitDispatchRejection(getPool,socket, { toUserId,
           reason: 'סוג התוכן חסום בהגדרות הנמען' });
         return;
       }
       if (fileUrl && !await validateApprovedFile(
           pool, socket.user.id, fileUrl, 'chat', toUserId)) {
-        socket.emit('message:rejected', { toUserId,
+        await emitDispatchRejection(getPool,socket, { toUserId,
           reason: 'הקובץ לא עבר סריקה ואישור עבור נמען זה' });
         return;
       }
-      const accepted = await pool.query(
-        `SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2
-         UNION ALL
-         SELECT 1 FROM messages
-         WHERE ((sender_id=$1 AND recipient_id=$2)
-             OR (sender_id=$2 AND recipient_id=$1))
-           AND group_id IS NULL AND deleted_for_everyone=FALSE
-         LIMIT 1`, [toUserId, socket.user.id]);
-      if (String(toUserId) !== String(socket.user.id) && !accepted.rows.length) {
-        if (msgType !== 'text' || fileUrl) {
-          socket.emit('message:rejected', { toUserId, reason: 'מי שאינו חבר יכול לשלוח בקשת טקסט בלבד' });
+      if (!recipientPolicy?.isContact) {
+        const request = await queueContactRequest(pool, {
+          senderId: socket.user.id, recipientId: toUserId, body: text, type: msgType,
+          fileUrl, fileName, operationId: auditIds()[0], parentEventId: auditIds()[1],
+        });
+        if (request) {
+          relay(toUserId, 'message:request', { id: request.id, senderId: socket.user.id,
+            senderName: socket.user.name, createdAt: request.created_at });
+          sendPush(toUserId, 'בקשת חברות חדשה', `${socket.user.name} רוצה לשלוח לך תוכן`,
+            { type: 'message_request', senderId: socket.user.id });
+          socket.emit('message:request-pending', { toUserId, fileUrl, id: request.id });
           return;
         }
-        const request = await pool.query(
-          `INSERT INTO message_requests
-           (sender_id, recipient_id, body, type, file_url, file_name)
-           VALUES ($1,$2,$3,$4,$5,$6)
-           RETURNING id, created_at`,
-          [socket.user.id, toUserId, text || null, msgType,
-           fileUrl || null, fileName || null]);
-        relay(toUserId, 'message:request', {
-          id: request.rows[0].id, senderId: socket.user.id,
-          senderName: socket.user.name,
-          createdAt: request.rows[0].created_at,
-        });
-        sendPush(toUserId, 'בקשת הודעה חדשה',
-          `${socket.user.name} רוצה לשלוח לך הודעה`,
-          { type: 'message_request', senderId: socket.user.id });
-        socket.emit('message:request-pending', { toUserId });
-        return;
+        // The recipient may have approved while this send was being queued.
+        recipientPolicy = await getEffectiveRecipientFilter(pool, toUserId, socket.user.id);
+        if (!contentAllowedByFilter(recipientPolicy?.filter, msgType, classification)) {
+          await emitDispatchRejection(getPool, socket, { toUserId,
+            reason: shortFilterReason({ filter: recipientPolicy?.filter, fileType: msgType, classification }),
+            code: 'RECIPIENT_CONTENT_FILTERED' });
+          return;
+        }
       }
       if ((msgType === 'text' || msgType === 'sticker') && !fileUrl) {
         const policy = await getEffectiveRecipientFilter(pool, toUserId, socket.user.id);
         if (policy && !policy.filter.text) {
-          socket.emit('message:rejected', { toUserId, reason: 'הודעות טקסט חסומות בהגדרות הנמען' });
+          await emitDispatchRejection(getPool,socket, { toUserId, reason: 'הודעות טקסט חסומות בהגדרות הנמען' });
           return;
         }
       }
       const saved = await writeSenderFilteredMedia(pool, { userId: socket.user.id, fileUrl,
       contextType: 'chat', contextId: toUserId }, client => client.query(
-        `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id, created_at`,
-        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]));
+        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds()]));
       const row = saved.rows[0];
       await pool.query(
         `INSERT INTO message_status (message_id, user_id, status)
@@ -4570,13 +4717,15 @@ io.on('connection', async (socket) => {
       console.error('chat:message save:', e.message);
       if (e.code === 'SENDER_CONTENT_FILTERED') {
         await notifyRejectedSend(await getPool(), { userId: socket.user.id, toUserId, fileUrl, error: e });
-        socket.emit('message:rejected', { toUserId, fileUrl, code: e.code,
+        await emitDispatchRejection(getPool,socket, { toUserId, fileUrl, code: e.code,
           blockedBy: 'sender_filter', reason: e.message });
         return;
       }
-      relay(toUserId, 'chat:message', { fromUserId: socket.user.id, fromName: socket.user.name, text });
+      await emitDispatchRejection(getPool, socket, { toUserId, fileUrl,
+        reason: e.status ? e.message : 'השליחה לא הושלמה. ניתן לנסות שוב',
+        code: e.code || 'SEND_FAILED' });
     }
-  });
+  }));
 
   socket.on('chat:typing', ({ toUserId }) => {
     if (!allowSocketEvent(socket, 'typing', 180, 60 * 1000)) return;
@@ -4584,25 +4733,28 @@ io.on('connection', async (socket) => {
   });
 
   // ── Group messaging ──────────────────────────────────────────────
-  socket.on('group:message', async ({ groupId, text, replyToId, fileUrl, fileName, fileType, clientMessageId, stickerId }) => {
+  socket.on('group:message', auditedSocketHandler({ getPool, userId: socket.user.id,
+    action: 'send_group_message', onError: code => socket.emit('message:rejected', { code }),
+    accept: payload => payload?.groupId && (payload.text || payload.fileUrl || payload.stickerId) &&
+      allowSocketEvent(socket, 'message', 120, 60 * 1000) },
+  async ({ groupId, text, replyToId, fileUrl, fileName, fileType, clientMessageId, stickerId }) => {
     const requestedSticker = stickerId != null;
     const normalizedStickerId = normalizeBuiltinStickerId(stickerId);
     if (requestedSticker && !normalizedStickerId) {
-      socket.emit('message:rejected', { groupId, clientMessageId, reason: 'המדבקה אינה מוכרת' });
+      await emitDispatchRejection(getPool,socket, { groupId, clientMessageId, reason: 'המדבקה אינה מוכרת' });
       return;
     }
     if (normalizedStickerId) text = normalizedStickerId;
     if ((!text && !fileUrl) || !groupId) return;
     if (socket.user.isTeen) {
-      socket.emit('message:rejected', { groupId, clientMessageId,
+      await emitDispatchRejection(getPool,socket, { groupId, clientMessageId,
         reason: 'קבוצות אינן זמינות בחשבון נוער' });
       return;
     }
-    if (!allowSocketEvent(socket, 'message', 120, 60 * 1000)) return;
     if (!normalizedStickerId && text && moderateChatText(text).blocked) {
       recordBlockedChat(socket.user.id, 'group_socket', text, groupId,
         socket.handshake.address);
-      socket.emit('message:rejected', { groupId, clientMessageId,
+      await emitDispatchRejection(getPool,socket, { groupId, clientMessageId,
         reason: 'ההודעה נחסמה משום שהיא כוללת תוכן פוגעני או אסור',
         code: 'CHAT_CONTENT_BLOCKED' });
       return;
@@ -4610,7 +4762,7 @@ io.on('connection', async (socket) => {
     if (text && !normalizedStickerId) {
       try { await verifyMessageLinks(text); } catch (error) {
         console.warn('Blocked group link:', error.message);
-        socket.emit('message:rejected', { groupId, clientMessageId,
+        await emitDispatchRejection(getPool,socket, { groupId, clientMessageId,
           reason: LINK_BLOCKED_MESSAGE });
         return;
       }
@@ -4626,13 +4778,15 @@ io.on('connection', async (socket) => {
          WHERE gm.group_id = $1 AND gm.user_id = $2 AND gm.status='member'`,
         [groupId, socket.user.id]);
       const member = mem.rows[0];
-      if (!member) return;
-      if (member.send_permission === 'admin' && member.role !== 'admin') return;
+      if (!member) { await emitDispatchRejection(getPool,socket,{groupId,code:'NOT_GROUP_MEMBER',reason:'השולח אינו חבר בקבוצה'});return; }
+      if (member.send_permission === 'admin' && member.role !== 'admin') { await emitDispatchRejection(getPool,socket,{groupId,code:'GROUP_ADMIN_ONLY',reason:'רק מנהלי הקבוצה רשאים לשלוח הודעות'});return; }
 
-      const msgType = normalizedStickerId ? 'sticker' : fileType && fileType !== 'text'
+      const storedType = fileUrl ? (await pool.query(
+        'SELECT file_type FROM stored_files WHERE public_url=$1', [fileUrl])).rows[0]?.file_type : null;
+      const msgType = storedType || (normalizedStickerId ? 'sticker' : fileType && fileType !== 'text'
         ? fileType
         : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) ? 'image'
-          : fileUrl ? 'document' : 'text');
+          : fileUrl ? 'document' : 'text'));
 
       const classification = fileUrl
         ? await getStoredImageClassification(pool, fileUrl) : null;
@@ -4645,24 +4799,24 @@ io.on('connection', async (socket) => {
           source: 'group_socket_send' });
         await notifyDestinationFilterBlock(pool, { userId: socket.user.id, groupId,
           fileUrl, filter: effectiveGroupFilter });
-        socket.emit('message:rejected', { groupId, clientMessageId,
+        await emitDispatchRejection(getPool,socket, { groupId, clientMessageId,
           reason: 'סוג התוכן חסום בהגדרות הסינון של הקבוצה' });
         return;
       }
 
       if (fileUrl && !await validateApprovedFile(
           pool, socket.user.id, fileUrl, 'group', groupId)) {
-        socket.emit('message:rejected', { groupId,
+        await emitDispatchRejection(getPool,socket, { groupId,
           reason: 'הקובץ לא עבר סריקה ואישור עבור קבוצה זו' });
         return;
       }
 
       const saved = await writeSenderFilteredMedia(pool, { userId: socket.user.id, fileUrl,
       contextType: 'group', contextId: groupId }, client => client.query(
-        `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id, created_at`,
-        [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null]));
+        [socket.user.id, groupId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds()]));
       const row = saved.rows[0];
       const deliveryPlan = await buildGroupDeliveryPlan(
         pool, groupId, socket.user.id, msgType, classification,
@@ -4706,11 +4860,11 @@ io.on('connection', async (socket) => {
       console.error('group:message:', e.message);
       if (e.code === 'SENDER_CONTENT_FILTERED') {
         await notifyRejectedSend(await getPool(), { userId: socket.user.id, groupId, fileUrl, error: e });
-        socket.emit('message:rejected', {
+        await emitDispatchRejection(getPool,socket, {
           groupId, clientMessageId, fileUrl, code: e.code, blockedBy: 'sender_filter', reason: e.message });
       }
     }
-  });
+  }));
 
   socket.on('group:typing', ({ groupId }) => {
     if (socket.user.isTeen) return;
@@ -4895,7 +5049,7 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
     const result = await pool.query(
       `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter, email_verified, phone_verified)
        VALUES ($1, $2, $3, $4, now(), '2026-08-23', TRUE, $5, $6, $7, $8, $9)
-       RETURNING id, name, email`,
+       RETURNING id, short_id, name, email`,
       [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender,
        agePolicy.birthDate, JSON.stringify(registrationFilter), verifyByEmail, verifyByPhone]);
     const user = result.rows[0];
@@ -5226,7 +5380,10 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
         AND ${messageAfterConversationClear('m', 'u.id')}
         ORDER BY m.created_at DESC LIMIT 1
       ) last_msg ON TRUE WHERE u.id=$1`, [req.user.id]);
-    const contacts = await projectContactPhones(pool, req.user.id, result.rows);
+    const contacts = await projectContactPhones(pool, req.user.id, result.rows.map(user =>
+      isUnfilteredAssistantConversation(req.user.id, user.id)
+        ? { ...user, receiving_filter: { ...DEFAULT_CONTENT_FILTER },
+          filter_override: { ...DEFAULT_CONTENT_FILTER } } : user));
     res.set('Cache-Control', 'no-store');
     res.json(await projectProfileImages(pool, req.user.id,
       [...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...contacts]));
@@ -5409,6 +5566,13 @@ app.get('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
        WHERE c.owner_id=$1 AND c.contact_id=$2`,
       [req.user.id, req.params.userId]);
     if (!result.rows.length) return res.status(404).json({ error: 'איש הקשר לא נמצא' });
+    if (isUnfilteredAssistantConversation(req.user.id, req.params.userId)) {
+      res.set('Cache-Control', 'no-store');
+      return res.json({ inherited: false, filter: { ...DEFAULT_CONTENT_FILTER },
+        generalFilter: normalizeContentFilter(result.rows[0].owner_filter),
+        enforceGeneralFilter: false, requiresChoice: false, filteringDisabled: true,
+        phoneSharing: await getPhoneSharingStatus(pool, req.user.id, req.params.userId) });
+    }
     const inherited = normalizeContentFilter(result.rows[0].owner_filter);
     const override = result.rows[0].filter_override;
     res.set('Cache-Control', 'no-store');
@@ -5458,10 +5622,11 @@ app.get('/api/contacts/:userId/filter-comparison', authWithDbCheck, async (req, 
            WHERE reciprocal.owner_id=$2 AND reciprocal.contact_id=$1
          ) AND NOT EXISTS(
            SELECT 1 FROM message_requests pending
-           WHERE pending.sender_id=$1 AND pending.recipient_id=$2
+           WHERE pending.status='pending' AND pending.sender_id=$1 AND pending.recipient_id=$2
          ) AS counterpart_filter_available`,
       [req.user.id, req.params.userId]);
     const counterpartFilterAvailable =
+      isUnfilteredAssistantConversation(req.user.id, req.params.userId) ||
       relationship.rows[0]?.counterpart_filter_available === true;
     const recipient = counterpartFilterAvailable
       ? await getEffectiveRecipientFilter(pool, req.params.userId, req.user.id)
@@ -5472,8 +5637,10 @@ app.get('/api/contacts/:userId/filter-comparison', authWithDbCheck, async (req, 
     res.json({
       counterpartFilterAvailable,
       recipientFilter: recipient?.filter || null,
-      personalFilter: resolveScopedContentFilter(
-        own.rows[0].owner_filter, own.rows[0].filter_override),
+      personalFilter: isUnfilteredAssistantConversation(req.user.id, req.params.userId)
+        ? { ...DEFAULT_CONTENT_FILTER } : resolveScopedContentFilter(
+          own.rows[0].owner_filter, own.rows[0].filter_override),
+      filteringDisabled: isUnfilteredAssistantConversation(req.user.id, req.params.userId),
       phoneSharing: await getPhoneSharingStatus(pool, req.user.id, req.params.userId),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -5489,6 +5656,15 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     const exists = await client.query('SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
       [req.user.id, req.params.userId]);
     if (!exists.rows.length) throw Object.assign(new Error('איש הקשר לא נמצא'), { status: 404 });
+    if (isUnfilteredAssistantConversation(req.user.id, req.params.userId)) {
+      const phoneSharing = await applyPhoneSharingChoices(client, req.user.id,
+        req.params.userId, phoneSharingChoices(req.body));
+      await client.query('COMMIT');
+      notifyPhoneSharingChange(io, onlineUsers, req.user.id, req.params.userId, phoneSharing);
+      res.set('Cache-Control', 'no-store');
+      return res.json({ inherited: false, filter: { ...DEFAULT_CONTENT_FILTER },
+        requiresChoice: false, filteringDisabled: true, phoneSharing });
+    }
     const requested = req.body?.inherit === true ? null : normalizeContentFilter(req.body?.filter || req.body);
     const history = await prepareFilterHistoryChange(client, req.user.id,
       { kind: 'contact', id: req.params.userId }, requested, req.body?.existingMediaAction);
@@ -5714,6 +5890,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
     const result = await pool.query(`
       SELECT
         m.id, m.sender_id, m.recipient_id, m.type,
+        receipt.client_message_id,
         m.body, m.file_url, m.file_name, m.file_size,
         m.reply_to_id, m.created_at,
         (m.delivery_summary->'guideFilterNotice'->>'key') IS NOT NULL AS _guide_filter_notice,
@@ -5730,6 +5907,8 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.moderation_status AS audio_moderation_status,
         sf.moderation_details AS _moderation_details
       FROM messages m
+      LEFT JOIN private_message_sends receipt ON receipt.user_id=m.sender_id
+        AND receipt.result->>'id'=m.id::text
       LEFT JOIN messages r ON m.reply_to_id=r.id AND r.deleted_for_everyone=FALSE
         AND NOT EXISTS (SELECT 1 FROM message_user_deletions d WHERE d.message_id=r.id AND d.user_id=$1)
         AND ${messageAfterConversationClear('r', '$1')}
@@ -5770,6 +5949,8 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.file_size,
         sf.created_at,
         sf.moderation_status = 'rejected' AS scan_rejected,
+        sf.moderation_status = 'stopped' AS scan_stopped,
+        sf.moderation_details->'budget' AS scan_budget,
         sf.moderation_details->>'destinationFilterRejected'='true'
           AS forward_allowed,
         sf.moderation_details->>'reason' AS scan_reason,
@@ -5784,7 +5965,8 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
           THEN '/betshuva-app/api/blocked-media/' || sf.id::text
         END AS blocked_preview_url,
         sf.moderation_details AS _moderation_details,
-        CASE WHEN sf.moderation_status='rejected'
+        CASE WHEN sf.moderation_status='stopped' THEN 'stopped_scan'
+             WHEN sf.moderation_status='rejected'
                OR sf.moderation_details->>'destinationFilterRejected'='true'
           THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status
       FROM stored_files sf
@@ -5793,7 +5975,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
           WHERE cs.user_id=$1 AND cs.kind='chat' AND cs.target_id=$2
             AND sf.created_at<=cs.cleared_at)
-        AND (sf.moderation_status IN ('pending','rejected')
+        AND (sf.moderation_status IN ('pending','rejected','stopped')
           OR (sf.moderation_status='approved'
             AND sf.moderation_details->>'destinationFilterRejected'='true'))
         ${before ? 'AND sf.created_at < $3' : ''}
@@ -5803,6 +5985,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
     const contactRequests = await pool.query(`
       SELECT
         'request_' || mr.id::text AS id,
+        receipt.client_message_id,
         mr.sender_id,
         mr.recipient_id,
         mr.type,
@@ -5812,8 +5995,12 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.file_size,
         mr.created_at,
         sf.moderation_details->'classification' AS image_classification,
-        'awaiting_contact_approval' AS message_status
+        CASE WHEN mr.status='rejected' THEN 'rejected_request'
+          ELSE 'awaiting_contact_approval' END AS message_status,
+        mr.rejection_reason AS scan_reason, mr.rejection_code AS rejection_code
       FROM message_requests mr
+      LEFT JOIN private_message_sends receipt ON receipt.user_id=mr.sender_id
+        AND receipt.result->>'id'=mr.id::text
       LEFT JOIN stored_files sf ON sf.public_url=mr.file_url
       WHERE mr.sender_id=$1 AND mr.recipient_id=$2
         AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
@@ -5852,7 +6039,8 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       ...personalMessages,
       ...await projectOwnScans(pool, myId, scans.rows, { contextType: 'chat', contextId: otherId }),
       ...await projectOwnScans(pool, myId, contactRequests.rows, { contextType: 'chat', contextId: otherId }),
-      ...privateFilters.rows,
+      ...privateFilters.rows.map(row => isUnfilteredAssistantConversation(myId, otherId)
+        ? { ...row, private_filter: { ...DEFAULT_CONTENT_FILTER } } : row),
     ]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       .slice(-50)
@@ -5938,7 +6126,9 @@ async function sendPrivateHttpMessage(req, res) {
       'SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2', [toUserId, senderId]);
     if (blocked.rows.length) return res.status(403).json({ error: 'נחסמת על ידי הנמען' });
 
-    const type = (() => {
+    const storedType = fileUrl ? (await pool.query(
+      'SELECT file_type FROM stored_files WHERE public_url=$1', [fileUrl])).rows[0]?.file_type : null;
+    const type = storedType || (() => {
       if (normalizedStickerId) return 'sticker';
       if (fileType && fileType !== 'text') return fileType;
       if (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)) return 'image';
@@ -5947,9 +6137,9 @@ async function sendPrivateHttpMessage(req, res) {
     })();
     const classification = fileUrl
       ? await getStoredImageClassification(pool, fileUrl) : null;
-    const recipientPolicy = await getEffectiveRecipientFilter(
+    let recipientPolicy = await getEffectiveRecipientFilter(
       pool, toUserId, senderId);
-    if (!contentAllowedByFilter(recipientPolicy?.filter,
+    if (recipientPolicy?.isContact && !contentAllowedByFilter(recipientPolicy?.filter,
         type === 'sticker' ? 'text' : type, classification)) {
       await recordFilterDecision(pool, { userId: toUserId, actorId: senderId,
         scopeType: 'contact', scopeId: senderId, messageType: type, classification,
@@ -5966,39 +6156,23 @@ async function sendPrivateHttpMessage(req, res) {
       return res.status(403).json({ error: 'הקובץ לא עבר סריקה ואישור עבור נמען זה' });
     }
 
-    const marketplaceInquiry = listingId ? await pool.query(
-      `SELECT 1 FROM listings
-       WHERE id=$1 AND user_id=$2 AND status='active' AND expires_at>now()`,
-      [listingId, toUserId]) : { rows: [] };
-    const accepted = await pool.query(
-      `SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2
-       UNION ALL
-       SELECT 1 FROM messages
-       WHERE ((sender_id=$1 AND recipient_id=$2)
-           OR (sender_id=$2 AND recipient_id=$1))
-         AND group_id IS NULL AND deleted_for_everyone=FALSE
-       LIMIT 1`, [toUserId, senderId]);
-    if (String(toUserId) !== String(senderId) && !accepted.rows.length && !marketplaceInquiry.rows.length) {
-      const request = await pool.query(
-        `INSERT INTO message_requests
-           (sender_id, recipient_id, body, type, file_url, file_name)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         RETURNING id, created_at`,
-        [senderId, toUserId, text || null, type, fileUrl || null, fileName || null]);
-      const requestRow = request.rows[0];
-      const sid = onlineUsers.get(toUserId);
-      if (sid) effect(() => io.to(sid).emit('message:request', {
-        id: requestRow.id, senderId, senderName: req.user.name,
-        createdAt: requestRow.created_at,
-      }));
-      effect(() => sendPush(toUserId, 'בקשת חברות חדשה',
-        fileUrl
-          ? `${req.user.name} רוצה להוסיף אותך כחבר ולשלוח לך קובץ`
-          : `${req.user.name} רוצה להוסיף אותך כחבר ולשלוח לך הודעה`,
-        { type: 'message_request', senderId }));
-      return res.json({ requestPending: true, id: requestRow.id });
+    if (!recipientPolicy?.isContact) {
+      const request = await queueContactRequest(pool, {
+        senderId, recipientId: toUserId, body: text, type, fileUrl, fileName,
+        operationId: auditIds()[0], parentEventId: auditIds()[1],
+      });
+      if (request) {
+        effect(() => relay(toUserId, 'message:request', { id: request.id, senderId,
+          senderName: req.user.name, createdAt: request.created_at }));
+        effect(() => sendPush(toUserId, 'בקשת חברות חדשה',
+          `${req.user.name} רוצה לשלוח לך תוכן`, { type: 'message_request', senderId }));
+        return res.json({ requestPending: true, id: request.id });
+      }
+      recipientPolicy = await getEffectiveRecipientFilter(pool, toUserId, senderId);
+      if (!contentAllowedByFilter(recipientPolicy?.filter, type, classification))
+        return res.status(403).json({ error: shortFilterReason({ filter: recipientPolicy?.filter,
+          fileType: type, classification }), code: 'RECIPIENT_CONTENT_FILTERED' });
     }
-
     if ((type === 'text' || type === 'sticker') && !fileUrl) {
       const policy = await getEffectiveRecipientFilter(pool, toUserId, senderId);
       if (policy && !policy.filter.text)
@@ -6007,10 +6181,10 @@ async function sendPrivateHttpMessage(req, res) {
 
     const saved = await writeSenderFilteredMedia(pool, { userId: senderId, fileUrl,
       contextType: 'chat', contextId: toUserId }, client => client.query(
-      `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id, created_at`,
-      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null]));
+      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null, ...auditIds()]));
     const row = saved.rows[0];
 
     // Keep a durable acknowledgement while the recipient is offline. Later
@@ -6052,6 +6226,9 @@ async function sendPrivateHttpMessage(req, res) {
     effect(() => sendPush(toUserId, req.user.name, pushBody,
       { type: 'chat', fromUserId: senderId }));
 
+    const marketplaceInquiry = listingId ? await pool.query(
+      `SELECT 1 FROM listings WHERE id=$1 AND user_id=$2 AND status='active' AND expires_at>now()`,
+      [listingId, toUserId]) : { rows: [] };
     res.json({ id: row.id, createdAt: row.created_at,
       status: sid ? 'delivered' : 'sent', classification,
       marketplaceInquiry: marketplaceInquiry.rows.length > 0 });
@@ -6063,7 +6240,10 @@ async function sendPrivateHttpMessage(req, res) {
       ...(e.code === 'SENDER_CONTENT_FILTERED' ? { blockedBy: 'sender_filter' } : {}) });
   }
 }
-app.post('/api/messages', auth, messageRateLimit, sendPrivateHttpMessage);
+app.post('/api/messages', auth, messageRateLimit, withPrivateMessageReceipt({
+  getPool, sendMessage: sendPrivateHttpMessage,
+  excludedRecipients: [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID, SCAN_BOT_ID],
+}));
 registerGuideMessageSend(app, { auth, rateLimit: messageRateLimit, getPool,
   systemUserId: SYSTEM_USER_ID, safeInformationUserId: SAFE_INFORMATION_USER_ID, scanBotId: SCAN_BOT_ID,
   sendMessage: sendPrivateHttpMessage });
@@ -6082,7 +6262,7 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
        LEFT JOIN user_contacts sender_contact
          ON sender_contact.owner_id=mr.sender_id
         AND sender_contact.contact_id=mr.recipient_id
-       WHERE mr.recipient_id=$1
+       WHERE mr.recipient_id=$1 AND mr.status='pending'
          AND mr.sender_id<>mr.recipient_id
        ORDER BY mr.created_at`, [req.user.id]);
     const sharing = await projectContactPhones(pool, req.user.id,
@@ -6094,19 +6274,43 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+async function recordContactRequestOutcome(db, request, { message, rejected, reason, code }) {
+  if (!request.audit_operation_id) return;
+  await recordAuditEvent(db, {
+    operationId: request.audit_operation_id, parentEventId: request.audit_parent_event_id,
+    kind: rejected ? 'dispatch_outcome' : 'message_request_accepted',
+    status: rejected ? 'blocked' : 'completed', operationStatus: rejected ? 'blocked' : 'completed',
+    executorType: 'user', executorId: request.recipient_id, source: 'http',
+    targetType: rejected ? 'contact_request' : 'message', targetId: message?.id || request.id,
+    reasonCode: code,
+    details: rejected ? { dispatchReason: reason, reasonCode: code, recipientId: request.recipient_id }
+      : { messageId: message.id, recipientId: request.recipient_id },
+  });
+}
+
 app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) => {
   const pool = await getPool();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const found = await client.query(
-      `SELECT * FROM message_requests WHERE id=$1 AND recipient_id=$2 FOR UPDATE`,
+      `SELECT * FROM message_requests WHERE id=$1 AND recipient_id=$2 AND status='pending'`,
       [req.params.id, req.user.id]);
     if (!found.rows.length) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'הבקשה לא נמצאה' });
+      return res.status(404).json({ error: 'הבקשה לא נמצאה או שכבר טופלה' });
     }
     const request = found.rows[0];
+    await lockContactRequests(client, request.sender_id, req.user.id);
+    const current = await client.query(`SELECT id FROM message_requests
+      WHERE id=$1 AND status='pending' FOR UPDATE`, [request.id]);
+    if (!current.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'הבקשה כבר טופלה' });
+    }
+    // Keep changes to the general filter out of this acceptance transaction.
+    const general = await client.query('SELECT content_filter FROM users WHERE id=$1 FOR SHARE', [req.user.id]);
+    const filter = resolveScopedContentFilter(general.rows[0]?.content_filter, req.body?.filter);
     await client.query(
       `INSERT INTO user_contacts(owner_id, contact_id, contact_source)
        VALUES($1,$2,'in_app'),($2,$1,'in_app')
@@ -6114,52 +6318,32 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
          contact_source=CASE WHEN user_contacts.contact_source='unknown'
            THEN EXCLUDED.contact_source ELSE user_contacts.contact_source END`,
       [req.user.id, request.sender_id]);
-    const general = await client.query('SELECT content_filter FROM users WHERE id=$1', [req.user.id]);
-    const filter = resolveScopedContentFilter(general.rows[0]?.content_filter, req.body?.filter);
-    if (general.rows[0]?.content_filter?.enforceGeneralFilter === true) {
-      const pending = await client.query(`SELECT mr.type,sf.moderation_details->'classification' AS classification
-        FROM message_requests mr LEFT JOIN stored_files sf ON sf.public_url=mr.file_url
-        WHERE mr.sender_id=$1 AND mr.recipient_id=$2`, [request.sender_id,req.user.id]);
-      if (pending.rows.some(row => !contentAllowedByFilter(filter,row.type,row.classification))) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'הבקשה מכילה תוכן שחסום בסינון הכללי שנאכף בחשבונך' });
-      }
-    }
     await client.query(
       `UPDATE user_contacts SET filter_override=$1, filter_choice_confirmed=TRUE
        WHERE owner_id=$2 AND contact_id=$3`,
       [JSON.stringify(filter), req.user.id, request.sender_id]);
     const phoneSharing = await applyPhoneSharingChoices(client, req.user.id,
       request.sender_id, phoneSharingChoices(req.body));
-    const saved = await client.query(
-      `INSERT INTO messages(sender_id, recipient_id, body, type, file_url, file_name)
-       SELECT sender_id,recipient_id,body,type,file_url,file_name
-       FROM message_requests
-       WHERE sender_id=$1 AND recipient_id=$2
-       ORDER BY created_at
-       RETURNING id,created_at,sender_id,body,type,file_url,file_name`,
-      [request.sender_id, req.user.id]);
-    await client.query(
-      'DELETE FROM message_requests WHERE sender_id=$1 AND recipient_id=$2',
-      [request.sender_id, req.user.id]);
+    const { sent, rejected } = await settleContactRequests(client, {
+      senderId: request.sender_id, recipientId: req.user.id, filter,
+      validateFile: validateApprovedFile, audit: recordContactRequestOutcome, auditIds,
+    });
     await client.query('COMMIT');
     notifyPhoneSharingChange(io, onlineUsers, req.user.id, request.sender_id, phoneSharing);
     const recipientSid = onlineUsers.get(req.user.id);
     if (recipientSid) {
-      for (const row of saved.rows) io.to(recipientSid).emit('chat:message',
+      for (const row of sent) io.to(recipientSid).emit('chat:message',
         await recipientMediaMessage(pool, req.user.id, {
           id: row.id, fromUserId: row.sender_id,
           text: row.body, createdAt: row.created_at,
-          fileUrl: row.file_url, fileName: row.file_name,
-          fileType: row.type,
+          fileUrl: row.file_url, fileName: row.file_name, fileType: row.type,
         }));
     }
-    const senderSid = onlineUsers.get(request.sender_id);
-    if (senderSid) io.to(senderSid).emit('message:request-accepted', {
-      byUserId: req.user.id, messageIds: saved.rows.map(row => row.id),
+    relay(request.sender_id, 'message:request-accepted', {
+      byUserId: req.user.id, messageIds: sent.map(row => row.id), rejected,
     });
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, messageIds: saved.rows.map(row => row.id), phoneSharing });
+    res.json({ ok: true, messageIds: sent.map(row => row.id), rejected, phoneSharing });
   } catch (e) {
     await client.query('ROLLBACK');
     res.status(e.status || 500).json({ error: e.message, code: e.code });
@@ -6167,18 +6351,27 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
 });
 
 app.delete('/api/message-requests/:id', authWithDbCheck, async (req, res) => {
+  const client = await (await getPool()).connect();
   try {
-    const pool = await getPool();
-    const result = await pool.query(
-      'DELETE FROM message_requests WHERE id=$1 AND recipient_id=$2 RETURNING sender_id',
+    await client.query('BEGIN');
+    const result = await client.query(
+      `SELECT sender_id FROM message_requests WHERE id=$1 AND recipient_id=$2 AND status='pending'`,
       [req.params.id, req.user.id]);
-    if (!result.rows.length) return res.status(404).json({ error: 'הבקשה לא נמצאה' });
-    const senderSid = onlineUsers.get(result.rows[0].sender_id);
-    if (senderSid) io.to(senderSid).emit('message:request-declined', {
-      byUserId: req.user.id,
-    });
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'הבקשה לא נמצאה או שכבר טופלה' });
+    }
+    const senderId = result.rows[0].sender_id;
+    await lockContactRequests(client, senderId, req.user.id);
+    const { rejected } = await settleContactRequests(client, { senderId,
+      recipientId: req.user.id, decline: true, audit: recordContactRequestOutcome });
+    await client.query('COMMIT');
+    relay(senderId, 'message:request-declined', { byUserId: req.user.id, rejected });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: e.message });
+  } finally { client.release(); }
 });
 
 // ── Messages: mark as read ─────────────────────────────────────────
@@ -6404,7 +6597,7 @@ app.get('/api/profile', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT id, name, email, phone, email_verified, phone_verified,
+      `SELECT id, short_id, name, email, phone, email_verified, phone_verified,
               city, country, street, house_number, apartment,
               profile_pic_url, privacy_pic, filter_level, birth_date,
               notifications_enabled, read_receipts_enabled,
@@ -6477,7 +6670,7 @@ app.get('/api/media-library', auth, async (req, res) => {
   const maxSize = req.query.maxSize === undefined ? null : Number(req.query.maxSize);
   const allowedTypes = new Set(['all', 'image', 'video', 'audio', 'document']);
   const allowedScopes = new Set(['all', 'chats', 'groups', 'profile', 'listings', 'forms', 'gifs', 'unassigned']);
-  const allowedModeration = new Set(['all', 'approved', 'pending', 'rejected']);
+  const allowedModeration = new Set(['all', 'approved', 'pending', 'rejected', 'stopped']);
   const allowedBackup = new Set(['all', 'local', 'backed_up', 'released']);
   const allowedClassifications = new Set(['all', 'men', 'women', 'children',
     'nonHumanImages', 'people', 'uncertain', 'video']);
@@ -7216,6 +7409,9 @@ registerConversationHistory(app, { auth: authWithDbCheck, rateLimit: messageRate
 registerFilterHistoryRoutes(app, { auth: authWithDbCheck, getPool,
   notifyUser: (userId, event, payload) => relay(userId, event, payload) });
 registerFilterAuditRoutes(app, { auth: authWithDbCheck, adminAuth, getPool });
+registerSystemAuditRoutes(app, { getPool, adminMiddleware: adminAuth });
+require('./audit-column-order').registerAuditColumnOrderRoutes(app, { getPool, adminMiddleware: adminAuth });
+registerAuditScanPreviewRoutes(app, { getPool, adminMiddleware: adminAuth });
 
 // Phase 1: provider-neutral backup settings and read-only storage accounting.
 app.get('/api/backup', auth, async (req, res) => {
@@ -8706,8 +8902,11 @@ app.post('/api/gifs/:id/use', auth, async (req, res) => {
 });
 
 const { acquireUploadLock, findReusableUpload } = require('./upload-reuse');
+// The API and recovery timer share a process. Reserve the ID before inserting
+// so recovery can distinguish a slow live upload from an interrupted request.
+const activeUploadFileIds = new Set();
 
-app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req, res) => {
+app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreRequestAuditContext, async (req, res) => {
   if (req.user.isTeen && req.body.groupId)
     return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const file = req.file;
@@ -8783,8 +8982,10 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
   }
 
   let releaseUploadLock;
+  let activeUploadFileId;
   try {
     const pool = await getPool();
+    file.originalname = await shortenCapturedFileName(pool, req.user.id, file.originalname);
     const contentSha256 = crypto.createHash('sha256')
       .update(file.buffer).digest('hex');
     releaseUploadLock = await acquireUploadLock(req.user.id, contentSha256, allowed.dbType);
@@ -8822,6 +9023,11 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
       groupFilter = await getGroupContentFilter(pool, req.body.groupId);
     }
+    await observeAudit(pool, { kind: 'upload_context', status: 'completed', details: {
+      ...uploadAuditDetails(req.body, allowed.dbType),
+      ...(req.body.groupId ? { recipientType: 'group', recipientId: req.body.groupId }
+        : req.body.toUserId ? { recipientType: 'user', recipientId: req.body.toUserId } : {}),
+    } });
     // A library exemption is tied to the current exact-byte trust check. It is
     // not a completed content scan, including when old copies have a hash or
     // visual fingerprint that matches this ordinary upload.
@@ -8866,19 +9072,32 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         trustedBuiltinExpression,
       }) : null;
     const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
-    const url = reused?.public_url || await uploadToBlob(file.buffer, blobName, file.mimetype);
+    let url = reused?.public_url;
+    if (!reused) {
+      await observeAudit(pool, { kind: 'blob_upload_started', status: 'running',
+        details: { fileType: allowed.dbType, fileSize: file.size } });
+      url = await uploadToBlob(file.buffer, blobName, file.mimetype);
+      await observeAudit(pool, { kind: 'blob_upload_finished', status: 'completed',
+        details: { fileType: allowed.dbType, fileSize: file.size } });
+    }
+    if (!reused) {
+      activeUploadFileId = crypto.randomUUID();
+      activeUploadFileIds.add(activeUploadFileId);
+    }
     const storedInsert = reused ? { rows: [{ id: reused.id }] } : await pool.query(
       `INSERT INTO stored_files
        (user_id, original_name, storage_path, public_url, mime_type, file_type,
         file_size, context_type, context_id, moderation_status, content_sha256,
-        visual_fingerprint)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11)
+        visual_fingerprint,id,audit_operation_id,audit_parent_event_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14)
        RETURNING id`,
       [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
        file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' :
          req.body.listingImage === 'true' ? 'listing' : 'general',
        req.body.groupId || req.body.toUserId || null, contentSha256,
-       visualFingerprint ? JSON.stringify(visualFingerprint) : null]);
+       visualFingerprint ? JSON.stringify(visualFingerprint) : null, activeUploadFileId, ...auditIds()]);
+    if (reused) await observeAudit(pool, { kind: 'media_reused', status: 'completed',
+      targetType: 'file', targetId: reused.id, details: { cacheHit: true, storedFileId: reused.id } });
     const scanTracking = { storedFileId: storedInsert.rows[0].id,
       userId: req.user.id, workflow: 'upload', attempt: 1 };
 
@@ -8888,9 +9107,11 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       scanResult = builtinExpressionResult();
     else if (cachedScan) {
       scanResult = { ...cachedScan, cacheHit: true, cacheMatch };
-      await recordProviderCall({ provider: 'cache', model: null,
-        operation: 'moderation_cache', tracking: scanTracking,
-        status: 'completed', cacheHit: true, usageReported: true });
+      if (allowed.dbType === 'image') scanTracking.scanPreviewId =
+        await saveAuditScanPreview(pool, { storedFileId: scanTracking.storedFileId, buffer: file.buffer });
+      await recordProviderCheck({ provider: 'cache',
+        operation: allowed.dbType === 'video' ? 'video_frames' : 'media_moderation',
+        tracking: scanTracking, result: scanResult, cacheHit: true });
       // A previous destination-filter rejection is not a moderation failure.
       // Reapply the new destination policy below without carrying its wording.
       if (scanResult.blocked !== true) {
@@ -8903,10 +9124,12 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     } else if (allowed.dbType === 'image')
       scanResult = await scanImage(file.buffer, { tracking: scanTracking });
     else if (allowed.dbType === 'video')
-      scanResult = await scanVideo(file.buffer, file.originalname, file.mimetype,
-        { tracking: scanTracking });
+      // Frame verification can outlive the HTTP request. Give the durable
+      // queue sole responsibility for scanning and delivering uncached videos.
+      scanResult = { blocked: false, pending: true,
+        reason: 'הסרטון ממתין לסריקה לפני השליחה' };
     else if (allowed.dbType === 'document')
-      scanResult = await scanDocument(file.buffer, file.mimetype);
+      scanResult = await scanDocument(file.buffer, file.mimetype, { tracking: scanTracking });
     else if (allowed.dbType === 'audio')
       scanResult = {
         blocked: false,
@@ -8930,7 +9153,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
           fileId: storedInsert.rows[0].id, source: 'sender_upload' });
       } catch (error) {
         if (error.code !== 'SENDER_CONTENT_FILTERED') throw error;
-        if (!reused) await pool.query(`UPDATE stored_files SET moderation_status=$1,moderation_details=$2,
+        if (!reused) await auditedMediaQuery(pool, `UPDATE stored_files SET moderation_status=$1,moderation_details=$2,
           blocked_content_expires_at=CASE WHEN $1='rejected' THEN now()+interval '2 minutes' ELSE NULL END
           WHERE id=$3`, [scanResult?.blocked ? 'rejected' : 'approved',
           JSON.stringify({ ...scanResult, senderFilterRejected: true,
@@ -8945,7 +9168,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
 
     if (scanResult?.blocked) {
-      const rejected = await pool.query(
+      const rejected = await auditedMediaQuery(pool,
         `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1,
            blocked_content_expires_at=CASE WHEN file_type='image'
              THEN now()+interval '2 minutes' ELSE blocked_content_expires_at END
@@ -9001,7 +9224,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         : blockedLabel
         ? `התמונה סווגה כ${blockedLabel}, וקטגוריה זו חסומה בהגדרות הקבוצה`
         : 'סוג התוכן חסום בהגדרות הסינון של הקבוצה';
-      if (!reused) await pool.query(
+      if (!reused) await auditedMediaQuery(pool,
         `UPDATE stored_files SET moderation_status='approved', moderation_details=$1
          WHERE public_url=$2`,
         [JSON.stringify({ ...scanResult, reason, blockedCategories,
@@ -9057,7 +9280,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
           ? 'במודעות מותרות רק תמונות ללא אנשים'
           : 'לא ניתן לאשר שזו תמונה ללא אנשים';
         const details = { ...scanResult, reason, listingImage: true };
-        if (!reused) await pool.query(
+        if (!reused) await auditedMediaQuery(pool,
           `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1
            WHERE public_url=$2`,
           [JSON.stringify(details), url]);
@@ -9075,7 +9298,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     }
 
     if (!scanBotUpload && !scanResult?.pending &&
-        ['image', 'video', 'document', 'audio'].includes(allowed.dbType) && recipientPolicy &&
+        ['image', 'video', 'document', 'audio'].includes(allowed.dbType) && recipientPolicy?.isContact &&
         !contentAllowedByFilter(recipientPolicy.filter, allowed.dbType,
           scanResult?.classification)) {
       await recordFilterDecision(pool, { userId: req.body.toUserId, actorId: req.user.id,
@@ -9098,7 +9321,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         localSafety: scanResult?.localSafety || null,
         googleSafeSearch: scanResult?.googleSafeSearch || null,
       }, req.ip);
-      if (!reused) await pool.query(
+      if (!reused) await auditedMediaQuery(pool,
         `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
         [JSON.stringify({ ...scanResult, reason, classification: scanResult?.classification || null,
           safeSearch: scanResult?.safeSearch || null,
@@ -9127,10 +9350,10 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
         `UPDATE stored_files SET moderation_details=$1 WHERE public_url=$2`,
         [JSON.stringify(scanResult), url]);
       const ins = await pool.query(
-        `INSERT INTO pending_scans (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO pending_scans (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type, audit_operation_id, audit_parent_event_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id`,
-        [req.user.id, toUserId, groupId, url, file.originalname, allowed.dbType, file.mimetype]);
+        [req.user.id, toUserId, groupId, url, file.originalname, allowed.dbType, file.mimetype, ...auditIds()]);
       requestPendingScanRetry();
       logActivity(req.user.id, 'upload_pending',
         { fileName: file.originalname, fileSize: file.size, fileType: allowed.dbType,
@@ -9150,7 +9373,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
       });
     }
 
-    if (!reused) await pool.query(
+    if (!reused) await auditedMediaQuery(pool,
       `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
       [JSON.stringify(scanResult || {}), url]);
 
@@ -9205,6 +9428,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), async (req
     res.status(e.status || 500).json({ error: e.message, code: e.code,
       ...(e.code === 'SENDER_CONTENT_FILTERED' ? { blockedBy: 'sender_filter' } : {}) });
   } finally {
+    if (activeUploadFileId) activeUploadFileIds.delete(activeUploadFileId);
     releaseUploadLock?.();
   }
 });
@@ -9500,10 +9724,12 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
     if (member.send_permission === 'admin' && member.role !== 'admin')
       return res.status(403).json({ error: 'רק מנהלי הקבוצה רשאים לשלוח הודעות' });
 
-    const type = fileType && fileType !== 'text'
+    const storedType = fileUrl ? (await pool.query(
+      'SELECT file_type FROM stored_files WHERE public_url=$1', [fileUrl])).rows[0]?.file_type : null;
+    const type = storedType || (fileType && fileType !== 'text'
       ? fileType
       : (fileUrl && fileName && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName)
-        ? 'image' : fileUrl ? 'document' : 'text');
+        ? 'image' : fileUrl ? 'document' : 'text'));
     const classification = fileUrl
       ? await getStoredImageClassification(pool, fileUrl) : null;
     const effectiveGroupFilter = await getGroupContentFilter(pool, groupId);
@@ -9527,11 +9753,11 @@ app.post('/api/groups/:id/messages', auth, messageRateLimit, async (req, res) =>
 
     const saved = await writeSenderFilteredMedia(pool, { userId: senderId, fileUrl,
       contextType: 'group', contextId: groupId }, client => client.query(
-      `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO messages (sender_id, group_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id, created_at`,
       [senderId, groupId, text || null, type, fileUrl || null,
-       fileName || null, replyToId || null]));
+       fileName || null, replyToId || null, ...auditIds()]));
     const row = saved.rows[0];
     const deliveryPlan = await buildGroupDeliveryPlan(
       pool, groupId, senderId, type, classification, { messageId: row.id, fileUrl });
@@ -9648,7 +9874,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         u.name AS sender_name,
         NULL::text AS reply_body,
         0 AS is_read,
-        CASE WHEN sf.moderation_status='rejected'
+        sf.moderation_status = 'stopped' AS scan_stopped,
+        sf.moderation_details->'budget' AS scan_budget,
+        CASE WHEN sf.moderation_status='stopped' THEN 'stopped_scan'
+             WHEN sf.moderation_status='rejected'
                OR sf.moderation_details->>'destinationFilterRejected'='true'
           THEN 'rejected_scan' ELSE 'pending_scan' END AS message_status,
         sf.moderation_details->>'destinationFilterRejected'='true'
@@ -9673,7 +9902,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         AND NOT EXISTS (SELECT 1 FROM conversation_user_state cs
           WHERE cs.user_id=$2 AND cs.kind='group' AND cs.target_id=$1
             AND sf.created_at<=cs.cleared_at)
-        AND (sf.moderation_status IN ('pending','rejected')
+        AND (sf.moderation_status IN ('pending','rejected','stopped')
           OR (sf.moderation_status='approved'
             AND sf.moderation_details->>'destinationFilterRejected'='true'))
         AND sf.created_at >= (
@@ -11063,6 +11292,8 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
       decisionSummary[row.moderation_status] = Number(row.count) || 0;
     const providerStage = (name, provider, phase = 'upload') => {
       if (!provider) return { name, phase, status: 'not_run' };
+      if (provider.status === 'disabled') return { name, phase, status: 'disabled',
+        decision: 'disabled', reason: 'הספק כבוי בהגדרות המערכת' };
       if (provider.required === false)
         return { name, phase, status: 'not_needed', decision: 'not_needed' };
       return {
@@ -11199,8 +11430,8 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
             faces: verification.googleFaceDetection } },
           providerStage('openai', frame.modestyVerification),
           providerStage('gemini', frame.geminiModestyVerification),
-          { name: 'final_decision', status: frame.pending ? 'pending' : 'completed',
-            decision: frame.blocked ? 'rejected' : frame.pending ? 'pending' : 'approved',
+          { name: 'final_decision', status: frame.scanStopped ? 'stopped' : frame.pending ? 'pending' : 'completed',
+            decision: frame.scanStopped ? 'stopped' : frame.blocked ? 'rejected' : frame.pending ? 'pending' : 'approved',
             reason: frame.reason || null, decidedBy: frame.blockedBy || null },
         ],
       };
@@ -11295,6 +11526,7 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
       const stats = details.classificationStats || {};
       const personOpenAI = details.personVerification?.providers?.openai;
       addTokenUsage('openai', personOpenAI);
+      addTokenUsage('gemini', details.personVerification?.providers?.gemini);
       addTokenUsage('openai', details.modestyVerification);
       addTokenUsage('gemini', details.geminiModestyVerification);
       const googleSafe = details.googleSafeSearch;
@@ -12096,7 +12328,7 @@ async function adminAuth(req, res, next) {
     if (!result.rows.length)
       return res.status(403).json({ error: 'אין הרשאת גישה לדשבורד' });
     req.adminPerm = result.rows[0].permission; // 'view' or 'edit'
-    next();
+    return requestAudit(req, res, next);
   } catch {
     res.status(401).json({ error: 'טוקן לא תקין' });
   }
@@ -13674,7 +13906,29 @@ async function retryPendingScans() {
         // explicit personal-media deleter and preventing cancelled deliveries.
         const pending = await client.query('SELECT id FROM pending_scans WHERE id=$1 FOR UPDATE', [rowId]);
         if (!pending.rows.length) throw new Error(`Pending scan ${rowId} no longer exists`);
-        const result = await persistOutcome(client);
+        await setAuditTransactionContext(client);
+        const context = getAuditContext();
+        const result = await runWithAuditContext({ ...context, transactionDb: client },
+          () => persistOutcome(client));
+        if (context?.operationId) {
+          const outcome = await client.query(`SELECT sf.moderation_status,
+              COALESCE(sf.moderation_details->>'senderFilterRejected','false')='true' AS sender_blocked,
+              COALESCE(sf.moderation_details->>'destinationFilterRejected','false')='true' AS target_blocked,
+              COALESCE(sf.moderation_details->>'deliveryRejected','false')='true' AS access_blocked
+            FROM pending_scans ps JOIN stored_files sf ON sf.public_url=ps.file_url
+            WHERE ps.id=$1`, [rowId]);
+          const state = outcome.rows[0];
+          const approval = await client.query(`SELECT 1 FROM message_requests mr
+            JOIN pending_scans ps ON ps.file_url=mr.file_url AND ps.user_id=mr.sender_id
+              AND ps.to_user_id=mr.recipient_id WHERE ps.id=$1 AND mr.status='pending'`, [rowId]);
+          const status = approval.rows.length ? 'pending' : state?.moderation_status === 'stopped' ? 'failed'
+            : state?.moderation_status === 'rejected' || state?.sender_blocked ||
+            state?.target_blocked || state?.access_blocked ? 'blocked' : state ? 'completed' : 'observed';
+          await recordAuditEvent(client, { kind: 'scan_workflow_finished', status,
+            operationStatus: status, reasonCode: status === 'pending' ? 'contact_approval_required'
+              : status === 'failed' ? 'scan_stopped'
+              : status === 'blocked' ? 'media_not_allowed' : 'queue_processed' });
+        }
         const deleted = await client.query(
           `DELETE FROM pending_scans WHERE id=$1 RETURNING id`, [rowId]);
         if (!deleted.rowCount) throw new Error(`Pending scan ${rowId} no longer exists`);
@@ -13690,6 +13944,13 @@ async function retryPendingScans() {
 
     const rows = await pool.query(`
       SELECT ps.*, sf.id AS stored_file_id,
+             sf.storage_path, sf.file_size,
+             (sf.file_type='video' AND EXISTS(
+               SELECT 1 FROM stored_files prior
+               JOIN moderation_provider_calls pc ON pc.stored_file_id=prior.id
+               WHERE prior.user_id=sf.user_id AND (prior.id=sf.id OR
+                 (sf.content_sha256 IS NOT NULL AND prior.content_sha256=sf.content_sha256))
+             )) AS legacy_provider_calls,
              sf.moderation_status AS stored_moderation_status,
              sf.moderation_details AS prior_moderation_details
       FROM pending_scans ps
@@ -13713,10 +13974,33 @@ async function retryPendingScans() {
       LIMIT 10
     `);
 
-    for (const row of rows.rows) {
+    const processPendingRow = async (row) => {
       let attempt = Number(row.retry_count) || 0;
       let scanCompleted = false;
       let outcomePersisted = false;
+      let readingVideoSource = false;
+      const persistStopped = async result => {
+        await completePending(row.id, async client => {
+          await client.query(`UPDATE stored_files SET moderation_status='stopped',
+            moderation_details=$1,blocked_content_expires_at=NULL WHERE public_url=$2`,
+          [JSON.stringify(result), row.file_url]);
+          const budget = result.budget;
+          await observeAudit(client, { kind: 'scan_workflow_finished', status: 'failed',
+            operationStatus: 'failed', reasonCode: result.reasonCode || 'scan_stopped',
+            targetType: row.stored_file_id ? 'file' : null, targetId: row.stored_file_id || null,
+            details: { frameCount: budget?.frameCount,
+              providerCallsUsed: budget?.used?.total, providerCallsLimit: budget?.limits?.total,
+              googleVisionCallsUsed: budget?.used?.google_vision,
+              googleVisionCallsLimit: budget?.limits?.google_vision,
+              openAICallsUsed: budget?.used?.openai, openAICallsLimit: budget?.limits?.openai,
+              geminiCallsUsed: budget?.used?.gemini, geminiCallsLimit: budget?.limits?.gemini } });
+        });
+        outcomePersisted = true;
+        relay(row.user_id, 'scan:cancelled', { fileName: row.file_name, fileUrl: row.file_url,
+          groupId: row.group_id || null, toUserId: row.to_user_id || null,
+          scanStopped: true, reasonCode: result.reasonCode, reason: result.reason,
+          budget: result.budget });
+      };
       try {
         const priorityClass = pendingScanPriorityClass(row.file_type, row.created_at);
         if (priorityClass === 'deferred_video') {
@@ -13733,7 +14017,7 @@ async function retryPendingScans() {
           ) AS waiting`);
           if (imageWaiting.rows[0]?.waiting) {
             pendingScanRetryRequested = true;
-            continue;
+            return;
           }
         }
 
@@ -13744,7 +14028,7 @@ async function retryPendingScans() {
            SET retry_count=retry_count+1, last_retry=now()
            WHERE id=$1 AND retry_count=$2
            RETURNING retry_count`, [row.id, attempt]);
-        if (!claimed.rows.length) continue;
+        if (!claimed.rows.length) return;
         attempt = Number(claimed.rows[0].retry_count) || attempt + 1;
         const queueWaitMs = Math.max(0, Date.now() - new Date(row.created_at).getTime());
         await pool.query(`INSERT INTO scan_queue_wait_metrics
@@ -13758,7 +14042,13 @@ async function retryPendingScans() {
         // before its pending row was delivered. In that state the temporary
         // local media may already be gone; reuse the immutable approved scan
         // and finish delivery instead of trying to read or scan it again.
-        if (row.stored_moderation_status === 'approved' &&
+        if (row.stored_moderation_status === 'stopped' || row.prior_moderation_details?.scanStopped) {
+          scanResult = stoppedVideoResult(row.prior_moderation_details?.reasonCode,
+            row.prior_moderation_details?.budget, row.prior_moderation_details);
+        } else if (row.file_type === 'video' && row.stored_moderation_status === 'approved' &&
+            row.prior_moderation_details?.moderationVersion !== MODERATION_CACHE_VERSION) {
+          scanResult = stoppedVideoResult('scan_version_changed', row.prior_moderation_details?.budget);
+        } else if (row.stored_moderation_status === 'approved' &&
             row.prior_moderation_details &&
             row.prior_moderation_details.pending !== true &&
             row.prior_moderation_details.classification?.uncertain !== true) {
@@ -13767,8 +14057,16 @@ async function retryPendingScans() {
         } else {
           // Local uploads use a public relative URL. Read those directly from
           // disk; only remote absolute URLs should be fetched over HTTP.
+          readingVideoSource = row.file_type === 'video';
           let buffer;
-          if (row.file_url.startsWith(`${UPLOAD_PUBLIC_BASE}/`)) {
+          if (row.stored_file_id && row.storage_path) {
+            // Verified backups may already hold bytes released by an older
+            // server. Read them through the checksum-checked storage reader.
+            buffer = await readSourceMedia(pool, UPLOAD_ROOT, {
+              id: row.stored_file_id, user_id: row.user_id,
+              storage_path: row.storage_path, file_size: row.file_size,
+            });
+          } else if (row.file_url.startsWith(`${UPLOAD_PUBLIC_BASE}/`)) {
             const encodedPath = row.file_url.slice(UPLOAD_PUBLIC_BASE.length + 1);
             const relativePath = encodedPath.split('/').map(decodeURIComponent).join(path.sep);
             const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
@@ -13782,6 +14080,7 @@ async function retryPendingScans() {
             if (!fileRes.ok) throw new Error(`Pending file download ${fileRes.status}`);
             buffer = Buffer.from(await fileRes.arrayBuffer());
           }
+          readingVideoSource = false;
 
         if (row.file_type === 'image') {
           scanResult = await scanImage(buffer, {
@@ -13791,23 +14090,42 @@ async function retryPendingScans() {
           });
         }
         else if (row.file_type === 'video')
-          scanResult = await scanVideo(buffer, row.file_name, row.mime_type, {
+          scanResult = await runBoundedVideoScan(buffer, row.file_name, row.mime_type, {
+            pool, scan: scanVideo, scanVersion: MODERATION_CACHE_VERSION,
+            legacyUnsafe: attempt > 1 || row.legacy_provider_calls === true,
             tracking: { storedFileId: row.stored_file_id, userId: row.user_id,
               workflow: 'retry', attempt },
           });
         else if (row.file_type === 'audio')
-          scanResult = await scanAudio(buffer, row.file_name);
+          scanResult = await scanAudio(buffer, row.file_name, { tracking: {
+            storedFileId: row.stored_file_id, userId: row.user_id, workflow: 'retry', attempt } });
         else
-          scanResult = await scanDocument(buffer, row.mime_type);
+          scanResult = await scanDocument(buffer, row.mime_type, { tracking: {
+            storedFileId: row.stored_file_id, userId: row.user_id, workflow: 'retry', attempt } });
+        if (scanResult) scanResult.moderationVersion = MODERATION_CACHE_VERSION;
         }
 
+        if (row.file_type === 'video' && scanResult) {
+          await recordProviderCheck({ provider: 'local', operation: 'video_frames',
+            tracking: { storedFileId: row.stored_file_id, userId: row.user_id, workflow: 'retry', attempt },
+            result: scanResult, cacheHit: scanResult.cacheHit === true });
+        }
+        if (scanResult?.scanStopped) {
+          scanCompleted = true;
+          await persistStopped(scanResult);
+          return;
+        }
         if (!scanResult || scanResult.pending) {
           if (scanResult) {
             await pool.query(
-              `UPDATE stored_files SET moderation_details=$1 WHERE public_url=$2`,
+              `UPDATE stored_files SET moderation_details=$1
+               WHERE public_url=$2 AND moderation_status='pending'`,
               [JSON.stringify(scanResult), row.file_url]);
           }
-          continue;
+          await observeAudit(pool, { kind: 'scan_waiting', status: 'pending',
+            attempt, reasonCode: 'scan_not_ready', targetType: row.stored_file_id ? 'file' : null,
+            targetId: row.stored_file_id || null });
+          return;
         }
         scanCompleted = true;
 
@@ -13833,7 +14151,7 @@ async function retryPendingScans() {
           relay(row.user_id, 'scan:rejected', { fileName: row.file_name, fileUrl: row.file_url,
             groupId: row.group_id || null, toUserId: row.to_user_id || null,
             code: error.code, blockedBy: 'sender_filter', reason: error.message });
-          continue;
+          return;
         }
 
         if (scanResult.blocked) {
@@ -13874,7 +14192,7 @@ async function retryPendingScans() {
             previewExpiresAt: rejectedFile?.blocked_content_expires_at || null,
             audioTranscript: decryptAudioTranscript(scanResult),
           });
-          continue;
+          return;
         }
 
         // Re-evaluate the current policy after a delayed scan, for every media
@@ -13882,6 +14200,19 @@ async function retryPendingScans() {
         let deliveryFilter = null;
         let deliveryPermitted = true;
         if (row.to_user_id && row.to_user_id !== SCAN_BOT_ID) {
+          const blocked = await pool.query('SELECT 1 FROM blocked_users WHERE blocker_id=$1 AND blocked_id=$2',
+            [row.to_user_id, row.user_id]);
+          if (blocked.rows.length || !await teenContactAllowed(pool, row.user_id, row.to_user_id)) {
+            const reason = blocked.rows.length ? 'נחסמת על ידי הנמען'
+              : 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים';
+            const reasonCode = blocked.rows.length ? 'recipient_blocked_sender' : 'teen_mutual_contact_required';
+            await completePending(row.id, client => client.query(
+              `UPDATE stored_files SET moderation_status='approved',moderation_details=$1 WHERE public_url=$2`,
+              [JSON.stringify({ ...scanResult, destinationFilterRejected: true, reason, reasonCode }), row.file_url]));
+            outcomePersisted = true;
+            relay(row.user_id, 'scan:rejected', { toUserId: row.to_user_id, fileUrl: row.file_url, reason, reasonCode });
+            return;
+          }
           const policy = await getEffectiveRecipientFilter(pool, row.to_user_id, row.user_id);
           deliveryFilter = policy?.filter;
           deliveryPermitted = policy?.isContact === true;
@@ -13889,27 +14220,53 @@ async function retryPendingScans() {
           deliveryFilter = await getGroupContentFilter(pool, row.group_id);
           deliveryPermitted = deliveryFilter != null;
         }
+        if (!deliveryPermitted && row.to_user_id && row.to_user_id !== SCAN_BOT_ID) {
+          const request = await completePending(row.id, async client => {
+            await client.query(`UPDATE stored_files SET moderation_status='approved', moderation_details=$1
+              WHERE public_url=$2`, [JSON.stringify(scanResult), row.file_url]);
+            const pending = await queueContactRequest(client, { senderId: row.user_id,
+              recipientId: row.to_user_id, body: row.file_name, type: row.file_type,
+              fileUrl: row.file_url, fileName: row.file_name,
+              operationId: auditIds()[0], parentEventId: auditIds()[1] });
+            if (!pending) throw Object.assign(new Error('Contact approved while scan completed; retry delivery'),
+              { code: 'CONTACT_APPROVAL_CHANGED' });
+            return pending;
+          });
+          outcomePersisted = true;
+          relay(row.to_user_id, 'message:request', { id: request.id,
+            senderId: row.user_id, createdAt: request.created_at });
+          sendPush(row.to_user_id, 'בקשת חברות חדשה', 'ממתין תוכן לאישור שלך',
+            { type: 'message_request', senderId: row.user_id });
+          relay(row.user_id, 'message:request-pending', { id: request.id,
+            toUserId: row.to_user_id, fileUrl: row.file_url });
+          return;
+        }
         if (!deliveryPermitted || (deliveryFilter &&
             !contentAllowedByFilter(deliveryFilter, row.file_type, scanResult.classification))) {
-          const reason = 'הקובץ אינו מותר לפי הגדרות הסינון הנוכחיות של היעד';
+          const reasonCode = deliveryPermitted ? 'content_filter' : 'contact_or_group_access';
+          const reason = deliveryPermitted
+            ? 'הקובץ אינו מותר לפי הגדרות הסינון הנוכחיות של היעד'
+            : row.group_id
+              ? 'לא ניתן לשלוח לקבוצה: אין גישה לקבוצה'
+              : 'הנמען עדיין לא אישר אותך כחבר';
           await completePending(row.id, async client => {
             await recordFilterDecision(client, { userId: row.to_user_id || row.user_id,
               actorId: row.user_id, scopeType: row.group_id ? 'group' : 'contact',
               scopeId: row.group_id || row.user_id, messageType: row.file_type,
               classification: scanResult.classification, policy: deliveryFilter,
               fileUrl: row.file_url, source: 'delayed_scan',
-              reasonCode: deliveryPermitted ? 'content_filter' : 'contact_or_group_access' });
+              reasonCode });
             return client.query(
               `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
-              [JSON.stringify({ ...scanResult, reason, destinationFilterRejected: true }), row.file_url]);
+              [JSON.stringify({ ...scanResult, reason, reasonCode, destinationFilterRejected: true }), row.file_url]);
           });
           outcomePersisted = true;
           if (deliveryPermitted) await notifyDestinationFilterBlock(pool, {
             userId: row.user_id, groupId: row.group_id, toUserId: row.to_user_id,
             fileUrl: row.file_url, filter: deliveryFilter, reason });
           relay(row.user_id, 'scan:rejected', { fileName: row.file_name, fileUrl: row.file_url,
-            groupId: row.group_id || null, toUserId: row.to_user_id || null, reason });
-          continue;
+            groupId: row.group_id || null, toUserId: row.to_user_id || null, reason, reasonCode });
+          return;
         }
 
         if (row.file_type === 'image' && row.to_user_id && row.to_user_id !== SCAN_BOT_ID) {
@@ -13942,7 +14299,7 @@ async function retryPendingScans() {
               fileName: row.file_name, fileUrl: row.file_url,
               groupId: null, toUserId: row.to_user_id, reason,
             });
-            continue;
+            return;
           }
         }
 
@@ -13970,7 +14327,7 @@ async function retryPendingScans() {
               fileName: row.file_name, fileUrl: row.file_url,
               groupId: null, toUserId: row.to_user_id, reason,
             });
-            continue;
+            return;
           }
         }
 
@@ -14005,7 +14362,7 @@ async function retryPendingScans() {
               groupId: row.group_id, fileName: row.file_name,
               fileUrl: row.file_url, reason,
             });
-            continue;
+            return;
           }
         }
 
@@ -14019,7 +14376,7 @@ async function retryPendingScans() {
             }, row.file_url, scanResult, 'approved');
           });
           outcomePersisted = true;
-          continue;
+          return;
         }
 
         if (row.file_type === 'audio' &&
@@ -14050,7 +14407,7 @@ async function retryPendingScans() {
             createdAt: exchange.reply.created_at });
           sendPush(row.user_id, 'בתשובה', exchange.answer,
             { type: 'chat', fromUserId: row.to_user_id });
-          continue;
+          return;
         }
 
         // Scan passed — save message and deliver
@@ -14062,10 +14419,10 @@ async function retryPendingScans() {
             await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [row.user_id]);
             await assertSenderFileAllowed(client, row.user_id, row.file_url, 'chat', row.to_user_id, 'sender_delayed_persist');
             const saved = await client.query(
-              `INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name)
-               VALUES ($1, $2, $3, $4, $5, $4)
+              `INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name, audit_operation_id, audit_parent_event_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                RETURNING id, created_at`,
-              [row.user_id, row.to_user_id, row.file_type, row.file_name, row.file_url]);
+              [row.user_id, row.to_user_id, row.file_type, row.file_name, row.file_url, row.file_name, ...auditIds()]);
             return saved.rows[0];
           });
           outcomePersisted = true;
@@ -14091,7 +14448,7 @@ async function retryPendingScans() {
               localSafety: scanResult.localSafety || null,
               googleSafeSearch: scanResult.googleSafeSearch || null,
               blockedBy: null });
-          continue;
+          return;
         }
 
         if (row.group_id && pendingGroup) {
@@ -14105,10 +14462,10 @@ async function retryPendingScans() {
             await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [row.user_id]);
             await assertSenderFileAllowed(client, row.user_id, row.file_url, 'group', row.group_id, 'sender_delayed_persist');
             const saved = await client.query(
-              `INSERT INTO messages (sender_id, group_id, type, body, file_url, file_name)
-               VALUES ($1, $2, $3, $4, $5, $4)
+              `INSERT INTO messages (sender_id, group_id, type, body, file_url, file_name, audit_operation_id, audit_parent_event_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                RETURNING id, created_at`,
-              [row.user_id, row.group_id, row.file_type, row.file_name, row.file_url]);
+              [row.user_id, row.group_id, row.file_type, row.file_name, row.file_url, row.file_name, ...auditIds()]);
             await client.query(
               'UPDATE messages SET delivery_summary=$1 WHERE id=$2',
               [JSON.stringify(deliveryPlan.summary), saved.rows[0].id]);
@@ -14156,7 +14513,7 @@ async function retryPendingScans() {
             googleSafeSearch: scanResult.googleSafeSearch || null,
             blockedBy: null,
           });
-          continue;
+          return;
         }
 
         await completePending(row.id, async client => {
@@ -14166,6 +14523,13 @@ async function retryPendingScans() {
         });
         outcomePersisted = true;
       } catch (e) {
+        if (readingVideoSource && !outcomePersisted) {
+          try {
+            await persistStopped(stoppedVideoResult('source_unavailable'));
+          } catch (persistError) {
+            console.error('persist stopped video', row.id, persistError.message);
+          }
+        }
         if (e.code === 'SENDER_CONTENT_FILTERED') {
           if (e.senderDecision) await recordFilterDecision(pool, e.senderDecision);
           await notifyRejectedSend(pool, { userId: row.user_id, groupId: row.group_id,
@@ -14175,6 +14539,8 @@ async function retryPendingScans() {
             code: e.code, blockedBy: 'sender_filter', reason: e.message });
         }
         console.error('retry row', row.id, e.message);
+        await observeAudit(pool, { kind: 'scan_attempt_failed', status: 'failed',
+          reasonCode: 'retry_required', attempt: Math.max(1, attempt) });
         if (!outcomePersisted && scanCompleted) {
           // A persistence failure after a successful scan must not consume the
           // final scan attempt. Leave the row eligible for a later retry.
@@ -14186,7 +14552,9 @@ async function retryPendingScans() {
           } catch (_) {}
         }
       }
-    }
+    };
+    for (const row of rows.rows)
+      await withPendingAudit(pool, row, () => processPendingRow(row));
     const moreEligible = await pool.query(`SELECT EXISTS(
       SELECT 1 FROM pending_scans
       WHERE (retry_count < 20 AND (last_retry IS NULL OR
@@ -14206,13 +14574,15 @@ async function retryPendingScans() {
 async function recoverOrphanedPendingScans(pool) {
   const recovered = await pool.query(`
     INSERT INTO pending_scans
-      (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type)
+      (user_id, to_user_id, group_id, file_url, file_name, file_type, mime_type, audit_operation_id, audit_parent_event_id)
     SELECT sf.user_id,
            CASE WHEN sf.context_type='chat' THEN sf.context_id END,
            CASE WHEN sf.context_type='group' THEN sf.context_id END,
-           sf.public_url, sf.original_name, sf.file_type, sf.mime_type
+           sf.public_url, sf.original_name, sf.file_type, sf.mime_type,
+           sf.audit_operation_id, sf.audit_parent_event_id
     FROM stored_files sf
     WHERE sf.moderation_status='pending'
+      AND NOT (sf.id=ANY($1::uuid[]))
       AND sf.context_type IN ('chat','group')
       AND sf.created_at < now() - interval '30 seconds'
       AND NOT EXISTS (
@@ -14222,7 +14592,7 @@ async function recoverOrphanedPendingScans(pool) {
         SELECT 1 FROM messages m WHERE m.file_url=sf.public_url
       )
     RETURNING id
-  `);
+  `, [[...activeUploadFileIds]]);
   if (recovered.rowCount)
     console.log(`[moderation-recovery] queued ${recovered.rowCount} interrupted upload(s)`);
   if (recovered.rowCount) requestPendingScanRetry();
@@ -14595,8 +14965,11 @@ async function runSafeReleaseQueue() {
       JOIN user_backup_settings s ON s.user_id=sf.user_id
        WHERE s.enabled=TRUE AND mbi.provider='google_drive'
          AND mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
+         AND sf.moderation_status='approved'
+         AND sf.moderation_details->>'pending' IS DISTINCT FROM 'true'
          AND sf.released_at IS NULL
          AND sf.release_scheduled_at IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM pending_scans ps WHERE ps.file_url=sf.public_url)
          AND NOT EXISTS (SELECT 1 FROM messages m
                          WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
          AND NOT EXISTS (SELECT 1 FROM received_message_media received
@@ -14649,6 +15022,14 @@ async function startServer() {
   await migrateDatabase();
   await initPendingTable();
   const pool = await getPool();
+  await ensureVideoScanBudgetSchema(pool);
+  await ensureSystemAuditSchema(pool);
+  await require('./audit-fx').refreshFx();
+  await ensureAuditScanPreviewSchema(pool);
+  const purgeScanPreviews = () => purgeExpiredAuditScanPreviews(pool)
+    .catch(error => console.error('[scan-preview-purge]', error.code || error.name));
+  await purgeScanPreviews();
+  setInterval(purgeScanPreviews, 30000);
   await pool.query(MEDIA_DELETE_SCHEMA);
   setTimeout(cleanupDeletedMedia, 2000);
   setInterval(cleanupDeletedMedia, 60000);

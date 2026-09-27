@@ -18,6 +18,18 @@ const NEW_ACCOUNT_CONTENT_FILTER = Object.freeze({
   children: false,
 });
 
+const UNFILTERED_ASSISTANT_IDS = Object.freeze([
+  '00000000-0000-4000-8000-000000000002',
+  '00000000-0000-4000-8000-000000000003',
+]);
+
+// Only private conversations with these built-in accounts ignore category
+// preferences. File safety, access, and group policies remain separate checks.
+function isUnfilteredAssistantConversation(firstId, secondId) {
+  return UNFILTERED_ASSISTANT_IDS.includes(firstId) ||
+    UNFILTERED_ASSISTANT_IDS.includes(secondId);
+}
+
 function normalizeContentFilter(value, fallback = DEFAULT_CONTENT_FILTER) {
   const input = value && typeof value === 'object' && !Array.isArray(value)
     ? value : {};
@@ -79,6 +91,8 @@ function contentAllowedByFilter(filter, type, classification) {
 module.exports = {
   DEFAULT_CONTENT_FILTER,
   NEW_ACCOUNT_CONTENT_FILTER,
+  UNFILTERED_ASSISTANT_IDS,
+  isUnfilteredAssistantConversation,
   contentAllowedByFilter,
   imageAllowedByFilter,
   normalizeContentFilter,

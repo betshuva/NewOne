@@ -34,7 +34,7 @@ function decryptMessageText(value) {
     .toString('utf8');
 }
 
-const DECRYPTED_RESULT_FIELDS = new Set(['body', 'reply_body', 'last_message']);
+const DECRYPTED_RESULT_FIELDS = new Set(['body', 'reply_body', 'last_message', 'file_name']);
 
 function decryptMessageRows(result) {
   if (!result?.rows) return result;

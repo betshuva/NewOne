@@ -137,6 +137,7 @@ for (const delayed of [false, true]) {
         reason: 'סיבת בדיקה', classification: { detectedCategories: ['men'] } };
       const pool = { query: async () => ({ rows: [{ id: 'file', blocked_content_expires_at: null }] }) };
       const scope = {
+        ...require('./helpers/system-audit-stubs'),
         pool, scanResult, scanBotUpload: false, reportImageScan: false, reused: null,
         req: { user: { id: 'sender' }, body: { toUserId: 'friend' } },
         res: { status() { return this; }, json(value) { responses.push(value); } },

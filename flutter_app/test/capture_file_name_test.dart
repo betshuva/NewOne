@@ -8,6 +8,15 @@ void main() {
 
   setUp(() => names = CaptureFileNameGenerator());
 
+  test('prefers assigned short numbers while supporting sessions loading a profile', () {
+    expect(captureCreatorIdForUser({'id': 'uuid', 'short_id': '742'}), '742');
+    expect(captureCreatorIdForUser({'id': 'uuid', 'short_id': 742}), '742');
+    expect(captureCreatorIdForUser({'id': 'uuid'}), 'uuid');
+    expect(captureCreatorIdForUser({'id': 'uuid', 'short_id': '../742'}), 'uuid');
+    expect(captureCreatorIdForUser({'id': 'uuid', 'short_id': 0}), 'uuid');
+    expect(captureCreatorIdForUser(null), isNull);
+  });
+
   test('records the local date, time, hundredths, and creator ID', () {
     expect(
         names.create(

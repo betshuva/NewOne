@@ -31,7 +31,7 @@ test('audio stays pending until its transcript passes harmful-text moderation', 
     /function requestPendingScanRetry\(\)[\s\S]*?setImmediate\([\s\S]*?retryPendingScans\(\)/);
   assert.match(source,
     /finally \{[\s\S]*?retryPendingScans\.running = false;[\s\S]*?pendingScanRetryRequested/);
-  assert.match(source, /row\.file_type === 'audio'[\s\S]*scanAudio\(buffer, row\.file_name\)/);
+  assert.match(source, /row\.file_type === 'audio'[\s\S]*scanAudio\(buffer, row\.file_name, \{ tracking:/);
   assert.match(source, /moderateChatText\(transcript\)/);
   assert.match(source, /transcriptHash: transcriptDigest\(transcript\)/);
   assert.doesNotMatch(source, /audio:\s*\{[^}]*transcript[,}]/s);
@@ -56,23 +56,6 @@ test('voice recording stops automatically at the server duration limit', () => {
     path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
   assert.equal((source.match(/_recordSeconds >= 120/g) || []).length, 2);
   assert.match(source, /ההקלטה נעצרה לאחר מגבלת שתי דקות/);
-});
-
-test('attachment menus identify the private recipient or group', () => {
-  const source = fs.readFileSync(
-    path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
-  assert.match(source, /שיתוף קובץ עם \$recipientName/);
-  assert.match(source, /שיתוף קובץ בקבוצה \$groupName/);
-});
-
-test('attachment menus use the approved compact five-row grid', () => {
-  const source = fs.readFileSync(
-    path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
-  assert.match(source,
-    /class _AttachGrid[\s\S]*?rowSizes = \[3, 2, 2, 1, 2\]/);
-  assert.ok((source.match(/_AttachGrid\(/g) || []).length >= 3);
-  assert.match(source,
-    /כל הקבצים עוברים בדיקת בטיחות וסינון לפני השליחה/);
 });
 
 test('small chat images expose the three-dot message menu', () => {

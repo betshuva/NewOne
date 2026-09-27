@@ -1,3 +1,6 @@
+import 'contact_request_status.dart';
+import 'chat_attachment_menu.dart';
+import 'chat_attachment_files.dart';
 import 'blocked_image_notice.dart';
 import 'location_autocomplete.dart';
 import 'calendar.dart';
@@ -5,6 +8,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'conversation_cleanup.dart';
 import 'filter_history.dart';
 import 'filter_audit_screen.dart';
+import 'system_audit_screen.dart';
 import 'guide_message_draft.dart';
 import 'inline_custom_emoji.dart';
 import 'inline_emoji_picker.dart';
@@ -38,12 +42,13 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf/pdf.dart';
+import 'package:pdf/pdf.dart' hide PdfDocument;
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:video_player/video_player.dart';
 import 'file_download.dart';
+import 'pdf_document_actions.dart';
 import 'hebrew_date.dart';
 import 'media_cache.dart';
 import 'media_delete_dialog.dart';
@@ -59,11 +64,14 @@ import 'web_otp.dart';
 import 'app_screenshot.dart';
 import 'incoming_share.dart';
 import 'read_notifications.dart';
+import 'private_message_outbox.dart';
+import 'foreground_notifications.dart';
 import 'message_reactions.dart';
 import 'message_hover.dart';
 import 'document_scanner.dart';
 import 'image_clipboard.dart';
 import 'native_video_capture.dart';
+import 'native_photo_capture.dart';
 import 'capture_file_name.dart';
 import 'captured_photo_name.dart';
 import 'image_paste_menu.dart';
@@ -73,7 +81,7 @@ const _sharedContactPrefix = 'betshuva://contact/';
 const _maxVideoDuration = Duration(seconds: 30);
 
 String? _captureCreatorId(BuildContext context, Map<String, dynamic>? me) {
-  final id = normalizeCaptureCreatorId(me?['id']?.toString() ?? '');
+  final id = captureCreatorIdForUser(me);
   if (id != null) return id;
   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
     content: Text('פרטי המשתמש עדיין נטענים. נסה שוב בעוד רגע'),
@@ -256,7 +264,14 @@ Future<Map<String, String>?> _manualSharedContact(BuildContext context) async {
 Future<Map<String, String>?> _pickPhoneContact(BuildContext context) async {
   if (kIsWeb) return _manualSharedContact(context);
   final granted = await FlutterContacts.requestPermission(readonly: true);
-  if (!granted) return null;
+  if (!granted) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('יש לאפשר גישה לאנשי הקשר בהגדרות הטלפון כדי לשתף איש קשר'),
+      ));
+    }
+    return null;
+  }
   final contacts = await FlutterContacts.getContacts(withProperties: true);
   if (!context.mounted) return null;
   var query = '';
@@ -1089,6 +1104,13 @@ MediaType _mimeFromFileName(String fileName) {
     case 'docx':
       return MediaType('application',
           'vnd.openxmlformats-officedocument.wordprocessingml.document');
+    case 'xlsx':
+      return MediaType('application',
+          'vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    case 'mp4':
+      return MediaType('video', 'mp4');
+    case 'mov':
+      return MediaType('video', 'quicktime');
     case 'mp3':
       return MediaType('audio', 'mpeg');
     case 'aac':
@@ -1096,7 +1118,7 @@ MediaType _mimeFromFileName(String fileName) {
     case 'm4a':
       return MediaType('audio', 'mp4');
     case 'webm':
-      return MediaType('audio', 'webm');
+      return MediaType('video', 'webm');
     case 'ogg':
       return MediaType('audio', 'ogg');
     case 'wav':
@@ -1193,11 +1215,23 @@ class _InAppPdfScreen extends StatefulWidget {
 
 class _InAppPdfScreenState extends State<_InAppPdfScreen> {
   final PdfViewerController _controller = PdfViewerController();
+  PdfDocument? _document;
   int? _page;
   int? _pages;
 
   @override
+  void didUpdateWidget(covariant _InAppPdfScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _document = null;
+      _page = null;
+      _pages = null;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final document = _document;
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: !widget.embedded,
@@ -1218,22 +1252,26 @@ class _InAppPdfScreenState extends State<_InAppPdfScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: 'הקטנה',
-            onPressed: () =>
-                _controller.isReady ? _controller.zoomDown() : null,
-            icon: const Icon(Icons.zoom_out),
-          ),
-          IconButton(
-            tooltip: 'הגדלה',
-            onPressed: () => _controller.isReady ? _controller.zoomUp() : null,
-            icon: const Icon(Icons.zoom_in),
-          ),
-          IconButton(
-            tooltip: 'הורדה',
-            onPressed: () =>
+          PdfDocumentActions(
+            key: ValueKey(widget.url),
+            fileName: widget.fileName,
+            url: widget.url,
+            loadBytes: document != null &&
+                    (document.permissions?.allowsPrinting ?? true)
+                ? () => document.encodePdf()
+                : null,
+            onZoomIn: _document == null
+                ? null
+                : () {
+                    if (_controller.isReady) _controller.zoomUp();
+                  },
+            onZoomOut: _document == null
+                ? null
+                : () {
+                    if (_controller.isReady) _controller.zoomDown();
+                  },
+            onDownload: () =>
                 _downloadChatFile(context, widget.url, widget.fileName),
-            icon: const Icon(Icons.download_outlined),
           ),
         ],
       ),
@@ -1248,6 +1286,7 @@ class _InAppPdfScreenState extends State<_InAppPdfScreen> {
           onViewerReady: (document, controller) {
             if (mounted) {
               setState(() {
+                _document = document;
                 _pages = document.pages.length;
                 _page = controller.pageNumber ?? 1;
               });
@@ -1774,8 +1813,18 @@ String? _normalizeIncomingFileType(String? fileType,
   return t;
 }
 
+bool _isVisualMediaMessage(Map<String, dynamic> message) {
+  final type = _normalizeIncomingFileType(
+    message['fileType'] as String?,
+    fileUrl: message['fileUrl'] as String?,
+    fileName: message['fileName'] as String?,
+  );
+  return type == 'image' || type == 'video';
+}
+
 // ── Local notifications setup ─────────────────────────────────────
 final _localNotif = FlutterLocalNotificationsPlugin();
+final _localNotificationOpen = ValueNotifier<RemoteMessage?>(null);
 
 @pragma('vm:entry-point')
 Future<void> _firebaseBackgroundHandler(RemoteMessage msg) async {
@@ -1787,7 +1836,15 @@ Future<void> _initLocalNotifications() async {
   const ios = DarwinInitializationSettings();
   await _localNotif.initialize(
     const InitializationSettings(android: android, iOS: ios),
+    onDidReceiveNotificationResponse: (response) {
+      _localNotificationOpen.value = notificationMessageFromPayload(response.payload);
+    },
   );
+  final launch = await _localNotif.getNotificationAppLaunchDetails();
+  if (launch?.didNotificationLaunchApp == true) {
+    _localNotificationOpen.value = notificationMessageFromPayload(
+        launch?.notificationResponse?.payload);
+  }
   const channel = AndroidNotificationChannel(
     'betshuva_messages',
     'הודעות ושיחות',
@@ -1801,24 +1858,9 @@ Future<void> _initLocalNotifications() async {
       ?.createNotificationChannel(channel);
 }
 
-void _showLocalNotification(RemoteMessage msg) {
-  final n = msg.notification;
-  if (n == null) return;
-  _localNotif.show(
-    msg.hashCode,
-    n.title,
-    n.body,
-    const NotificationDetails(
-      android: AndroidNotificationDetails(
-        'betshuva_messages',
-        'הודעות',
-        importance: Importance.high,
-        priority: Priority.high,
-        sound: RawResourceAndroidNotificationSound('default'),
-      ),
-      iOS: DarwinNotificationDetails(sound: 'default'),
-    ),
-  );
+Future<void> _showLocalNotification(RemoteMessage msg) async {
+  try { await showForegroundMessageNotification(_localNotif, msg); }
+  catch (error) { debugPrint('Notification display failed: $error'); }
 }
 
 // ── Color Palette — Betshuva Brand ───────────────────────────────
@@ -1850,15 +1892,13 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.32';
+const kVersion = '1.3.34';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
 const kSafeInformationAiId = '00000000-0000-4000-8000-000000000003';
 const _shareChannel = MethodChannel('com.betshuva.app/share');
 
-const _maxBatchImages = 20;
-const _maxBatchDocuments = 20;
 const _maxConcurrentImageUploads = 2;
 var _uploadMessageSequence = 0;
 
@@ -1950,6 +1990,41 @@ String _senderFilterRejectionMessage(Map data) =>
     data['reason']?.toString() ??
     'סוג התמונה חסום בהגדרות הסינון שלך';
 
+bool _isScanStopped(Map data) =>
+    data['scanStopped'] == true || data['scan_stopped'] == true ||
+    data['moderation_status'] == 'stopped' ||
+    data['moderationStatus'] == 'stopped' ||
+    data['status'] == 'stopped' || data['status'] == 'stopped_scan';
+
+String _scanStoppedReason(Map data) {
+  const reasons = {
+    'credit_balance_exhausted': 'אין יתרה זמינה אצל ספק הסריקה',
+    'required_provider_unavailable': 'שירות הסריקה אינו זמין',
+    'provider_guard_unavailable': 'לא ניתן לאמת את תקציב הסריקה',
+    'provider_not_configured': 'שירות הסריקה אינו מוגדר',
+    'budget_exhausted': 'הושגה מגבלת הבדיקות לסרטון',
+    'deadline_exceeded': 'הסריקה חרגה מהזמן המותר',
+    'legacy_budget_unknown': 'לא ניתן לאמת כמה בדיקות כבר בוצעו לסרטון',
+    'operation_outcome_unknown': 'תוצאת בדיקה קודמת אינה ידועה',
+  };
+  final rawReason = (data['scanReason'] ?? data['scan_reason'] ?? data['reason'])
+      ?.toString().trim();
+  final reason = rawReason != null && rawReason.isNotEmpty
+      ? reasons[rawReason] ?? rawReason
+      : reasons[data['reasonCode']] ?? 'הקובץ לא נשלח';
+  final budget = data['scanBudget'] ?? data['scan_budget'] ?? data['budget'];
+  if (budget is Map && budget['used'] is Map && budget['limits'] is Map) {
+    final used = int.tryParse(budget['used']['total'].toString());
+    final limit = int.tryParse(budget['limits']['total'].toString());
+    if (used != null && limit != null && used >= 0 && limit >= 0) {
+      return '$reason\nבוצעו $used מתוך $limit בדיקות';
+    }
+  }
+  return reason;
+}
+
+String _scanStoppedNotice(Map data) => 'הסריקה נעצרה\n${_scanStoppedReason(data)}';
+
 bool _matchesRecentFailedUpload(
     Map<String, dynamic> message, String fileName, String idPrefix) {
   if (message['status'] != 'failed' ||
@@ -1969,6 +2044,12 @@ Future<_FileUploadResult> _uploadFileRequest({
   required Map<String, String> fields,
 }) async {
   try {
+    const maxBytes = 50 * 1024 * 1024;
+    final length = file is XFile ? await file.length() : (file as PlatformFile).size;
+    if (length > maxBytes) {
+      return _FileUploadResult(_FileUploadOutcome.failed,
+          error: 'הקובץ גדול מדי. ניתן לשלוח קובץ עד 50 MB');
+    }
     final bytes = file is XFile
         ? await file.readAsBytes()
         : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
@@ -1994,6 +2075,10 @@ Future<_FileUploadResult> _uploadFileRequest({
       if (decoded is Map<String, dynamic>) data = decoded;
     } catch (_) {}
 
+    if (_isScanStopped(data)) {
+      return _FileUploadResult(_FileUploadOutcome.failed,
+          data: data, error: _scanStoppedNotice(data));
+    }
     if (_isSenderFilterRejection(data)) {
       return _FileUploadResult(_FileUploadOutcome.failed,
           data: data, error: _senderFilterRejectionMessage(data));
@@ -2659,6 +2744,7 @@ Future<ForwardChatResult> forwardChatMessages(
     }
     var sentCount = 0;
     var pendingCount = 0;
+    var contactPendingCount = 0;
     final acceptedByMessage = List<int>.filled(messages.length, 0);
     final forwardingErrors = <String>[];
     String responseError(http.Response response) {
@@ -2759,6 +2845,12 @@ Future<ForwardChatResult> forwardChatMessages(
               body: jsonEncode({...payload, 'toUserId': target['id']}),
             );
             sent = response.statusCode == 200;
+            if (sent && jsonDecode(response.body)['requestPending'] == true) {
+              pendingCount++;
+              contactPendingCount++;
+              acceptedByMessage[messageIndex]++;
+              continue;
+            }
             if (!sent) forwardingErrors.add(responseError(response));
           } else {
             final response = await transport.post(
@@ -2788,9 +2880,10 @@ Future<ForwardChatResult> forwardChatMessages(
       final totalDeliveries = messages.length * targets.length;
       final allSent = sentCount == totalDeliveries;
       final uniqueErrors = forwardingErrors.toSet().join(' • ');
-      final pendingNotice = pendingCount == 0
-          ? ''
-          : ' • $pendingCount קבצים ממתינים לסריקה ולאישור';
+      final scanPendingCount = pendingCount - contactPendingCount;
+      final pendingNotice =
+          (scanPendingCount == 0 ? '' : ' • $scanPendingCount קבצים ממתינים לסריקה') +
+          (contactPendingCount == 0 ? '' : ' • $contactPendingCount פריטים ממתינים לאישור הנמען');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -8352,7 +8445,16 @@ class _MainShellContentState extends State<_MainShellContent> {
   // Firebase initialization failed throws synchronously during initState and
   // leaves Flutter rendering a blank screen, so keep all notification setup
   // behind a guarded async boundary.
+  void _consumeLocalNotificationOpen() {
+    final message = _localNotificationOpen.value;
+    if (message == null || !mounted) return;
+    _localNotificationOpen.value = null;
+    _handleNotificationOpen(message);
+  }
+
   Future<void> _initNotificationOpenHandlers() async {
+    _localNotificationOpen.addListener(_consumeLocalNotificationOpen);
+    _consumeLocalNotificationOpen();
     try {
       if (Firebase.apps.isEmpty) return;
       final initialMessage =
@@ -8366,6 +8468,7 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   @override
   void dispose() {
+    _localNotificationOpen.removeListener(_consumeLocalNotificationOpen);
     _profilePictureFilterSubscription.cancel();
     _conversationChangesSubscription.cancel();
     unregisterAppScreenshotMenu(this);
@@ -8596,13 +8699,9 @@ class _MainShellContentState extends State<_MainShellContent> {
       }
       return;
     }
-    if (accepted) {
-      final senderId = request['sender_id'] ?? request['senderId'];
-      _messageRequests.removeWhere(
-          (item) => (item['sender_id'] ?? item['senderId']) == senderId);
-    } else {
-      _messageRequests.removeAt(0);
-    }
+    final resolvedSenderId = request['sender_id'] ?? request['senderId'];
+    _messageRequests.removeWhere(
+        (item) => (item['sender_id'] ?? item['senderId']) == resolvedSenderId);
     _showingMessageRequest = false;
     _showNextMessageRequest();
   }
@@ -9132,7 +9231,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         .where((count) => count > 0)
         .fold<int>(0, (total, count) => total + count);
     final isDesktop = MediaQuery.sizeOf(context).width >= 900;
-    final mainNavigationIndex = _idx >= 3 ? 0 : _idx.clamp(0, 2);
+    final mainNavigationIndex = _idx == 3 ? 0 : _idx;
 
     Widget navigationIcon(IconData icon, int unreadCount) => Stack(
           clipBehavior: Clip.none,
@@ -9614,34 +9713,34 @@ class _BrandAppBarTitle extends StatelessWidget {
             else
               _magenDavid(size: 34),
             const SizedBox(width: 9),
-            Column(
+            Expanded(child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Row(
-                  mainAxisSize: MainAxisSize.min,
+                LayoutBuilder(builder: (context, constraints) => Row(
+                  mainAxisSize: MainAxisSize.max,
                   children: [
-                    Text('בתשובה',
+                    const Flexible(child: Text('בתשובה', maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                             color: Colors.white,
                             fontSize: 19,
                             height: 1.05,
-                            fontWeight: FontWeight.w700)),
-                    SizedBox(width: 7),
-                    Text('תוכן יהודי נקי',
+                            fontWeight: FontWeight.w700))),
+                    if (constraints.maxWidth >= 170) const SizedBox(width: 7),
+                    if (constraints.maxWidth >= 170) const Flexible(child: Text('תוכן יהודי נקי', maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                             color: Colors.white,
                             fontSize: 10,
                             height: 1.05,
-                            fontWeight: FontWeight.w700)),
+                            fontWeight: FontWeight.w700))),
                   ],
-                ),
+                )),
                 if (name.isNotEmpty)
-                  Text(name,
+                  Text(name, maxLines: 1, overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           color: Colors.white70, fontSize: 11, height: 1.1)),
               ],
-            ),
+            )),
           ],
         ),
       ],
@@ -14475,10 +14574,11 @@ class _ListingsScreenState extends State<ListingsScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(38),
+          preferredSize: const Size.fromHeight(48),
           child: Container(
             color: kHeader,
             child: _MainNavigationTabs(
+              token: widget.token,
               currentIndex: widget.currentMainNavigationIndex,
               onSelected: widget.onMainNavigationSelected,
             ),
@@ -20148,19 +20248,52 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
 }
 
 class _MainNavigationTabs extends StatelessWidget {
+  final String token;
   final int currentIndex;
   final ValueChanged<int> onSelected;
 
   const _MainNavigationTabs({
+    required this.token,
     required this.currentIndex,
     required this.onSelected,
   });
 
   static const _labels = ['שיחות', 'קבוצות', 'מודעות'];
 
+  Future<void> _openCalendar(BuildContext context) async {
+    if (MediaQuery.sizeOf(context).width >= 900) {
+      onSelected(5);
+    } else {
+      await Navigator.push(context, MaterialPageRoute<void>(
+        builder: (_) => CalendarScreen(api: kApi, token: token)));
+    }
+  }
+
+  Future<void> _openMedia(BuildContext context) async {
+    if (MediaQuery.sizeOf(context).width >= 900) {
+      onSelected(4);
+    } else {
+      await Navigator.push(context, MaterialPageRoute<void>(
+        builder: (_) => PersonalMediaScreen(token: token)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Row(
-        children: List.generate(_labels.length, (index) {
+        textDirection: TextDirection.rtl,
+        children: [
+          CalendarNavigationButton(
+            api: kApi,
+            token: token,
+            selected: currentIndex == 5,
+            onTap: () => _openCalendar(context),
+          ),
+          _PersonalMediaNavigationButton(
+            token: token,
+            selected: currentIndex == 4,
+            onTap: () => _openMedia(context),
+          ),
+          ...List.generate(_labels.length, (index) {
           final active = currentIndex == index;
           return Expanded(
             child: InkWell(
@@ -20190,6 +20323,7 @@ class _MainNavigationTabs extends StatelessWidget {
             ),
           );
         }),
+        ],
       );
 }
 
@@ -20985,65 +21119,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
         elevation: 0,
         toolbarHeight: 72,
         titleSpacing: 16,
-        title: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'בסיעתא דשמיא  •  ${fullHebrewDate(DateTime.now())}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w400),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                if ((widget.me?['profile_pic_url'] as String?) != null)
-                  UserAvatar(
-                    radius: 17,
-                    picUrl: widget.me?['profile_pic_url'] as String?,
-                    name: widget.me?['name'] as String? ?? '',
-                  )
-                else
-                  _magenDavid(size: 34),
-                const SizedBox(width: 10),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text('בתשובה',
-                            style: TextStyle(
-                                fontSize: 19,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                                height: 1.1)),
-                        SizedBox(width: 7),
-                        Text('תוכן יהודי נקי',
-                            style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                                height: 1.1)),
-                      ],
-                    ),
-                    Text(widget.me?['name'] as String? ?? '',
-                        style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w300,
-                            color: Colors.white70,
-                            letterSpacing: 0.5)),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ),
+        title: _BrandAppBarTitle(me: widget.me),
         actions: [
           IconButton(
             icon: const Icon(Icons.group_add_outlined, color: Colors.white),
@@ -21110,10 +21186,11 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(38),
+          preferredSize: const Size.fromHeight(48),
           child: Container(
             color: kHeader,
             child: _MainNavigationTabs(
+              token: widget.token,
               currentIndex: widget.currentMainNavigationIndex,
               onSelected: widget.onMainNavigationSelected,
             ),
@@ -21147,35 +21224,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                 onChanged: (value) =>
                     setState(() => _searchQuery = value.trim().toLowerCase()),
               ),
-            ),
-          if (_tab == 0 && 'לוח שנה'.contains(_searchQuery))
-            CalendarFriendTile(api: kApi, token: widget.token,
-              selected: widget.calendarSelected,
-              onTap: () async {
-                if (widget.onCalendar != null && MediaQuery.sizeOf(context).width >= 900) {
-                  widget.onCalendar!();
-                } else {
-                  await Navigator.push(context, MaterialPageRoute<void>(
-                    builder: (_) => CalendarScreen(api: kApi, token: widget.token)));
-                }
-              }),
-          if (_tab == 0 && 'המדיה שלי'.contains(_searchQuery))
-            _PersonalMediaConversationTile(
-              token: widget.token,
-              selected: widget.personalMediaSelected,
-              onTap: () async {
-                if (widget.onPersonalMedia != null &&
-                    MediaQuery.sizeOf(context).width >= 900) {
-                  widget.onPersonalMedia!();
-                } else {
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute<void>(
-                      builder: (_) => PersonalMediaScreen(token: widget.token),
-                    ),
-                  );
-                }
-              },
             ),
           // List
           if (_tab == 2) ...[
@@ -21421,11 +21469,6 @@ class _ConversationsScreenState extends State<ConversationsScreen> {
                               .compareTo(_lastMessageTime(aData));
                         });
                       if (searchedUsers.isEmpty && showGroups.isEmpty) {
-                        if (_tab == 0 &&
-                            _searchQuery.isNotEmpty &&
-                            ('המדיה שלי'.contains(_searchQuery) || 'לוח שנה'.contains(_searchQuery))) {
-                          return const SizedBox.shrink();
-                        }
                         return const Center(
                           child: Text('אין שיחות להצגה',
                               style: TextStyle(color: kSubtext, fontSize: 15)),
@@ -21655,26 +21698,26 @@ IconData? _conversationPreviewIcon(Map<String, dynamic> item) {
   }
 }
 
-// A personal library shortcut, deliberately separate from user/group rows.
+// A personal library shortcut in the main navigation bar.
 // It never participates in recipients, unread counts, pinning or message APIs.
-class _PersonalMediaConversationTile extends StatefulWidget {
+class _PersonalMediaNavigationButton extends StatefulWidget {
   final String token;
   final Future<void> Function() onTap;
   final bool selected;
 
-  const _PersonalMediaConversationTile({
+  const _PersonalMediaNavigationButton({
     required this.token,
     required this.onTap,
     required this.selected,
   });
 
   @override
-  State<_PersonalMediaConversationTile> createState() =>
-      _PersonalMediaConversationTileState();
+  State<_PersonalMediaNavigationButton> createState() =>
+      _PersonalMediaNavigationButtonState();
 }
 
-class _PersonalMediaConversationTileState
-    extends State<_PersonalMediaConversationTile> with WidgetsBindingObserver {
+class _PersonalMediaNavigationButtonState
+    extends State<_PersonalMediaNavigationButton> with WidgetsBindingObserver {
   Timer? _summaryTimer;
   String? _summary;
   bool _loading = false;
@@ -21692,7 +21735,7 @@ class _PersonalMediaConversationTileState
   }
 
   @override
-  void didUpdateWidget(covariant _PersonalMediaConversationTile oldWidget) {
+  void didUpdateWidget(covariant _PersonalMediaNavigationButton oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.token != widget.token) {
       _summary = null;
@@ -21749,79 +21792,21 @@ class _PersonalMediaConversationTileState
 
   @override
   Widget build(BuildContext context) => Semantics(
-        button: true,
+        key: const ValueKey('personal-media-shortcut'),
         selected: widget.selected,
-        label: 'המדיה שלי, ספרייה אישית',
-        child: Material(
-          color: widget.selected ? const Color(0xFFDCEFFC) : const Color(0xFFF4FAFE),
-          child: InkWell(
-            key: const ValueKey('personal-media-conversation-entry'),
-            onTap: () async {
-              await widget.onTap();
-              if (mounted) _loadSummary();
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: Color(0xFFD4E9F7))),
-              ),
-              child: Row(children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      begin: Alignment.topRight,
-                      end: Alignment.bottomLeft,
-                      colors: [kPrimaryMid, kHeader],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: kPrimary.withValues(alpha: .15),
-                        blurRadius: 8,
-                        offset: const Offset(0, 3),
-                      ),
-                    ],
-                  ),
-                  child: const Icon(Icons.photo_library_outlined,
-                      color: Colors.white, size: 26),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('המדיה שלי',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              color: kHeader,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 4),
-                      Text(_summary ?? 'טוען כמות קבצים ונפח…',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: kSubtext, fontSize: 12)),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                const Tooltip(
-                  message: 'הספרייה האישית שלך',
-                  child: Icon(Icons.lock_outline_rounded,
-                      color: kPrimaryMid, size: 15),
-                ),
-                const SizedBox(width: 8),
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: kPrimary,
-                  size: 22,
-                ),
-              ]),
-            ),
+        child: IconButton(
+          tooltip: 'המדיה שלי${_summary == null ? '' : '\n$_summary'}',
+          icon: const Icon(Icons.photo_library_outlined, size: 22),
+          color: Colors.white,
+          style: IconButton.styleFrom(
+            minimumSize: const Size(48, 48),
+            backgroundColor: widget.selected ? Colors.white24 : Colors.transparent,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
           ),
+          onPressed: () async {
+            await widget.onTap();
+            if (mounted) _loadSummary();
+          },
         ),
       );
 }
@@ -22543,6 +22528,9 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
+  final _attachmentAnchorKey = GlobalKey();
+  bool _attachmentMenuOpen = false;
+  bool _attachmentPickerOpen = false;
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
   final _msgCtrl = InlineEmojiController();
@@ -22564,6 +22552,7 @@ class _ChatScreenState extends State<ChatScreen> {
   late final void Function(dynamic) _scanRejectedSocketHandler;
   late final void Function(dynamic) _scanCancelledSocketHandler;
   late final void Function(dynamic) _messageRejectedSocketHandler;
+  late final void Function(dynamic) _contactRequestChangedHandler;
   Timer? _messageRefreshTimer;
   String? _serverMessagesFingerprint;
   int _historyGeneration = 0;
@@ -22614,6 +22603,13 @@ class _ChatScreenState extends State<ChatScreen> {
       _msgHistory.clear();
       _loading = false;
     });
+    if (_useOutbox) {
+      for (final message in await _outbox.load()) {
+        if (!conversationMessageAfter(message, cutoff)) {
+          await _outbox.remove(message['outboxId'].toString());
+        }
+      }
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs
         .remove('cache_msgs_${widget.me?['id']}_${widget.recipient['id']}');
@@ -22661,6 +22657,26 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void>? _initialMessagesFuture;
   Future<void>? _initialOutgoingFilterFuture;
 
+  bool get _isUnfilteredAssistantChat =>
+      const {kSystemGuideId, kSafeInformationAiId}
+          .contains(widget.recipient['id']);
+
+  static const _unfilteredAssistantFilter = <String, bool>{
+    'text': true,
+    'video': true,
+    'nonHumanImages': true,
+    'men': true,
+    'women': true,
+    'children': true,
+  };
+
+  void _applyAssistantFilter() {
+    _recipientReceivingFilter = _unfilteredAssistantFilter;
+    _outgoingFilter = _unfilteredAssistantFilter;
+    _counterpartFilterAvailable = true;
+    _requiresFirstMessageFilterChoice = false;
+  }
+
   String _selectionKey(Map<String, dynamic> message) =>
       message['id']?.toString() ??
       message['clientMessageId']?.toString() ??
@@ -22693,12 +22709,15 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   bool get _recipientAllowsText =>
+      _isUnfilteredAssistantChat ||
       widget.recipient['id'] == kScanBotId ||
       _recipientReceivingFilter?['text'] != false;
   bool get _recipientAllowsVideo =>
+      _isUnfilteredAssistantChat ||
       widget.recipient['id'] == kScanBotId ||
       _recipientReceivingFilter?['video'] != false;
   bool get _recipientAllowsImages =>
+      _isUnfilteredAssistantChat ||
       widget.recipient['id'] == kScanBotId ||
       _recipientReceivingFilter == null ||
       const ['nonHumanImages', 'men', 'women', 'children']
@@ -22803,6 +22822,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadRecipientReceivingFilter() async {
+    if (_isUnfilteredAssistantChat) {
+      setState(_applyAssistantFilter);
+      return;
+    }
     if (widget.recipient['id'] == kScanBotId) return;
     try {
       final response = await http.get(
@@ -22822,6 +22845,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadOutgoingFilter() async {
+    if (_isUnfilteredAssistantChat) {
+      setState(_applyAssistantFilter);
+      return;
+    }
     final generation = _historyGeneration;
     try {
       final response = await http.get(
@@ -22842,6 +22869,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<bool> _loadContactFilterComparison() async {
+    if (_isUnfilteredAssistantChat) {
+      setState(_applyAssistantFilter);
+      return true;
+    }
     final generation = _historyGeneration;
     try {
       final response = await http.get(
@@ -22879,8 +22910,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _historyGeneration++;
     _serverMessagesFingerprint = null;
     setState(() {
-      // Recheck every image, including our own sends, against current visibility.
-      _messages.removeWhere((message) => message['fileType'] == 'image');
+      // Recheck visual media, including our own sends, before showing a frame.
+      _messages.removeWhere(_isVisualMediaMessage);
       _selectedMessageKeys.clear();
       _outgoingFilter = null;
     });
@@ -22894,6 +22925,18 @@ class _ChatScreenState extends State<ChatScreen> {
     final generation = _historyGeneration;
     final requestSerial = ++_historyRequestSerial;
     final cacheKey = 'cache_msgs_${widget.me?['id']}_${widget.recipient['id']}';
+    final outbox = _useOutbox ? await _outbox.load() : <Map<String, dynamic>>[];
+    if (!mounted || requestSerial != _historyRequestSerial || generation != _historyGeneration) return;
+    if (outbox.isNotEmpty) {
+      setState(() {
+      _loading = false;
+      for (final message in outbox) {
+        final index = _messages.indexWhere((m) => m['outboxId'] == message['outboxId']);
+        if (index < 0) { _messages.add(message); }
+        else { _messages[index].addAll(message); }
+      }
+      });
+    }
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -22902,13 +22945,14 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!silent && cached != null && mounted) {
         final list = (jsonDecode(cached) as List)
             .cast<Map<String, dynamic>>()
-            .where((message) => message['fileType'] != 'image')
+            .where((message) => !_isVisualMediaMessage(message))
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
         setState(() {
           _messages
             ..clear()
-            ..addAll(list);
+            ..addAll(list)
+            ..addAll(outbox);
           _loading = false;
         });
         _scrollToBottom();
@@ -22927,6 +22971,20 @@ class _ChatScreenState extends State<ChatScreen> {
             .map(_normalizeDbMessage)
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
+        for (final sent in normalized) {
+          final key = sent['clientMessageId']?.toString();
+          if (key != null && outbox.any((m) => m['outboxId'] == key)) {
+            await _outbox.remove(key);
+          }
+        }
+        if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+        // Reconcile acknowledgements even when the fetched history itself has
+        // not changed (for example, an older route saved a timed-out attempt).
+        final confirmedKeys = normalized.map((m) => m['clientMessageId'])
+            .whereType<String>().toSet();
+        if (_messages.any((m) => confirmedKeys.contains(m['outboxId']))) {
+          setState(() => _messages.removeWhere((m) => confirmedKeys.contains(m['outboxId'])));
+        }
         _persistRecentImageUrls(normalized).ignore();
         final fingerprint = jsonEncode(normalized);
         if (silent && fingerprint == _serverMessagesFingerprint) return;
@@ -22938,7 +22996,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.clear();
           _messages.addAll(normalized);
           for (final p in pending) {
-            final alreadySaved = p['fileUrl'] != null
+            final alreadySaved = p['outboxId'] != null
+                ? normalized.any((m) => m['clientMessageId'] == p['outboxId'])
+                : p['fileUrl'] != null
                 ? _messages.any((message) => message['fileUrl'] == p['fileUrl'])
                 : _messages.any((message) => message['text'] == p['text']);
             if (!alreadySaved) {
@@ -22981,6 +23041,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final privateFilter = map['private_filter'];
     return {
       'id': map['id'],
+      if (map['client_message_id'] != null) 'clientMessageId': map['client_message_id'],
       'text': map['body'] ?? map['file_name'] ?? '',
       'from': map['sender_id'],
       'time': _formatTime(map['created_at']),
@@ -22988,7 +23049,8 @@ class _ChatScreenState extends State<ChatScreen> {
       'isUnread': map['sender_id'] != widget.me?['id'] &&
           map['is_read'] != true &&
           map['is_read'] != 1,
-      'status': map['message_status'] == 'pending_scan'
+      'status': contactRequestStatus(map['message_status']) ?? (_isScanStopped(map) ? 'stopped_scan'
+          : map['message_status'] == 'pending_scan'
           ? 'pending_scan'
           : map['message_status'] == 'rejected_scan'
               ? 'rejected_scan'
@@ -22996,8 +23058,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   ? 'read'
                   : map['message_status'] == 'delivered'
                       ? 'delivered'
-                      : 'sent',
+                      : 'sent'),
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
+      if (_isScanStopped(map)) 'scanStopped': true,
+      if (map['scan_budget'] != null || map['budget'] != null)
+        'scanBudget': map['scan_budget'] ?? map['budget'],
       if (map['forward_allowed'] == true) 'forwardAllowed': true,
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
@@ -23182,17 +23247,42 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     };
     widget.socket?.on('scan:rejected', _scanRejectedSocketHandler);
+    _contactRequestChangedHandler = (data) {
+      if (!mounted || data is! Map) return;
+      final target = (data['toUserId'] ?? data['byUserId'])?.toString();
+      if (target != widget.recipient['id']?.toString()) return;
+      _serverMessagesFingerprint = null;
+      _loadMessages(silent: true);
+    };
+    for (final event in ['message:request-pending', 'message:request-accepted', 'message:request-declined']) {
+      widget.socket?.on(event, _contactRequestChangedHandler);
+    }
+
     _scanCancelledSocketHandler = (data) {
       if (!mounted || data is! Map) return;
       final fileUrl = data['fileUrl']?.toString();
-      if (fileUrl == null) return;
+      final targetId = data['toUserId']?.toString();
+      if (fileUrl == null || data['groupId'] != null ||
+          targetId != null && targetId != widget.recipient['id']?.toString()) {
+        return;
+      }
+      if (targetId == null &&
+          !_messages.any((message) => message['fileUrl'] == fileUrl)) {
+        return;
+      }
       setState(() => _messages.removeWhere((message) =>
           message['fileUrl'] == fileUrl &&
           (message['status'] == 'uploading' ||
               message['status'] == 'pending_scan')));
+      if (_isScanStopped(data)) {
+        _serverMessagesFingerprint = null;
+        _loadMessages(silent: true);
+      }
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(data['reason']?.toString() ??
-            'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת'),
+        content: Text(_isScanStopped(data) ? _scanStoppedNotice(data)
+            : data['reason']?.toString() ??
+                'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
+            textDirection: TextDirection.rtl),
       ));
     };
     widget.socket?.on('scan:cancelled', _scanCancelledSocketHandler);
@@ -23325,6 +23415,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _audioRecorder.dispose();
     widget.socket?.off('chat:message', _chatMessageHandler);
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
+    for (final event in ['message:request-pending', 'message:request-accepted', 'message:request-declined']) {
+      widget.socket?.off(event, _contactRequestChangedHandler);
+    }
+
     widget.socket?.off('scan:cancelled', _scanCancelledSocketHandler);
     widget.socket?.off('message:rejected', _messageRejectedSocketHandler);
     widget.socket?.off('chat:typing', _chatTypingHandler);
@@ -23368,7 +23462,10 @@ class _ChatScreenState extends State<ChatScreen> {
             throw Exception('ההקלטה ריקה ולא נשלחה');
           }
           await _uploadAndSend(recording, _voiceFileName, 'audio',
-              extraFields: const {'recordedAudio': 'true'});
+              extraFields: const {
+                'recordedAudio': 'true',
+                'captureKind': 'microphone'
+              });
         } finally {
           _voiceSubmissionInProgress = false;
         }
@@ -23434,7 +23531,111 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  late final _outbox = PrivateMessageOutbox(
+      widget.me?['id']?.toString() ?? '', widget.recipient['id'].toString());
+  bool _sendingText = false;
+  bool get _useOutbox => (widget.me?['id']?.toString().isNotEmpty ?? false) &&
+      !{kSystemGuideId, kSafeInformationAiId, kScanBotId}.contains(widget.recipient['id']);
+
+  Future<void> _discardOutbox(Map<String, dynamic> message) async {
+    final key = message['outboxId'].toString();
+    if (PrivateMessageOutbox.sending.contains(key)) return;
+    await _outbox.remove(key);
+    if (mounted) setState(() => _messages.removeWhere((m) => m['outboxId'] == key));
+  }
+
+  Future<void> _sendDurableText(String text, String? stickerId) async {
+    final key = PrivateMessageOutbox.newId();
+    final message = <String, dynamic>{
+      'id': 'temp_$key', 'outboxId': key, 'text': text,
+      'from': widget.me?['id'], 'time': _nowTime(),
+      'createdAt': DateTime.now().toIso8601String(), 'status': 'sending',
+      if (stickerId != null) 'stickerId': stickerId,
+      if (stickerId != null) 'fileType': 'sticker',
+      if (_replyTo != null) 'replyTo': Map<String, dynamic>.from(_replyTo!),
+      if (widget.listingId != null) 'listingId': widget.listingId,
+    };
+    try {
+      await _outbox.save(message);
+    } catch (_) {
+      if (mounted) _showError('לא ניתן לשמור את ההודעה במכשיר. הטקסט נשאר בשדה הכתיבה');
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _messages.removeWhere((m) => m['outboxId'] == key);
+      _messages.add(message);
+      _replyTo = null;
+      _msgCtrl.clear();
+    });
+    _scrollToBottom();
+    await _submitOutboxMessage(message);
+  }
+
+  Future<void> _submitOutboxMessage(Map<String, dynamic> message) async {
+    final key = message['outboxId'].toString();
+    if (!PrivateMessageOutbox.sending.add(key)) return;
+    if (mounted) setState(() => message['status'] = 'sending');
+    try {
+      final response = await http.post(Uri.parse('$kApi/messages'),
+        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'clientMessageId': key, 'toUserId': widget.recipient['id'],
+          'text': message['text'],
+          if (message['stickerId'] != null) 'stickerId': message['stickerId'],
+          if (message['replyTo'] != null) 'replyToId': message['replyTo']['id'],
+          if (message['listingId'] != null) 'listingId': message['listingId'],
+        }),
+      ).timeout(const Duration(seconds: 35));
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200 || data['id'] == null) {
+        if (data['code'] == 'CHAT_CONTENT_BLOCKED') {
+          await _outbox.remove(key);
+          if (mounted) {
+            message.remove('outboxId');
+            _markBlockedContent(message['id'].toString());
+            ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
+                data['error']?.toString() ?? 'ההודעה נחסמה'));
+          }
+          return;
+        }
+        throw StateError(data['error']?.toString() ?? 'השליחה נכשלה');
+      }
+      await _outbox.remove(key);
+      if (!mounted) return;
+      setState(() {
+        _messages.removeWhere((m) => m['outboxId'] == key);
+        if (!_messages.any((m) => m['id'] == data['id'] || m['id'] == 'request_${data['id']}')) {
+          _messages.add({...message, 'id': data['requestPending'] == true ? 'request_${data['id']}' : data['id'], 'outboxId': null,
+            'clientMessageId': key, 'status': data['requestPending'] == true ? 'awaiting_contact_approval' : data['status'] ?? 'sent'});
+        }
+      });
+      if (data['requestPending'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('ממתין לאישור חברות ולהרשאת הנמען לקבלת התוכן')));
+      }
+      if (widget.listingId != null) widget.onMessageSent?.call();
+    } catch (error) {
+      // Keep the original record even if the route has already been closed.
+      // The same id is reused on retry, including after an ambiguous timeout.
+      message['status'] = 'failed';
+      message['outboxError'] = error is StateError ? error.message.toString()
+          : 'אין חיבור לשרת. ההודעה נשמרה במכשיר ולא אושרה לשליחה';
+      await _outbox.save(message);
+      if (mounted) setState(() {});
+    } finally {
+      PrivateMessageOutbox.sending.remove(key);
+    }
+  }
+
   Future<void> _send({String? stickerId}) async {
+    if (_sendingText) return;
+    _sendingText = true;
+    try { await _sendImpl(stickerId: stickerId); }
+    finally { _sendingText = false; }
+  }
+
+  Future<void> _sendImpl({String? stickerId}) async {
     if (!_recipientAllowsText) {
       _showRecipientFilterNotice('תוכן טקסטואלי');
       return;
@@ -23486,6 +23687,11 @@ class _ChatScreenState extends State<ChatScreen> {
     // the original message is added to the chat or sent to the recipient.
     if (!await _ensureFirstMessageFilterChoice()) return;
 
+    if (_useOutbox) {
+      await _sendDurableText(text, sticker?.id);
+      return;
+    }
+
     // Normal send
     final replySnapshot = _replyTo;
     final tempId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
@@ -23529,9 +23735,15 @@ class _ChatScreenState extends State<ChatScreen> {
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
           if (data['requestPending'] == true) {
-            setState(() => _messages.removeWhere((m) => m['id'] == tempId));
+            setState(() {
+              final index = _messages.indexWhere((m) => m['id'] == tempId);
+              if (index != -1) {
+                _messages[index]['id'] = 'request_${data['id']}';
+                _messages[index]['status'] = 'awaiting_contact_approval';
+              }
+            });
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('נשלחה בקשת הודעה — ההודעה תימסר לאחר אישור')));
+                content: Text('ממתין לאישור חברות ולהרשאת הנמען לקבלת התוכן')));
             return;
           }
           setState(() {
@@ -23600,6 +23812,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<bool> _ensureFirstMessageFilterChoice() async {
+    if (_isUnfilteredAssistantChat) return true;
     if (widget.recipient['id'] == kScanBotId) return true;
     await Future.wait([
       if (_initialMessagesFuture != null) _initialMessagesFuture!,
@@ -23934,6 +24147,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _openContactFilterSettings() async {
+    if (_isUnfilteredAssistantChat) {
+      await _showContactFilterStatus();
+      return;
+    }
     await Navigator.push(
         context,
         MaterialPageRoute(
@@ -24122,7 +24339,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   );
                 }),
-                ListTile(
+                if (!_isUnfilteredAssistantChat) ListTile(
                   dense: true,
                   leading: const Icon(Icons.tune_rounded, color: kPrimary),
                   title: const Text('הגדרות סינון לאיש הקשר'),
@@ -24441,251 +24658,50 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _showAttachMenu() async {
     await _loadRecipientReceivingFilter();
-    if (!mounted) return;
-    final recipientName = widget.recipient['name']?.toString().trim();
-    final attachMenuTitle = recipientName == null || recipientName.isEmpty
-        ? 'שיתוף קובץ'
-        : 'שיתוף קובץ עם $recipientName';
-    showDialog(
-      context: context,
-      barrierColor: Colors.black54,
-      builder: (dialogContext) => Align(
-        alignment: Alignment.bottomRight,
-        child: Dialog(
-          insetPadding: const EdgeInsets.only(right: 16, bottom: 64),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 320),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 14, 12, 14),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    attachMenuTitle,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  _AttachGrid(
-                    children: [
-                      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
-                        _AttachOption(
-                          icon: Icons.paste,
-                          label: 'הדבק תמונה',
-                          color: kPrimary,
-                          onTap: () {
-                            Navigator.of(dialogContext).pop();
-                            pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
-                          },
-                        ),
-                      _AttachOption(
-                        icon: Icons.screenshot_monitor_outlined,
-                        label: 'צילום מסך',
-                        color: kPrimary,
-                        allowed: _recipientAllowsImages,
-                        status: _recipientAllowsImages
-                            ? 'עריכה לפני שליחה'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsImages) {
-                            _showRecipientFilterNotice('תמונות');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          openAppScreenshot(
-                            context,
-                            token: widget.token,
-                            destination: AppScreenshotDestination.user(
-                                widget.recipient['id'].toString()),
-                          );
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.image_outlined,
-                        label: 'גלריה (עד 10)',
-                        color: kPrimary,
-                        allowed: _recipientAllowsImages,
-                        status: _recipientAllowsImages
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsImages) {
-                            _showRecipientFilterNotice('תמונות');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _pickFile(ImageSource.gallery);
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.camera_alt_outlined,
-                        label: 'צלם תמונה',
-                        color: kPrimaryMid,
-                        allowed: _recipientAllowsImages,
-                        status: _recipientAllowsImages
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsImages) {
-                            _showRecipientFilterNotice('תמונות');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _capturePhoto();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.document_scanner_outlined,
-                        label: 'סריקת מסמך בצילום',
-                        color: Colors.orange.shade800,
-                        allowed: _recipientAllowsText,
-                        status: _recipientAllowsText
-                            ? 'עד 20 עמודים ל־PDF'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsText) {
-                            _showRecipientFilterNotice('מסמכים');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _scanDocument();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.picture_as_pdf_outlined,
-                        label: 'מסמכים (עד 20)',
-                        color: Colors.orange,
-                        allowed: _recipientAllowsText,
-                        status: _recipientAllowsText
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsText) {
-                            _showRecipientFilterNotice('מסמכים');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _pickDocument();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.videocam_outlined,
-                        label: 'וידאו',
-                        color: Colors.deepPurple,
-                        allowed: _recipientAllowsVideo,
-                        status: _recipientAllowsVideo
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsVideo) {
-                            _showRecipientFilterNotice('וידאו');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _pickVideo();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.video_camera_back_outlined,
-                        label: 'צלם וידאו',
-                        color: Colors.redAccent,
-                        allowed: _recipientAllowsVideo,
-                        status: _recipientAllowsVideo
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsVideo) {
-                            _showRecipientFilterNotice('וידאו');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _recordVideo();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.mic_none_rounded,
-                        label: 'הקלטת שמע',
-                        color: Colors.deepOrange,
-                        allowed: _recipientAllowsText,
-                        status: _recipientAllowsText
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsText) {
-                            _showRecipientFilterNotice('הקלטות שמע');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _toggleVoiceRecording();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.contact_phone_outlined,
-                        label: 'שתף איש קשר',
-                        color: Colors.teal,
-                        allowed: _recipientAllowsText,
-                        status: _recipientAllowsText
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsText) {
-                            _showRecipientFilterNotice('שיתוף אנשי קשר');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _sharePhoneContact();
-                        },
-                      ),
-                      _AttachOption(
-                        icon: Icons.badge_outlined,
-                        label: 'שתף את הפרטים שלי',
-                        color: kPrimary,
-                        allowed: _recipientAllowsText,
-                        status: _recipientAllowsText
-                            ? 'מותר לנמען'
-                            : 'חסום בסינון הנמען',
-                        onTap: () {
-                          if (!_recipientAllowsText) {
-                            _showRecipientFilterNotice('שיתוף פרטים');
-                            return;
-                          }
-                          Navigator.of(dialogContext).pop();
-                          _shareMyContact();
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.blue.shade200),
-                    ),
-                    child: Row(children: [
-                      Icon(Icons.security_outlined,
-                          color: Colors.blue.shade700, size: 18),
-                      const SizedBox(width: 8),
-                      const Expanded(
-                        child: Text(
-                            'כל הקבצים עוברים בדיקת בטיחות וסינון לפני השליחה',
-                            style: TextStyle(fontSize: 12, color: Colors.blue)),
-                      ),
-                    ]),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    if (!mounted || _attachmentMenuOpen) return;
+    _attachmentMenuOpen = true;
+    try {
+      final action = await showChatAttachmentMenu(
+        context: context,
+        anchorKey: _attachmentAnchorKey,
+        imagesAllowed: _recipientAllowsImages,
+        videoAllowed: _recipientAllowsVideo,
+        textAllowed: _recipientAllowsText,
+        blockedLabel: 'חסום בסינון הנמען',
+        allowPaste: !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
+      );
+      if (!mounted || action == null) return;
+      final allowed = switch (action) {
+        ChatAttachmentAction.photo || ChatAttachmentAction.paste => _recipientAllowsImages,
+        ChatAttachmentAction.video => _recipientAllowsVideo,
+        ChatAttachmentAction.upload => true,
+        _ => _recipientAllowsText,
+      };
+      if (!allowed) {
+        _showRecipientFilterNotice('סוג התוכן');
+        return;
+      }
+      switch (action) {
+        case ChatAttachmentAction.upload:
+          await _pickAttachments();
+        case ChatAttachmentAction.photo:
+          await _capturePhoto();
+        case ChatAttachmentAction.video:
+          await _recordVideo();
+        case ChatAttachmentAction.audio:
+          await _toggleVoiceRecording();
+        case ChatAttachmentAction.scan:
+          await _scanDocument();
+        case ChatAttachmentAction.contact:
+          await _sharePhoneContact();
+        case ChatAttachmentAction.myContact:
+          await _shareMyContact();
+        case ChatAttachmentAction.paste:
+          await pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
+      }
+    } finally {
+      _attachmentMenuOpen = false;
+    }
   }
 
   Future<void> _showExpressions() async {
@@ -24787,39 +24803,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _msgFocusNode.requestFocus();
   }
 
-  Future<void> _pickFile(ImageSource source) async {
-    final picker = ImagePicker();
-    if (source == ImageSource.gallery) {
-      final picked = await picker.pickMultiImage(
-        maxWidth: 1920,
-        maxHeight: 1920,
-        imageQuality: 85,
-        limit: _maxBatchImages,
-      );
-      if (picked.isEmpty) return;
-      final selected =
-          await _deduplicatePickedImages(picked.take(_maxBatchImages).toList());
-      if (picked.length > _maxBatchImages && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('ניתן להעלות עד 20 תמונות בכל פעם',
-              textDirection: TextDirection.rtl),
-        ));
-      }
-      await _uploadPrivateImageBatch(selected);
-      return;
-    }
-
-    final picked = await picker.pickImage(
-        source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
-    if (picked != null) {
-      if (!mounted) return;
-      final creatorId = _captureCreatorId(context, widget.me);
-      if (creatorId == null) return;
-      final name = await capturedPhotoFileName(picked, creatorId: creatorId);
-      await _uploadAndSend(picked, name, 'image');
-    }
-  }
-
   Future<void> _capturePhoto() async {
     if (_cameraCaptureOpen) return;
     final creatorId = _captureCreatorId(context, widget.me);
@@ -24829,12 +24812,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       photo = kIsWeb
           ? await captureWebPhoto(context, creatorId: creatorId)
-          : await ImagePicker().pickImage(
-              source: ImageSource.camera,
-              maxWidth: 1920,
-              maxHeight: 1920,
-              imageQuality: 85,
-            );
+          : await captureNativePhoto(context);
     } finally {
       _cameraCaptureOpen = false;
     }
@@ -24842,7 +24820,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final name = kIsWeb
         ? photo.name
         : await capturedPhotoFileName(photo, creatorId: creatorId);
-    await _uploadAndSend(photo, name, 'image');
+    await _uploadAndSend(photo, name, 'image',
+        extraFields: const {'captureKind': 'camera_image'});
   }
 
   Future<XFile?> _captureDocumentPage() async {
@@ -24853,12 +24832,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       return kIsWeb
           ? await captureWebPhoto(context, creatorId: creatorId)
-          : await ImagePicker().pickImage(
-              source: ImageSource.camera,
-              maxWidth: 1920,
-              maxHeight: 1920,
-              imageQuality: 85,
-            );
+          : await captureNativePhoto(context);
     } finally {
       _cameraCaptureOpen = false;
     }
@@ -24936,46 +24910,58 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
   }
 
-  Future<void> _pickDocument() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['pdf', 'docx'],
-      allowMultiple: true,
-      withData: kIsWeb,
-    );
-    if (result == null || result.files.isEmpty) return;
-    final files = result.files.take(_maxBatchDocuments).toList();
-    if (result.files.length > _maxBatchDocuments && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('ניתן להעלות עד 20 מסמכים בכל פעם',
-            textDirection: TextDirection.rtl),
-      ));
-    }
-    var nextIndex = 0;
-    Future<void> worker() async {
-      while (nextIndex < files.length) {
-        final file = files[nextIndex++];
-        await _uploadAndSend(file, file.name, 'document');
+  Future<void> _pickAttachments() async {
+    if (_attachmentPickerOpen) return;
+    _attachmentPickerOpen = true;
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: chatAttachmentExtensions,
+        allowMultiple: true,
+        withData: kIsWeb,
+      );
+      if (!mounted || result == null || result.files.isEmpty) return;
+      if (result.files.length > maxChatAttachments) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('ניתן להעלות עד 20 קבצים בכל פעם'),
+        ));
       }
+      final files = result.files.take(maxChatAttachments).toList();
+      if (files.every((file) => chatAttachmentType(file.name) == 'image')) {
+        await _loadRecipientReceivingFilter();
+        if (!mounted) return;
+        if (!_recipientAllowsImages) {
+          _showRecipientFilterNotice('תמונות');
+          return;
+        }
+        if (!await _ensureFirstMessageFilterChoice()) return;
+        if (!mounted) return;
+        final images = await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
+        await _uploadPrivateImageBatch(images);
+        return;
+      }
+      for (final file in files) {
+        if (!mounted) return;
+        final type = chatAttachmentType(file.name);
+        if (type == null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('סוג הקובץ אינו נתמך: ${file.name}'),
+          ));
+          continue;
+        }
+        if (type == 'video' && !await _videoWithinDurationLimit(context, file.xFile)) continue;
+        if (!mounted) return;
+        await _uploadAndSend(file, file.name, type);
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('לא ניתן לפתוח את הקבצים. נסה לבחור אותם שוב'),
+        ));
+      }
+    } finally {
+      _attachmentPickerOpen = false;
     }
-
-    await Future.wait(List.generate(
-      math.min(_maxConcurrentImageUploads, files.length),
-      (_) => worker(),
-    ));
-  }
-
-  Future<void> _pickVideo() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['mp4', 'webm', 'mov'],
-      withData: kIsWeb,
-    );
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.single;
-    if (!mounted) return;
-    if (!await _videoWithinDurationLimit(context, file.xFile)) return;
-    await _uploadAndSend(file.xFile, file.name, 'video');
   }
 
   Future<void> _recordVideo() async {
@@ -24988,7 +24974,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (video == null || !mounted) return;
     if (!await _videoWithinDurationLimit(context, video)) return;
     if (!mounted) return;
-    await _uploadAndSend(video, video.name, 'video');
+    await _uploadAndSend(video, video.name, 'video',
+        extraFields: const {'captureKind': 'camera_video'});
   }
 
   Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
@@ -25104,6 +25091,10 @@ class _ChatScreenState extends State<ChatScreen> {
       case _FileUploadOutcome.failed:
         // A failed attempt is not a chat message. Keep the conversation honest
         // and report the exact transport/server error transiently instead.
+        if (_isScanStopped(data)) {
+          _serverMessagesFingerprint = null;
+          _loadMessages(silent: true);
+        }
         _showError(result.error ?? 'הקובץ לא התקבל בשרת. אפשר לנסות שוב');
         return false;
       case _FileUploadOutcome.rejected:
@@ -25225,7 +25216,7 @@ class _ChatScreenState extends State<ChatScreen> {
             if (!mounted) return false;
             setState(() {
               _messages.add({
-                'id': sendData['id'] ?? _newUploadMessageId('request_'),
+                'id': sendData['id'] != null ? 'request_${sendData['id']}' : _newUploadMessageId('request_'),
                 'text': fileName,
                 'from': widget.me?['id'],
                 'time': _nowTime(),
@@ -25240,7 +25231,7 @@ class _ChatScreenState extends State<ChatScreen> {
             _scrollToBottom();
             if (showNotice) {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('נשלחה בקשת חברות — הקובץ יימסר לאחר האישור'),
+                content: Text('ממתין לאישור חברות ולהרשאת הנמען לקבלת הקובץ'),
               ));
             }
             return false;
@@ -25320,7 +25311,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               const SizedBox(height: 16),
               const Text(
-                'התמונה נחסמה',
+                'הקובץ נחסם',
                 style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
@@ -25335,7 +25326,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'אנא בחר תמונה אחרת',
+                'יש לבחור קובץ אחר',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 13, color: Color(0xFF8AAFC9)),
               ),
@@ -25433,7 +25424,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   hiddenCounterpartExplanation:
                       'בחרו איזה תוכן תהיו מוכנים לקבל מ$recipientName. לאחר אישור הקשר על ידי $recipientName, תוכלו לראות מה מותר לשלוח בשיחה.',
                   counterpartIcon: Icons.person_outline,
-                  onPersonalFilterChanged: (updated) => setDialogState(() {
+                  onPersonalFilterChanged: _isUnfilteredAssistantChat
+                      ? null
+                      : (updated) => setDialogState(() {
                     personalDraft = updated;
                     dirty = true;
                   }),
@@ -25450,7 +25443,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           actions: [
-            FilledButton.icon(
+            if (!_isUnfilteredAssistantChat) FilledButton.icon(
               onPressed: !dirty || saving
                   ? null
                   : () async {
@@ -25862,6 +25855,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                   child: const Text('הקובץ נמחק',
                                       style: TextStyle(color: kSubtext)),
                                 )
+                              else if (_isScanStopped(msg))
+                                _ScanStoppedCard(message: msg)
                               else if (msg['filterHidden'] == true)
                                 FilterHiddenImage(
                                   key: ValueKey('hidden-${msg['id']}'),
@@ -25886,7 +25881,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                   onDoubleTap: kIsWeb && msg['isFile'] != true
                                       ? () => _copyMessageText(context, msg)
                                       : null,
-                                  onLongPress: () =>
+                                  onLongPress: msg['outboxId'] != null ? null : () =>
                                       _selectedMessageKeys.isNotEmpty
                                           ? _toggleMessageSelection(msg)
                                           : _showMessageOptions(msg, isMe),
@@ -25906,7 +25901,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                             : (widget.recipient['name']
                                                     ?.toString() ??
                                                 '');
-                                        final bubble = _MessageBubble(
+                                        final bubble = Column(mainAxisSize: MainAxisSize.min, children: [_MessageBubble(
                                           message: msg,
                                           conversationMessages: _messages,
                                           isMe: isMe,
@@ -25924,7 +25919,18 @@ class _ChatScreenState extends State<ChatScreen> {
                                                   message['from'] ==
                                                       widget.me?['id']),
                                           onDocumentOpen: widget.onDocumentOpen,
-                                        );
+                                        ),
+                                          if (msg['outboxId'] != null && msg['status'] != 'sending')
+                                            Column(mainAxisSize: MainAxisSize.min, children: [
+                                              Text(msg['outboxError']?.toString() ?? 'ההודעה נשמרה במכשיר וממתינה לניסיון נוסף',
+                                                textAlign: TextAlign.right, style: const TextStyle(fontSize: 12, color: Colors.red)),
+                                              Wrap(children: [
+                                                TextButton.icon(onPressed: () => _submitOutboxMessage(msg),
+                                                  icon: const Icon(Icons.refresh), label: const Text('נסה לשלוח שוב')),
+                                                TextButton(onPressed: () => _discardOutbox(msg), child: const Text('הסר הודעה שלא נשלחה')),
+                                              ]),
+                                            ]),
+                                        ]);
                                         return Row(
                                           textDirection: TextDirection.ltr,
                                           mainAxisAlignment:
@@ -26102,6 +26108,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           children: [
                             const SizedBox(width: 10),
                             IconButton(
+                              key: _attachmentAnchorKey,
                               tooltip: 'צירוף קובץ',
                               icon: const Icon(Icons.attach_file,
                                   size: 18, color: kSubtext),
@@ -27313,15 +27320,34 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
                     message: _controller.value.errorDescription)
                 : null);
         if (supportsCompatibleVideoPlayback(error)) {
-          return Container(
+          return SizedBox(
             width: 280,
             height: 150,
-            color: Colors.black87,
-            alignment: Alignment.center,
-            child: FilledButton.icon(
-              onPressed: _openingCompatible ? null : _openCompatible,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('הפעל וידאו'),
+            child: Semantics(
+              container: true,
+              button: true,
+              enabled: !_openingCompatible,
+              label: 'הפעל וידאו',
+              child: Tooltip(
+                message: 'הפעל וידאו',
+                excludeFromSemantics: true,
+                child: Material(
+                  color: Colors.black87,
+                  child: InkWell(
+                    onTap: _openingCompatible ? null : _openCompatible,
+                    child: ExcludeSemantics(
+                      child: VideoThumbnail(
+                        key: ValueKey('chat-video-preview-${widget.url}'),
+                        url: _absoluteMediaUrl(widget.url),
+                        fallback: const Center(
+                          child: Icon(Icons.play_circle_fill,
+                              color: Colors.white, size: 56),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
           );
         }
@@ -27733,7 +27759,7 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
                 widget.scanning
                     ? 'הקובץ שמור וממתין לאישור הסריקה לפני שליחה'
                     : elapsed >= 45
-                    ? 'הקובץ נשמר; בדיקת הבטיחות עדיין מתבצעת'
+                    ? 'ההעלאה עדיין מתבצעת; הקובץ טרם נשלח'
                     : 'קודם העלאה לאחסון, אחריה בדיקת בטיחות וסינון',
                 style: const TextStyle(fontSize: 10, color: kSubtext),
               ),
@@ -28824,6 +28850,26 @@ class _PrivateContactFilterEntry extends StatelessWidget {
   }
 }
 
+class _ScanStoppedCard extends StatelessWidget {
+  final Map<String, dynamic> message;
+
+  const _ScanStoppedCard({required this.message});
+
+  @override
+  Widget build(BuildContext context) => Align(
+        key: ValueKey('scan-stopped-${message['id']}'),
+        alignment: Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          child: _UploadResultCard(
+            blocked: false,
+            title: 'הסריקה נעצרה',
+            reason: _scanStoppedReason(message),
+          ),
+        ),
+      );
+}
+
 class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic> message;
   final List<Map<String, dynamic>> conversationMessages;
@@ -28857,6 +28903,10 @@ class _MessageBubble extends StatelessWidget {
   Widget _statusIcon() {
     if (!isMe) return const SizedBox.shrink();
     switch (message['status'] as String? ?? 'sent') {
+      case 'sending':
+      case 'uploading':
+        return const Tooltip(message: 'ממתין לאישור שליחה',
+          child: Icon(Icons.schedule, size: 15, color: kSubtext));
       case 'read':
         return const Icon(Icons.done_all, size: 14, color: kReadTick);
       case 'received':
@@ -28870,7 +28920,7 @@ class _MessageBubble extends StatelessWidget {
         );
       case 'awaiting_contact_approval':
         return const Tooltip(
-          message: 'ממתין לאישור חברות — הקובץ יישלח לאחר האישור',
+          message: 'ממתין לאישור חברות ולבחירת סוגי התוכן המותרים',
           child: Icon(Icons.person_add_alt_1, size: 15, color: Colors.orange),
         );
       case 'failed':
@@ -28904,6 +28954,19 @@ class _MessageBubble extends StatelessWidget {
       fileName: fileName,
     );
     final uploadStatus = message['status']?.toString();
+    if (uploadStatus == 'rejected_request') {
+      return Align(alignment: _messageAlignment,
+        child: Container(padding: const EdgeInsets.all(10), margin: const EdgeInsets.symmetric(vertical: 3),
+          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
+          decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.red.shade200)),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(fileName ?? message['text']?.toString() ?? '', textDirection: TextDirection.rtl),
+              ContactRequestStatusBanner(status: uploadStatus!, reason: message['scanReason']?.toString()),
+            ])));
+    }
+
     if (fileType == 'document' &&
         (uploadStatus == 'pending_scan' || uploadStatus == 'rejected_scan')) {
       return Align(
@@ -28924,7 +28987,7 @@ class _MessageBubble extends StatelessWidget {
         : fileType == 'audio'
             ? 'ההקלטה'
             : 'התמונה';
-    if ((isVisualUpload || fileType == 'audio') &&
+    if ((isVisualUpload || fileType == 'audio' || fileType == 'document') &&
         uploadStatus == 'uploading') {
       return Align(
         alignment: _messageAlignment,
@@ -29098,6 +29161,8 @@ class _MessageBubble extends StatelessWidget {
               textDirection: TextDirection.rtl,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (uploadStatus == 'awaiting_contact_approval')
+                  ContactRequestStatusBanner(status: uploadStatus!),
                 Semantics(
                   image: true,
                   label: 'מדבקת עוזר AI: ${avielSticker.label}',
@@ -29156,6 +29221,8 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (uploadStatus == 'awaiting_contact_approval')
+              ContactRequestStatusBanner(status: uploadStatus!),
             if (!hideReply && message['replyTo'] != null)
               Align(
                 alignment: Alignment.centerRight,
@@ -30432,136 +30499,7 @@ class _OriginalExpressionGrid extends StatelessWidget {
       );
 }
 
-class _AttachGrid extends StatelessWidget {
-  final List<Widget> children;
-  const _AttachGrid({required this.children});
 
-  @override
-  Widget build(BuildContext context) {
-    const rowSizes = [3, 2, 2, 1, 2];
-    var offset = 0;
-    final rows = <Widget>[];
-    for (final size in rowSizes) {
-      final rowChildren = children.skip(offset).take(size).toList();
-      offset += size;
-      if (rowChildren.isEmpty) break;
-      rows.add(Padding(
-        padding: const EdgeInsets.only(bottom: 7),
-        child: SizedBox(
-          height: 72,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (var index = 0; index < rowChildren.length; index++) ...[
-                if (index > 0) const SizedBox(width: 7),
-                Expanded(child: rowChildren[index]),
-              ],
-            ],
-          ),
-        ),
-      ));
-    }
-    return Column(mainAxisSize: MainAxisSize.min, children: rows);
-  }
-}
-
-class _AttachOption extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-  final bool allowed;
-  final String? status;
-
-  const _AttachOption({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.onTap,
-    this.allowed = true,
-    this.status,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Directionality(
-      textDirection: TextDirection.rtl,
-      child: Material(
-        color: allowed ? Colors.white : Colors.grey.shade50,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: BorderSide(
-            color: allowed
-                ? color.withValues(alpha: 0.22)
-                : Colors.orange.withValues(alpha: 0.35),
-          ),
-        ),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 30,
-                  height: 30,
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(icon, color: color, size: 18),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: allowed ? kTextDark : Colors.grey.shade600,
-                  ),
-                ),
-                if (status != null) ...[
-                  const SizedBox(height: 2),
-                  Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(
-                      allowed
-                          ? Icons.check_circle_outline
-                          : Icons.shield_outlined,
-                      size: 16,
-                      color: allowed
-                          ? Colors.green.shade700
-                          : Colors.orange.shade800,
-                    ),
-                    const SizedBox(width: 3),
-                    Flexible(
-                      child: Text(
-                        status!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 8.5,
-                            color: allowed
-                                ? Colors.green.shade800
-                                : Colors.orange.shade900),
-                      ),
-                    ),
-                  ]),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Groups Screen ─────────────────────────────────────────────────
 class GroupsScreen extends StatefulWidget {
   final String token;
   final Map<String, dynamic>? me;
@@ -30747,10 +30685,11 @@ class _GroupsScreenState extends State<GroupsScreen> {
           IconButton(icon: const Icon(Icons.search), onPressed: () {}),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(38),
+          preferredSize: const Size.fromHeight(48),
           child: Container(
             color: kHeader,
             child: _MainNavigationTabs(
+              token: widget.token,
               currentIndex: widget.currentMainNavigationIndex,
               onSelected: widget.onMainNavigationSelected,
             ),
@@ -30964,6 +30903,9 @@ class GroupChatScreen extends StatefulWidget {
 }
 
 class _GroupChatScreenState extends State<GroupChatScreen> {
+  final _attachmentAnchorKey = GlobalKey();
+  bool _attachmentMenuOpen = false;
+  bool _attachmentPickerOpen = false;
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
   final _msgCtrl = InlineEmojiController();
@@ -32219,8 +32161,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _historyGeneration++;
     _serverMessagesFingerprint = null;
     setState(() {
-      // Recheck every image, including our own sends, against current visibility.
-      _messages.removeWhere((message) => message['fileType'] == 'image');
+      // Recheck visual media, including our own sends, before showing a frame.
+      _messages.removeWhere(_isVisualMediaMessage);
       _selectedMessageKeys.clear();
       _outgoingFilter = null;
     });
@@ -32242,7 +32184,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (!silent && cached != null && mounted) {
         final list = (jsonDecode(cached) as List)
             .cast<Map<String, dynamic>>()
-            .where((message) => message['fileType'] != 'image')
+            .where((message) => !_isVisualMediaMessage(message))
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
         setState(() {
@@ -32338,8 +32280,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isMe': isMe,
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
       'isFile': isFile,
-      'status': map['message_status'] ?? 'sent',
+      'status': _isScanStopped(map) ? 'stopped_scan' : map['message_status'] ?? 'sent',
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
+      if (_isScanStopped(map)) 'scanStopped': true,
+      if (map['scan_budget'] != null || map['budget'] != null)
+        'scanBudget': map['scan_budget'] ?? map['budget'],
       if (map['forward_allowed'] == true) 'forwardAllowed': true,
       if (map['image_classification'] != null)
         'classification': map['image_classification'],
@@ -32401,7 +32346,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final fileName = data['fileName'] as String?;
       final fileType = _normalizeIncomingFileType(data['fileType'] as String?,
           fileUrl: fileUrl, fileName: fileName);
-      if (fileType == 'image' || data['filter_hidden'] == true) {
+      if (fileType == 'image' ||
+          fileType == 'video' ||
+          data['filter_hidden'] == true) {
         setState(() => _messages.removeWhere((message) =>
             message['id'] == data['id'] ||
             (fileUrl != null && message['fileUrl'] == fileUrl &&
@@ -32519,16 +32466,27 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final fileUrl = data['fileUrl']?.toString();
       final groupId = data['groupId']?.toString();
       if (fileUrl == null ||
+          data['toUserId'] != null ||
           groupId != null && groupId != widget.group['id']?.toString()) {
+        return;
+      }
+      if (groupId == null &&
+          !_messages.any((message) => message['fileUrl'] == fileUrl)) {
         return;
       }
       setState(() => _messages.removeWhere((message) =>
           message['fileUrl'] == fileUrl &&
           (message['status'] == 'uploading' ||
               message['status'] == 'pending_scan')));
+      if (_isScanStopped(data)) {
+        _serverMessagesFingerprint = null;
+        _loadMessages(silent: true);
+      }
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(data['reason']?.toString() ??
-            'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת'),
+        content: Text(_isScanStopped(data) ? _scanStoppedNotice(data)
+            : data['reason']?.toString() ??
+                'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
+            textDirection: TextDirection.rtl),
       ));
     };
     widget.socket?.on('scan:cancelled', _scanCancelledSocketHandler);
@@ -32692,7 +32650,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             throw Exception('ההקלטה ריקה ולא נשלחה');
           }
           await _uploadGroupFile(recording, _voiceFileName, 'audio',
-              extraFields: const {'recordedAudio': 'true'});
+              extraFields: const {
+                'recordedAudio': 'true',
+                'captureKind': 'microphone'
+              });
         } finally {
           _voiceSubmissionInProgress = false;
         }
@@ -33128,276 +33089,55 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _showAttachMenu() async {
     if (!await _ensureCanSendToGroup()) return;
     await _loadGroupReceivingFilter();
-    if (!mounted) return;
-    final groupName = widget.group['name']?.toString().trim();
-    final attachMenuTitle = groupName == null || groupName.isEmpty
-        ? 'שיתוף קובץ בקבוצה'
-        : 'שיתוף קובץ בקבוצה $groupName';
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (sheetContext) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              attachMenuTitle,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
-            _AttachGrid(
-              children: [
-                if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
-                  _AttachOption(
-                    icon: Icons.paste,
-                    label: 'הדבק תמונה',
-                    color: kPrimary,
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
-                    },
-                  ),
-                _AttachOption(
-                  icon: Icons.screenshot_monitor_outlined,
-                  label: 'צילום מסך',
-                  color: kPrimary,
-                  allowed: _groupAllowsImages,
-                  status: _groupAllowsImages
-                      ? 'עריכה לפני שליחה'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsImages) {
-                      _showGroupFilterNotice('תמונות');
-                      return;
-                    }
-                    Navigator.of(sheetContext).pop();
-                    openAppScreenshot(
-                      context,
-                      token: widget.token,
-                      destination: AppScreenshotDestination.group(_groupId),
-                    );
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.image_outlined,
-                  label: 'גלריה (עד 10)',
-                  color: kPrimary,
-                  allowed: _groupAllowsImages,
-                  status: _groupAllowsImages
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsImages) {
-                      _showGroupFilterNotice('תמונות');
-                      return;
-                    }
-                    Navigator.pop(context);
-                    _pickFile(ImageSource.gallery);
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.camera_alt_outlined,
-                  label: 'מצלמה',
-                  color: kPrimaryMid,
-                  allowed: _groupAllowsImages,
-                  status: _groupAllowsImages
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsImages) {
-                      _showGroupFilterNotice('תמונות');
-                      return;
-                    }
-                    Navigator.pop(context);
-                    _capturePhoto();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.document_scanner_outlined,
-                  label: 'סריקת מסמך בצילום',
-                  color: Colors.orange.shade800,
-                  allowed: _groupAllowsText,
-                  status: _groupAllowsText
-                      ? 'עד 20 עמודים ל־PDF • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsText) {
-                      _showGroupFilterNotice('מסמכים');
-                      return;
-                    }
-                    Navigator.pop(context);
-                    _scanDocument();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.picture_as_pdf_outlined,
-                  label: 'מסמכים (עד 20)',
-                  color: Colors.orange,
-                  allowed: _groupAllowsText,
-                  status: _groupAllowsText
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsText) {
-                      _showGroupFilterNotice('מסמכים');
-                      return;
-                    }
-                    Navigator.pop(context);
-                    _pickDocument();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.videocam_outlined,
-                  label: 'וידאו',
-                  color: Colors.deepPurple,
-                  allowed: _groupAllowsVideo,
-                  status: _groupAllowsVideo
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsVideo) {
-                      _showGroupFilterNotice('וידאו');
-                      return;
-                    }
-                    Navigator.pop(context);
-                    _pickVideo();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.video_camera_back_outlined,
-                  label: 'צלם וידאו',
-                  color: Colors.redAccent,
-                  allowed: _groupAllowsVideo,
-                  status: _groupAllowsVideo
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsVideo) {
-                      _showGroupFilterNotice('וידאו');
-                      return;
-                    }
-                    Navigator.pop(context);
-                    _recordVideo();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.mic_none_rounded,
-                  label: 'הקלטת שמע',
-                  color: Colors.deepOrange,
-                  allowed: _groupAllowsText,
-                  status: _groupAllowsText
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () {
-                    if (!_groupAllowsText) {
-                      _showGroupFilterNotice('הקלטות שמע');
-                      return;
-                    }
-                    Navigator.pop(context);
-                    _toggleVoiceRecording();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.contact_phone_outlined,
-                  label: 'שתף איש קשר',
-                  color: Colors.teal,
-                  allowed: _groupAllowsText,
-                  status: _groupAllowsText
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () async {
-                    if (!await _groupAllowsFileType('document')) return;
-                    if (!mounted) return;
-                    Navigator.pop(context);
-                    final contact = await _pickGroupSharedContact(
-                        context, widget.token, _members);
-                    if (contact == null || !mounted) return;
-                    _msgCtrl.text = _sharedContactText(contact);
-                    await _send();
-                  },
-                ),
-                _AttachOption(
-                  icon: Icons.badge_outlined,
-                  label: 'שתף את הפרטים שלי',
-                  color: kPrimary,
-                  allowed: _groupAllowsText,
-                  status: _groupAllowsText
-                      ? 'מותר • לפי סינון אישי'
-                      : 'חסום בסינון הקבוצה',
-                  onTap: () async {
-                    if (!await _groupAllowsFileType('document')) return;
-                    if (!mounted) return;
-                    Navigator.pop(context);
-                    final contact = await _confirmMyContactShare(
-                      context,
-                      widget.token,
-                      isGroup: true,
-                    );
-                    if (contact == null || !mounted) return;
-                    _msgCtrl.text = _sharedContactText(contact);
-                    await _send();
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.blue.shade200),
-              ),
-              child: Row(children: [
-                Icon(Icons.security_outlined,
-                    color: Colors.blue.shade700, size: 18),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text(
-                      'כל הקבצים עוברים בדיקת בטיחות וסינון לפני השליחה',
-                      style: TextStyle(fontSize: 12, color: Colors.blue)),
-                ),
-              ]),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _pickFile(ImageSource source) async {
-    final picker = ImagePicker();
-    if (source == ImageSource.gallery) {
-      final picked = await picker.pickMultiImage(
-        maxWidth: 1920,
-        maxHeight: 1920,
-        imageQuality: 85,
-        limit: _maxBatchImages,
+    if (!mounted || _attachmentMenuOpen) return;
+    _attachmentMenuOpen = true;
+    try {
+      final action = await showChatAttachmentMenu(
+        context: context,
+        anchorKey: _attachmentAnchorKey,
+        imagesAllowed: _groupAllowsImages,
+        videoAllowed: _groupAllowsVideo,
+        textAllowed: _groupAllowsText,
+        blockedLabel: 'חסום בסינון הקבוצה',
+        allowPaste: !kIsWeb && defaultTargetPlatform == TargetPlatform.android,
       );
-      if (picked.isEmpty) return;
-      final selected =
-          await _deduplicatePickedImages(picked.take(_maxBatchImages).toList());
-      if (picked.length > _maxBatchImages && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('ניתן להעלות עד 20 תמונות בכל פעם',
-              textDirection: TextDirection.rtl),
-        ));
+      if (!mounted || action == null) return;
+      final allowed = switch (action) {
+        ChatAttachmentAction.photo || ChatAttachmentAction.paste => _groupAllowsImages,
+        ChatAttachmentAction.video => _groupAllowsVideo,
+        ChatAttachmentAction.upload => true,
+        _ => _groupAllowsText,
+      };
+      if (!allowed) {
+        _showGroupFilterNotice('סוג התוכן');
+        return;
       }
-      await _uploadGroupImageBatch(selected);
-      return;
-    }
-
-    final picked = await picker.pickImage(
-        source: source, maxWidth: 1920, maxHeight: 1920, imageQuality: 85);
-    if (picked != null) {
-      if (!mounted) return;
-      final creatorId = _captureCreatorId(context, widget.me);
-      if (creatorId == null) return;
-      final name = await capturedPhotoFileName(picked, creatorId: creatorId);
-      await _uploadGroupFile(picked, name, 'image');
+      switch (action) {
+        case ChatAttachmentAction.upload:
+          await _pickAttachments();
+        case ChatAttachmentAction.photo:
+          await _capturePhoto();
+        case ChatAttachmentAction.video:
+          await _recordVideo();
+        case ChatAttachmentAction.audio:
+          await _toggleVoiceRecording();
+        case ChatAttachmentAction.scan:
+          await _scanDocument();
+        case ChatAttachmentAction.contact:
+          final contact = await _pickGroupSharedContact(context, widget.token, _members);
+          if (contact == null || !mounted) return;
+          _msgCtrl.text = _sharedContactText(contact);
+          await _send();
+        case ChatAttachmentAction.myContact:
+          final contact = await _confirmMyContactShare(context, widget.token, isGroup: true);
+          if (contact == null || !mounted) return;
+          _msgCtrl.text = _sharedContactText(contact);
+          await _send();
+        case ChatAttachmentAction.paste:
+          await pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
+      }
+    } finally {
+      _attachmentMenuOpen = false;
     }
   }
 
@@ -33410,12 +33150,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     try {
       photo = kIsWeb
           ? await captureWebPhoto(context, creatorId: creatorId)
-          : await ImagePicker().pickImage(
-              source: ImageSource.camera,
-              maxWidth: 1920,
-              maxHeight: 1920,
-              imageQuality: 85,
-            );
+          : await captureNativePhoto(context);
     } finally {
       _cameraCaptureOpen = false;
     }
@@ -33423,7 +33158,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final name = kIsWeb
         ? photo.name
         : await capturedPhotoFileName(photo, creatorId: creatorId);
-    await _uploadGroupFile(photo, name, 'image');
+    await _uploadGroupFile(photo, name, 'image',
+        extraFields: const {'captureKind': 'camera_image'});
   }
 
   Future<XFile?> _captureDocumentPage() async {
@@ -33434,12 +33170,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     try {
       return kIsWeb
           ? await captureWebPhoto(context, creatorId: creatorId)
-          : await ImagePicker().pickImage(
-              source: ImageSource.camera,
-              maxWidth: 1920,
-              maxHeight: 1920,
-              imageQuality: 85,
-            );
+          : await captureNativePhoto(context);
     } finally {
       _cameraCaptureOpen = false;
     }
@@ -33508,46 +33239,52 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     await _loadMessages();
   }
 
-  Future<void> _pickDocument() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['pdf', 'docx'],
-      allowMultiple: true,
-      withData: kIsWeb,
-    );
-    if (result == null || result.files.isEmpty) return;
-    final files = result.files.take(_maxBatchDocuments).toList();
-    if (result.files.length > _maxBatchDocuments && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('ניתן להעלות עד 20 מסמכים בכל פעם',
-            textDirection: TextDirection.rtl),
-      ));
-    }
-    var nextIndex = 0;
-    Future<void> worker() async {
-      while (nextIndex < files.length) {
-        final file = files[nextIndex++];
-        await _uploadGroupFile(file, file.name, 'document');
+  Future<void> _pickAttachments() async {
+    if (_attachmentPickerOpen) return;
+    _attachmentPickerOpen = true;
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: chatAttachmentExtensions,
+        allowMultiple: true,
+        withData: kIsWeb,
+      );
+      if (!mounted || result == null || result.files.isEmpty) return;
+      if (result.files.length > maxChatAttachments) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('ניתן להעלות עד 20 קבצים בכל פעם'),
+        ));
       }
+      final files = result.files.take(maxChatAttachments).toList();
+      if (files.every((file) => chatAttachmentType(file.name) == 'image')) {
+        if (!await _groupAllowsFileType('image')) return;
+        if (!mounted) return;
+        final images = await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
+        await _uploadGroupImageBatch(images);
+        return;
+      }
+      for (final file in files) {
+        if (!mounted) return;
+        final type = chatAttachmentType(file.name);
+        if (type == null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('סוג הקובץ אינו נתמך: ${file.name}'),
+          ));
+          continue;
+        }
+        if (type == 'video' && !await _videoWithinDurationLimit(context, file.xFile)) continue;
+        if (!mounted) return;
+        await _uploadGroupFile(file, file.name, type);
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('לא ניתן לפתוח את הקבצים. נסה לבחור אותם שוב'),
+        ));
+      }
+    } finally {
+      _attachmentPickerOpen = false;
     }
-
-    await Future.wait(List.generate(
-      math.min(_maxConcurrentImageUploads, files.length),
-      (_) => worker(),
-    ));
-  }
-
-  Future<void> _pickVideo() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['mp4', 'webm', 'mov'],
-      withData: kIsWeb,
-    );
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.single;
-    if (!mounted) return;
-    if (!await _videoWithinDurationLimit(context, file.xFile)) return;
-    await _uploadGroupFile(file.xFile, file.name, 'video');
   }
 
   Future<void> _recordVideo() async {
@@ -33560,7 +33297,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (video == null || !mounted) return;
     if (!await _videoWithinDurationLimit(context, video)) return;
     if (!mounted) return;
-    await _uploadGroupFile(video, video.name, 'video');
+    await _uploadGroupFile(video, video.name, 'video',
+        extraFields: const {'captureKind': 'camera_video'});
   }
 
   Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType,
@@ -33649,6 +33387,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     switch (result.outcome) {
       case _FileUploadOutcome.failed:
         // Failed attempts are operational feedback, not conversation items.
+        if (_isScanStopped(data)) {
+          _serverMessagesFingerprint = null;
+          _loadMessages(silent: true);
+        }
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content:
                 Text(result.error ?? 'הקובץ לא התקבל בשרת. אפשר לנסות שוב'),
@@ -33835,7 +33577,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     size: 38, color: Color(0xFFB91C1C)),
               ),
               const SizedBox(height: 16),
-              const Text('התמונה נחסמה',
+              const Text('הקובץ נחסם',
                   style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -33846,7 +33588,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   style: const TextStyle(
                       fontSize: 14, color: Color(0xFF4B5563), height: 1.5)),
               const SizedBox(height: 8),
-              const Text('אנא בחר תמונה אחרת',
+              const Text('יש לבחור קובץ אחר',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 13, color: Color(0xFF8AAFC9))),
               const SizedBox(height: 20),
@@ -35232,6 +34974,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                     style: TextStyle(color: kSubtext)),
                               );
                             }
+                            if (_isScanStopped(msg)) {
+                              return _ScanStoppedCard(message: msg);
+                            }
                             if (msg['filterHidden'] == true) {
                               return Align(alignment: Alignment.centerRight,
                                 child: FilterHiddenImage(
@@ -35277,7 +35022,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             final isVisualUploadState =
                                 (uploadFileType == 'image' ||
                                         uploadFileType == 'video' ||
-                                        uploadFileType == 'audio') &&
+                                        uploadFileType == 'audio' ||
+                                        (uploadFileType == 'document' && uploadStatus == 'uploading')) &&
                                     (uploadStatus == 'uploading' ||
                                         uploadStatus == 'pending_scan' ||
                                         uploadStatus == 'failed' ||
@@ -36370,6 +36116,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         onPressed: _showGroupExpressions,
                       ),
                       IconButton(
+                              key: _attachmentAnchorKey,
                         icon: const Icon(Icons.attach_file, color: kSubtext),
                         onPressed: _showAttachMenu,
                       ),
@@ -37335,7 +37082,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   }
 
   Widget _hiddenMediaPreview(Map<String, dynamic> item, {bool small = false}) {
-    final message = hiddenImageMessage(
+    final message = _isScanStopped(item) ? _scanStoppedNotice(item) : hiddenImageMessage(
       hiddenReason: item['hiddenReason']?.toString(),
       status: item['moderationStatus']?.toString(),
       reason: item['scanReason']?.toString(),
@@ -37712,6 +37459,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   String _moderationLabel(String? status) => switch (status) {
         'approved' => 'אושר',
         'rejected' => 'נחסם',
+        'stopped' => 'הסריקה נעצרה',
         _ => 'ממתין לסריקה',
       };
 
@@ -42515,6 +42263,12 @@ class _AdminScreenState extends State<AdminScreen>
         title: const Text('לוח ניהול'),
         actions: [
           IconButton(
+            tooltip: 'אודיט מערכת',
+            icon: const Icon(Icons.account_tree_outlined),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(
+              builder: (_) => SystemAuditScreen(api: kApi, token: widget.token))),
+          ),
+          IconButton(
             tooltip: 'היסטוריית סינון ותמונות',
             icon: const Icon(Icons.history),
             onPressed: () => Navigator.push(context, MaterialPageRoute(
@@ -45611,8 +45365,10 @@ class _EducationFormDetailsScreenState
 
       final title = (_form?['title']?.toString() ?? 'survey')
           .replaceAll(RegExp(r'[^\w\u0590-\u05FF-]+'), '_');
+      final fileName =
+          '${title.toLowerCase().startsWith('betshuva-') ? title : 'betshuva-$title'}.pdf';
       await Printing.sharePdf(
-          bytes: await document.save(), filename: '$title.pdf');
+          bytes: await document.save(), filename: fileName);
     } catch (e) {
       if (mounted) {
         setState(() => _error = 'הפקת קובץ ה־PDF נכשלה');

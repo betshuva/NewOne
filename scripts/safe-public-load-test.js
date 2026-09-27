@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
+if (process.env.NODE_TEST_CONTEXT !== undefined) {
+  throw new Error('Production load scripts must be run explicitly, not through test discovery.');
+}
+
 const { performance } = require('node:perf_hooks');
 
 const target = process.env.LOAD_TARGET || 'http://127.0.0.1:3000/api/version';

@@ -73,6 +73,7 @@ test('actual push sends readable labels without mutating persisted wire text', a
   assert.ok(start >= 0 && end > start);
   const sent = [];
   const sendPush = vm.runInNewContext(`${source.slice(start, end)}; sendPush`, {
+    ...require('./helpers/system-audit-stubs'),
     inlineEmojiPlainText,
     getPool: async () => ({ query: async () => ({ rows: [{ token: 'fixture-token' }] }) }),
     getFirebaseMessaging: () => ({
@@ -106,13 +107,14 @@ async function privateSend(text, { allowText = true, linkError } = {}) {
   const end = source.indexOf("app.post('/api/messages',", start);
   assert.ok(start >= 0 && end > start);
   const handler = vm.runInNewContext(`${source.slice(start, end)}; sendPrivateHttpMessage`, {
+    ...require('./helpers/system-audit-stubs'),
     SYSTEM_USER_ID: 'guide', SAFE_INFORMATION_USER_ID: 'info',
     normalizeBuiltinStickerId: () => null,
     moderateChatText, recordBlockedChat() {}, clientIp: () => '127.0.0.1',
     async verifyMessageLinks(value) { links.push(value); if (linkError) throw linkError; },
     LINK_BLOCKED_MESSAGE: 'unsafe link',
     getPool: async () => pool, teenContactAllowed: async () => true,
-    getEffectiveRecipientFilter: async () => ({ filter: { text: allowText } }),
+    getEffectiveRecipientFilter: async () => ({ filter: { text: allowText }, isContact: true }),
     contentAllowedByFilter(_filter, type) { policyTypes.push(type); return allowText; },
     recordFilterDecision: async () => {}, notifyDestinationFilterBlock: async () => {},
     writeSenderFilteredMedia: async (_pool, options, write) => {

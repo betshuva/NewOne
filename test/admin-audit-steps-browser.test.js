@@ -1,0 +1,61 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
+test('headerless step groups retain colors, exact ordinals, first-row collapse and saved layout',{
+  skip:process.env.RUN_BROWSER_TESTS!=='1',timeout:60000,
+},async t=>{
+  const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+  const browser=await chromium.launch({headless:true,args:['--no-sandbox']});t.after(()=>browser.close());
+  const html=await fs.readFile(path.join(__dirname,'../admin-audit.html'));
+  for(const width of [1440,390])await t.test(String(width),async()=>{
+    const context=await browser.newContext({viewport:{width,height:900},locale:'he-IL',hasTouch:width===390});
+    const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+    const operation={id:'00000000-0000-4000-8000-000000000001',action:'upload_file',created_at:'2026-09-25T08:00:00Z',root_event_id:'1',event_count:'56',sub_event_count:'55',status:'completed'};
+    const events=Array.from({length:55},(_,index)=>({id:String(index+2),operation_id:operation.id,kind:index?'scan_queued':'media_stored',created_at:new Date(Date.parse(operation.created_at)+(index+1)*1000).toISOString(),sub_event_index:String(index+1),sub_event_total:'55',status:'completed'}));
+    operation.first_sub_event=events[0];
+    const empty={id:'00000000-0000-4000-8000-000000000099',action:'send_message',created_at:operation.created_at,root_event_id:'99',event_count:'1',sub_event_count:'0',first_sub_event:null};
+    let filtered=false;
+    await page.addInitScript(()=>localStorage.setItem('bt_admin_token','mock-token'));
+    await page.route('**/*',async route=>{
+      const url=new URL(route.request().url());
+      if(url.hostname==='audit.test')return route.fulfill({contentType:'text/html',body:url.pathname.endsWith('.html')?html:''});
+      if(url.pathname.endsWith('/column-order'))return route.fulfill({json:{orders:{operations:['expand','created_at','action','status']},widths:{operations:{action:280}}}});
+      if(url.pathname.endsWith('/catalog'))return route.fulfill({json:{actions:[],statuses:[],categories:[]}});
+      if(url.pathname.endsWith('/operations'))return route.fulfill({json:{operations:filtered?[{...operation,first_sub_event:events[19]}]:[operation,empty],nextCursor:null}});
+      if(url.pathname.endsWith('/events'))return route.fulfill({json:filtered?{events:[events[19]],nextCursor:null}:url.searchParams.has('before')?{events:events.slice(50),nextCursor:null}:{events:events.slice(0,50),nextCursor:'next-page'}});
+      throw new Error(`Unexpected request ${url.pathname}`);
+    });
+    await page.goto('https://audit.test/admin-audit.html');await page.waitForFunction(()=>!state.loading&&columnOrdersLoaded);
+    const settle=()=>page.waitForFunction(()=>!state.loading&&[...state.pages.values()].every(page=>!page.loading));
+    const root=page.locator(`[data-operation-id="${operation.id}"]`),emptyRow=page.locator(`[data-operation-id="${empty.id}"]`);
+    assert.equal(await root.getAttribute('data-event-id'),'2');
+    assert.equal(await root.locator('[data-field="step_index"]').innerText(),'1 מתוך 55');assert.equal(await page.locator('[data-column-id="step_total"]').count(),0);
+    assert.equal(await page.locator('tbody tr').count(),2);
+    assert.match(await emptyRow.locator('.sub-action-cell').innerText(),/טרם תועדו/);
+    assert.equal(await emptyRow.locator('[data-field="step_index"]').innerText(),'-');
+    const headings=await page.locator('thead th').evaluateAll(nodes=>nodes.map(node=>node.dataset.columnId));
+    assert.deepEqual(headings.filter(k=>['expand','created_at','action','status'].includes(k)),['expand','created_at','action','status']);
+    assert.equal(await page.locator('[data-column-id="action"] .column-resize').getAttribute('aria-valuenow'),'280');
+    const color=await root.evaluate(node=>node.style.getPropertyValue('--group-color'));
+    assert.notEqual(color,await emptyRow.evaluate(node=>node.style.getPropertyValue('--group-color')));
+    const firstText=await root.innerText();
+    await root.locator('[data-expand]').click();await settle();
+    assert.equal(await page.locator(`[data-parent-operation-id="${operation.id}"]`).count(),55);
+    assert.equal(await page.locator('[data-event-id="2"]').count(),1);
+    assert.equal(await page.locator('[data-event-id="51"] [data-field="step_index"]').innerText(),'50 מתוך 55');
+    const repeated=await page.locator(`[data-parent-operation-id="${operation.id}"] .action-cell`).allTextContents();
+    assert.equal(new Set(repeated).size,1);
+    assert.equal(await page.locator('[data-event-id="20"]').evaluate(node=>node.style.getPropertyValue('--group-color')),color);
+    assert.equal(await page.locator('[data-event-more]').count(),0);
+    assert.equal(await page.locator(`[data-parent-operation-id="${operation.id}"]`).count(),55);
+    assert.equal(await page.locator('[data-event-id="56"] [data-field="step_index"]').innerText(),'55 מתוך 55');
+    await root.locator('[data-expand]').click();await settle();
+    assert.equal(await page.locator(`[data-parent-operation-id="${operation.id}"]`).count(),1);assert.equal(await root.innerText(),firstText);
+    await root.locator('[data-expand]').click();await settle();assert.equal(await page.locator(`[data-parent-operation-id="${operation.id}"]`).count(),55);
+    await page.locator('#collapse-all').click();assert.equal(await page.locator('tbody tr').count(),2);
+    filtered=true;await page.evaluate(()=>{state.columns.operations={kind:{values:['scan_queued'],exclude:false}};return load();});await settle();
+    assert.equal(await root.getAttribute('data-event-id'),'21');assert.equal(await root.locator('[data-field="step_index"]').innerText(),'20 מתוך 55');
+    await root.locator('[data-expand]').click();await settle();assert.equal(await page.locator('tbody tr').count(),1);
+    assert.equal(await root.evaluate(node=>node.style.getPropertyValue('--group-color')),color);
+    assert.deepEqual(errors,[]);await context.close();
+  });
+});

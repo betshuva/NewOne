@@ -2,6 +2,7 @@
 
 const sharp = require('sharp');
 const { recordProviderCall } = require('./provider-usage-log');
+const { guardModerationProvider, providerRequestSignal } = require('./moderation-provider-guard');
 
 const GOOGLE_VISION_ENDPOINT = 'https://vision.googleapis.com/v1/images:annotate';
 const MAX_INLINE_IMAGE_BYTES = 7 * 1024 * 1024;
@@ -120,6 +121,12 @@ async function prepareInlineImage(buffer) {
 
 async function scanGoogleSafeSearch(buffer, options = {}) {
   const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
+  return guardModerationProvider({ provider: 'google_vision', operation: 'safe_search',
+    apiKey, options, run: () => requestGoogleSafeSearch(buffer, options) });
+}
+
+async function requestGoogleSafeSearch(buffer, options) {
+  const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
   const threshold = normalizeBlockThreshold(
     options.threshold ?? process.env.GOOGLE_SAFESEARCH_BLOCK_THRESHOLD,
   );
@@ -175,7 +182,7 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
           features: [{ type: 'SAFE_SEARCH_DETECTION' }],
         }],
       }),
-      signal: AbortSignal.timeout(Math.max(1000, Math.min(timeoutMs, 60000))),
+      signal: providerRequestSignal(options, Math.max(1000, Math.min(timeoutMs, 60000))),
     });
     const data = await response.json().catch(() => ({}));
     const annotationResponse = data.responses?.[0];
@@ -192,11 +199,7 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
     }
 
     const evaluation = evaluateSafeSearch(annotationResponse.safeSearchAnnotation, threshold);
-    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
-      operation: 'safe_search', tracking: options.tracking, status: 'completed',
-      units: 1, usageReported: true,
-      durationMs: Math.round(performance.now() - startedAt) });
-    return {
+    const result = {
       ...baseResult,
       ...evaluation,
       available: true,
@@ -206,14 +209,13 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
       status: evaluation.uncertain ? 'review' : evaluation.blocked ? 'blocked' : 'passed',
       durationMs: Math.round(performance.now() - startedAt),
     };
+    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
+      operation: 'safe_search', tracking: options.tracking, status: 'completed',
+      units: 1, usageReported: true, durationMs: result.durationMs, result });
+    return result;
   } catch (error) {
-    if (requestSent) await recordProviderCall({ provider: 'google_vision',
-      model: 'cloud-vision-v1', operation: 'safe_search',
-      tracking: options.tracking, status: 'failed', units: 1,
-      durationMs: Math.round(performance.now() - startedAt),
-      errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
     const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
-    return {
+    const result = {
       ...baseResult,
       status: 'error',
       errorCode,
@@ -221,6 +223,10 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
       retryable: !['IMAGE_TOO_LARGE', 'IMAGE_PREPARATION_FAILED'].includes(errorCode),
       durationMs: Math.round(performance.now() - startedAt),
     };
+    if (requestSent) await recordProviderCall({ provider: 'google_vision',
+      model: 'cloud-vision-v1', operation: 'safe_search', tracking: options.tracking,
+      status: 'failed', units: 1, durationMs: result.durationMs, errorCode, result });
+    return result;
   }
 }
 
@@ -228,6 +234,12 @@ async function scanGoogleSafeSearch(buffer, options = {}) {
 // only to verify a local "person" hit, avoiding extra Vision requests and cost
 // for ordinary product photos.
 async function scanGoogleObjectLocalization(buffer, options = {}) {
+  const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
+  return guardModerationProvider({ provider: 'google_vision', operation: 'object_localization',
+    apiKey, options, run: () => requestGoogleObjectLocalization(buffer, options) });
+}
+
+async function requestGoogleObjectLocalization(buffer, options) {
   const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
   const configured = googleSafeSearchConfigured(apiKey);
   const threshold = normalizePersonThreshold(
@@ -274,7 +286,7 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
           features: [{ type: 'OBJECT_LOCALIZATION', maxResults: 30 }],
         }],
       }),
-      signal: AbortSignal.timeout(Math.max(1000, Math.min(timeoutMs, 60000))),
+      signal: providerRequestSignal(options, Math.max(1000, Math.min(timeoutMs, 60000))),
     });
     const data = await response.json().catch(() => ({}));
     const annotationResponse = data.responses?.[0];
@@ -296,11 +308,7 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
       .filter(person => person.score >= threshold);
     const maxPersonScore = persons.reduce((maximum, person) =>
       Math.max(maximum, person.score), 0);
-    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
-      operation: 'object_localization', tracking: options.tracking,
-      status: 'completed', units: 1, usageReported: true,
-      durationMs: Math.round(performance.now() - startedAt) });
-    return {
+    const result = {
       ...baseResult,
       available: true,
       status: persons.length ? 'person_detected' : 'passed',
@@ -313,14 +321,13 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
       transformed: prepared.transformed,
       durationMs: Math.round(performance.now() - startedAt),
     };
+    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
+      operation: 'object_localization', tracking: options.tracking, status: 'completed',
+      units: 1, usageReported: true, durationMs: result.durationMs, result });
+    return result;
   } catch (error) {
-    if (requestSent) await recordProviderCall({ provider: 'google_vision',
-      model: 'cloud-vision-v1', operation: 'object_localization',
-      tracking: options.tracking, status: 'failed', units: 1,
-      durationMs: Math.round(performance.now() - startedAt),
-      errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
     const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
-    return {
+    const result = {
       ...baseResult,
       status: 'error',
       errorCode,
@@ -328,10 +335,20 @@ async function scanGoogleObjectLocalization(buffer, options = {}) {
       retryable: !['IMAGE_TOO_LARGE', 'IMAGE_PREPARATION_FAILED'].includes(errorCode),
       durationMs: Math.round(performance.now() - startedAt),
     };
+    if (requestSent) await recordProviderCall({ provider: 'google_vision',
+      model: 'cloud-vision-v1', operation: 'object_localization', tracking: options.tracking,
+      status: 'failed', units: 1, durationMs: result.durationMs, errorCode, result });
+    return result;
   }
 }
 
 async function scanGoogleFaceDetection(buffer, options = {}) {
+  const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
+  return guardModerationProvider({ provider: 'google_vision', operation: 'face_detection',
+    apiKey, options, run: () => requestGoogleFaceDetection(buffer, options) });
+}
+
+async function requestGoogleFaceDetection(buffer, options) {
   const apiKey = String(options.apiKey ?? process.env.GOOGLE_VISION_API_KEY ?? '').trim();
   const configured = googleSafeSearchConfigured(apiKey);
   const startedAt = performance.now();
@@ -374,7 +391,7 @@ async function scanGoogleFaceDetection(buffer, options = {}) {
           features: [{ type: 'FACE_DETECTION', maxResults: 30 }],
         }],
       }),
-      signal: AbortSignal.timeout(Math.max(1000, Math.min(timeoutMs, 60000))),
+      signal: providerRequestSignal(options, Math.max(1000, Math.min(timeoutMs, 60000))),
     });
     const data = await response.json().catch(() => ({}));
     const annotationResponse = data.responses?.[0];
@@ -391,11 +408,7 @@ async function scanGoogleFaceDetection(buffer, options = {}) {
       detectionConfidence: Number(face.detectionConfidence) || 0,
       boundingPoly: face.boundingPoly || null,
     }));
-    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
-      operation: 'face_detection', tracking: options.tracking,
-      status: 'completed', units: 1, usageReported: true,
-      durationMs: Math.round(performance.now() - startedAt) });
-    return {
+    const result = {
       ...baseResult,
       available: true,
       status: faces.length ? 'face_detected' : 'passed',
@@ -407,14 +420,13 @@ async function scanGoogleFaceDetection(buffer, options = {}) {
       transformed: prepared.transformed,
       durationMs: Math.round(performance.now() - startedAt),
     };
+    await recordProviderCall({ provider: 'google_vision', model: 'cloud-vision-v1',
+      operation: 'face_detection', tracking: options.tracking, status: 'completed',
+      units: 1, usageReported: true, durationMs: result.durationMs, result });
+    return result;
   } catch (error) {
-    if (requestSent) await recordProviderCall({ provider: 'google_vision',
-      model: 'cloud-vision-v1', operation: 'face_detection',
-      tracking: options.tracking, status: 'failed', units: 1,
-      durationMs: Math.round(performance.now() - startedAt),
-      errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
     const errorCode = String(error?.code || error?.name || 'REQUEST_FAILED');
-    return {
+    const result = {
       ...baseResult,
       status: 'error',
       errorCode,
@@ -422,6 +434,10 @@ async function scanGoogleFaceDetection(buffer, options = {}) {
       retryable: !['IMAGE_TOO_LARGE', 'IMAGE_PREPARATION_FAILED'].includes(errorCode),
       durationMs: Math.round(performance.now() - startedAt),
     };
+    if (requestSent) await recordProviderCall({ provider: 'google_vision',
+      model: 'cloud-vision-v1', operation: 'face_detection', tracking: options.tracking,
+      status: 'failed', units: 1, durationMs: result.durationMs, errorCode, result });
+    return result;
   }
 }
 

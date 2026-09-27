@@ -272,9 +272,9 @@ test('Israel conversation keeps both participants on the right with avatars and 
   assert.match(client, /Alignment get _messageAlignment => Alignment.centerRight/);
   assert.match(client, /hideReply: isSystemGuideChat/);
   assert.match(client,
-    /final bubble = _MessageBubble\([\s\S]*?textDirection: TextDirection\.ltr[\s\S]*?UserAvatar\(/);
+    /final bubble = Column\([\s\S]*?_MessageBubble\([\s\S]*?textDirection: TextDirection\.ltr[\s\S]*?UserAvatar\(/);
   assert.match(client,
-    /final bubble = _MessageBubble\([\s\S]*?Alignment\.centerRight[\s\S]*?BoxConstraints\([\s\S]*?maxWidth: 760[\s\S]*?child: bubble/);
+    /final bubble = Column\([\s\S]*?_MessageBubble\([\s\S]*?Alignment\.centerRight[\s\S]*?BoxConstraints\([\s\S]*?maxWidth: 760[\s\S]*?child: bubble/);
   assert.doesNotMatch(client, /Flexible\(child: bubble\)/);
   assert.match(client, /if \(!hideReply && message\['replyTo'\] != null\)/);
   assert.doesNotMatch(exchange, /reply_to_id/);

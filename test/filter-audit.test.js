@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const {randomUUID}=require('node:crypto');
 const {Client,Pool}=require('pg');
 const {initializeFilterAudit,recordFilterEvent,registerFilterAuditRoutes,recordFilterDecision}=require('../server/filter-audit');
-const {DEFAULT_CONTENT_FILTER:ALL}=require('../server/content-filter-policy');
+const {DEFAULT_CONTENT_FILTER:ALL,UNFILTERED_ASSISTANT_IDS}=require('../server/content-filter-policy');
 const dbOptions={skip:process.env.RUN_DB_TESTS!=='1'};
 
 async function fixture(t) {
@@ -65,6 +65,25 @@ test('audit initializer is idempotent and labels existing state as installation 
  await initializeFilterAudit(f.pool);
  assert.equal((await f.events('filter_baseline')).length,4);
  assert.equal((await f.pool.query("SELECT * FROM filter_audit_metadata WHERE key='recording_started'")).rows.length,1);
+});
+
+test('assistant private delivery audits record the all-allowed policy while keeping actual general settings',dbOptions,async t=>{
+ const f=await fixture(t);
+ const blocked={...ALL,men:false,video:false,enforceGeneralFilter:true};
+ await f.pool.query('UPDATE users SET content_filter=$1 WHERE id=$2',[blocked,f.receiver]);
+ const ordinary=await f.image();
+ for(const assistant of UNFILTERED_ASSISTANT_IDS){
+  await f.pool.query('INSERT INTO users VALUES($1,$2,$3)',[assistant,'Assistant',blocked]);
+  for(const [from,to] of [[assistant,f.receiver],[f.receiver,assistant]]){
+   const id=randomUUID();
+   await f.pool.query("INSERT INTO messages(id,sender_id,recipient_id,type,file_url) VALUES($1,$2,$3,'image',$4)",[id,from,to,ordinary.url]);
+   const row=(await f.events('delivery_persisted')).find(event=>event.message_id===id);
+   assert.deepEqual(row.details.policy,ALL);
+   assert.deepEqual(row.details.generalFilter,blocked);
+  }
+ }
+ const normal=(await f.events('delivery_persisted')).find(event=>event.message_id===ordinary.id);
+ assert.equal(normal.details.policy.men,false);
 });
 
 test('policy changes and audit are atomic, preserve actor and avoid no-op history',dbOptions,async t=>{

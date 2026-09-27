@@ -307,6 +307,8 @@ async function generateGuideAnswer(options) {
   const data = await response.json().catch(() => ({}));
   const usage = {
     inputTokens: Number(data.usage?.input_tokens || 0),
+      cachedInputTokens: Number(data.usage?.input_tokens_details?.cached_tokens || 0),
+      cacheWriteTokens: data.usage?.input_tokens_details?.cache_write_tokens ?? null,
     outputTokens: Number(data.usage?.output_tokens || 0),
     totalTokens: Number(data.usage?.total_tokens || 0),
   };

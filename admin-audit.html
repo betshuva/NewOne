@@ -1,0 +1,1412 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>בתשובה | יומן פעולות מערכת</title>
+<style>
+@font-face{font-family:MaterialIcons;src:url('assets/fonts/MaterialIcons-Audit.otf') format('opentype');font-style:normal;font-weight:normal;font-display:block}
+.material-icons{font-family:MaterialIcons;font-size:20px;font-weight:normal;font-style:normal;line-height:1;display:inline-block;vertical-align:middle}
+:root{color-scheme:dark;--bg:#0d1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--muted:#a0abb8;--blue:#58a6df;--error:#ff9c94;--green:#80ce98}
+*{box-sizing:border-box;letter-spacing:0}
+body{margin:0;background:var(--bg);color:var(--text);font:14px Arial,"Segoe UI",sans-serif;height:100dvh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+h1{font-size:20px;margin:0;font-weight:600;flex:1;min-width:180px}a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+button,input,select{font:inherit;color:inherit;border:1px solid var(--line);background:var(--bg);border-radius:5px;min-height:36px}
+button{cursor:pointer;padding:6px 12px}button:hover:not(:disabled){border-color:var(--blue);background:#21262d}button:disabled{opacity:.45;cursor:default}
+button:focus-visible,a:focus-visible,input:focus,select:focus,summary:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.icon{width:36px;height:36px;padding:0;flex-shrink:0;font-size:20px}.tools{display:flex;gap:8px}.primary{background:#1b6ca8;border-color:#1b6ca8;color:white}
+.danger{color:var(--error)}#delete-dialog{width:min(480px,94vw)}.delete-body{padding:16px 18px;line-height:1.7;overflow-wrap:anywhere}.delete-body p{margin:0 0 12px}.delete-body .code{direction:ltr;text-align:right;font-family:monospace;font-size:12px}.delete-footer{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line)}
+main{display:flex;flex-direction:column;flex:1;min-height:0}#filters{border-bottom:1px solid var(--line);padding:0 20px;background:var(--panel)}
+summary{padding:12px 0;cursor:pointer;font-weight:600}form{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px;padding:0 0 16px;max-height:42dvh;overflow:auto;align-items:end}
+label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}input,select{padding:7px 9px;width:100%;min-width:0}input[dir=ltr]{text-align:left}
+.filter-actions{display:flex;gap:8px;align-items:center}.toolbar{display:flex;align-items:center;gap:12px;padding:10px 20px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:0}.tabs button{border-radius:0}.tabs button:first-child{border-radius:0 5px 5px 0}.tabs button:last-child{border-radius:5px 0 0 5px}
+.tabs button[aria-selected=true]{color:var(--blue);background:#21262d;border-bottom:2px solid var(--blue)}.meta{color:var(--muted);font-size:12px}
+#table-wrap{overflow:auto;flex:1;min-height:120px;scrollbar-gutter:stable}table{border-collapse:collapse;table-layout:fixed;width:100%;min-width:1380px;font-size:12px}
+th,td{padding:10px 12px;text-align:right;border-bottom:1px solid var(--line);vertical-align:middle;overflow-wrap:anywhere}
+th{background:#21262d;color:var(--muted);font-weight:600}#audit-table>thead{position:sticky;top:0;z-index:2}
+.column-heading{display:flex;align-items:center;gap:4px;min-height:32px}.column-heading>span{flex:1;min-width:0}.column-heading .icon{width:26px;height:30px;min-height:30px;border-color:transparent;background:transparent}.column-heading .icon.active{background:#173c56;color:#8ad0ff;border-color:var(--blue)}th:has(.column-heading){padding:6px 8px}
+#audit-table th{position:relative;cursor:grab;touch-action:pan-y;user-select:none}#audit-table th:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}#audit-table th.column-dragging{opacity:.5;cursor:grabbing}#audit-table th.column-drop-before{box-shadow:inset -3px 0 var(--blue)}#audit-table th.column-drop-after{box-shadow:inset 3px 0 var(--blue)}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.column-resize{position:absolute;inset-block:0;inset-inline-end:0;width:10px;cursor:col-resize;touch-action:none;z-index:1}.column-resize::after{content:"";position:absolute;inset-block:8px;left:4px;width:2px;background:var(--line)}.column-resize:hover::after,.column-resize:focus-visible::after{background:var(--blue)}.column-resize:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}body.column-resizing,body.column-resizing *{cursor:col-resize!important;user-select:none!important}
+#column-dialog{position:fixed;margin:0;right:auto;bottom:auto;width:340px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);box-shadow:0 12px 36px #0008}#column-dialog::backdrop{background:#0003}
+.column-body{padding:12px;display:flex;flex-direction:column;gap:12px;overflow:auto;max-height:calc(100dvh - 150px)}.column-footer{display:flex;gap:8px;justify-content:flex-end;padding:12px;border-top:1px solid var(--line)}.column-footer button:first-child{margin-inline-end:auto}.column-options{max-height:240px;overflow:auto;border-block:1px solid var(--line)}.column-option{display:flex;flex-direction:row;align-items:center;gap:8px;padding:9px 4px;color:var(--text);font-size:13px;cursor:pointer;min-height:36px;overflow-wrap:anywhere}.column-option input{width:16px;height:16px;min-height:16px;flex-shrink:0;accent-color:var(--blue)}.column-option span{min-width:0}.column-range{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}.column-message{font-size:12px;color:var(--muted);line-height:1.5}.column-message.error{color:var(--error)}#clear-columns{color:var(--blue)}
+td.time,td.code{font-family:monospace;direction:ltr;text-align:right;font-size:11px}.audit-select{width:18px;height:18px;min-height:18px;accent-color:var(--blue);cursor:pointer}.selection-control{text-align:center}.selection-control .audit-select{vertical-align:middle}.row-actions{display:flex;gap:4px;flex-wrap:wrap}.row-actions .icon{width:32px;height:32px;font-size:16px}
+.value{display:block;max-height:3.2em;overflow:hidden;line-height:1.6}.status{color:var(--green)}.status[data-status=failed],.status[data-status=blocked],.status[data-status=rejected]{color:var(--error)}
+.status[data-status=pending],.status[data-status=queued],.status[data-status=partial]{color:#e4bd66}.status[data-status=running]{color:var(--blue)}.status[data-status=observed],.status[data-status=cancelled],.status[data-status=skipped]{color:var(--muted)}
+.status[data-status=unknown]{color:var(--muted)}.status-icon{font-size:16px;margin-inline-end:5px}
+.check-cell .value,.check-result .value{max-height:none}.check-context{display:block;color:var(--muted);font-size:11px;line-height:1.6;margin-top:4px;overflow-wrap:anywhere}
+.check-preview{display:block;position:relative;width:64px;height:48px;min-height:48px;padding:0;margin-top:8px;overflow:hidden;border-radius:4px;background:#0b0e12}.check-preview img{display:block;width:100%;height:100%;object-fit:contain}.preview-placeholder{font-size:11px;color:var(--muted)}#preview-dialog{width:min(960px,94vw);max-height:92dvh}.preview-viewer{height:min(70dvh,720px);min-height:120px;display:grid;place-items:center;background:#0b0e12;padding:8px}.preview-viewer img{width:100%;height:100%;min-width:0;min-height:0;object-fit:contain}.preview-caption{padding:10px 18px;line-height:1.6;overflow-wrap:anywhere}
+.check-result[data-check-outcome=passed]{color:var(--green)}.check-result[data-check-outcome=blocked],.check-result[data-check-outcome=failed],.check-result[data-check-outcome=stopped]{color:var(--error)}.check-result[data-check-outcome=uncertain]{color:#e4bd66}.check-result[data-check-outcome=skipped],.check-result[data-check-outcome=unknown]{color:var(--muted)}
+td.time .value{max-height:none;white-space:pre-line}
+.operation-row{background:var(--group-tint);border-top:2px solid var(--group-color)}.operation-row>td:first-child,.child-row>td:first-child,.group-note>td{border-inline-start:4px solid var(--group-color)}
+.operation-row .action-name{font-weight:700}.operation-row .value{max-height:none}.group-id,.latest-event{display:block;color:var(--muted);font-size:11px;line-height:1.5;margin-top:4px;overflow-wrap:anywhere}.group-id{direction:ltr;text-align:right;font-family:monospace}
+.child-row{background:var(--child-tint)}.operation-row.child-row{background:var(--group-tint)}.child-row .action-name{font-weight:700}.sub-action-cell .sequence{display:block;margin-top:4px;color:var(--muted)}.child-row .branch{color:var(--group-color)}.child-row .value{max-height:none}.child-row .sequence{color:var(--muted);font:11px monospace}
+.group-note>td{background:var(--child-tint);padding:8px 14px}.group-note .pager{padding:4px;justify-content:flex-start}.group-note .empty{padding:8px;text-align:right}.group-note .notice{padding:8px 0}.notice{padding:12px 20px;color:var(--muted);line-height:1.6}.error{color:var(--error)}
+.notice:empty{display:none}.pager{display:flex;justify-content:center;padding:10px}.empty{text-align:center;padding:40px;color:var(--muted)}
+.busy{height:3px;background:var(--blue);opacity:.8;flex-shrink:0}#auth-warning{padding:24px} [hidden]{display:none!important}
+dialog{border:1px solid var(--line);border-radius:8px;color:var(--text);background:var(--panel);padding:0;width:min(760px,94vw);max-height:85dvh}
+dialog::backdrop{background:#0009}.dialog-head{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}h2{font-size:17px;margin:0;flex:1}
+pre{font:12px/1.7 monospace;direction:ltr;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;padding:18px;margin:0;max-height:65dvh;overflow:auto}
+@media(max-width:600px){header{padding:12px;gap:8px}h1{font-size:18px}header>a{font-size:12px}.toolbar{padding:10px 12px;gap:8px}#filters{padding:0 12px}form{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.meta{flex-basis:100%}.notice{padding:10px 12px}dialog .dialog-head{padding:10px}}
+.audit-explanation{line-height:1.6}.audit-explanation .change-value{display:block;margin-block:3px;overflow-wrap:anywhere}
+.audit-explanation .value{max-height:none}.outcome-summary{margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--line);line-height:1.6}.outcome-summary>span,.outcome-summary>strong,.operation-outcome-label,.step-status{display:block}.operation-outcome-label{font-size:12px;margin-top:6px;line-height:1.5}.step-status{font-size:12px;margin-top:6px}.outcome-summary[data-operation-status=failed]>strong,.operation-outcome-label[data-operation-status=failed],.outcome-summary[data-operation-status=blocked]>strong,.operation-outcome-label[data-operation-status=blocked],.outcome-summary[data-operation-status=rejected]>strong,.operation-outcome-label[data-operation-status=rejected]{color:var(--error)}
+.operation-initiator{display:block;margin-top:6px;font-size:12px;line-height:1.5}[data-identity] .value{max-height:none;overflow-wrap:anywhere}
+.operation-total{display:block;font-size:12px;margin-top:6px;line-height:1.5}
+
+#settings-dialog{width:min(1120px,96vw);max-height:92dvh}#settings-dialog[open]{display:flex;flex-direction:column}.settings-body{padding:12px 18px;overflow:auto}.settings-intro{margin:0 0 12px;color:var(--muted);line-height:1.6}.settings-search{display:block;width:100%;margin-bottom:12px;box-sizing:border-box}.settings-row{display:grid;grid-template-columns:76px minmax(140px,1fr) minmax(135px,1fr) minmax(210px,2fr) minmax(145px,1fr);gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}.settings-row label{display:flex;flex-direction:column;gap:5px;font-size:12px}.settings-row input,.settings-row select{min-width:0;width:100%;box-sizing:border-box}.settings-row .settings-options{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.settings-options label{max-width:100%;flex:1;min-width:72px}.settings-options label.check{flex-direction:row;align-items:center;min-width:100px}.settings-options input[type=checkbox]{width:auto}.settings-preview{direction:ltr;unicode-bidi:plaintext;overflow-wrap:anywhere;white-space:pre-wrap}.settings-footer{padding:12px 18px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)}.settings-footer .primary{margin-inline-start:auto}.settings-name{font-weight:600}.settings-preview-label{color:var(--muted);font-size:12px}.settings-error{padding:8px 18px}.settings-hint{font-size:12px;color:var(--muted)}
+@media(max-width:700px){.settings-row{grid-template-columns:70px minmax(0,1fr);gap:10px}.settings-row>.settings-format,.settings-row>.settings-options,.settings-row>.settings-example{grid-column:1/-1}.settings-body{padding:10px 12px}.settings-row .settings-options{align-items:flex-start}.settings-footer{padding:10px 12px}}
+</style>
+</head>
+<body>
+<header><a href="admin.html">חזרה לניהול</a><h1>יומן פעולות מערכת</h1><div class="tools"><button id="export" class="icon" title="ייצוא CSV" aria-label="ייצוא CSV"><span class="material-icons" aria-hidden="true">&#xe201;</span></button><button id="refresh" class="icon" title="רענן יומן" aria-label="רענן יומן"><span class="material-icons" aria-hidden="true">&#xe514;</span></button></div></header>
+<p style="margin:8px 16px;color:var(--muted);font-size:13px">עלויות API הן אומדן בש״ח לפני מס והנחות. סיכום הפעולה כולל את כל שלביה, גם כשמופעל מסנן. פרטי התעריף ושער הדולר מופיעים בלחיצה על סכום.</p>
+<section id="auth-warning" hidden role="alert">נדרשת כניסה לחשבון ניהול. <a href="admin.html">כניסה לניהול</a></section>
+<main id="app">
+<div id="column-order-help" class="notice"><button id="open-column-settings" type="button" disabled>הגדרות עמודות</button> לשינוי סדר העמודות, גררו כותרת למיקום הרצוי. לשינוי רוחב, גררו את הקצה השמאלי של הכותרת. הסדר והרוחב נשמרים בחשבון שלכם לכל מכשיר. <button id="reset-column-order" type="button" hidden>איפוס סדר העמודות</button> <button id="reset-column-widths" type="button" hidden>איפוס רוחב העמודות</button> <span id="column-width-status" class="meta" role="status" aria-live="polite"></span> <button id="retry-column-widths" type="button" hidden>נסה לשמור רוחב שוב</button> <span id="column-order-status" class="meta" role="status" aria-live="polite"></span> <button id="retry-column-order" type="button" hidden>נסה שוב</button></div>
+<div class="toolbar"><div class="tabs" role="tablist" aria-label="תצוגת היומן"><button id="operations-tab" role="tab" aria-selected="true">פעולות משתמש</button><button id="events-tab" role="tab" aria-selected="false">כל האירועים</button></div><button id="collapse-all" class="icon" title="כווץ את כל הפעולות" aria-label="כווץ את כל הפעולות" disabled><span class="material-icons" aria-hidden="true">&#xe245;</span></button><span id="count" class="meta">0 רשומות</span><button id="clear-columns" hidden><span class="material-icons" aria-hidden="true">&#xf05fe;</span> <span></span></button><span id="started" class="meta"></span><button id="coverage" class="icon" title="היקף התיעוד" aria-label="היקף התיעוד" hidden><span class="material-icons" aria-hidden="true">&#xe33d;</span></button></div>
+<div id="bulk-tools" class="toolbar" hidden><button id="select-visible">סמן את המוצגות</button><button id="clear-selection">נקה סימון</button><button id="delete-selected" class="danger" disabled>מחק מסומנות (0)</button><button id="delete-all" class="danger">מחק את כל היומן</button><span class="meta">הסימון חל על רשומות התיעוד בלבד</span></div>
+<div id="catalog-error" class="notice error" role="alert"></div><div id="live-error" class="notice error" role="status"></div><div id="notice" class="notice" role="status" aria-live="polite"></div><div id="busy" class="busy" hidden></div>
+<section id="table-wrap" aria-label="רשומות היומן" tabindex="0"><table id="audit-table"><thead></thead><tbody></tbody></table><div id="empty" class="empty" hidden>אין רשומות בטווח שנבחר</div><div id="load-error" class="notice error" role="alert"></div><div class="pager"><button id="more" hidden>רשומות נוספות</button></div></section>
+</main>
+<dialog id="settings-dialog" aria-labelledby="settings-title"><div class="dialog-head"><h2 id="settings-title">הגדרות עמודות</h2><button id="settings-close" type="button" aria-label="סגור הגדרות עמודות">סגור</button></div><div class="settings-body"><p class="settings-intro">שנו מיקום בין 1 ל־<span id="settings-count"></span>; שאר העמודות יזוזו וימוספרו מחדש. הפורמט משפיע על התצוגה בלבד. מטבע משנה את הסמל, ללא המרת שער. מספר במשך זמן מוצג בשניות. אחוזים: 0.25 מוצג כ־25%; רמת ביטחון נשמרת כבר באחוזים.</p><input id="settings-search" class="settings-search" type="search" placeholder="חיפוש עמודה" aria-label="חיפוש עמודה"><div id="settings-list"></div></div><div id="settings-error" class="settings-error error" role="alert"></div><div class="settings-footer"><button id="settings-reset" type="button">איפוס סדר ופורמטים</button><button id="settings-cancel" type="button">ביטול</button><button id="settings-save" class="primary" type="button">שמירה</button></div></dialog>
+<dialog id="column-dialog" aria-labelledby="column-title"><div class="dialog-head"><h2 id="column-title"></h2><button id="column-close" class="icon" title="סגור סינון" aria-label="סגור סינון"><span class="material-icons" aria-hidden="true">&#xe16a;</span></button></div><div class="column-body"><label id="column-field-label">שדה<select id="column-field"></select></label><div id="column-editor"></div><div id="column-error" class="column-message error" role="alert"></div></div><div class="column-footer"><button id="column-clear">נקה עמודה</button><button id="column-cancel">ביטול</button><button id="column-apply" class="primary">אישור</button></div></dialog>
+<dialog id="detail-dialog" aria-labelledby="detail-title"><div class="dialog-head"><h2 id="detail-title">פרטי רישום</h2><button id="copy-root" class="icon" title="העתק מזהה פעולה" aria-label="העתק מזהה פעולה"><span class="material-icons" aria-hidden="true">&#xe190;</span></button><button id="close-dialog" class="icon" title="סגור" aria-label="סגור"><span class="material-icons" aria-hidden="true">&#xe16a;</span></button></div><pre id="detail-json"></pre></dialog>
+<dialog id="preview-dialog" aria-labelledby="preview-title"><div class="dialog-head"><h2 id="preview-title">התמונה שנבדקה</h2><button id="close-preview" class="icon" title="סגור תמונה" aria-label="סגור תמונה"><span class="material-icons" aria-hidden="true">&#xe16a;</span></button></div><div class="preview-viewer"><div id="preview-status" class="meta" role="status">טוען תמונה...</div><img id="preview-image" alt="התמונה שנבדקה בסריקה" hidden></div><div id="preview-caption" class="preview-caption meta"></div></dialog>
+<dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description"><div class="dialog-head"><h2 id="delete-title"></h2></div><div class="delete-body"><p id="delete-label"></p><p id="delete-id" class="code"></p><p id="delete-description"></p><div id="delete-error" class="error" role="alert"></div></div><div class="delete-footer"><button id="delete-cancel" type="button">ביטול</button><button id="delete-confirm" class="danger" type="button"><span class="material-icons" aria-hidden="true">&#xe1bb;</span> מחק תיעוד</button></div></dialog>
+<script>
+'use strict';
+/* Shared column format engine: server/audit-column-formats.js */
+function createAuditColumnFormats(){
+ const numeric=new Set(['dispatch_sent_count','dispatch_failed_count','event_count','attempt','step_total','provider_calls_used','provider_calls_limit','person_count','face_count','confidence','http_status','affected_count','frame_index','input_tokens','output_tokens','cached_input_tokens','total_tokens','cost_ils','operation_input_tokens','operation_output_tokens','operation_total_tokens','operation_cost_ils','fx_rate','event_id','parent_event_id','initiator_identifier','recipient_identifier']);
+ const controls=new Set(['expand','select','details','preview','findings','dispatch_recipients']);
+ const dates=['dd/MM/yy HH:mm:ss.SS','dd/MM/yyyy HH:mm:ss','dd/MM/yyyy','dd/MM/yy','yyyy-MM-dd','HH:mm:ss.SS','HH:mm'];
+ const durations=['mm:ss','hh:mm:ss','seconds'];
+ const types={auto:'ברירת מחדל',text:'טקסט',number:'מספר',currency:'מטבע',percent:'אחוזים',date:'תאריך ושעה',duration:'משך זמן'};
+ function kind(key){return controls.has(key)?'control':['created_at','fx_date'].includes(key)?'date':['duration_ms','elapsed_ms','frame_timestamp'].includes(key)?'duration':numeric.has(key)?'number':'text';}
+ function allowed(key){const k=kind(key);return k==='control'?['auto']:k==='number'?['auto','text','number','currency','percent']:k==='date'?['auto','text','date']:k==='duration'?['auto','text','number','duration']:['auto','text'];}
+ function valid(key,f){
+  if(!f||typeof f!=='object'||Array.isArray(f)||!allowed(key).includes(f.type))return false;
+  const keys=f.type==='number'||f.type==='percent'?['type','decimals','grouping']:f.type==='currency'?['type','decimals','grouping','currency']:f.type==='date'?['type','pattern']:f.type==='duration'?['type','pattern','decimals']:['type'];
+  if(Object.keys(f).some(k=>!keys.includes(k)))return false;
+  if(keys.includes('decimals')&&(!Number.isInteger(f.decimals)||f.decimals<0||f.decimals>10))return false;
+  if(keys.includes('grouping')&&typeof f.grouping!=='boolean')return false;
+  if(f.type==='currency'&&!['ILS','USD','EUR'].includes(f.currency))return false;
+  if(f.type==='date'&&!dates.includes(f.pattern))return false;
+  if(f.type==='duration'&&(!durations.includes(f.pattern)||f.decimals>3))return false;
+  return true;
+ }
+ function defaults(type){return type==='number'||type==='percent'?{type,decimals:2,grouping:true}:type==='currency'?{type,decimals:2,grouping:true,currency:'ILS'}:type==='date'?{type,pattern:dates[0]}:type==='duration'?{type,pattern:'mm:ss',decimals:2}:{type};}
+ function normalize(saved,keys){return Object.fromEntries(Object.entries(saved&&typeof saved==='object'&&!Array.isArray(saved)?saved:{}).filter(([key,f])=>keys.includes(key)&&valid(key,f)&&f.type!=='auto'));}
+ function move(order,key,position){if(!Number.isInteger(position)||position<1||position>order.length||!order.includes(key))throw Error('יש להזין מיקום בין 1 ל־'+order.length);const next=order.filter(k=>k!==key);next.splice(position-1,0,key);return next;}
+ function decimal(value,places,grouping=false,shift=0){
+  const m=/^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(String(value));if(!m||String(value).length>200)return null;
+  const exponent=Number(m[4]||0);if(Math.abs(exponent)>100)return null;
+  const digits=BigInt(m[2]+(m[3]||'')),power=exponent-(m[3]||'').length+places+shift;
+  const scaled=power>=0?digits*10n**BigInt(power):(digits+10n**BigInt(-power)/2n)/10n**BigInt(-power);
+  const padded=String(scaled).padStart(places+1,'0'),whole=places?padded.slice(0,-places):padded;
+  return (m[1]&&scaled!==0n?'-':'')+(grouping?whole.replace(/\B(?=(\d{3})+(?!\d))/g,','):whole)+(places?'.'+padded.slice(-places):'');
+ }
+ function format(key,value,f){
+  if(value==null||value===''||!valid(key,f)||f.type==='auto')return null;
+  if(f.type==='text')return String(value);
+  if(['number','currency','percent'].includes(f.type)){
+   const shift=f.type==='percent'?(key==='confidence'?0:2):kind(key)==='duration'?-3:0;
+   const n=decimal(value,f.decimals,f.grouping,shift);return n==null?null:f.type==='currency'?({ILS:'₪',USD:'$',EUR:'€'}[f.currency]+n):f.type==='percent'?n+'%':n;
+  }
+  if(f.type==='date'){
+   if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}(T.*)?$/.test(value))return null;
+   const date=value.length===10?new Date(value+'T00:00:00'):new Date(value);if(!Number.isFinite(date.getTime()))return null;
+   const two=n=>String(n).padStart(2,'0'),parts={yyyy:String(date.getFullYear()),yy:two(date.getFullYear()%100),MM:two(date.getMonth()+1),dd:two(date.getDate()),HH:two(date.getHours()),mm:two(date.getMinutes()),ss:two(date.getSeconds()),SS:two(Math.floor(date.getMilliseconds()/10))};
+   return f.pattern.replace(/yyyy|yy|MM|dd|HH|mm|ss|SS/g,token=>parts[token]);
+  }
+  if(f.type==='duration'){
+   const raw=decimal(value,f.decimals,false,-3);if(raw==null||raw.startsWith('-'))return null;
+   if(f.pattern==='seconds')return raw;
+   const [sec,fraction]=raw.split('.'),n=BigInt(sec),two=n=>String(n).padStart(2,'0');
+   const prefix=f.pattern==='hh:mm:ss'?two(n/3600n)+':'+two(n/60n%60n):two(n/60n);
+   return prefix+':'+two(n%60n)+(fraction?'.'+fraction:'');
+  }
+  return null;
+ }
+ return {kind,allowed,valid,defaults,normalize,move,format,types,dates,durations};
+}
+const columnFormatTools=createAuditColumnFormats();
+const columnFormats={operations:{},events:{}};
+let settingsDraft=null,settingsSaving=false;
+const DISPATCH_SEND_LABELS={sent:'נשלח — נשמר בשרת',partial:'נשלח לחלק מהנמענים',blocked:'נחסם',failed:'נכשל',pending:'ממתין',not_sent:'לא נשלח',unknown:'לא ידוע',not_applicable:'לא רלוונטי'};
+const DISPATCH_DELIVERY_LABELS={read:'דווח שנקרא',server_delivered:'השרת סימן מסירה — אין אישור מהמכשיר',unconfirmed:'אין אישור מסירה מהמכשיר',not_sent:'לא נשלח',not_applicable:'לא רלוונטי'};
+const DISPATCH_TYPE_LABELS={text:'טקסט',image:'תמונה',video:'וידאו',audio:'הקלטה / קובץ קול',document:'קובץ',sticker:'מדבקה'};
+const API = 'https://betshuva.com/betshuva-app/api/admin/audit';
+const STATUS_LABELS = {accepted:'התקבל',queued:'בתור',running:'בתהליך',pending:'ממתין',stored:'נשמר בשרת',persisted:'נשמר בשרת',completed:'הושלם',succeeded:'הצליח',cancelled:'בוטל',partial:'חלקי',observed:'תועד',approved:'אושר',delivered:'נמסר',read:'נקרא',failed:'נכשל',blocked:'נחסם',rejected:'נדחה',skipped:'דולג',unknown:'לא ידוע'};
+const KIND_LABELS = {message_persisted:'הודעה נשמרה בשרת',delivery_persisted:'הודעה נשמרה בשרת',operation_started:'הפעולה החלה',operation_completed:'הפעולה הושלמה',operation_failed:'הפעולה נכשלה',client_displayed:'דיווח תצוגה מהמכשיר',media_stored:'מדיה נשמרה בשרת',media_moderation_changed:'מצב סינון המדיה עודכן',scan_queued:'סריקה נוספה לתור',scan_attempt_started:'ניסיון סריקה החל',scan_waiting:'סריקה ממתינה',scan_attempt_failed:'ניסיון סריקה נכשל',scan_workflow_finished:'תהליך הסריקה הסתיים',scan_queue_removed:'רשומת הסריקה הוסרה מהתור',http_response:'תגובת שרת לבקשה',http_connection_closed:'חיבור הבקשה נסגר',provider_call_finished:'קריאה לספק הסתיימה',scan_cache_used:'תוצאת סריקה מהמטמון',push_provider_result:'תשובת ספק ההתראות',push_skipped:'שליחת התראה דולגה',message_retry_reused:'ניסיון חוזר השתמש בהודעה קיימת',server_message_status_changed:'מצב הודעה בשרת עודכן',message_delivery_state_changed:'מצב מסירת הודעה עודכן',contact_request_pending:'בקשת קשר ממתינה',contact_request_status_changed:'מצב בקשת קשר עודכן'};
+Object.assign(KIND_LABELS,{filter_change:'שינוי סינון',filter_changed:'שינוי סינון',filter_baseline:'מצב סינון התחלתי',upload_context:'פרטי המדיה והנמען',blob_upload_started:'העלאת הקובץ לאחסון החלה',blob_upload_finished:'העלאת הקובץ לאחסון הסתיימה'});
+const EXECUTOR_LABELS = {user:'משתמש',admin:'מנהל',service:'שירות',worker:'שירות',system:'מערכת',provider:'ספק',client:'מכשיר'};
+const ICONS = {code:0xe176,copy:0xe190,refresh:0xe514,expandLess:0xe245,expandMore:0xe246,filter:0xe27a,dropdown:0xe098,delete:0xe1bb};
+const FILTER_KEYS = ['userId','action','status','category','targetType','targetId','source'];
+const MAX_EXPORT_BYTES = 5 * 1024 * 1024;
+const CHECK_TYPE_LABELS = {safe_search:'תוכן למבוגרים, חשיפה, אלימות, רפואה וזיוף',object_localization:'איתור אנשים באמצעות זיהוי אובייקטים',face_detection:'איתור וספירת פנים',person_presence:'אימות נוכחות אנשים וסיווג גברים, נשים וילדים',modesty:'בדיקת צניעות הלבוש',modesty_format_repair:'פענוח חוזר של תשובת בדיקת הצניעות',local_safety:'בדיקת בטיחות מקומית להשוואה',local_explicit_content:'בדיקה מקומית של עירום ותוכן מיני מפורש',local_classification:'סיווג מקומי של אנשים וסוג התמונה',video_frames:'בדיקת התמונות שנדגמו מהסרטון',audio_transcription:'פענוח הדיבור ובדיקת תוכן ההקלטה',document_content:'בדיקת הטקסט והתמונות במסמך',media_moderation:'בדיקת תוכן הקובץ'};
+const CHECK_OUTCOME_LABELS = {passed:'הבדיקה הושלמה',blocked:'נמצא ממצא לחסימה',uncertain:'תוצאה לא ודאית',failed:'הבדיקה נכשלה',stopped:'הבדיקה נעצרה',skipped:'הבדיקה לא בוצעה',not_recorded:'תוצאה לא תועדה'};
+const PROVIDER_LABELS = {google_vision:'Google Vision',openai:'OpenAI',gemini:'Gemini',local:'בדיקה מקומית',local_clip:'בדיקה מקומית',local_safety:'בדיקה מקומית'};
+const COLUMN_SCHEMAS = {
+  "operations": [
+    ["expand", "", 52, []],
+    ["created_at", "זמן מקומי", 180, ["created_at"]],
+    ["action", "פעולה", 180, ["display_action", "media_type", "capture_kind"]],
+    ["kind", "פעולת משנה", 200, ["kind"]],
+    ["step_index", "שלב", 150, ["step_index", "step_total"]],
+    ["operation_status", "מצב הפעולה כולה", 180, ["operation_status"]],
+    ["status", "מצב השלב", 140, ["status"]],
+    ["initiator_id", "שם יוזם הפעולה", 180, ["initiator_id"]],
+    ["initiator_identifier", "מזהה יוזם הפעולה", 160, ["initiator_identifier"]],
+    ["executor_id", "שם מבצע השלב", 180, ["executor_id"]],
+    ["executor_identifier", "מזהה מבצע השלב", 160, ["executor_identifier"]],
+    ["executor_type", "סוג מבצע השלב", 130, ["executor_type"]],
+    ["recipient_id", "שם הנמען", 180, ["recipient_id"]],
+    ["recipient_identifier", "מזהה הנמען", 160, ["recipient_identifier"]],
+    ["recipient_type", "סוג נמען", 120, ["recipient_type"]],
+    ["dispatch_state", "מצב השליחה", 200, ["dispatch_state"]],
+    ["dispatch_reason", "סיבה לאי־שליחה", 280, ["dispatch_reason"]],
+    ["dispatch_code", "קוד סיבת אי־שליחה", 190, ["dispatch_code"]],
+    ["dispatch_delivery", "מצב המסירה לנמען", 260, ["dispatch_delivery"]],
+    ["dispatch_sent_count", "נמענים שנשלח עבורם", 150, ["dispatch_sent_count"]],
+    ["dispatch_failed_count", "נמענים שלא נשלח עבורם", 160, ["dispatch_failed_count"]],
+    ["dispatch_message_type", "סוג ההודעה", 130, ["dispatch_message_type"]],
+    ["dispatch_content", "תוכן ההודעה", 260, ["dispatch_content"]],
+    ["dispatch_file_name", "שם הקובץ", 250, ["dispatch_file_name"]],
+    ["dispatch_message_id", "מזהה ההודעה", 240, ["dispatch_message_id"]],
+    ["dispatch_recipients", "פירוט נמענים", 150, []],
+    ["elapsed_ms", "זמן עד השלב", 140, ["elapsed_ms"]],
+    ["duration_ms", "זמן כולל לפעולה", 140, ["duration_ms"]],
+    ["operation_total_tokens", "סה״כ טוקנים לפעולה", 165, ["operation_total_tokens"]],
+    ["operation_cost_ils", "סה״כ עלות לפעולה (₪)", 180, ["operation_cost_ils"]],
+    ["operation_usage_status", "שלמות עלות הפעולה", 175, ["operation_usage_status"]],
+    ["input_tokens", "טוקני קלט בשלב", 140, ["input_tokens"]],
+    ["output_tokens", "טוקני פלט בשלב", 140, ["output_tokens"]],
+    ["cached_input_tokens", "טוקני קלט מהמטמון", 150, ["cached_input_tokens"]],
+    ["total_tokens", "סה״כ טוקנים בשלב", 150, ["total_tokens"]],
+    ["cost_ils", "עלות השלב (₪)", 150, ["cost_ils"]],
+    ["usage_status", "שלמות עלות השלב", 175, ["usage_status"]],
+    ["usage_model", "מודל בשלב", 180, ["usage_model"]],
+    ["fx_rate", "שער דולר לחישוב", 140, ["fx_rate"]],
+    ["fx_date", "תאריך שער הדולר", 145, ["fx_date"]],
+    ["operation_input_tokens", "סה״כ טוקני קלט לפעולה", 175, ["operation_input_tokens"]],
+    ["operation_output_tokens", "סה״כ טוקני פלט לפעולה", 175, ["operation_output_tokens"]],
+    ["operation_reason", "סיבת תוצאת הפעולה", 240, ["operation_reason"]],
+    ["operation_reason_code", "קוד סיבת הפעולה", 180, ["operation_reason_code"]],
+    ["step_reason", "סיבת תוצאת השלב", 240, ["step_reason"]],
+    ["reason_code", "קוד סיבת השלב", 180, ["step_reason_code"]],
+    ["provider_calls_used", "קריאות בדיקה שנוצלו", 145, ["provider_calls_used"]],
+    ["provider_calls_limit", "מכסת קריאות בדיקה", 145, ["provider_calls_limit"]],
+    ["change_context", "סוג השינוי", 180, ["change_context"]],
+    ["before_value", "מצב קודם", 140, ["before_value"]],
+    ["after_value", "מצב חדש", 140, ["after_value"]],
+    ["event_explanation", "תיאור השלב", 260, ["event_explanation"]],
+    ["check_type", "מה נבדק", 240, ["check_type"]],
+    ["check_outcome", "תוצאת הבדיקה", 180, ["check_outcome"]],
+    ["person_count", "מספר אנשים", 110, ["person_count"]],
+    ["face_count", "מספר פנים", 110, ["face_count"]],
+    ["confidence", "רמת ביטחון (%)", 130, ["confidence"]],
+    ["findings", "ממצאי הבדיקה", 150, []],
+    ["provider", "ספק הבדיקה", 150, ["provider"]],
+    ["frame_index", "מספר תמונה", 110, ["frame_index"]],
+    ["frame_timestamp", "זמן התמונה בסרטון", 150, ["frame_timestamp"]],
+    ["cache_hit", "תוצאה מהמטמון", 130, ["cache_hit"]],
+    ["preview", "תצוגת תמונה", 130, []],
+    ["target_type", "סוג יעד", 140, ["target_type"]],
+    ["target_id", "מזהה יעד", 180, ["target_id"]],
+    ["source", "מקור", 110, ["source"]],
+    ["http_status", "קוד תשובת שרת", 125, ["http_status"]],
+    ["affected_count", "רשומות שהושפעו", 130, ["affected_count"]],
+    ["attempt", "ניסיון", 100, ["attempt"]],
+    ["event_count", "מספר אירועים בפעולה", 145, ["event_count"]],
+    ["operation_id", "מזהה פעולה", 240, ["operation_id"]],
+    ["event_id", "מזהה אירוע", 140, ["event_id"]],
+    ["parent_event_id", "מזהה אירוע קודם", 150, ["parent_event_id"]],
+    ["beforeText", "טקסט — לפני", 150, ["beforeText"]],
+    ["afterText", "טקסט — אחרי", 150, ["afterText"]],
+    ["beforeImage", "תמונות — לפני", 150, ["beforeImage"]],
+    ["afterImage", "תמונות — אחרי", 150, ["afterImage"]],
+    ["beforeVideo", "סרטונים — לפני", 150, ["beforeVideo"]],
+    ["afterVideo", "סרטונים — אחרי", 150, ["afterVideo"]],
+    ["beforeAudio", "קול — לפני", 150, ["beforeAudio"]],
+    ["afterAudio", "קול — אחרי", 150, ["afterAudio"]],
+    ["beforeDocument", "מסמכים — לפני", 150, ["beforeDocument"]],
+    ["afterDocument", "מסמכים — אחרי", 150, ["afterDocument"]],
+    ["beforeMen", "גברים — לפני", 150, ["beforeMen"]],
+    ["afterMen", "גברים — אחרי", 150, ["afterMen"]],
+    ["beforeWomen", "נשים — לפני", 150, ["beforeWomen"]],
+    ["afterWomen", "נשים — אחרי", 150, ["afterWomen"]],
+    ["beforeChildren", "ילדים — לפני", 150, ["beforeChildren"]],
+    ["afterChildren", "ילדים — אחרי", 150, ["afterChildren"]],
+    ["beforeNonHumanImages", "נוף וחפצים — לפני", 150, ["beforeNonHumanImages"]],
+    ["afterNonHumanImages", "נוף וחפצים — אחרי", 150, ["afterNonHumanImages"]],
+    ["beforeEnforceGeneralFilter", "אכיפת הסינון הכללי — לפני", 150, ["beforeEnforceGeneralFilter"]],
+    ["afterEnforceGeneralFilter", "אכיפת הסינון הכללי — אחרי", 150, ["afterEnforceGeneralFilter"]],
+    ["details", "פרטים", 132, []]
+  ],
+  "events": [
+    ["select", "", 52, []],
+    ["created_at", "זמן מקומי", 180, ["created_at"]],
+    ["action", "פעולה", 180, ["display_action"]],
+    ["kind", "פעולת משנה", 200, ["kind"]],
+    ["operation_status", "מצב הפעולה כולה", 180, ["operation_status"]],
+    ["status", "מצב השלב", 140, ["status"]],
+    ["initiator_id", "שם יוזם הפעולה", 180, ["initiator_id"]],
+    ["initiator_identifier", "מזהה יוזם הפעולה", 160, ["initiator_identifier"]],
+    ["executor_id", "שם מבצע השלב", 180, ["executor_id"]],
+    ["executor_identifier", "מזהה מבצע השלב", 160, ["executor_identifier"]],
+    ["executor_type", "סוג מבצע השלב", 130, ["executor_type"]],
+    ["recipient_id", "שם הנמען", 180, ["recipient_id"]],
+    ["recipient_identifier", "מזהה הנמען", 160, ["recipient_identifier"]],
+    ["recipient_type", "סוג נמען", 120, ["recipient_type"]],
+    ["dispatch_state", "מצב השליחה", 200, ["dispatch_state"]],
+    ["dispatch_reason", "סיבה לאי־שליחה", 280, ["dispatch_reason"]],
+    ["dispatch_code", "קוד סיבת אי־שליחה", 190, ["dispatch_code"]],
+    ["dispatch_delivery", "מצב המסירה לנמען", 260, ["dispatch_delivery"]],
+    ["dispatch_sent_count", "נמענים שנשלח עבורם", 150, ["dispatch_sent_count"]],
+    ["dispatch_failed_count", "נמענים שלא נשלח עבורם", 160, ["dispatch_failed_count"]],
+    ["dispatch_message_type", "סוג ההודעה", 130, ["dispatch_message_type"]],
+    ["dispatch_content", "תוכן ההודעה", 260, ["dispatch_content"]],
+    ["dispatch_file_name", "שם הקובץ", 250, ["dispatch_file_name"]],
+    ["dispatch_message_id", "מזהה ההודעה", 240, ["dispatch_message_id"]],
+    ["dispatch_recipients", "פירוט נמענים", 150, []],
+    ["elapsed_ms", "זמן עד השלב", 140, ["elapsed_ms"]],
+    ["duration_ms", "זמן כולל לפעולה", 140, ["duration_ms"]],
+    ["operation_total_tokens", "סה״כ טוקנים לפעולה", 165, ["operation_total_tokens"]],
+    ["operation_cost_ils", "סה״כ עלות לפעולה (₪)", 180, ["operation_cost_ils"]],
+    ["operation_usage_status", "שלמות עלות הפעולה", 175, ["operation_usage_status"]],
+    ["input_tokens", "טוקני קלט בשלב", 140, ["input_tokens"]],
+    ["output_tokens", "טוקני פלט בשלב", 140, ["output_tokens"]],
+    ["cached_input_tokens", "טוקני קלט מהמטמון", 150, ["cached_input_tokens"]],
+    ["total_tokens", "סה״כ טוקנים בשלב", 150, ["total_tokens"]],
+    ["cost_ils", "עלות השלב (₪)", 150, ["cost_ils"]],
+    ["usage_status", "שלמות עלות השלב", 175, ["usage_status"]],
+    ["usage_model", "מודל בשלב", 180, ["usage_model"]],
+    ["fx_rate", "שער דולר לחישוב", 140, ["fx_rate"]],
+    ["fx_date", "תאריך שער הדולר", 145, ["fx_date"]],
+    ["operation_input_tokens", "סה״כ טוקני קלט לפעולה", 175, ["operation_input_tokens"]],
+    ["operation_output_tokens", "סה״כ טוקני פלט לפעולה", 175, ["operation_output_tokens"]],
+    ["operation_reason", "סיבת תוצאת הפעולה", 240, ["operation_reason"]],
+    ["operation_reason_code", "קוד סיבת הפעולה", 180, ["operation_reason_code"]],
+    ["step_reason", "סיבת תוצאת השלב", 240, ["step_reason"]],
+    ["reason_code", "קוד סיבת השלב", 180, ["step_reason_code"]],
+    ["provider_calls_used", "קריאות בדיקה שנוצלו", 145, ["provider_calls_used"]],
+    ["provider_calls_limit", "מכסת קריאות בדיקה", 145, ["provider_calls_limit"]],
+    ["change_context", "סוג השינוי", 180, ["change_context"]],
+    ["before_value", "מצב קודם", 140, ["before_value"]],
+    ["after_value", "מצב חדש", 140, ["after_value"]],
+    ["event_explanation", "תיאור השלב", 260, ["event_explanation"]],
+    ["check_type", "מה נבדק", 240, ["check_type"]],
+    ["check_outcome", "תוצאת הבדיקה", 180, ["check_outcome"]],
+    ["person_count", "מספר אנשים", 110, ["person_count"]],
+    ["face_count", "מספר פנים", 110, ["face_count"]],
+    ["confidence", "רמת ביטחון (%)", 130, ["confidence"]],
+    ["findings", "ממצאי הבדיקה", 150, []],
+    ["provider", "ספק הבדיקה", 150, ["provider"]],
+    ["frame_index", "מספר תמונה", 110, ["frame_index"]],
+    ["frame_timestamp", "זמן התמונה בסרטון", 150, ["frame_timestamp"]],
+    ["cache_hit", "תוצאה מהמטמון", 130, ["cache_hit"]],
+    ["preview", "תצוגת תמונה", 130, []],
+    ["target_type", "סוג יעד", 140, ["target_type"]],
+    ["target_id", "מזהה יעד", 180, ["target_id"]],
+    ["source", "מקור", 110, ["source"]],
+    ["http_status", "קוד תשובת שרת", 125, ["http_status"]],
+    ["affected_count", "רשומות שהושפעו", 130, ["affected_count"]],
+    ["attempt", "ניסיון", 100, ["attempt"]],
+    ["operation_id", "מזהה פעולה", 240, ["operation_id"]],
+    ["event_id", "מזהה אירוע", 140, ["event_id"]],
+    ["parent_event_id", "מזהה אירוע קודם", 150, ["parent_event_id"]],
+    ["beforeText", "טקסט — לפני", 150, ["beforeText"]],
+    ["afterText", "טקסט — אחרי", 150, ["afterText"]],
+    ["beforeImage", "תמונות — לפני", 150, ["beforeImage"]],
+    ["afterImage", "תמונות — אחרי", 150, ["afterImage"]],
+    ["beforeVideo", "סרטונים — לפני", 150, ["beforeVideo"]],
+    ["afterVideo", "סרטונים — אחרי", 150, ["afterVideo"]],
+    ["beforeAudio", "קול — לפני", 150, ["beforeAudio"]],
+    ["afterAudio", "קול — אחרי", 150, ["afterAudio"]],
+    ["beforeDocument", "מסמכים — לפני", 150, ["beforeDocument"]],
+    ["afterDocument", "מסמכים — אחרי", 150, ["afterDocument"]],
+    ["beforeMen", "גברים — לפני", 150, ["beforeMen"]],
+    ["afterMen", "גברים — אחרי", 150, ["afterMen"]],
+    ["beforeWomen", "נשים — לפני", 150, ["beforeWomen"]],
+    ["afterWomen", "נשים — אחרי", 150, ["afterWomen"]],
+    ["beforeChildren", "ילדים — לפני", 150, ["beforeChildren"]],
+    ["afterChildren", "ילדים — אחרי", 150, ["afterChildren"]],
+    ["beforeNonHumanImages", "נוף וחפצים — לפני", 150, ["beforeNonHumanImages"]],
+    ["afterNonHumanImages", "נוף וחפצים — אחרי", 150, ["afterNonHumanImages"]],
+    ["beforeEnforceGeneralFilter", "אכיפת הסינון הכללי — לפני", 150, ["beforeEnforceGeneralFilter"]],
+    ["afterEnforceGeneralFilter", "אכיפת הסינון הכללי — אחרי", 150, ["afterEnforceGeneralFilter"]],
+    ["details", "פרטים", 132, []]
+  ]
+};
+const OP_COLUMNS = COLUMN_SCHEMAS.operations.map(column=>column[1]);
+const OP_WIDTHS = COLUMN_SCHEMAS.operations.map(column=>column[2]);
+const OP_FIELDS = COLUMN_SCHEMAS.operations.map(column=>column[3]);
+const EVENT_COLUMNS = COLUMN_SCHEMAS.events.map(column=>column[1]);
+const EVENT_WIDTHS = COLUMN_SCHEMAS.events.map(column=>column[2]);
+const EVENT_FIELDS = COLUMN_SCHEMAS.events.map(column=>column[3]);
+const DECIMAL_FIELDS=new Set(['cost_ils','operation_cost_ils','fx_rate']);
+const USAGE_FIELDS=["operation_total_tokens", "operation_cost_ils", "operation_usage_status", "input_tokens", "output_tokens", "cached_input_tokens", "total_tokens", "cost_ils", "usage_status", "usage_model", "fx_rate", "fx_date", "operation_input_tokens", "operation_output_tokens"];
+const USAGE_LABELS={estimated:'אומדן מתועד',partial:'חסר מידע',no_charge:'ללא קריאת ספק בתשלום'};
+const NUMBER_FIELDS = new Set(['operation_total_tokens','operation_cost_ils','input_tokens','output_tokens','cached_input_tokens','total_tokens','cost_ils','fx_rate','operation_input_tokens','operation_output_tokens','dispatch_sent_count','dispatch_failed_count','event_count','duration_ms','attempt','step_total','step_index','elapsed_ms','frame_timestamp','frame_index','person_count','face_count','confidence','http_status','affected_count','provider_calls_used','provider_calls_limit']);
+const DURATION_FIELDS=new Set(['duration_ms','elapsed_ms','frame_timestamp']);
+const PARENT_FIELDS=new Set(['operation_total_tokens','operation_cost_ils','operation_usage_status','operation_input_tokens','operation_output_tokens','dispatch_state','dispatch_reason','dispatch_code','dispatch_delivery','dispatch_sent_count','dispatch_failed_count','dispatch_message_type','dispatch_content','dispatch_file_name','dispatch_message_id','dispatch_recipients','action','display_action','event_count','duration_ms','operation_status','operation_reason','operation_reason_code','initiator_identifier','recipient_identifier','operation_id','step_total','provider_calls_used','provider_calls_limit']);
+const FIELD_LABELS = {created_at:'זמן מקומי',action:'פעולה',initiator_id:'יוזם הפעולה',recipient_id:'נמען',recipient_type:'סוג נמען',media_type:'סוג מדיה',capture_kind:'מקור הצילום / ההקלטה',target_type:'סוג יעד',target_id:'מזהה יעד',source:'מקור',status:'מצב',reason_code:'סיבה',event_count:'מספר אירועים',duration_ms:'זמן כולל לפעולה (דקות:שניות)',kind:'אירוע',executor_id:'מבצע פעולת המשנה',attempt:'ניסיון',operation_id:'מזהה פעולה',parent_event_id:'מזהה אירוע קודם'};
+Object.assign(FIELD_LABELS,{step_index:'מספר שלב',step_total:'סך שלבים',display_action:'פעולה',kind:'פעולת משנה',check_type:'מה נבדק',check_outcome:'תוצאת הבדיקה'});
+for(const columns of Object.values(COLUMN_SCHEMAS))for(const [key,title,,fields]of columns)for(const field of fields)if(!FIELD_LABELS[field])FIELD_LABELS[field]=title;
+const state = {mode:'operations',rows:[],cursor:null,boundary:null,hasLoaded:false,applied:{},columns:{operations:{},events:{}},actions:[],coverage:null,started:null,expanded:new Set(),pages:new Map(),generation:0,request:0,catalogRequest:0,loading:false,failedMore:false,exporting:false,token:null,controller:null,liveTimer:null,liveController:null,liveRequest:0,liveRunning:false,liveFailures:0,liveError:null,lastUpdated:null,pageHidden:false};
+const AUTO_REFRESH_MS=5000;
+const sorting={operations:null,events:null};
+const columnOrders={operations:null,events:null};
+let columnOrdersLoaded=false,columnOrdersSaving=false;
+const pendingColumnOrders=new Map();
+let columnDrag=null,columnResize=null;
+const columnWidths={operations:{},events:{}};
+const pendingColumnWidths=new Map();
+let columnWidthsSaving=false;
+const AUTO_REFRESH_MAX_REQUESTS=20;
+let columnPopup=null;
+let deleteTarget=null,deleteBusy=false,canDelete=false;
+const selectedAuditRows=new Map();
+const checkPreviews=new Map();
+let previewObserver=null,activePreview=null,previewAuthorizationFailed=false;
+function localDate(date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;}
+function buildQuery(values){
+  const from=new Date(`${values.from}T00:00:00`),to=new Date(`${values.to}T00:00:00`);
+  if(!Number.isFinite(from.getTime())||!Number.isFinite(to.getTime())||from>to)throw new Error('טווח התאריכים אינו תקין');
+  to.setDate(to.getDate()+1);
+  const query={from:from.toISOString(),to:to.toISOString()};
+  for(const key of FILTER_KEYS){const value=String(values[key]||'').trim();if(value)query[key]=value;}
+  return query;
+}
+function mergeRows(existing,incoming){const ids=new Set(existing.map(row=>String(row.id)));const result=existing.slice();for(const row of incoming){if(row&&row.id!=null&&!ids.has(String(row.id))){ids.add(String(row.id));result.push(row);}}return result;}
+function auditRowKey(row,mode){
+  if(!row)return null;const id=String(row.id);if(mode==='events'){if(!/^[1-9]\d*$/.test(id))throw new Error('מזהה אירוע אינו תקין');return {id};}
+  const createdAt=Date.parse(row.created_at);if(!Number.isFinite(createdAt))throw new Error('תאריך הפעולה אינו תקין');return {createdAt,id};
+}
+function compareAuditKeys(first,second,mode){
+  if(mode==='operations'&&first.createdAt!==second.createdAt)return first.createdAt<second.createdAt?-1:1;
+  const a=mode==='events'?BigInt(first.id):first.id,b=mode==='events'?BigInt(second.id):second.id;return a===b?0:a<b?-1:1;
+}
+async function readAuditWindow(fetchPage,{mode,cursor,boundary,budget,sortedCount=null}){
+  if(sortedCount!==null){
+    let rows=[],before=null,metadata;
+    do {if(++budget.used>budget.max)throw new Error('טווח הרשומות גדול מדי');
+      const data=await fetchPage({limit:String(Math.min(200,Math.max(1,sortedCount-rows.length))),...(before?{before}:{})});
+      if(!Array.isArray(data[mode]))throw new Error('טעינת היומן נכשלה');
+      rows=mergeRows(rows,data[mode]);metadata=data;
+      if(data.nextCursor===before&&before)throw new Error('רצף העדכון אינו תקין');
+      before=data.nextCursor||null;
+    }while(before&&rows.length<sortedCount);
+    return {rows,cursor:before,boundary:null,metadata};
+  }
+  let rows=[],before=null,metadata=null;const cursors=new Set();
+  if(cursor&&!boundary)throw new Error('גבול רשומות חסר');
+  for(;;){
+    if(++budget.used>budget.max)throw new Error('טווח הרשומות גדול מדי');
+    const data=await fetchPage({limit:'200',...(before?{before}:{})});if(!Array.isArray(data[mode]))throw new Error('טעינת היומן נכשלה');metadata=data;
+    const incoming=data[mode],next=data.nextCursor||null;let reached=false,trimmed=false;
+    const visible=cursor?incoming.filter(row=>{const compared=compareAuditKeys(auditRowKey(row,mode),boundary,mode);if(compared<=0)reached=true;if(compared<0)trimmed=true;return compared>=0;}):incoming;
+    rows=mergeRows(rows,visible);
+    if(!next||reached)return {rows,cursor:cursor&&(trimmed||next)?cursor:null,boundary,metadata};
+    if(!incoming.length||cursors.has(next))throw new Error('רצף העדכון אינו תקין');cursors.add(next);before=next;
+  }
+}
+// Follow server cursors automatically; commit only a complete event chain.
+async function readAllEvents(fetchPage){
+  const rows=new Map(),cursors=new Set();let before=null;
+  for(;;){
+    const data=await fetchPage({limit:'200',...(before?{before}:{})});
+    if(!Array.isArray(data.events))throw new Error('טעינת האירועים נכשלה');
+    const previousSize=rows.size;for(const row of data.events)rows.set(String(row.id),row);
+    const next=data.nextCursor||null;
+    if(!next){const complete=[...rows.values()];return {rows:complete,cursor:null,boundary:auditRowKey(complete.at(-1),'events')};}
+    if(typeof next!=='string'||rows.size===previousSize||cursors.has(next))throw new Error('רצף טעינת האירועים אינו תקין');
+    cursors.add(next);before=next;
+  }
+}
+function autoRefreshPaused(){
+  const selection=window.getSelection();
+  const editing=false;
+  return document.hidden||state.pageHidden||navigator.onLine===false||state.loading||state.exporting||!!columnDrag||!!columnResize||!!deleteTarget||deleteBusy||selectedAuditRows.size>0||!!columnPopup||!!settingsDraft||byId('detail-dialog').open||byId('preview-dialog').open||[...state.pages.values()].some(page=>page.loading)||editing||!!(selection&&!selection.isCollapsed&&byId('table-wrap').contains(selection.anchorNode));
+}
+function cancelAutoRefresh(){clearTimeout(state.liveTimer);state.liveTimer=null;state.liveRequest++;state.liveController?.abort();state.liveController=null;state.liveRunning=false;}
+function scheduleAutoRefresh(delay=AUTO_REFRESH_MS){
+  clearTimeout(state.liveTimer);state.liveTimer=null;if(!state.token||document.hidden||state.pageHidden)return;
+  state.liveTimer=setTimeout(()=>autoRefresh(),delay);
+}
+function renderLiveState(){
+  errorWithRetry(byId('live-error'),state.liveError,()=>{state.liveFailures=0;autoRefresh();});
+  const label=byId('live-updated');if(label)label.textContent=state.lastUpdated?`עודכן ${time(state.lastUpdated)}`:'';
+}
+function captureTableAnchor(){
+  const wrap=byId('table-wrap'),rect=wrap.getBoundingClientRect(),head=byId('audit-table').tHead?.getBoundingClientRect(),top=wrap.scrollTop;
+  const candidates=[...wrap.querySelectorAll('tr[data-operation-id],tr[data-event-id]')].map(row=>({row,rect:row.getBoundingClientRect()}))
+    .filter(item=>item.rect.bottom>Math.max(rect.top,head?.bottom||rect.top)&&item.rect.top<rect.bottom)
+    .sort((a,b)=>Math.abs(a.rect.top-rect.top)-Math.abs(b.rect.top-rect.top)).slice(0,10)
+    .map(({row,rect:item})=>({operation:row.dataset.operationId,event:row.dataset.eventId,top:item.top-rect.top}));
+  const focused=document.activeElement,focus=focused&&wrap.contains(focused)?Object.fromEntries(Object.entries(focused.dataset)):null;
+  return {top,left:wrap.scrollLeft,candidates:top>1?candidates:[],focus};
+}
+function restoreTableAnchor(anchor){
+  const wrap=byId('table-wrap'),rows=[...wrap.querySelectorAll('tr[data-operation-id],tr[data-event-id]')];wrap.scrollLeft=anchor.left;
+  if(anchor.top<=1)wrap.scrollTop=0;else for(const item of anchor.candidates){const row=rows.find(row=>item.operation?row.dataset.operationId===item.operation:row.dataset.eventId===item.event);if(row){wrap.scrollTop+=row.getBoundingClientRect().top-wrap.getBoundingClientRect().top-item.top;break;}}
+  if(anchor.focus){const focused=[...wrap.querySelectorAll('button')].find(button=>Object.entries(anchor.focus).length&&Object.entries(anchor.focus).every(([key,value])=>button.dataset[key]===value));focused?.focus({preventScroll:true});}
+}
+async function autoRefresh(){
+  if(state.liveRunning)return;
+  if(!state.token||autoRefreshPaused()){scheduleAutoRefresh();return;}
+  if(!state.hasLoaded){load();return;}
+  clearTimeout(state.liveTimer);const request=++state.liveRequest,generation=state.generation,foreground=state.request,mode=state.mode,query=activeColumnQuery(),controller=new AbortController();
+  state.liveRunning=true;state.liveController=controller;const deadline=setTimeout(()=>controller.abort(),45000),budget={used:0,max:AUTO_REFRESH_MAX_REQUESTS};
+  const current=()=>request===state.liveRequest&&generation===state.generation&&foreground===state.request&&mode===state.mode;
+  const fetchPage=path=>async paging=>{if(!current()||autoRefreshPaused())throw new DOMException('Paused','AbortError');return apiRequest(path,{...(path===mode?query:childColumnQuery()),...paging},{token:state.token,signal:controller.signal,consume:response=>response.json()});};
+  try{
+    const fresh=await readAuditWindow(fetchPage(mode),{mode,cursor:state.cursor,boundary:state.boundary,budget,sortedCount:sorting[mode]?Math.max(50,state.rows.length):null});if(!current()||autoRefreshPaused())return;
+    const updatedPages=new Map(),roots=new Map(fresh.rows.map(row=>[String(row.id),row]));
+    for(const id of state.expanded){const page=state.pages.get(id),root=roots.get(id);if(!root||!page)continue;
+      if(page.loaded&&!page.error&&String(page.eventCount)===String(root.event_count))continue;
+      updatedPages.set(id,await readAllEvents(fetchPage(`operations/${encodeURIComponent(id)}/events`)));
+    }
+    if(!current()||autoRefreshPaused())return;
+    const changed=JSON.stringify(state.rows)!==JSON.stringify(fresh.rows)||state.cursor!==fresh.cursor||!!state.error||!!state.liveError||[...updatedPages].some(([id,page])=>JSON.stringify(state.pages.get(id).rows)!==JSON.stringify(page.rows)||state.pages.get(id).cursor!==page.cursor||!!state.pages.get(id).error);
+    const anchor=changed?captureTableAnchor():null;state.rows=fresh.rows;state.cursor=fresh.cursor;state.error=null;
+    for(const [id,page]of updatedPages)Object.assign(state.pages.get(id),{rows:page.rows,cursor:page.cursor,boundary:page.boundary,loaded:true,error:null,eventCount:roots.get(id).event_count});
+    for(const id of [...state.expanded])if(!roots.has(id)){state.expanded.delete(id);state.pages.delete(id);}
+    metadata(fresh.metadata);state.lastUpdated=Date.now();state.liveFailures=0;state.liveError=null;renderLiveState();if(changed){render();restoreTableAnchor(anchor);}
+  }catch(error){if(current()&&!autoRefreshPaused()){state.liveFailures++;state.liveError=error.name==='AbortError'?'העדכון האוטומטי מתעכב: השרת לא השיב בזמן':`העדכון האוטומטי מתעכב: ${error.message}`;renderLiveState();}}
+  finally{clearTimeout(deadline);if(current()){state.liveRunning=false;state.liveController=null;scheduleAutoRefresh(Math.min(60000,AUTO_REFRESH_MS*2**state.liveFailures));}}
+}
+function withColumnFilters(query,columns){return {...query,...(Object.keys(columns).length?{columnFilters:JSON.stringify(columns)}:{})};}
+function selectedValue(filter,value){return filter.exclude?!filter.values.includes(value):filter.values.includes(value);}
+function toggleColumnValue(filter,value,checked){const values=new Set(filter.values);if(checked!==filter.exclude)values.add(value);else values.delete(value);if(values.size>100)throw new Error('ניתן לבחור או להחריג עד 100 ערכים');return {values:[...values],exclude:filter.exclude};}
+function rangeFilter(field,start,end){
+  start=String(start||'').trim();end=String(end||'').trim();if(!start&&!end)return null;
+  if(field==='created_at'){
+    const from=start?new Date(start):null,to=end?new Date(end):null;
+    if((from&&!Number.isFinite(from.getTime()))||(to&&!Number.isFinite(to.getTime()))||(from&&to&&from>=to))throw new Error('טווח התאריכים אינו תקין');
+    return {...(from?{from:from.toISOString()}:{}),...(to?{to:to.toISOString()}: {})};
+  }
+  if(DECIMAL_FIELDS.has(field)){if(![start,end].every(v=>!v||/^\d{1,12}(\.\d{1,12})?$/.test(v))||(start&&end&&Number(start)>Number(end)))throw new Error('יש להזין טווח מספרים חיוביים או אפס; ניתן להזין שבר עשרוני');return {...(start?{min:start}:{}),...(end?{max:end}:{})};}
+  if(![start,end].every(value=>!value||(/^\d{1,19}$/.test(value)&&BigInt(value)<=9223372036854775807n))||(start&&end&&BigInt(start)>BigInt(end)))throw new Error('יש להזין טווח של מספרים שלמים ולא שליליים');
+  return {...(start?{min:String(BigInt(start))}:{}),...(end?{max:String(BigInt(end))}:{})};
+}
+function dateInputValue(raw){if(!raw)return '';const date=new Date(raw);if(!Number.isFinite(date.getTime()))return '';const two=n=>String(n).padStart(2,'0');return `${localDate(date)}T${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3,'0')}`;}
+function hierarchyQuery(query,mode){return mode==='operations'?{...query,scope:'user',match:'items',steps:'1'}:{...query};}
+function sortQuery(mode){const sort=sorting[mode];return sort?{sort:sort.field,direction:sort.direction}:{};}
+function activeColumnQuery(){return {...hierarchyQuery(withColumnFilters(state.applied,state.columns[state.mode]),state.mode),...sortQuery(state.mode)};}
+function childColumnQuery(columns=state.columns.operations){
+  const mapped={};
+  for(const [field,value]of Object.entries(columns)){
+    if(PARENT_FIELDS.has(field))continue;
+    mapped[field]=value;
+  }
+  const sort=sorting.operations,field=sort?.field;
+  return {...withColumnFilters({steps:'1'},mapped),...(sort&&!PARENT_FIELDS.has(field)?{sort:field,direction:sort.direction}:{sort:'created_at',direction:'asc'})};
+}
+function closeColumnFilter(){
+  const popup=columnPopup;if(!popup)return;columnPopup=null;clearTimeout(popup.timer);popup.controller?.abort();const dialog=byId('column-dialog');if(dialog.open)dialog.close();
+  const trigger=document.querySelector(`[data-column-filter="${popup.fields[0]}"]`);trigger?.setAttribute('aria-expanded','false');trigger?.focus({preventScroll:true});
+  scheduleAutoRefresh();
+}
+function positionColumnFilter(){
+  if(!columnPopup)return;const dialog=byId('column-dialog'),anchor=document.querySelector(`[data-column-filter="${columnPopup.fields[0]}"]`),rect=anchor?.getBoundingClientRect();if(!rect)return;
+  const width=dialog.offsetWidth,height=dialog.offsetHeight;dialog.style.left=`${Math.max(12,Math.min(innerWidth-width-12,rect.right-width))}px`;
+  dialog.style.top=`${Math.max(12,Math.min(innerHeight-height-12,rect.bottom+6))}px`;
+}
+function saveColumnDraft(){
+  const popup=columnPopup;if(!popup)return;const field=popup.field;
+  if(field==='created_at'||NUMBER_FIELDS.has(field)){const start=byId('column-start').value,end=byId('column-end').value,filter=rangeFilter(field,DURATION_FIELDS.has(field)?durationFilterValue(start):start,DURATION_FIELDS.has(field)?durationFilterValue(end):end);if(filter)popup.draft[field]=filter;else delete popup.draft[field];}
+  else if(popup.selection.exclude&&!popup.selection.values.length)delete popup.draft[field];
+  else popup.draft[field]={...popup.selection,values:popup.selection.values.slice()};
+}
+function applyColumnDraft(clear=false){
+  const popup=columnPopup;if(!popup)return;
+  try{if(!clear)saveColumnDraft();else for(const field of popup.fields)delete popup.draft[field];
+    if(popup.mode!==state.mode||popup.generation!==state.generation)return closeColumnFilter();
+    const next={...state.columns[state.mode]};for(const field of popup.fields){if(popup.draft[field])next[field]=popup.draft[field];else delete next[field];}
+    state.columns[state.mode]=next;closeColumnFilter();notice('');load();
+  }catch(error){byId('column-error').textContent=error.message;}
+}
+function optionLabel(field,item){if(item.value==null)return '(ריק)';if(item.label&&item.label!==item.value)return String(item.label);if(field==='action'||field==='kind')return actionLabel(item.value);if(field==='status')return statusLabel(item.value);if(field==='check_type')return knownCheckValue(CHECK_TYPE_LABELS,item.value)||'לא תועד';if(field==='check_outcome')return knownCheckValue(CHECK_OUTCOME_LABELS,item.value)||'תוצאה לא תועדה';return String(item.label||item.value);}
+function renderColumnOptions(){
+  const popup=columnPopup;if(!popup||!popup.selection)return;const list=byId('column-options');if(!list)return;const focused=document.activeElement?.dataset.optionValue;list.replaceChildren();
+  const all=byId('column-all');all.checked=popup.selection.exclude&&!popup.selection.values.length;all.indeterminate=popup.selection.values.length>0;
+  byId('column-selection').textContent=popup.selection.exclude?(popup.selection.values.length?`הכול למעט ${popup.selection.values.length} ערכים`:'כל הערכים'):`${popup.selection.values.length} ערכים נבחרו`;
+  for(const item of popup.options){const label=element('label',null,{class:'column-option'}),input=element('input',null,{type:'checkbox'});input.checked=selectedValue(popup.selection,item.value);input.dataset.optionValue=item.value==null?'__NULL__':String(item.value);
+    input.onchange=()=>{try{popup.selection=toggleColumnValue(popup.selection,item.value,input.checked);byId('column-error').textContent='';}catch(error){byId('column-error').textContent=error.message;}renderColumnOptions();};label.append(input,element('span',optionLabel(popup.field,item)));list.append(label);}
+  if(!popup.options.length&&!popup.loading&&!popup.error)list.append(element('div','אין ערכים תואמים',{class:'column-message'}));
+  byId('column-option-note').textContent=popup.loading?'טוען ערכים...':popup.hasMore?'מוצגים 100 ערכים; קיימים ערכים נוספים':'';
+  errorWithRetry(byId('column-option-error'),popup.error,fetchColumnOptions);
+  if(focused!==undefined)[...list.querySelectorAll('input')].find(input=>input.dataset.optionValue===focused)?.focus({preventScroll:true});
+  positionColumnFilter();
+}
+async function fetchColumnOptions(){
+  const popup=columnPopup;if(!popup||!popup.selection)return;const request=++popup.request;popup.controller?.abort();popup.controller=new AbortController();popup.loading=true;popup.error=null;renderColumnOptions();
+  const columns={...popup.draft};delete columns[popup.field];
+  const query={...hierarchyQuery(withColumnFilters(state.applied,columns),popup.mode),mode:popup.mode,column:popup.field,search:byId('column-search').value.trim()};
+  try{const response=await apiRequest('filter-options',query,{token:state.token,signal:popup.controller.signal}),data=await response.json();if(columnPopup!==popup||request!==popup.request)return;if(!Array.isArray(data.options))throw new Error('טעינת ערכי הסינון נכשלה');popup.options=data.options.filter(item=>item&&('value'in item)).slice(0,100);popup.hasMore=data.hasMore===true;}
+  catch(error){if(columnPopup!==popup||request!==popup.request)return;popup.options=[];popup.hasMore=false;popup.error=error.name==='AbortError'?'השרת לא השיב בזמן':error.message;}
+  finally{if(columnPopup===popup&&request===popup.request){popup.loading=false;renderColumnOptions();}}
+}
+function appendStepSortActions(editor){
+  const popup=columnPopup;if(!popup.fields.includes('step_index')||!popup.fields.includes('step_total'))return;
+  const actions=element('div',null,{class:'row-actions'});
+  for(const [direction,label]of [['asc','מיון עולה'],['desc','מיון יורד']]){
+    const control=element('button',label,{type:'button','data-step-sort':direction,'aria-label':`${label}: ${FIELD_LABELS[popup.field]}`});
+    control.onclick=()=>{try{saveColumnDraft();sorting[popup.mode]={field:popup.field,direction};applyColumnDraft();}catch(error){byId('column-error').textContent=error.message;}};
+    actions.append(control);
+  }
+  editor.append(actions);
+}
+function renderColumnEditor(){
+  const popup=columnPopup;clearTimeout(popup.timer);popup.controller?.abort();popup.request++;popup.options=[];popup.error=null;popup.loading=false;popup.hasMore=false;popup.selection=null;byId('column-error').textContent='';const editor=byId('column-editor');editor.replaceChildren();
+  const field=popup.field,filter=popup.draft[field];
+  if(field==='created_at'||NUMBER_FIELDS.has(field)){
+    const date=field==='created_at',range=element('div',null,{class:'column-range'});
+    for(const [id,title,value] of [['column-start',date?'מתאריך ושעה':'מינימום',date?dateInputValue(filter?.from):filter?.min],['column-end',date?'עד תאריך ושעה (לא כולל)':'מקסימום',date?dateInputValue(filter?.to):filter?.max]]){
+      const label=element('label',title),input=element('input',null,{id,type:date?'datetime-local':'text',dir:'ltr',...(date?{step:'0.001'}:DURATION_FIELDS.has(field)?{placeholder:'02:35',maxlength:'24'}:{inputmode:DECIMAL_FIELDS.has(field)?'decimal':'numeric',maxlength:DECIMAL_FIELDS.has(field)?'25':'19'})});input.value=DURATION_FIELDS.has(field)&&value!=null?formatDuration(value,true):value||'';input.onkeydown=event=>{if(event.key==='Enter')applyColumnDraft();};label.append(input);range.append(label);}
+    editor.append(range);appendStepSortActions(editor);if(DURATION_FIELDS.has(field))editor.append(element('p','דקות:שניות, למשל 02:35. אפשר להוסיף אלפיות שנייה: 00:01.500.',{class:'column-message'}));positionColumnFilter();return;
+  }
+  popup.selection=filter?{values:filter.values.slice(),exclude:filter.exclude===true}:{values:[],exclude:true};
+  const label=element('label','חיפוש ערכים'),search=element('input',null,{id:'column-search',type:'search',maxlength:'100',autocomplete:'off'});label.append(search);search.oninput=()=>{clearTimeout(popup.timer);popup.controller?.abort();popup.request++;popup.options=[];popup.loading=true;renderColumnOptions();popup.timer=setTimeout(fetchColumnOptions,250);};
+  const allLabel=element('label',null,{class:'column-option'}),all=element('input',null,{id:'column-all',type:'checkbox'});all.onchange=()=>{popup.selection={values:[],exclude:all.checked};renderColumnOptions();};allLabel.append(all,element('span','בחירת הכול'));
+  editor.append(label,allLabel,element('div',null,{id:'column-options',class:'column-options'}),element('div',null,{id:'column-selection',class:'column-message'}),element('div',null,{id:'column-option-note',class:'column-message',role:'status'}),element('div',null,{id:'column-option-error',class:'column-message error',role:'alert'}));
+  fetchColumnOptions();
+}
+function openColumnFilter(fields,title,trigger){
+  closeColumnFilter();cancelAutoRefresh();columnPopup={fields,title,field:fields.find(field=>state.columns[state.mode][field])||fields[0],draft:JSON.parse(JSON.stringify(state.columns[state.mode])),mode:state.mode,generation:state.generation,request:0,options:[]};
+  byId('column-title').textContent=`סינון: ${title}`;const select=byId('column-field');select.replaceChildren();for(const field of fields)select.append(element('option',FIELD_LABELS[field],{value:field}));select.value=columnPopup.field;byId('column-field-label').hidden=fields.length<2;
+  select.onchange=()=>{try{saveColumnDraft();columnPopup.field=select.value;renderColumnEditor();}catch(error){byId('column-error').textContent=error.message;select.value=columnPopup.field;}};
+  renderColumnEditor();byId('column-dialog').showModal();trigger.setAttribute('aria-expanded','true');positionColumnFilter();(byId('column-search')||byId('column-start'))?.focus({preventScroll:true});
+}
+function safeDetails(value,depth=0){
+  if(depth>6)return '[omitted]';
+  if(Array.isArray(value))return value.slice(0,100).map(item=>safeDetails(item,depth+1));
+  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).slice(0,100).map(([key,item])=>[key,/password|secret|token|authorization|cookie|transcript|encrypted|email|phone|(^|_)(body|text|prompt|payload|url|headers)($|_)/i.test(key)?'[redacted]':safeDetails(item,depth+1)]));
+  if(typeof value==='string')return value.length>500?value.slice(0,500)+'...':value;
+  return value==null||['number','boolean'].includes(typeof value)?value:'[omitted]';
+}
+function statusLabel(code){return STATUS_LABELS[code]||String(code||'לא ידוע');}
+function actor(row,event=false){
+  if(event){const label=EXECUTOR_LABELS[row.executor_type];return label?`${label}: ${row.executor_name||(row.executor_type==='system'&&row.executor_id==='api'?'השרת (API)':row.executor_id)||'לא תועד'}`:'מבצע לא ידוע';}
+  if(row.initiator_id)return `משתמש: ${row.initiator_name||row.initiator_id}${row.initiator_short_id==null?(row.initiator_name?` (ID ${row.initiator_id})`:''):` (ID ${row.initiator_short_id})`}`;
+  return row.initiator_type==='service'?`שירות: ${row.initiator_name||'-'}`:'יוזם לא ידוע';
+}
+function requestError(status){return status===401||status===403?'אין הרשאה לצפייה ביומן':status===400?'המסננים אינם תקינים':'טעינת היומן נכשלה';}
+async function apiRequest(path,query,{token,signal,consume}={}){
+  const url=new URL(`${API}/${path}`);url.search=new URLSearchParams({...query,dispatch:'1',costs:'1',previews:'1'}).toString();
+  const controller=new AbortController();const abort=()=>controller.abort();
+  if(signal){if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});}
+  const timeout=setTimeout(abort,20000);
+  try{const response=await fetch(url,{method:'GET',headers:{Authorization:`Bearer ${token}`},signal:controller.signal});if(!response.ok)throw new Error(requestError(response.status));return consume?await consume(response):response;}
+  finally{clearTimeout(timeout);if(signal)signal.removeEventListener('abort',abort);}
+}
+function deletionTarget(row){
+  const event=row.operation_id!=null;
+  const root=event&&(row.root_event_id!=null?String(row.id)===String(row.root_event_id):row.kind==='operation_started');
+  return {kind:event?'events':'operations',id:String(row.id),operationId:String(row.operation_id||row.id),root};
+}
+async function deleteAuditRecord(kind,id,{token}={}){
+  if(!['operations','events'].includes(kind)||typeof id!=='string'||!(kind==='operations'?/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i:/^[1-9]\d{0,18}$/).test(id))throw new Error('מזהה רשומה אינו תקין');
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),20000);
+  try{
+    const response=await fetch(`${API}/${kind}/${encodeURIComponent(id)}`,{method:'DELETE',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({confirmId:id}),signal:controller.signal});
+    if(response.status===404)return {missing:true};
+    if(!response.ok)throw Object.assign(new Error(response.status===401||response.status===403?'נדרשת הרשאת עריכה למחיקת תיעוד':response.status===409?'את אירוע פתיחת הפעולה ניתן למחוק רק יחד עם הפעולה הראשית':response.status===400?'בקשת המחיקה אינה תקינה':'המחיקה נכשלה. הרשומה נשארה בטבלה'),{status:response.status});
+    let data;try{data=await response.json();}catch(_){throw new Error('לא התקבל אישור למחיקה. רענן את הטבלה לפני ניסיון נוסף');}
+    if(!data||data.deleted!==true)throw new Error('לא התקבל אישור למחיקה. רענן את הטבלה לפני ניסיון נוסף');return data;
+  }catch(error){if(error.name==='AbortError'||error instanceof TypeError)throw new Error('לא התקבל אישור למחיקה. רענן את הטבלה לפני ניסיון נוסף');throw error;}
+  finally{clearTimeout(timeout);}
+}
+function openDelete(row){
+  if(!canDelete||deleteBusy||deleteTarget||state.loading||state.exporting||[...state.pages.values()].some(page=>page.loading))return;
+  const target=deletionTarget(row);if(target.root)return;
+  cancelAutoRefresh();deleteTarget=target;
+  const operation=target.kind==='operations';byId('delete-title').textContent=operation?'מחיקת פעולה ראשית':'מחיקת פעולת משנה';
+  byId('delete-label').textContent=operation?mediaActionLabel(row):actionLabel(row.kind);byId('delete-id').textContent=`ID ${target.id}`;
+  byId('delete-description').textContent=operation?'הפעולה וכל פעולות המשנה שלה יימחקו מהיומן לצמיתות. הודעות וקבצים לא יימחקו.':'רק רשומת התיעוד הזו תימחק לצמיתות. הפעולה הראשית ושאר פעולות המשנה יישארו. הודעות וקבצים לא יימחקו.';
+  byId('delete-error').textContent='';byId('delete-cancel').disabled=false;byId('delete-confirm').disabled=false;byId('delete-dialog').showModal();byId('delete-cancel').focus();
+}
+function auditSelector(row){
+  if(!canDelete)return null;const target=deletionTarget(row);if(target.root)return null;
+  const key=`${target.kind}:${target.id}`,input=element('input',null,{type:'checkbox',class:'audit-select','aria-label':`סמן ${target.kind==='operations'?'פעולה וכל פעולות המשנה':'רשומת תיעוד'} למחיקה`,'data-audit-select':key,'data-target':JSON.stringify(target)});
+  input.checked=selectedAuditRows.has(key);input.disabled=deleteBusy;
+  input.onchange=()=>{if(input.checked&&selectedAuditRows.size>=200){input.checked=false;notice('אפשר לסמן עד 200 רשומות בכל מחיקה');return;}if(input.checked)selectedAuditRows.set(key,target);else selectedAuditRows.delete(key);renderSelection();};return input;
+}
+function renderSelection(){
+  byId('bulk-tools').hidden=!canDelete;byId('delete-selected').disabled=deleteBusy||!selectedAuditRows.size;
+  byId('delete-selected').textContent=`מחק מסומנות (${selectedAuditRows.size})`;
+  for(const id of ['delete-all','select-visible','clear-selection'])byId(id).disabled=deleteBusy;
+}
+async function openBulkDelete(all){
+  if(!canDelete||deleteBusy||deleteTarget||state.loading||state.exporting)return;
+  cancelAutoRefresh();const payload={scope:all?'all':'selected',confirm:all?'DELETE_ALL_AUDIT':'DELETE_SELECTED_AUDIT'};
+  deleteTarget={bulk:true,payload,ready:false};
+  byId('delete-title').textContent=all?'מחיקת כל יומן המערכת':'מחיקת הרשומות המסומנות';
+  byId('delete-label').textContent=all?'טוען מספר רשומות…':`${selectedAuditRows.size} רשומות מסומנות`;
+  byId('delete-id').textContent='';byId('delete-error').textContent='';byId('delete-confirm').disabled=true;
+  byId('delete-description').textContent=all?'כל הפעולות ופעולות המשנה הקיימות ביומן יימחקו, גם מחוץ לסינון הנוכחי. הודעות וקבצים לא יימחקו. תיעוד המחיקה יישאר ביומן.':'רשומות התיעוד המסומנות יימחקו לצמיתות. סימון פעולה ראשית מוחק גם את פעולות המשנה שלה. הודעות וקבצים לא יימחקו.';
+  byId('delete-dialog').showModal();byId('delete-cancel').focus();const target=deleteTarget;
+  try{
+    if(all){const preview=await apiRequest('deletion-preview',{},{token:state.token,consume:response=>response.json()});if(deleteTarget!==target)return;
+      payload.through=preview.through;byId('delete-label').textContent=`${preview.operations} פעולות · ${preview.events} רשומות תיעוד`;if(!preview.through){byId('delete-error').textContent='היומן ריק';return;}}
+    else{payload.operations=[];payload.events=[];for(const row of selectedAuditRows.values())payload[row.kind].push(row.id);if(!payload.operations.length&&!payload.events.length)return;}
+    target.ready=true;byId('delete-confirm').disabled=false;
+  }catch(error){if(deleteTarget===target)byId('delete-error').textContent=error.message;}
+}
+async function confirmBulkDelete(){
+  const target=deleteTarget;if(!target?.ready||deleteBusy||!canDelete)return;deleteBusy=true;byId('delete-confirm').disabled=true;byId('delete-cancel').disabled=true;renderSelection();let removed=0;
+  try{
+    let remaining;
+    do{
+      const response=await fetch(`${API}/records`,{method:'DELETE',headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/json'},body:JSON.stringify(target.payload),signal:AbortSignal.timeout(60000)});
+      if(!response.ok){if([401,403].includes(response.status))canDelete=false;throw new Error('המחיקה לא אושרה. יש לרענן את היומן לפני ניסיון נוסף');}
+      const data=await response.json();if(data.deleted!==true||!/^\d+$/.test(String(data.remaining)))throw new Error('השרת לא אישר את תוצאת המחיקה');
+      removed+=data.deletedEvents;remaining=BigInt(data.remaining);byId('delete-label').textContent=`נמחקו ${removed} רשומות תיעוד`;
+      if(remaining>0n&&!data.deletedOperations)throw new Error('המחיקה נעצרה. יש לרענן את היומן');
+    }while(target.payload.scope==='all'&&remaining>0n);
+    selectedAuditRows.clear();deleteBusy=false;closeDelete();notice(`נמחקו ${removed} רשומות תיעוד`);await load();
+  }catch(error){byId('delete-error').textContent=`${removed?`נמחקו ${removed} רשומות לפני העצירה. `:''}${error.message}`;target.ready=false;}
+  finally{deleteBusy=false;byId('delete-confirm').disabled=!target.ready;byId('delete-cancel').disabled=false;renderSelection();scheduleAutoRefresh();}
+}
+function closeDelete(){if(deleteBusy)return;deleteTarget=null;byId('delete-dialog').close();scheduleAutoRefresh();}
+async function confirmDelete(){
+  if(deleteTarget?.bulk)return confirmBulkDelete();
+  if(!deleteTarget||deleteBusy||!canDelete)return;const target=deleteTarget;deleteBusy=true;byId('delete-dialog').setAttribute('aria-busy','true');byId('delete-confirm').disabled=true;byId('delete-cancel').disabled=true;byId('delete-error').textContent='';
+  try{
+    const result=await deleteAuditRecord(target.kind,target.id,{token:state.token});
+    if(target.kind==='operations'){
+      state.rows=state.rows.filter(row=>String(row.operation_id||row.id)!==target.operationId);state.pages.delete(target.operationId);state.expanded.delete(target.operationId);
+    }else{
+      if(state.mode==='events')state.rows=state.rows.filter(row=>String(row.id)!==target.id);
+      const page=state.pages.get(target.operationId);if(page){page.rows=page.rows.filter(row=>String(row.id)!==target.id).map(row=>String(row.parent_event_id)===target.id?{...row,parent_event_id:null}:row);page.eventCount=null;}
+    }
+    deleteBusy=false;closeDelete();render();notice(result.missing?'הרשומה כבר אינה קיימת. הטבלה מתעדכנת':'רשומת התיעוד נמחקה');
+    await autoRefresh();
+  }catch(error){if(error.status===401||error.status===403){canDelete=false;render();}byId('delete-error').textContent=error.message;}
+  finally{deleteBusy=false;byId('delete-dialog').setAttribute('aria-busy','false');byId('delete-confirm').disabled=!canDelete;byId('delete-cancel').disabled=false;scheduleAutoRefresh();}
+}
+function element(tag,text,attributes={}){const node=document.createElement(tag);if(text!=null)node.textContent=String(text);for(const [key,value]of Object.entries(attributes)){if(value!=null)node.setAttribute(key,String(value));}return node;}
+const byId=id=>document.getElementById(id);
+function button(icon,label,handler){const node=element('button',null,{type:'button',class:'icon',title:label,'aria-label':label});node.append(element('span',String.fromCodePoint(ICONS[icon]),{class:'material-icons','aria-hidden':'true'}));node.addEventListener('click',handler);return node;}
+function time(raw){const date=new Date(raw);if(!raw||!Number.isFinite(date.getTime()))return 'זמן לא ידוע';const two=n=>String(n).padStart(2,'0');return `${two(date.getDate())}/${two(date.getMonth()+1)}/${two(date.getFullYear()%100)} ${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}.${two(Math.floor(date.getMilliseconds()/10))}`;}
+function actionLabel(code){return state.actions.find(item=>(item.action||item.code)===code)?.label||KIND_LABELS[code]||String(code||'לא ידוע');}
+function mediaActionLabel(row){
+  if(row.action!=='upload_file')return actionLabel(row.action);
+  if(row.capture_kind==='camera_video'&&row.media_type==='video')return 'צילום וידאו';
+  if(row.capture_kind==='camera_image'&&row.media_type==='image')return 'צילום תמונה';
+  if(row.capture_kind==='microphone'&&row.media_type==='audio')return 'הקלטת קול';
+  return {video:'העלאת וידאו',image:'העלאת תמונה',audio:'העלאת קובץ קול',document:'העלאת מסמך'}[row.media_type]||actionLabel(row.action);
+}
+function recipientLabel(row){
+  if(!row.recipient_id)return 'לא תועד';
+  const label=row.recipient_type==='group'?'קבוצה':'משתמש',identity=row.recipient_short_id||row.recipient_id;
+  return `${label}: ${row.recipient_name||row.recipient_id}${row.recipient_name||row.recipient_short_id?` (ID ${identity})`:''}`;
+}
+function previewRequestUrl(raw,eventId){
+  if(typeof raw!=='string'||!raw||!/^[1-9]\d{0,18}$/.test(String(eventId)))return null;
+  try{const base=new URL(API),url=new URL(raw,base.origin),size=url.searchParams.get('size');
+    if(url.origin!==base.origin||url.username||url.password||url.hash||!['thumb','full'].includes(size)||
+      [...url.searchParams.keys()].length!==1||!['/api/admin/audit',base.pathname].some(prefix=>url.pathname===`${prefix}/events/${eventId}/preview`))return null;
+    return `${API}/events/${eventId}/preview?size=${size}`;
+  }catch(_){return null;}
+}
+async function fetchCheckPreview(raw,eventId,{token,signal}={}){
+  const url=previewRequestUrl(raw,eventId);if(!url||!token)throw new Error('התמונה אינה זמינה');
+  const controller=new AbortController(),abort=()=>controller.abort(),timeout=setTimeout(abort,20000);
+  if(signal){if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});}
+  try{const response=await fetch(url,{method:'GET',headers:{Authorization:`Bearer ${token}`},signal:controller.signal,cache:'no-store',redirect:'error'});
+    if(!response.ok)throw Object.assign(new Error(response.status===401||response.status===403?'אין הרשאה לצפייה בתמונה':'התמונה אינה זמינה'),{status:response.status});
+    if(!/^image\/(?:jpeg|png|webp)(?:;|$)/i.test(response.headers.get('content-type')||''))throw new Error('התמונה אינה זמינה');
+    if(Number(response.headers.get('content-length'))>10*1024*1024)throw new Error('התמונה אינה זמינה');
+    const blob=await response.blob();if(!blob.size||blob.size>10*1024*1024)throw new Error('התמונה אינה זמינה');return blob;
+  }finally{clearTimeout(timeout);if(signal)signal.removeEventListener('abort',abort);}
+}
+function updateCheckPreview(entry){
+  for(const node of entry.nodes){const image=node.querySelector('img'),placeholder=node.querySelector('.preview-placeholder');
+    if(entry.objectUrl){image.src=entry.objectUrl;image.hidden=false;placeholder.hidden=true;node.disabled=false;}
+    else{image.removeAttribute('src');image.hidden=true;placeholder.hidden=false;placeholder.textContent=entry.failed?'לא זמין':'טוען';node.disabled=!!entry.failed;}}
+}
+async function loadCheckPreview(entry){
+  if(entry.loading||entry.objectUrl||entry.failed||!entry.nodes.size)return;
+  if(previewAuthorizationFailed){entry.failed=true;updateCheckPreview(entry);return;}
+  entry.loading=true;entry.controller=new AbortController();
+  try{const blob=await fetchCheckPreview(entry.url,entry.eventId,{token:state.token,signal:entry.controller.signal});
+    if(checkPreviews.get(entry.url)!==entry||!entry.nodes.size)return;
+    entry.objectUrl=URL.createObjectURL(blob);
+  }catch(error){if(error.status===401||error.status===403)previewAuthorizationFailed=true;entry.failed=true;}
+  finally{entry.loading=false;if(checkPreviews.get(entry.url)===entry)updateCheckPreview(entry);}
+}
+function operationPreviewRow(row,root){
+  const owner=root&&Object.hasOwn(root,'operationPreview')?root:row;
+  if(!owner||!Object.hasOwn(owner,'operationPreview'))return row;
+  const preview=owner.operationPreview;if(!preview)return {};
+  return {id:preview.eventId,checkPreviewUrl:preview.url,checkPreviewFullUrl:preview.fullUrl,
+    checkLabel:preview.mediaType==='video'?'הפריים הראשון בסרטון':'התמונה שהועלתה',
+    operationPreviewLabel:preview.mediaType==='video'?'הפריים הראשון בסרטון':'התמונה שהועלתה'};
+}
+function checkPreviewButton(row){
+  const url=previewRequestUrl(row.checkPreviewUrl,row.id);if(!url)return null;
+  let entry=checkPreviews.get(url);if(!entry){entry={url,eventId:String(row.id),nodes:new Set(),loading:false,failed:false,objectUrl:null,controller:null};checkPreviews.set(url,entry);}
+  const blocked=row.check_outcome==='blocked'||row.details?.checkOutcome==='blocked'||['blocked','rejected'].includes(row.status);
+  const label=row.operationPreviewLabel||(blocked?'תמונה שנחסמה בבדיקה':'התמונה שנבדקה');
+  const node=element('button',null,{type:'button',class:'check-preview',title:`הגדל ${label}`,'aria-label':`הגדל ${label}`,'data-check-preview':row.id});
+  node.append(element('img',null,{alt:label,hidden:true}),element('span','טוען',{class:'preview-placeholder'}));
+  node.querySelector('img').onerror=()=>{if(entry.objectUrl)URL.revokeObjectURL(entry.objectUrl);entry.objectUrl=null;entry.failed=true;updateCheckPreview(entry);};
+  node.onclick=()=>openCheckPreview(row);entry.nodes.add(node);updateCheckPreview(entry);
+  if(!previewObserver)previewObserver=new IntersectionObserver(items=>{for(const item of items)if(item.isIntersecting){const current=checkPreviews.get(item.target.dataset.previewUrl);if(current)loadCheckPreview(current);previewObserver.unobserve(item.target);}},{root:byId('table-wrap'),rootMargin:'80px'});
+  node.dataset.previewUrl=url;previewObserver.observe(node);return node;
+}
+function releaseCheckPreviews(all=false){
+  for(const [url,entry]of checkPreviews)if(all||!entry.nodes.size){entry.controller?.abort();if(entry.objectUrl)URL.revokeObjectURL(entry.objectUrl);checkPreviews.delete(url);}
+  if(all)previewObserver?.disconnect();
+}
+function clearActivePreview(){
+  const current=activePreview;activePreview=null;current?.controller.abort();if(current?.objectUrl)URL.revokeObjectURL(current.objectUrl);
+  byId('preview-image').removeAttribute('src');byId('preview-image').hidden=true;
+}
+async function openCheckPreview(row){
+  const url=previewRequestUrl(row.checkPreviewFullUrl||row.checkPreviewUrl,row.id);if(!url)return;
+  cancelAutoRefresh();clearActivePreview();const current={controller:new AbortController(),objectUrl:null};activePreview=current;
+  const dialog=byId('preview-dialog'),status=byId('preview-status'),image=byId('preview-image');
+  status.hidden=false;status.textContent='טוען תמונה...';status.classList.remove('error');
+  byId('preview-caption').textContent=[checkLabel(row),checkContext(row)].filter(value=>value&&value!=='-').join(' · ');dialog.showModal();
+  try{if(previewAuthorizationFailed)throw new Error('אין הרשאה לצפייה בתמונה');
+    const blob=await fetchCheckPreview(url,row.id,{token:state.token,signal:current.controller.signal});if(activePreview!==current)return;
+    current.objectUrl=URL.createObjectURL(blob);image.src=current.objectUrl;image.hidden=false;status.hidden=true;
+  }catch(error){if(error.status===401||error.status===403)previewAuthorizationFailed=true;if(activePreview!==current)return;status.textContent=error.name==='AbortError'?'טעינת התמונה לא הושלמה':error.message;status.classList.add('error');}
+}
+function knownCheckValue(labels,code){return typeof code==='string'&&Object.hasOwn(labels,code)?labels[code]:null;}
+function checkLabel(row){return typeof row.checkLabel==='string'&&row.checkLabel.trim()?row.checkLabel:knownCheckValue(CHECK_TYPE_LABELS,row.check_type||row.details?.checkType)||'-';}
+function checkResultLabel(row){return typeof row.checkResultLabel==='string'&&row.checkResultLabel.trim()?row.checkResultLabel:knownCheckValue(CHECK_OUTCOME_LABELS,row.check_outcome||row.details?.checkOutcome)||(checkLabel(row)==='-'?'-':'תוצאה לא תועדה');}
+function checkContext(row){
+  const details=row.details||{},parts=[],provider=knownCheckValue(PROVIDER_LABELS,details.provider||row.provider||(row.executor_type==='provider'?row.executor_id:null));
+  if(provider)parts.push(provider);
+  if(Number.isSafeInteger(details.frameIndex)&&details.frameIndex>=0&&details.frameIndex<90)parts.push(`תמונה ${details.frameIndex+1}`);
+  if(Number.isSafeInteger(details.frameTimestampMs)&&details.frameTimestampMs>=0)parts.push(`שנייה ${details.frameTimestampMs/1000}`);
+  if(details.cacheHit===true)parts.push('תוצאה שמורה');
+  return parts.join(' · ');
+}
+function metadata(data){if(data.recordingStartedAt)state.started=data.recordingStartedAt;if(data.coverage)state.coverage=data.coverage;byId('started').textContent=state.started?`תחילת תיעוד: ${time(state.started)}`:'';byId('coverage').hidden=!state.coverage;}
+function notice(text){byId('notice').textContent=text;}
+function showDetails(row){cancelAutoRefresh();const root=String(row.operation_id||row.id||'');byId('detail-json').textContent=JSON.stringify(safeDetails(row),null,2);byId('copy-root').hidden=!root;byId('copy-root').onclick=()=>copyRoot(root);byId('detail-dialog').showModal();scheduleAutoRefresh();}
+async function copyRoot(id){try{await navigator.clipboard.writeText(String(id));notice('מזהה הפעולה הועתק');}catch(_){notice('לא ניתן להעתיק את המזהה');}}
+function cell(value,code=false){const td=element('td',null,{class:code?'code':null});td.append(element('span',value==null||value===''?'-':value,{class:'value',title:value==null?'':String(value)}));return td;}
+function timeCell(raw){const td=cell(time(raw).replace(' ','\n'),true);td.classList.add('time');return td;}
+function rowActions(row){const td=element('td');const actions=element('div',null,{class:'row-actions'});const detail=button('code','פרטי רישום',()=>showDetails(row));detail.dataset.detailsId=row.id;const copy=button('copy','העתק מזהה פעולה',()=>copyRoot(row.operation_id||row.id));actions.append(detail,copy);if(canDelete){const target=deletionTarget(row),remove=button('delete',target.root?'מחיקת אירוע הפתיחה דרך הפעולה הראשית':target.kind==='operations'?'מחק פעולה ראשית ופעולות משנה':'מחק פעולת משנה',()=>openDelete(row));remove.classList.add('danger');remove.dataset.deleteId=target.id;remove.dataset.deleteKind=target.kind;remove.disabled=target.root||deleteBusy||state.loading||state.exporting||[...state.pages.values()].some(page=>page.loading);actions.append(remove);}td.append(actions);return td;}
+const CHANGE_LABELS={Text:'טקסט',Image:'תמונות',Video:'סרטונים',Audio:'קול',Document:'מסמכים',Men:'גברים',Women:'נשים',Children:'ילדים',NonHumanImages:'נוף וחפצים',EnforceGeneralFilter:'אכיפת הסינון הכללי'};
+const TARGET_LABELS={general:'סינון כללי',contact:'סינון איש קשר',group:'סינון קבוצה',user:'משתמש',message:'הודעה',file:'קובץ',stored_file:'קובץ',pending_scan:'סריקה בתור'};
+const AUDIT_REASON_LABELS={scan_stopped:'הסריקה נעצרה',scan_incomplete:'בדיקה נדרשת לא הושלמה',required_provider_unavailable:'שירות בדיקה נדרש אינו זמין',budget_exhausted:'מכסת הבדיקות לסרטון מוצתה',deadline_exceeded:'הסריקה חרגה מהזמן המותר',credit_balance_exhausted:'אין יתרת קרדיט אצל ספק הבדיקה',provider_suspended:'ספק הבדיקה מושהה',provider_not_configured:'ספק בדיקה נדרש אינו מוגדר',legacy_budget_unknown:'לא ניתן לאמת את מספר הבדיקות הקודמות',frame_manifest_changed:'התמונות שנדגמו אינן תואמות לסריקה הקודמת',scan_version_changed:'גרסת הסריקה השתנתה ונדרש אישור לבדיקה נוספת',operation_outcome_unknown:'תוצאת בקשת בדיקה קודמת אינה ידועה',provider_guard_unavailable:'לא ניתן לאמת את מכסת הבדיקות',source_unavailable:'לא ניתן לקרוא את קובץ הסרטון',queue_processed:'הטיפול בתור הסתיים',media_not_allowed:'המדיה לא אושרה',outcome_unknown:'התוצאה אינה ידועה',request_removed_without_acceptance:'הבקשה הוסרה ללא אישור',request_entry_removed:'רשומת הבקשה הוסרה',permission_denied:'אין הרשאה',unauthorized:'נדרשת הזדהות',forbidden:'אין הרשאה',not_found:'היעד לא נמצא',timeout:'תם זמן ההמתנה',provider_error:'שגיאה אצל ספק השירות',filter_blocked:'נחסם לפי הגדרות הסינון'};
+function auditChanges(row){
+  const details=row.details||{},entries=[];
+  for(const [key,label]of Object.entries(CHANGE_LABELS)){
+    const before=details[`before${key}`],after=details[`after${key}`];
+    if((typeof before==='boolean'||typeof after==='boolean')&&before!==after)entries.push({key,label,before,after});
+  }
+  if(typeof details.previousStatus==='string'||typeof details.nextStatus==='string'){
+    if(details.previousStatus!==details.nextStatus)entries.push({key:'Status',label:'מצב',before:details.previousStatus,after:details.nextStatus});
+  }
+  return entries;
+}
+function changeValue(change,side){
+  const value=change[side];if(value===undefined||value===null)return 'לא תועד';
+  if(change.key==='Status')return Object.hasOwn(STATUS_LABELS,value)?STATUS_LABELS[value]:`מצב מתועד: ${value}`;
+  return change.key==='EnforceGeneralFilter'?(value?'פעילה':'כבויה'):(value?'מותר':'חסום');
+}
+function auditTarget(row){
+  const type=row.target_type,id=row.target_id;
+  if(!type&&!id)return '';
+  const label=Object.hasOwn(TARGET_LABELS,type)?TARGET_LABELS[type]:type||'יעד';
+  return `${label}${id?` · מזהה ${id}`:''}`;
+}
+function auditReason(row){
+  const reason=row.reason_code||row.details?.reasonCode;if(!reason)return '';
+  if(Object.hasOwn(AUDIT_REASON_LABELS,reason))return AUDIT_REASON_LABELS[reason];
+  const http=/^http_([1-5]\d{2})$/.exec(reason);
+  if(http){const code=Number(http[1]);return `${code<300?'השרת השיב בהצלחה':code<400?'השרת החזיר הפניה':code===401?'נדרשת הזדהות':code===403?'אין הרשאה':code===404?'היעד לא נמצא':code<500?'השרת דחה את הבקשה':'שגיאה בשרת'} (HTTP ${code})`;}
+  return `קוד סיבה מתועד: ${reason}`;
+}
+function auditExplanation(row){
+  const kind=row.kind||row.action,status=row.status,details=row.details||{},reason=auditReason(row);
+  let text;
+  if(kind==='http_response')text=reason||`התקבלה תשובת שרת · ${STATUS_LABELS[status]||'תוצאה לא תועדה'}`;
+  else if(kind==='http_connection_closed')text='החיבור נסגר; לא ניתן לקבוע מכך אם השינוי נשמר';
+  else if(kind==='filter_changed')text=status==='completed'?'שינוי הגדרות הסינון נרשם במסד הנתונים':`שינוי סינון · ${STATUS_LABELS[status]||'תוצאה לא תועדה'}`;
+  else if(kind==='filter_baseline')text='תועד מצב הסינון ההתחלתי';
+  else if(row.check_type||details.checkType)text=`${checkLabel(row)} · ${checkResultLabel(row)}`;
+  else text=`${actionLabel(kind)} · ${STATUS_LABELS[status]||'תוצאה לא תועדה'}`;
+  if(kind==='http_response')text+=` · מצב מתועד: ${STATUS_LABELS[status]||'לא תועד'}; תשובת השרת לבדה אינה פירוט של השינויים שנשמרו`;
+  else if(reason)text+=` · ${reason}`;
+  if(['failed','blocked','rejected'].includes(status)&&!reason)text+=' · הסיבה לא תועדה';
+  if(Number.isSafeInteger(details.affectedCount)&&details.affectedCount>=0)text+=` · מספר רשומות שהושפעו: ${details.affectedCount}`;
+  const budget=scanBudgetText(row);if(budget)text+=` · ${budget}`;
+  return text;
+}
+function scanBudgetText(row){
+  const {providerCallsUsed:used,providerCallsLimit:limit}=row?.details||{};
+  return Number.isSafeInteger(used)&&used>=0&&Number.isSafeInteger(limit)&&limit>=0
+    ?`נוצלו ${used} מתוך מכסה של ${limit} קריאות בדיקה`:'';
+}
+function operationOutcome(root){
+  const failed=['failed','blocked','rejected'].includes(root.status),scan=root.status_source==='scan_workflow_finished';
+  const headline=scan&&root.status==='failed'?'הסריקה נעצרה — הפעולה לא הושלמה':`מצב הפעולה כולה: ${statusLabel(root.status)}`;
+  const detailed=root.scan_summary?.status===root.status?root.scan_summary:null;
+  const evidence=root.outcome_event?.status===root.status?root.outcome_event:null;
+  let reason=root.reason_code||evidence?.reason_code;
+  if(scan&&(!reason||['scan_stopped','queue_processed'].includes(reason)))reason=detailed?.reason_code||reason;
+  return {headline,reason:reason?auditReason({reason_code:reason}):failed?'הסיבה לא תועדה':'',
+    budget:scanBudgetText(detailed)||scanBudgetText(evidence)};
+}
+function statusCell(row){const td=cell(statusLabel(row.status));td.classList.add('status');td.dataset.status=String(row.status||'unknown');const icon=['failed','blocked','rejected'].includes(row.status)?0xe238:['running','pending','queued'].includes(row.status)?0xe556:['completed','succeeded','approved','stored','persisted','delivered','read'].includes(row.status)?0xe1f6:0xe30b;td.firstElementChild.prepend(element('span',String.fromCodePoint(icon),{class:'material-icons status-icon','aria-hidden':'true'}));return td;}
+function operationHue(id){let hash=0;for(const character of String(id))hash=(hash*31+character.charCodeAt(0))%65521;return (hash*137.508)%360;}
+function groupStyle(node,id){const hue=operationHue(id);node.style.setProperty('--group-color',`hsl(${hue} 60% 55%)`);node.style.setProperty('--group-tint',`hsl(${hue} 35% 17%)`);node.style.setProperty('--child-tint',`hsl(${hue} 22% 11%)`);}
+function chronologicalChildren(rows,root){
+  return rows.filter(row=>String(row.operation_id)===String(root.id)&&String(row.id)!==String(root.root_event_id)).slice().sort((a,b)=>{
+    const delta=Date.parse(a.created_at)-Date.parse(b.created_at);return Number.isFinite(delta)&&delta?delta:compareAuditKeys(auditRowKey(a,'events'),auditRowKey(b,'events'),'events');
+  });
+}
+function childCount(root){
+  if(/^\d+$/.test(String(root.sub_event_count)))return String(root.sub_event_count);
+  if(root.root_event_id!=null&&/^\d+$/.test(String(root.event_count)))return String(BigInt(root.event_count)>0n?BigInt(root.event_count)-1n:0n);
+  return null;
+}
+function durationMilliseconds(value){
+  if(typeof value==='number'&&(!Number.isSafeInteger(value)||value<0))return null;
+  if(!['number','string'].includes(typeof value)||!/^\d{1,19}$/.test(String(value)))return null;
+  const ms=BigInt(value);return ms<=9223372036854775807n?ms:null;
+}
+function formatDuration(value,exact=false){
+  const ms=durationMilliseconds(value);if(ms===null)return '-';
+  if(!exact&&ms>0n&&ms<1000n)return '<00:01';
+  const minutes=String(ms/60000n).padStart(2,'0'),seconds=String(ms/1000n%60n).padStart(2,'0');
+  return `${minutes}:${seconds}${exact&&ms%1000n?'.'+String(ms%1000n).padStart(3,'0'):''}`;
+}
+function durationFilterValue(input){
+  const text=String(input).trim();if(!text)return '';
+  const match=/^(\d{1,16}):([0-5]\d)(?:\.(\d{1,3}))?$/.exec(text);
+  if(!match)throw new Error('יש להזין דקות:שניות, למשל 02:35');
+  const ms=BigInt(match[1])*60000n+BigInt(match[2])*1000n+BigInt((match[3]||'').padEnd(3,'0'));
+  if(ms>9223372036854775807n)throw new Error('משך הזמן גדול מדי');return String(ms);
+}
+function elapsedFromRoot(row,root){const started=Date.parse(root.created_at),at=Date.parse(row.created_at);return Number.isFinite(started)&&Number.isFinite(at)&&at>=started?formatDuration(at-started):'-';}
+function timingCell(value,kind){const td=cell(value,true);td.dataset.timing=kind;td.title=kind==='total'?'הזמן מתחילת הפעולה ועד האירוע האחרון שתועד, כולל המתנה (דקות:שניות)':'הזמן מתחילת הפעולה ועד שלב זה (דקות:שניות)';if(value==='<00:01')td.title+=' — פחות משנייה';return td;}
+
+function subEventPosition(row,root){
+  const index=String(row?.sub_event_index||''),total=String(row?.sub_event_total||childCount(root)||'');
+  return /^[1-9]\d*$/.test(index)&&/^[1-9]\d*$/.test(total)&&BigInt(index)<=BigInt(total)?`${index} מתוך ${total}`:'';
+}
+function operationReasonCode(root){
+  const scan=root.status_source==='scan_workflow_finished',detail=root.scan_summary?.status===root.status?root.scan_summary:null;
+  let reason=root.reason_code||(root.outcome_event?.status===root.status?root.outcome_event?.reason_code:null);
+  if(scan&&(!reason||['scan_stopped','queue_processed'].includes(reason)))reason=detail?.reason_code||reason;
+  return reason||null;
+}
+function reasonText(code){if(!code)return '-';return auditReason({reason_code:code}).replace(/ \(HTTP \d{3}\)$/,'');}
+function stageDescription(row){
+  if(row.kind==='http_response')return 'תשובת השרת לבקשה';
+  if(row.kind==='http_connection_closed')return 'החיבור לשרת נסגר';
+  if(row.kind==='filter_changed')return 'עדכון הגדרות הסינון';
+  if(row.kind==='filter_baseline')return 'תיעוד הגדרות הסינון ההתחלתיות';
+  return actionLabel(row.kind);
+}
+function dispatchCell(key,operation){
+  const data=operation.dispatch||{},na=data.dispatch_state==='not_applicable';
+  if(key==='dispatch_recipients'){
+    if(!data.recipients)return cell(na?'לא רלוונטי':'-');
+    const td=element('td');td.append(button('code','הצג פירוט נמענים',()=>{
+      const lines=[];for(const [key,label]of [['deliveredTo','אושר ונשמר עבורו בשרת'],['blockedFor','לא נשלח — נחסם']])for(const recipient of data.recipients[key]||[])lines.push(`${recipient.name||recipient.id}: ${label}${recipient.reason?' — '+recipient.reason:''}${recipient.reasonCode?' ('+recipient.reasonCode+')':''}`);
+      byId('detail-json').textContent=lines.join('\n')||'לא תועדו נמענים';byId('copy-root').hidden=true;byId('detail-dialog').showModal();
+    }));return td;
+  }
+  const value=data[key];let text=key==='dispatch_state'?DISPATCH_SEND_LABELS[value]||'לא ידוע':key==='dispatch_delivery'?DISPATCH_DELIVERY_LABELS[value]||'לא ידוע':key==='dispatch_message_type'?DISPATCH_TYPE_LABELS[value]||value:value;
+  if(key==='dispatch_content'&&!text)text=na?'לא רלוונטי':data.dispatch_message_type&&data.dispatch_message_type!=='text'?'אין טקסט נלווה':'לא תועד';
+  const td=cell(text==null?(na?'לא רלוונטי':'-'):text);
+  if(key==='dispatch_content'&&data.message_body&&data.message_body.length>160)td.append(button('code','הצג תוכן הודעה מלא',()=>{byId('detail-json').textContent=data.message_body;byId('copy-root').hidden=true;byId('detail-dialog').showModal();}));
+  return td;
+}
+function usageCell(key,row,operation){
+  const parent=key.startsWith('operation_'),data=(parent?operation?.operation_usage:row?.usage),property=parent?key.slice(10):key==='usage_status'?'status':key==='usage_model'?'model':key;
+  const resolved=property==='usage_status'?'status':property;
+  let value=data?.[resolved];
+  if(resolved==='status')value=USAGE_LABELS[value]||'לא ידוע';
+  else if(value==null)value=['fx_date','fx_rate','model'].includes(resolved)&&data?.calls===0?'-':'לא ידוע';
+  else if(resolved==='cost_ils')value=Number(value)===0?'₪0':Number(value)<0.000001?'פחות מ־₪0.000001':'₪'+Number(value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:6});
+  else if(resolved==='fx_date')value=String(value).split('-').reverse().join('/');
+  else if(resolved.includes('tokens'))value=Number(value).toLocaleString('en-US');
+  const td=cell(value);td.dataset.usage=parent?'operation':'step';
+  const lines=['אומדן עלות API לפני מס והנחות ספק; אינו חיוב בפועל. טוקני פלט כוללים טוקני חשיבה. טוקני מטמון כלולים בקלט.'];
+  if(parent)lines.push('סיכום כל קריאות הספק לפעולה, ללא תלות בסינון, בכיווץ או במספר השורות המוצגות.');
+  if(data?.missing_calls)lines.push(`חסר מידע עבור ${data.missing_calls} קריאות. סכום ידוע בלבד: ₪${Number(data.known_cost_ils||0).toFixed(6)}; טוקנים ידועים: ${data.known_total_tokens||0}.`);
+  if(data?.fx_rate)lines.push(`שער בנק ישראל: ${data.fx_rate} ₪ לדולר, מתאריך ${data.fx_date}.`);
+  for(const basis of data?.basis||[]){
+   if(basis.missingUsage)continue;
+   lines.push(`${basis.provider||''} / ${basis.model||''}: קלט $${basis.inputUsdPerMillion??'לא ידוע'}, פלט $${basis.outputUsdPerMillion??'לא ידוע'} למיליון; מטמון $${basis.snapshot?.cachedInputUsdPerMillion??'לא תועד'}; ליחידה $${basis.unitUsd??'לא רלוונטי'}.`);
+   if(!basis.snapshot)lines.push('תעריף היסטורי כפי שתועד; פירוט מטמון לא תועד. ההמרה לש״ח לפי השער המוצג.');
+   if(basis.snapshot?.webSearchCalls)lines.push(`חיפושי אינטרנט: ${basis.snapshot.webSearchCalls}, בעלות $${basis.snapshot.webSearchUsdPerCall} לחיפוש.`);
+   if(basis.snapshot?.cacheWriteTokens)lines.push(`כתיבה למטמון: ${basis.snapshot.cacheWriteTokens} טוקנים, בתעריף $${basis.snapshot.cacheWriteUsdPerMillion} למיליון.`);
+   if(basis.snapshot?.longContext)lines.push('הקשר ארוך: תעריף הקלט הוכפל ותעריף הפלט הוכפל ב־1.5.');
+   if(basis.snapshot)lines.push(`מקור התעריף: ${basis.snapshot.priceSource||basis.source}; שער בעת הרישום: ${basis.snapshot.fxRate} מתאריך ${basis.snapshot.fxDate}.`);
+  }
+  td.title=lines.join('\n');td.firstElementChild.title=td.title;if(resolved==='cost_ils'){td.firstElementChild.tabIndex=0;td.firstElementChild.setAttribute('role','button');const show=()=>{cancelAutoRefresh();byId('detail-json').textContent=td.title;byId('copy-root').hidden=true;byId('detail-dialog').showModal();};td.firstElementChild.onclick=show;td.firstElementChild.onkeydown=e=>{if(['Enter',' '].includes(e.key)){e.preventDefault();show();}};}return td;
+}
+function singleFieldCell(key,row,root){
+  const details=row?.details||{},evidence=row||{},operation=root||{},scan=operation.scan_summary?.status===operation.status?operation.scan_summary:null,
+    outcome=operation.outcome_event?.status===operation.status?operation.outcome_event:null,budget={...(outcome?.details||{}),...(scan?.details||{}),...(operation.budget_details||{})},reason=operationReasonCode(operation);
+  let value;
+  if(USAGE_FIELDS.includes(key))return usageCell(key,row,operation);
+  if(key.startsWith('dispatch_'))return dispatchCell(key,operation);
+  if(key==='created_at')return timeCell(evidence.created_at||operation.created_at);
+  if(key==='elapsed_ms')return timingCell(row?elapsedFromRoot(row,operation):'-','elapsed');
+  if(key==='duration_ms')return timingCell(formatDuration(operation.duration_ms),'total');
+  if(key==='status')return row?statusCell(row):cell('-');
+  if(key==='operation_status')return statusCell(operation);
+  if(key==='check_type'){const td=cell(checkLabel(evidence));td.classList.add('check-cell');return td;}
+  if(key==='check_outcome'){const code=evidence.check_outcome||details.checkOutcome,td=cell(knownCheckValue(CHECK_OUTCOME_LABELS,code)||(checkLabel(evidence)==='-'?'-':'תוצאה לא תועדה'));td.classList.add('check-result');td.dataset.checkOutcome=code||'unknown';return td;}
+  if(key==='preview'){const td=element('td'),preview=checkPreviewButton(operationPreviewRow(evidence,operation));if(preview)td.append(preview);else td.append(element('span','-'));return td;}
+  if(key==='findings'){const td=element('td');if(evidence.checkResultLabel&&evidence.checkResultLabel!=='-'){const open=button('code','הצג ממצאי בדיקה',()=>{cancelAutoRefresh();byId('detail-json').textContent=checkResultLabel(evidence);byId('copy-root').hidden=true;byId('detail-dialog').showModal();});td.append(open);}else td.append(element('span','-'));return td;}
+  if(key==='details')return rowActions(row||operation);
+  switch(key){
+    case 'action':value=mediaActionLabel(operation);break;
+    case 'kind':value=row?actionLabel(row.kind):childCount(operation)==='0'?'טרם תועדו פעולות משנה':'אין פעולות משנה התואמות לסינון';break;
+    case 'step_index':value=subEventPosition(evidence,operation)||'-';break;
+    case 'initiator_id':value=operation.initiator_name||'לא תועד';break;
+    case 'initiator_identifier':value=operation.initiator_short_id??operation.initiator_id;break;
+    case 'executor_id':value=evidence.executor_name||(evidence.executor_type==='system'&&evidence.executor_id==='api'?'השרת (API)':'לא תועד');break;
+    case 'executor_identifier':value=evidence.executor_id;break;
+    case 'executor_type':value=EXECUTOR_LABELS[evidence.executor_type]||evidence.executor_type;break;
+    case 'recipient_id':value=operation.recipient_name||(operation.dispatch?.dispatch_state==='not_applicable'?'לא רלוונטי':'לא תועד');break;
+    case 'recipient_identifier':value=operation.recipient_short_id??operation.recipient_id;break;
+    case 'recipient_type':value=operation.recipient_type==='group'?'קבוצה':operation.recipient_type==='user'?'משתמש':operation.recipient_type;break;
+    case 'operation_reason':value=reasonText(reason);break;
+    case 'operation_reason_code':value=reason;break;
+    case 'step_reason':value=reasonText(evidence.reason_code||details.reasonCode);break;
+    case 'reason_code':value=evidence.reason_code||details.reasonCode;break;
+    case 'provider_calls_used':value=budget.providerCallsUsed;break;
+    case 'provider_calls_limit':value=budget.providerCallsLimit;break;
+    case 'change_context':value=auditChanges(evidence).length?(auditChanges(evidence).some(change=>change.key!=='Status')?'הגדרות סינון':'מצב'):null;break;
+    case 'before_value':value=details.previousStatus?statusLabel(details.previousStatus):null;break;
+    case 'after_value':value=details.nextStatus?statusLabel(details.nextStatus):null;break;
+    case 'event_explanation':value=row?stageDescription(row):'לא תועדה פעולת משנה';break;
+    case 'person_count':value=details.checkPersonCount;break;
+    case 'face_count':value=details.checkFaceCount;break;
+    case 'confidence':value=details.checkConfidencePct;break;
+    case 'provider':{const code=details.provider||evidence.provider||(evidence.executor_type==='provider'?evidence.executor_id:null);value=knownCheckValue(PROVIDER_LABELS,code)||code;break;}
+    case 'frame_index':value=Number.isSafeInteger(details.frameIndex)&&details.frameIndex>=0?details.frameIndex+1:null;break;
+    case 'frame_timestamp':value=formatDuration(details.frameTimestampMs,true);break;
+    case 'cache_hit':value=typeof details.cacheHit==='boolean'?(details.cacheHit?'כן':'לא'):null;break;
+    case 'target_type':value=TARGET_LABELS[evidence.target_type]||evidence.target_type;break;
+    case 'target_id':case 'source':case 'attempt':case 'parent_event_id':value=evidence[key];break;
+    case 'http_status':value=details.httpStatus??details.statusCode??/^http_([1-5]\d{2})$/.exec(evidence.reason_code||'')?.[1];break;
+    case 'affected_count':value=details.affectedCount;break;
+    case 'event_count':value=operation.event_count;break;
+    case 'operation_id':value=operation.id;break;
+    case 'event_id':value=evidence.id;break;
+    default:{const match=/^(before|after)(.+)$/.exec(key);if(match&&Object.hasOwn(CHANGE_LABELS,match[2])&&typeof details[key]==='boolean')value=changeValue({key:match[2],[match[1]]:details[key]},match[1]);}
+  }
+  const td=cell(value==null?'-':value);
+  if(key==='action'){td.classList.add('action-cell');td.firstElementChild.classList.add('action-name');}
+  if(key==='kind')td.classList.add('sub-action-cell');
+  if(key==='initiator_id'||key==='executor_id')td.dataset.identity=key==='initiator_id'?'initiator':'executor';
+  return td;
+}
+function appendFieldCells(tr,mode,row,root,control){
+  for(const key of defaultColumnOrder(mode)){const td=['expand','select'].includes(key)?control:singleFieldCell(key,row,root);td.dataset.field=key;applyColumnFormat(td,key,row,root,mode);tr.append(td);}
+}
+function childRow(row,root,first=false){
+  const tr=element('tr',null,{class:'child-row','data-event-id':row?.id,'data-parent-operation-id':root.id});groupStyle(tr,root.id);
+  if(first){tr.classList.add('operation-row');tr.dataset.operationId=root.id;}
+  const control=element('td',null,{class:'selection-control'}),selector=auditSelector(row||root);if(selector)control.append(selector);
+  if(first){const id=String(root.id),expand=button(state.expanded.has(id)?'expandLess':'expandMore',state.expanded.has(id)?'כווץ לשורה הראשונה':'הצג את כל פעולות המשנה',()=>toggle(id));expand.dataset.expand=id;expand.setAttribute('aria-expanded',String(state.expanded.has(id)));if(state.expanded.has(id))expand.setAttribute('aria-controls',`operation-events-${id}`);control.append(expand);}
+  appendFieldCells(tr,'operations',row,root,control);
+  if(first&&row){const actions=tr.querySelector('[data-field="details"] .row-actions'),primary=button('code','פרטי הפעולה הראשית',()=>showDetails(root));primary.dataset.operationDetails=root.id;actions.append(primary);if(canDelete){const remove=button('delete','מחק פעולה ראשית ופעולות משנה',()=>openDelete(root));remove.classList.add('danger');remove.dataset.deleteKind='operations';remove.dataset.deleteId=root.id;actions.append(remove);}}
+  return tr;
+}
+function eventRow(row){
+  const tr=element('tr',null,{'data-event-id':row.id}),control=element('td'),selector=auditSelector(row);if(selector)control.append(selector);
+  const root={...row,id:row.operation_id,action:row.operation_action,created_at:row.operation_created_at,duration_ms:row.operation_duration_ms,status:row.current_operation_status,reason_code:row.current_operation_reason_code,status_source:row.current_operation_status_source,budget_details:row.details};
+  appendFieldCells(tr,'events',row,root,control);return tr;
+}
+function tableHead(columns,fields=null){const head=element('thead'),tr=element('tr');for(const [index,name]of columns.entries()){const th=element('th',null,{scope:'col'}),keys=fields?.[index];if(keys?.length){const active=keys.some(key=>state.columns[state.mode][key]),heading=element('div',null,{class:'column-heading'}),filter=button(active?'filter':'dropdown',`סינון: ${name}${active?' (פעיל)':''}`,()=>openColumnFilter(keys,name,filter));filter.dataset.columnFilter=keys[0];filter.classList.toggle('active',active);filter.setAttribute('aria-haspopup','dialog');filter.setAttribute('aria-expanded',String(columnPopup?.fields[0]===keys[0]));heading.append(element('span',name),filter);th.append(heading);}else th.textContent=name;tr.append(th);}head.append(tr);return head;}
+function tableColumns(table,widths){const group=element('colgroup');for(const width of widths){const col=element('col');col.style.width=`${width}px`;group.append(col);}table.append(group);table.style.width=table.style.minWidth=`${widths.reduce((sum,width)=>sum+width,0)}px`;}
+function addSortControls(head,fields){
+  for(const [index,keys]of fields.entries()){
+    if(!keys.length)continue;
+    const selected=sorting[state.mode],field=keys.includes(selected?.field)?selected.field:keys[0],th=head.querySelectorAll('th')[index],active=selected?.field===field;
+    const control=button(active?(selected.direction==='asc'?'expandLess':'expandMore'):'dropdown',`מיון ${active&&selected.direction==='asc'?'יורד':'עולה'}: ${FIELD_LABELS[field]||field}`,()=>{
+      sorting[state.mode]={field,direction:active&&selected.direction==='asc'?'desc':'asc'};load();
+    });
+    if(!active){
+      const arrows=element('span',null,{'aria-hidden':'true',style:'display:flex;flex-direction:column;align-items:center'});
+      for(const icon of ['expandLess','expandMore'])arrows.append(element('span',String.fromCodePoint(ICONS[icon]),{class:'material-icons',style:'font-size:14px;line-height:9px'}));
+      control.replaceChildren(arrows);
+    }
+    control.dataset.columnSort=field;control.classList.toggle('active',active);
+    th.setAttribute('aria-sort',active?(selected.direction==='asc'?'ascending':'descending'):'none');
+    th.querySelector('.column-heading').append(control);
+  }
+}
+function defaultColumnOrder(mode){return COLUMN_SCHEMAS[mode].map(column=>column[0]);}
+function columnRawValue(key,row,root,td){
+ const e=row||{},o=root||{},d=e.details||{};
+ if(USAGE_FIELDS.includes(key)){const parent=key.startsWith('operation_'),data=parent?o.operation_usage:e.usage;const prop=parent?key.slice(10):key==='usage_status'?'status':key==='usage_model'?'model':key;return data?.[prop==='usage_status'?'status':prop]??null;}
+ if(key.startsWith('dispatch_'))return o.dispatch?.[key]??null;
+ if(key==='created_at')return e.created_at||o.created_at;
+ if(key==='duration_ms')return o.duration_ms;
+ if(key==='elapsed_ms'){const a=Date.parse(e.created_at),b=Date.parse(o.created_at);return Number.isFinite(a)&&Number.isFinite(b)&&a>=b?a-b:null;}
+ if(key==='frame_timestamp')return d.frameTimestampMs;
+ if(key==='frame_index')return Number.isSafeInteger(d.frameIndex)&&d.frameIndex>=0?d.frameIndex+1:null;
+ if(key==='event_count')return o.event_count;
+ if(key==='event_id')return e.id;
+ if(key==='initiator_identifier')return o.initiator_short_id??o.initiator_id;
+ if(key==='recipient_identifier')return o.recipient_short_id??o.recipient_id;
+ if(key==='provider_calls_used'||key==='provider_calls_limit'){const scan=o.scan_summary?.status===o.status?o.scan_summary:null,outcome=o.outcome_event?.status===o.status?o.outcome_event:null,budget={...(outcome?.details||{}),...(scan?.details||{}),...(o.budget_details||{})};return budget[key==='provider_calls_used'?'providerCallsUsed':'providerCallsLimit'];}
+ const properties={person_count:'checkPersonCount',face_count:'checkFaceCount',confidence:'checkConfidencePct',affected_count:'affectedCount'};
+ if(properties[key])return d[properties[key]];
+ if(key==='http_status')return d.httpStatus??d.statusCode??/^http_([1-5]\d{2})$/.exec(e.reason_code||'')?.[1];
+ if(['attempt','parent_event_id'].includes(key))return e[key];
+ return td?.querySelector('.value')?.textContent??null;
+}
+function applyColumnFormat(td,key,row,root,mode){
+ const f=columnFormats[mode][key],span=td.querySelector('.value');if(!f||!span||columnFormatTools.kind(key)==='control')return;
+ // Text labels keep their status icons and translated meaning.
+ if(f.type==='text'&&columnFormatTools.kind(key)==='text')return;
+ const value=columnFormatTools.format(key,columnRawValue(key,row,root,td),f);if(value==null)return;
+ span.textContent=value;span.style.whiteSpace='pre-wrap';span.dir='auto';td.dataset.formatted=f.type;
+}
+function settingsSample(key){
+ const first=state.rows[0];let row,root;
+ if(settingsDraft.mode==='operations'){root=first;row=first?.first_sub_event;}else{row=first;root=first?{...first,id:first.operation_id,created_at:first.operation_created_at,duration_ms:first.operation_duration_ms,status:first.current_operation_status,budget_details:first.details}:null;}
+ if(first){const td=singleFieldCell(key,row,root),raw=columnRawValue(key,row,root,td);if(raw!=null&&raw!=='')return {raw,original:td.querySelector('.value')?.textContent??String(raw),actual:true};}
+ const kind=columnFormatTools.kind(key),raw=kind==='number'?(key==='confidence'?97:'1234.56789'):kind==='date'?'2026-09-27T09:15:30.125Z':kind==='duration'?75427:'דוגמה';
+ return {raw,original:String(raw),actual:false};
+}
+function updateSettingsPreview(key){
+ const target=byId('settings-list').querySelector(`[data-settings-key="${key}"]`),sample=settingsSample(key),f=settingsDraft.formats[key]||{type:'auto'};
+ target.querySelector('.settings-preview').textContent=columnFormatTools.format(key,sample.raw,f)??sample.original;
+ target.querySelector('.settings-preview-label').textContent=sample.actual?'תצוגה מקדימה מהרשומה הראשונה':'דוגמה לתצוגה';
+}
+function settingsOptions(key,container){
+ const f=settingsDraft.formats[key]||{type:'auto'};container.replaceChildren();
+ const changed=()=>{byId('settings-error').textContent='';updateSettingsPreview(key);};
+ if(['number','currency','percent','duration'].includes(f.type)){
+  const label=element('label','ספרות עשרוניות'),input=element('input',null,{type:'number',min:'0',max:f.type==='duration'?'3':'10',step:'1','data-setting-decimals':key});input.value=f.decimals;
+  input.onchange=()=>{const n=Number(input.value);if(!input.value||!Number.isInteger(n)||n<0||n>(f.type==='duration'?3:10)){input.value=f.decimals;byId('settings-error').textContent='מספר הספרות העשרוניות אינו תקין';return;}f.decimals=n;changed();};label.append(input);container.append(label);
+ }
+ if(['number','currency','percent'].includes(f.type)){
+  const label=element('label',null,{class:'check'}),input=element('input',null,{type:'checkbox','data-setting-grouping':key});input.checked=f.grouping;input.onchange=()=>{f.grouping=input.checked;changed();};label.append(input,element('span','מפריד אלפים'));container.append(label);
+ }
+ const choices=f.type==='currency'?[['ILS','₪ שקל'],['USD','$ דולר'],['EUR','€ אירו']]:f.type==='date'?columnFormatTools.dates.map(x=>[x,x]):f.type==='duration'?columnFormatTools.durations.map(x=>[x,x==='seconds'?'שניות':x]):null;
+ if(choices){const prop=f.type==='currency'?'currency':'pattern',label=element('label',f.type==='currency'?'סמל מטבע':'תבנית'),select=element('select',null,{dir:'ltr',['data-setting-'+prop]:key});for(const [value,text]of choices)select.append(element('option',text,{value}));select.value=f[prop];select.onchange=()=>{f[prop]=select.value;changed();};label.append(select);container.append(label);}
+}
+function renderSettings(){
+ const list=byId('settings-list'),search=byId('settings-search').value.trim().toLocaleLowerCase();list.replaceChildren();
+ const schema=new Map(COLUMN_SCHEMAS[settingsDraft.mode].map(c=>[c[0],c[1]]));
+ for(const [index,key]of settingsDraft.order.entries()){
+  const title=schema.get(key)||(['expand','select'].includes(key)?'סימון ופתיחת הפעולה':key);if(search&&!title.toLocaleLowerCase().includes(search))continue;
+  const row=element('div',null,{class:'settings-row','data-settings-key':key}),positionLabel=element('label','מיקום'),position=element('input',null,{type:'number',min:'1',max:String(settingsDraft.order.length),step:'1',value:String(index+1),'data-setting-position':key,'aria-label':`מיקום: ${title}`});position.value=index+1;
+  position.onchange=()=>{try{settingsDraft.order=columnFormatTools.move(settingsDraft.order,key,Number(position.value));byId('settings-error').textContent='';renderSettings();byId('settings-list').querySelector(`[data-setting-position="${key}"]`)?.focus();}catch(error){position.value=index+1;byId('settings-error').textContent=error.message;}};
+  positionLabel.append(position);row.append(positionLabel,element('div',title,{class:'settings-name'}));
+  const formatLabel=element('label','פורמט',{class:'settings-format'}),select=element('select',null,{'data-setting-type':key,'aria-label':`פורמט: ${title}`});
+  for(const value of columnFormatTools.allowed(key))select.append(element('option',columnFormatTools.types[value],{value}));
+  select.value=settingsDraft.formats[key]?.type||'auto';select.disabled=columnFormatTools.kind(key)==='control';formatLabel.append(select);row.append(formatLabel);
+  const options=element('div',null,{class:'settings-options'});row.append(options);const example=element('div',null,{class:'settings-example'});example.append(element('div','',{class:'settings-preview-label'}),element('div','',{class:'settings-preview'}));row.append(example);list.append(row);
+  select.onchange=()=>{if(select.value==='auto')delete settingsDraft.formats[key];else settingsDraft.formats[key]=columnFormatTools.defaults(select.value);settingsOptions(key,options);updateSettingsPreview(key);};settingsOptions(key,options);updateSettingsPreview(key);
+ }
+ if(!list.children.length)list.append(element('p','אין עמודות תואמות לחיפוש'));
+}
+async function openColumnSettings(){
+ if(!columnOrdersLoaded)return;
+ if(columnOrdersSaving){notice('שמירת סדר העמודות מתבצעת. אפשר לפתוח את ההגדרות לאחר סיומה.');return;}
+ if(pendingColumnOrders.size){await flushColumnOrders();if(pendingColumnOrders.size)return;}
+ cancelAutoRefresh();settingsDraft={mode:state.mode,order:columnOrders[state.mode].slice(),formats:JSON.parse(JSON.stringify(columnFormats[state.mode]))};
+ byId('settings-title').textContent='הגדרות עמודות — '+(state.mode==='operations'?'פעולות משתמש':'כל האירועים');byId('settings-count').textContent=settingsDraft.order.length;byId('settings-search').value='';byId('settings-error').textContent='';renderSettings();byId('settings-dialog').showModal();byId('settings-search').focus();
+}
+function closeColumnSettings(){if(settingsSaving)return;settingsDraft=null;byId('settings-dialog').close();scheduleAutoRefresh();}
+async function saveColumnSettings(){
+ if(!settingsDraft||settingsSaving)return;settingsSaving=true;const draft=settingsDraft,controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+ byId('settings-save').textContent='שומר…';byId('settings-error').textContent='';byId('settings-dialog').setAttribute('aria-busy','true');for(const control of byId('settings-dialog').querySelectorAll('input,select,button'))control.disabled=true;
+ try{
+  const response=await fetch(`${API}/column-settings/${draft.mode}`,{method:'PUT',headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/json'},body:JSON.stringify({order:draft.order,formats:draft.formats}),signal:controller.signal});
+  if(!response.ok)throw Error('שמירת ההגדרות נכשלה. השינויים נשארו כאן וניתן לנסות שוב.');
+  const data=await response.json();columnOrders[draft.mode]=normalizedColumnOrder(draft.mode,data.order);columnFormats[draft.mode]=columnFormatTools.normalize(data.formats,defaultColumnOrder(draft.mode));settingsSaving=false;closeColumnSettings();render();notice('סדר העמודות והפורמטים נשמרו בחשבון');
+ }catch(error){byId('settings-error').textContent=error.name==='AbortError'?'השרת לא השיב בזמן. ניתן לנסות לשמור שוב.':error.message;}
+ finally{clearTimeout(timer);settingsSaving=false;byId('settings-dialog').removeAttribute('aria-busy');for(const control of byId('settings-dialog').querySelectorAll('input,select,button'))control.disabled=false;byId('settings-save').textContent='שמירה';if(settingsDraft)renderSettings();}
+}
+
+function normalizedColumnOrder(mode,saved){
+  const defaults=defaultColumnOrder(mode),order=[...new Set((Array.isArray(saved)?saved:[]).filter(key=>defaults.includes(key)))];
+  if(mode==='operations'&&order.includes('action')&&!order.includes('kind'))order.splice(order.indexOf('action')+1,0,'kind');
+  let anchor='kind';for(const key of ['change_context','before_value','after_value','event_explanation']){if(!order.includes(key)&&order.includes(anchor))order.splice(order.indexOf(anchor)+1,0,key);anchor=key;}
+  if(mode==='operations'&&order.includes('initiator_id')&&!order.includes('executor_id'))order.splice(order.indexOf('initiator_id')+1,0,'executor_id');
+  if(mode==='events'&&order.includes('executor_id')&&!order.includes('initiator_id'))order.splice(order.indexOf('executor_id'),0,'initiator_id');
+  if(mode==='events'&&!order.includes('duration_ms')&&order.includes('details'))order.splice(order.indexOf('details'),0,'duration_ms');
+  if(!order.includes('elapsed_ms')&&order.includes('duration_ms'))order.splice(order.indexOf('duration_ms'),0,'elapsed_ms');
+  for(const [index,key]of defaults.entries())if(!order.includes(key)){const previous=defaults[index-1];order.splice(previous&&order.includes(previous)?order.indexOf(previous)+1:0,0,key);}return order;
+}
+function normalizedColumnWidths(mode,saved){
+  const allowed=defaultColumnOrder(mode);return Object.fromEntries(Object.entries(saved&&typeof saved==='object'?saved:{}).filter(([key,width])=>allowed.includes(key)&&Number.isInteger(width)&&width>=48&&width<=1200));
+}
+function currentColumnWidths(mode){return defaultColumnOrder(mode).map((key,index)=>columnWidths[mode][key]??(mode==='events'?EVENT_WIDTHS:OP_WIDTHS)[index]);}
+function applyColumnWidth(mode,key,width){
+  columnWidths[mode][key]=Math.max(48,Math.min(1200,Math.round(width)));
+  const table=byId('audit-table'),head=table.tHead.querySelector(`th[data-column-id="${key}"]`);
+  table.querySelector('colgroup').children[head.cellIndex].style.width=`${columnWidths[mode][key]}px`;
+  table.style.width=table.style.minWidth=`${currentColumnWidths(mode).reduce((sum,value)=>sum+value,0)}px`;
+  head.querySelector('.column-resize').setAttribute('aria-valuenow',String(columnWidths[mode][key]));
+  byId('reset-column-widths').hidden=false;
+}
+function queueColumnWidths(mode){pendingColumnWidths.set(mode,{...columnWidths[mode]});flushColumnWidths();}
+async function flushColumnWidths(){
+  if(columnWidthsSaving)return;columnWidthsSaving=true;byId('retry-column-widths').hidden=true;
+  byId('column-width-status').textContent='שומר רוחב עמודות…';
+  try{
+    while(pendingColumnWidths.size){
+      const [mode,widths]=pendingColumnWidths.entries().next().value;
+      const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),20000);
+      try{
+        const response=await fetch(`${API}/column-widths/${mode}`,{method:'PUT',headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/json'},body:JSON.stringify({widths}),signal:controller.signal});
+        if(!response.ok)throw new Error('Saving column widths failed');
+        if(pendingColumnWidths.get(mode)===widths)pendingColumnWidths.delete(mode);
+      }finally{clearTimeout(timeout);}
+    }
+    byId('column-width-status').textContent='רוחב העמודות נשמר בחשבון';
+  }catch(_){byId('column-width-status').textContent='רוחב העמודות לא נשמר בשרת';byId('retry-column-widths').hidden=false;}
+  finally{columnWidthsSaving=false;}
+}
+function finishColumnResize(commit=false){
+  const resize=columnResize;if(!resize)return;columnResize=null;
+  document.body.classList.remove('column-resizing');
+  if(resize.handle.hasPointerCapture(resize.pointerId))resize.handle.releasePointerCapture(resize.pointerId);
+  if(commit){if((columnWidths[resize.mode][resize.key]??resize.width)!==resize.width)queueColumnWidths(resize.mode);}
+  else{
+    applyColumnWidth(resize.mode,resize.key,resize.width);
+    if(resize.saved===undefined)delete columnWidths[resize.mode][resize.key];else columnWidths[resize.mode][resize.key]=resize.saved;
+  }
+  byId('reset-column-widths').hidden=!Object.keys(columnWidths[state.mode]).length;
+  scheduleAutoRefresh();
+}
+function enableColumnResizing(table){
+  const mode=state.mode,defaults=defaultColumnOrder(mode);
+  for(const th of table.tHead.rows[0].cells){
+    const key=th.dataset.columnId,index=defaults.indexOf(key),label=(mode==='events'?EVENT_COLUMNS:OP_COLUMNS)[index]||'הרחבת פעולות';
+    const handle=element('span',null,{class:'column-resize',role:'separator',tabindex:columnOrdersLoaded?'0':'-1','aria-orientation':'vertical','aria-label':`רוחב: ${label}`,'aria-valuemin':'48','aria-valuemax':'1200','aria-valuenow':String(currentColumnWidths(mode)[index]),'aria-disabled':String(!columnOrdersLoaded),title:'גררו לשינוי רוחב, או השתמשו בחצים ימינה ושמאלה'});
+    th.append(handle);
+    handle.onpointerdown=event=>{
+      if(!columnOrdersLoaded||event.button!==0||!event.isPrimary)return;
+      event.preventDefault();event.stopPropagation();finishColumnDrag();finishColumnResize();cancelAutoRefresh();
+      columnResize={handle,mode,key,pointerId:event.pointerId,startX:event.clientX,width:currentColumnWidths(mode)[index],saved:columnWidths[mode][key]};
+      handle.setPointerCapture(event.pointerId);handle.focus({preventScroll:true});document.body.classList.add('column-resizing');
+    };
+    handle.onpointermove=event=>{const resize=columnResize;if(!resize||resize.handle!==handle||resize.pointerId!==event.pointerId)return;event.preventDefault();applyColumnWidth(mode,key,resize.width+resize.startX-event.clientX);};
+    handle.onpointerup=event=>{if(columnResize?.pointerId===event.pointerId){event.stopPropagation();finishColumnResize(true);}};
+    handle.onpointercancel=handle.onlostpointercapture=()=>{if(columnResize?.handle===handle)finishColumnResize();};
+    handle.onkeydown=event=>{
+      if(!columnOrdersLoaded||event.altKey||!['ArrowLeft','ArrowRight'].includes(event.key))return;
+      event.preventDefault();event.stopPropagation();applyColumnWidth(mode,key,currentColumnWidths(mode)[index]+(event.key==='ArrowLeft'?10:-10));queueColumnWidths(mode);
+    };
+  }
+  byId('reset-column-widths').hidden=!Object.keys(columnWidths[mode]).length;
+}
+async function loadColumnOrders(){
+  byId('column-order-status').textContent='טוען סדר עמודות…';byId('retry-column-order').hidden=true;
+  try{
+    const data=await apiRequest('column-order',{formats:'1'},{token:state.token,consume:response=>response.json()});
+    for(const mode of ['operations','events']){columnOrders[mode]=normalizedColumnOrder(mode,data.orders?.[mode]);columnWidths[mode]=normalizedColumnWidths(mode,data.widths?.[mode]);columnFormats[mode]=columnFormatTools.normalize(data.formats?.[mode],defaultColumnOrder(mode));}
+    columnOrdersLoaded=true;byId('open-column-settings').disabled=false;byId('column-order-status').textContent='';render();
+  }catch(_){byId('column-order-status').textContent='טעינת סדר העמודות נכשלה';byId('retry-column-order').hidden=false;}
+}
+function saveColumnOrder(order,label){
+  if(!columnOrdersLoaded)return;
+  columnOrders[state.mode]=order;pendingColumnOrders.set(state.mode,order.slice());render();flushColumnOrders();
+}
+async function flushColumnOrders(){
+  if(columnOrdersSaving)return;columnOrdersSaving=true;byId('retry-column-order').hidden=true;
+  byId('column-order-status').textContent='שומר סדר עמודות…';
+  try{
+    while(pendingColumnOrders.size){
+      const [mode,order]=pendingColumnOrders.entries().next().value;
+      const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),20000);
+      try{
+        const response=await fetch(`${API}/column-order/${mode}`,{method:'PUT',headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/json'},body:JSON.stringify({order}),signal:controller.signal});
+        if(!response.ok)throw new Error('Saving column order failed');
+        // A later drag can replace this mode while its previous save is in flight.
+        if(pendingColumnOrders.get(mode)===order)pendingColumnOrders.delete(mode);
+      }finally{clearTimeout(timeout);}
+    }
+    byId('column-order-status').textContent='סדר העמודות נשמר בחשבון';
+  }catch(_){byId('column-order-status').textContent='סדר העמודות לא נשמר בשרת';byId('retry-column-order').hidden=false;}
+  finally{columnOrdersSaving=false;}
+}
+function moveColumn(source,target,before){
+  const order=columnOrders[state.mode].slice();if(source===target||!order.includes(source)||!order.includes(target))return;
+  order.splice(order.indexOf(source),1);order.splice(order.indexOf(target)+(before?0:1),0,source);
+  if(order.every((key,index)=>key===columnOrders[state.mode][index]))return;
+  saveColumnOrder(order,'מיקום העמודה עודכן');
+  [...byId('audit-table').tHead.querySelectorAll('th')].find(th=>th.dataset.columnId===source)?.focus({preventScroll:true});
+}
+function clearColumnDropMarks(){for(const th of byId('audit-table').tHead.querySelectorAll('th'))th.classList.remove('column-drop-before','column-drop-after');}
+function finishColumnDrag(commit=false){
+  const drag=columnDrag;if(!drag)return;columnDrag=null;cancelAnimationFrame(drag.frame);
+  drag.th.classList.remove('column-dragging');clearColumnDropMarks();
+  if(drag.th.hasPointerCapture(drag.pointerId))drag.th.releasePointerCapture(drag.pointerId);
+  if(commit&&drag.active&&drag.target)moveColumn(drag.source,drag.target,drag.before);
+  scheduleAutoRefresh();
+}
+function trackColumnDrag(){
+  const drag=columnDrag;if(!drag?.active)return;
+  const wrap=byId('table-wrap'),bounds=wrap.getBoundingClientRect();
+  if(drag.y>=bounds.top&&drag.y<=bounds.bottom){
+    if(drag.x<bounds.left+36)wrap.scrollLeft-=12;else if(drag.x>bounds.right-36)wrap.scrollLeft+=12;
+  }
+  const head=byId('audit-table').tHead.getBoundingClientRect();
+  const target=document.elementFromPoint(drag.x,Math.max(head.top+1,Math.min(drag.y,head.bottom-1)))?.closest('th[data-column-id]');
+  clearColumnDropMarks();drag.target=null;
+  if(target&&target.closest('table')===byId('audit-table')&&target!==drag.th&&drag.y>=head.top&&drag.y<=head.bottom+60){
+    const rect=target.getBoundingClientRect();drag.target=target.dataset.columnId;drag.before=drag.x>rect.left+rect.width/2;
+    target.classList.add(drag.before?'column-drop-before':'column-drop-after');
+  }
+  drag.frame=requestAnimationFrame(trackColumnDrag);
+}
+function enableColumnReordering(table){
+  const defaults=defaultColumnOrder(state.mode),order=columnOrders[state.mode]||defaults;
+  const headings=[...table.tHead.rows[0].cells];
+  for(const [index,th]of headings.entries()){
+    th.dataset.columnId=defaults[index];th.tabIndex=0;th.setAttribute('aria-disabled',String(!columnOrdersLoaded));
+    const label=(state.mode==='events'?EVENT_COLUMNS:OP_COLUMNS)[index]||'הרחבת פעולות';
+    th.title=`${label} — גררו לשינוי מיקום, או השתמשו ב־Alt וחץ ימינה/שמאלה`;
+    th.setAttribute('aria-keyshortcuts','Alt+ArrowLeft Alt+ArrowRight');th.setAttribute('aria-describedby','column-order-help');
+    if(!th.textContent)th.setAttribute('aria-label',label);
+    th.onpointerdown=event=>{
+      if(!columnOrdersLoaded||event.button!==0||!event.isPrimary||event.target.closest('button,.column-resize'))return;
+      finishColumnDrag();cancelAutoRefresh();
+      columnDrag={th,source:th.dataset.columnId,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,x:event.clientX,y:event.clientY,active:false};
+      th.setPointerCapture(event.pointerId);
+    };
+    th.onpointermove=event=>{
+      const drag=columnDrag;if(!drag||drag.th!==th||drag.pointerId!==event.pointerId)return;
+      drag.x=event.clientX;drag.y=event.clientY;
+      if(!drag.active&&Math.abs(drag.x-drag.startX)>6){drag.active=true;th.classList.add('column-dragging');trackColumnDrag();}
+      if(drag.active)event.preventDefault();
+    };
+    th.onpointerup=event=>{if(columnDrag?.pointerId===event.pointerId)finishColumnDrag(true);};
+    th.onpointercancel=th.onlostpointercapture=()=>finishColumnDrag();
+    th.onkeydown=event=>{
+      if(!columnOrdersLoaded||event.target!==th||!event.altKey||!['ArrowLeft','ArrowRight'].includes(event.key))return;
+      event.preventDefault();const current=columnOrders[state.mode],index=current.indexOf(th.dataset.columnId),step=event.key==='ArrowLeft'?1:-1;
+      if(current[index+step])moveColumn(th.dataset.columnId,current[index+step],step<0);
+    };
+  }
+  // Reorder complete rows only: group notes span the entire table.
+  for(const group of [table.querySelector('colgroup'),...table.rows]){
+    const cells=[...group.children];if(cells.length!==defaults.length)continue;
+    group.append(...order.map(key=>cells[defaults.indexOf(key)]));
+  }
+  byId('reset-column-order').hidden=order.every((key,index)=>key===defaults[index]);
+}
+function errorWithRetry(target,text,retry){target.replaceChildren();if(!text)return;target.append(element('span',text));const action=button('refresh','נסה שוב',retry);target.append(action);}
+function inlineEvents(root){
+  const id=String(root.id),page=state.pages.get(id),body=element('tbody',null,{id:`operation-events-${id}`,'data-operation-events':id});if(!page)return body;
+  const rows=(childColumnQuery().sort?page.rows.filter(row=>String(row.id)!==String(root.root_event_id)):chronologicalChildren(page.rows,root)).filter(row=>String(row.id)!==String(root.first_sub_event?.id)),tr=element('tr',null,{class:'group-note'}),td=element('td',null,{colspan:OP_COLUMNS.length});groupStyle(tr,id);tr.append(td);
+  if(page.loading)td.append(element('div',null,{class:'busy',role:'progressbar','aria-label':'טוען אירועים'}));
+  if(page.loaded&&!rows.length&&!root.first_sub_event&&!page.loading&&!page.cursor)td.append(element('div',Object.keys(state.columns.operations).length?'אין פעולות משנה התואמות לסינון':'אין אירועי המשך מתועדים',{class:'empty'}));
+  if(page.error){const error=element('div',null,{class:'notice error',role:'alert'});errorWithRetry(error,page.error,()=>loadEvents(id));td.append(error);}
+  if(td.childNodes.length)body.append(tr);for(const row of rows)body.append(childRow(row,root));return body;
+}
+function render(){
+  finishColumnResize();finishColumnDrag();
+  previewObserver?.disconnect();for(const entry of checkPreviews.values())entry.nodes.clear();
+  const wrap=byId('table-wrap'),left=wrap.scrollLeft,top=wrap.scrollTop,table=byId('audit-table');table.replaceChildren();tableColumns(table,currentColumnWidths(state.mode));table.append(tableHead(state.mode==='events'?EVENT_COLUMNS:OP_COLUMNS,state.mode==='events'?EVENT_FIELDS:OP_FIELDS));
+  addSortControls(table.querySelector('thead'),state.mode==='events'?EVENT_FIELDS:OP_FIELDS);
+  for(const row of state.rows){
+    const body=element('tbody');table.append(body);if(state.mode==='events'){body.append(eventRow(row));continue;}
+    const id=String(row.id);body.append(childRow(row.first_sub_event,row,true));if(state.expanded.has(id))table.append(inlineEvents(row));
+  }
+  enableColumnReordering(table);enableColumnResizing(table);renderSelection();
+  byId('collapse-all').hidden=state.mode!=='operations';byId('collapse-all').disabled=!state.expanded.size;byId('count').textContent=`${state.rows.length} ${state.mode==='operations'?'פעולות משתמש':'אירועים'}`;byId('busy').hidden=!state.loading&&!state.exporting;byId('empty').hidden=state.loading||state.rows.length>0||!!state.error;byId('more').hidden=!state.cursor;byId('more').disabled=state.loading;errorWithRetry(byId('load-error'),state.error,()=>load(state.failedMore));wrap.scrollLeft=left;wrap.scrollTop=top;
+  const active=Object.keys(state.columns[state.mode]).length;byId('clear-columns').hidden=!active;byId('clear-columns').lastElementChild.textContent=`נקה מסנני עמודות (${active})`;releaseCheckPreviews();
+}
+async function catalog(){
+  const request=++state.catalogRequest;canDelete=false;render();byId('catalog-error').replaceChildren();
+  try{const response=await apiRequest('catalog',{},state),data=await response.json();if(request!==state.catalogRequest)return;canDelete=data.canDelete===true;state.actions=Array.isArray(data.actions)?data.actions:[];metadata(data);render();}
+  catch(_){if(request===state.catalogRequest){canDelete=false;render();errorWithRetry(byId('catalog-error'),'טעינת קטלוג הפעולות נכשלה',catalog);}}
+}
+async function load(more=false){
+  if(more&&(state.loading||!state.cursor))return;
+  cancelAutoRefresh();state.liveFailures=0;state.liveError=null;renderLiveState();
+  closeColumnFilter();const request=++state.request;state.controller?.abort();state.controller=new AbortController();const mode=state.mode,query={...activeColumnQuery(),limit:'50',...(more?{before:state.cursor}:{})};state.loading=true;state.failedMore=more;state.error=null;
+  if(!more){selectedAuditRows.clear();state.generation++;state.rows=[];state.cursor=null;state.boundary=null;state.hasLoaded=false;state.expanded.clear();for(const page of state.pages.values())page.controller?.abort();state.pages.clear();}render();
+  try{const response=await apiRequest(mode,query,{token:state.token,signal:state.controller.signal}),data=await response.json();if(request!==state.request)return;if(!Array.isArray(data[mode]))throw new Error('טעינת היומן נכשלה');state.rows=mergeRows(state.rows,data[mode]);state.cursor=data.nextCursor||null;state.boundary=auditRowKey(state.rows.at(-1),mode);state.hasLoaded=true;state.lastUpdated=Date.now();metadata(data);renderLiveState();}
+  catch(error){if(request!==state.request)return;state.error=error.name==='AbortError'?'השרת לא השיב בזמן':error.message;}
+  finally{if(request===state.request){state.loading=false;render();scheduleAutoRefresh();}}
+}
+function cancelEventLoad(page){if(!page?.loading)return;page.controller?.abort();page.request++;page.loading=false;page.controller=null;}
+function toggle(id){cancelAutoRefresh();if(state.expanded.has(id)){state.expanded.delete(id);cancelEventLoad(state.pages.get(id));render();scheduleAutoRefresh();return;}state.expanded.add(id);if(!state.pages.has(id))state.pages.set(id,{rows:[],cursor:null,boundary:null,loaded:false,loading:false,request:0});render();if(!state.pages.get(id).loaded)loadEvents(id);else scheduleAutoRefresh(0);}
+async function loadEvents(id){
+  const page=state.pages.get(id);if(!page||page.loading)return;cancelAutoRefresh();
+  const generation=state.generation,request=++page.request,anchor=captureTableAnchor(),query=childColumnQuery(),controller=new AbortController();
+  const current=()=>generation===state.generation&&request===page.request&&state.pages.get(id)===page&&state.expanded.has(id);
+  page.loading=true;page.error=null;page.controller=controller;render();restoreTableAnchor(anchor);
+  try{
+    const complete=await readAllEvents(async paging=>{
+      if(!current()||controller.signal.aborted)throw new DOMException('Cancelled','AbortError');
+      return apiRequest(`operations/${encodeURIComponent(id)}/events`,{...query,...paging},{token:state.token,signal:controller.signal,consume:response=>response.json()});
+    });
+    if(!current())return;
+    Object.assign(page,complete,{eventCount:state.rows.find(row=>String(row.id)===id)?.event_count,loaded:true});
+  }catch(error){if(current())page.error=error.name==='AbortError'?'השרת לא השיב בזמן':error.message;}
+  finally{if(current()){page.loading=false;page.controller=null;render();restoreTableAnchor(anchor);scheduleAutoRefresh();}}
+}
+async function exportCsv(){
+  if(state.exporting)return;const dates=state.columns[state.mode].created_at||{},exportRange={from:dates.from||state.started,to:dates.to||new Date().toISOString()},duration=new Date(exportRange.to)-new Date(exportRange.from);if(!Number.isFinite(duration)||duration<=0||duration>31*86400000){notice('לייצוא יש לבחור בכותרת הזמן טווח של עד 31 ימים');return;}
+  cancelAutoRefresh();const generation=state.generation,mode=state.mode;state.exporting=true;byId('export').disabled=true;render();
+  try{const response=await apiRequest('export.csv',{...activeColumnQuery(),...exportRange,mode},state);if(Number(response.headers.get('content-length'))>MAX_EXPORT_BYTES)throw new Error('קובץ הייצוא גדול מדי');const bytes=await response.arrayBuffer();if(bytes.byteLength>MAX_EXPORT_BYTES)throw new Error('קובץ הייצוא גדול מדי');if(generation!==state.generation)return;const blob=new Blob([bytes],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),anchor=element('a',null,{href:url,download:`betshuva-audit-${mode}-${localDate(new Date())}.csv`});anchor.hidden=true;document.body.append(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notice(response.headers.get('x-audit-export-truncated')==='true'?'הייצוא הוגבל ל-5,000 רשומות':'קובץ הייצוא נוצר');}
+  catch(error){if(generation===state.generation)notice(error.message);}
+  finally{state.exporting=false;byId('export').disabled=false;render();scheduleAutoRefresh();}
+}
+function initialize(){
+  state.token=localStorage.getItem('bt_admin_token')||localStorage.getItem('bt_token');
+  if(!state.token){byId('auth-warning').hidden=false;byId('app').hidden=true;byId('export').disabled=true;byId('refresh').disabled=true;return;}
+  state.applied={};
+  loadColumnOrders();
+  byId('open-column-settings').onclick=openColumnSettings;byId('settings-close').onclick=closeColumnSettings;byId('settings-cancel').onclick=closeColumnSettings;byId('settings-save').onclick=saveColumnSettings;
+  byId('settings-dialog').addEventListener('cancel',event=>{event.preventDefault();closeColumnSettings();});byId('settings-search').oninput=()=>{if(settingsDraft)renderSettings();};
+  byId('settings-reset').onclick=()=>{if(!settingsDraft||settingsSaving)return;settingsDraft.order=defaultColumnOrder(settingsDraft.mode);settingsDraft.formats={};byId('settings-search').value='';byId('settings-error').textContent='';renderSettings();};
+  byId('retry-column-order').onclick=()=>columnOrdersLoaded?flushColumnOrders():loadColumnOrders();
+  byId('retry-column-widths').onclick=flushColumnWidths;
+  byId('reset-column-widths').onclick=()=>{columnWidths[state.mode]={};queueColumnWidths(state.mode);render();};
+  byId('reset-column-order').onclick=()=>saveColumnOrder(defaultColumnOrder(state.mode),'סדר העמודות אופס');
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&(columnDrag||columnResize)){event.preventDefault();finishColumnResize();finishColumnDrag();}});
+  document.querySelector('.toolbar').append(element('span',null,{id:'live-updated',class:'meta',title:'מועד העדכון האחרון'}));
+  byId('clear-columns').firstElementChild.textContent=String.fromCodePoint(0xf0500);
+  byId('clear-columns').onclick=()=>{state.columns[state.mode]={};load();};
+  byId('collapse-all').onclick=()=>{cancelAutoRefresh();for(const page of state.pages.values())cancelEventLoad(page);state.expanded.clear();render();scheduleAutoRefresh();};
+  byId('column-close').onclick=closeColumnFilter;byId('column-cancel').onclick=closeColumnFilter;byId('column-clear').onclick=()=>applyColumnDraft(true);byId('column-apply').onclick=()=>applyColumnDraft();
+  byId('column-dialog').addEventListener('cancel',event=>{event.preventDefault();closeColumnFilter();});
+  byId('column-dialog').addEventListener('click',event=>{if(event.target!==byId('column-dialog'))return;const rect=event.target.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)closeColumnFilter();});
+  window.addEventListener('resize',positionColumnFilter);
+  document.addEventListener('visibilitychange',()=>{cancelAutoRefresh();if(!document.hidden)scheduleAutoRefresh(0);});
+  window.addEventListener('offline',cancelAutoRefresh);window.addEventListener('online',()=>scheduleAutoRefresh(0));
+  window.addEventListener('pagehide',()=>{state.pageHidden=true;cancelAutoRefresh();for(const page of state.pages.values())cancelEventLoad(page);clearActivePreview();releaseCheckPreviews(true);});
+  window.addEventListener('pageshow',()=>{state.pageHidden=false;if(state.hasLoaded)render();scheduleAutoRefresh(0);});
+  byId('detail-dialog').addEventListener('close',()=>scheduleAutoRefresh());
+  byId('close-preview').onclick=()=>byId('preview-dialog').close();
+  byId('preview-dialog').addEventListener('close',()=>{clearActivePreview();scheduleAutoRefresh();});
+  byId('preview-image').onerror=()=>{if(!activePreview)return;clearActivePreview();byId('preview-status').hidden=false;byId('preview-status').textContent='התמונה אינה זמינה';};
+  byId('select-visible').onclick=()=>{for(const input of byId('audit-table').querySelectorAll('[data-audit-select]')){if(selectedAuditRows.size>=200)break;input.checked=true;selectedAuditRows.set(input.dataset.auditSelect,JSON.parse(input.dataset.target));}renderSelection();};
+  byId('clear-selection').onclick=()=>{selectedAuditRows.clear();render();scheduleAutoRefresh();};
+  byId('delete-selected').onclick=()=>openBulkDelete(false);byId('delete-all').onclick=()=>openBulkDelete(true);
+  byId('delete-cancel').onclick=closeDelete;byId('delete-confirm').onclick=confirmDelete;
+  byId('delete-dialog').addEventListener('cancel',event=>{event.preventDefault();closeDelete();});
+  for(const mode of ['operations','events'])byId(`${mode}-tab`).onclick=()=>{if(state.mode===mode)return;state.mode=mode;for(const value of ['operations','events'])byId(`${value}-tab`).setAttribute('aria-selected',String(value===mode));load();};
+  byId('refresh').onclick=()=>{catalog();load();};byId('more').onclick=()=>load(true);byId('export').onclick=exportCsv;byId('coverage').onclick=()=>showDetails({recordingStartedAt:state.started,coverage:state.coverage});byId('close-dialog').onclick=()=>byId('detail-dialog').close();
+  window.addEventListener('storage',event=>{if(['bt_admin_token','bt_token'].includes(event.key)){cancelAutoRefresh();window.location.reload();}});
+  catalog();load();
+}
+if(typeof module!=='undefined'&&module.exports)module.exports={operationPreviewRow,buildQuery,mergeRows,safeDetails,statusLabel,actor,time,actionLabel,mediaActionLabel,recipientLabel,checkLabel,checkResultLabel,checkContext,optionLabel,previewRequestUrl,fetchCheckPreview,apiRequest,deletionTarget,deleteAuditRecord,withColumnFilters,selectedValue,toggleColumnValue,rangeFilter,dateInputValue,auditRowKey,compareAuditKeys,readAuditWindow,readAllEvents,hierarchyQuery,operationHue,chronologicalChildren,childCount,subEventPosition,normalizedColumnOrder,childColumnQuery,elapsedFromRoot,AUTO_REFRESH_MS,AUTO_REFRESH_MAX_REQUESTS,MAX_EXPORT_BYTES,operationOutcome,scanBudgetText,formatDuration,durationFilterValue};
+if(typeof document!=='undefined')initialize();
+</script>
+</body>
+</html>

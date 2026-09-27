@@ -14,7 +14,7 @@ test('voice transcripts are encrypted, access-scoped and purged after two minute
   assert.match(server, /blocked_content_expires_at=now\(\)\+interval '2 minutes'/);
   assert.match(server, /moderation_details #- '\{audio,transcriptEncrypted\}'/);
   assert.match(server, /await fs\.unlink\(absolutePath\)/);
-  assert.match(server, /sf\.user_id=\$1[^]*moderation_status IN \('pending','rejected'\)/);
+  assert.match(server, /sf\.user_id=\$1[^]*moderation_status IN \('pending','rejected','stopped'\)/);
   assert.doesNotMatch(server, /console\.log\([^\n]*transcriptEncrypted/);
 });
 

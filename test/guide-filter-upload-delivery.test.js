@@ -29,12 +29,13 @@ async function upload({ group = false, type = 'image', filter = { ...all, men: f
     return { rows: [] };
   } };
   const scope = {
+    ...require('./helpers/system-audit-stubs'),
     pool, allowed: { dbType: type }, file: { originalname: 'sample', size: 12 },
     req: { user: { id: 'sender' }, body: group ? { groupId: 'group' } : { toUserId: 'friend' }, ip: 'test' },
     res: { json(value) { response = value; return value; } },
     scanResult: { classification: scanClassification, pending },
     groupFilter: group ? filter : null,
-    recipientPolicy: group ? null : { filter },
+    recipientPolicy: group ? null : { filter, isContact: true },
     storedInsert: { rows: [{ id: 'file' }] }, url: '/betshuva-app/uploads/sample',
     scanBotUpload: false, reportImageScan: false, reused: null,
     contentAllowedByFilter, normalizeContentFilter,
@@ -88,15 +89,18 @@ async function delayed({ group = false, permitted = true, allowed = false } = {}
   let approved = false;
   const filter = { ...all, men: allowed };
   const pool = { async query(sql) {
+    if (sql.includes('SELECT 1 FROM blocked_users')) return { rows: permitted ? [] : [{ blocked: true }] };
     assert.match(sql, /UPDATE stored_files SET moderation_status='approved'/);
     approved = true;
     return { rows: [] };
   } };
   const scope = {
+    ...require('./helpers/system-audit-stubs'),
     pool, row: { user_id: 'sender', group_id: group ? 'group' : null,
       to_user_id: group ? null : 'friend', file_url: '/betshuva-app/uploads/sample',
       file_name: 'sample.jpg', file_type: 'image' },
     scanResult: { classification }, SCAN_BOT_ID: 'scan', outcomePersisted: false,
+    teenContactAllowed: async () => true,
     getEffectiveRecipientFilter: async () => ({ filter, isContact: permitted }),
     getGroupContentFilter: async () => permitted ? filter : null,
     contentAllowedByFilter,

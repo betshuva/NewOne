@@ -43,6 +43,8 @@ test('dashboard distinguishes journal accounting from historical estimates', () 
   assert.match(server, /completeForRecordedCalls/);
   assert.match(server, /missingUsage/);
   assert.match(server, /unpricedCalls/);
-  assert.match(server, /operation: 'moderation_cache'/);
-  assert.match(server, /operation: 'google_safe_search_reuse'/);
+  assert.ok(/recordProviderCheck\(\{ provider: 'cache',[\s\S]{0,180}'media_moderation'/.test(server),
+    'Whole-media cache reuse is audit-only');
+  assert.ok(/canReuseGoogle\) await recordProviderCheck\(\{ provider: 'cache',[\s\S]{0,60}operation: 'safe_search'/.test(server),
+    'SafeSearch cache reuse is audit-only');
 });

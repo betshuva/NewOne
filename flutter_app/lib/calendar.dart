@@ -75,21 +75,21 @@ class CalendarApi {
   }
 }
 
-class CalendarFriendTile extends StatefulWidget {
+class CalendarNavigationButton extends StatefulWidget {
   final String api, token;
   final bool selected;
   final Future<void> Function() onTap;
-  const CalendarFriendTile(
+  const CalendarNavigationButton(
       {super.key,
       required this.api,
       required this.token,
       required this.onTap,
       this.selected = false});
   @override
-  State<CalendarFriendTile> createState() => _CalendarFriendTileState();
+  State<CalendarNavigationButton> createState() => _CalendarNavigationButtonState();
 }
 
-class _CalendarFriendTileState extends State<CalendarFriendTile>
+class _CalendarNavigationButtonState extends State<CalendarNavigationButton>
     with WidgetsBindingObserver {
   Timer? _timer;
   String _label = 'אירועים, חגים וזמני שבת';
@@ -113,7 +113,7 @@ class _CalendarFriendTileState extends State<CalendarFriendTile>
   }
 
   @override
-  void didUpdateWidget(covariant CalendarFriendTile old) {
+  void didUpdateWidget(covariant CalendarNavigationButton old) {
     super.didUpdateWidget(old);
     if (old.token != widget.token) {
       _label = 'אירועים, חגים וזמני שבת';
@@ -153,26 +153,28 @@ class _CalendarFriendTileState extends State<CalendarFriendTile>
   }
 
   @override
-  Widget build(BuildContext context) => Material(
-      color: widget.selected ? const Color(0xFFDCEFFC) : Colors.white,
-      child: ListTile(
-        key: const ValueKey('calendar-friend'),
-        leading: const CircleAvatar(
-            backgroundColor: _blue,
-            child: Icon(Icons.calendar_month, color: Colors.white)),
-        title: const Text('לוח שנה',
-            style: TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(_label, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: _pending > 0
-            ? Badge(
-                label: Text('$_pending'),
-                child: const Icon(Icons.mail_outline, color: _blue))
-            : const Icon(Icons.chevron_right, color: _blue),
-        onTap: () async {
-          await widget.onTap();
-          if (mounted) _load();
-        },
-      ));
+  Widget build(BuildContext context) => Semantics(
+        key: const ValueKey('calendar-shortcut'),
+        selected: widget.selected,
+        child: IconButton(
+          tooltip: 'לוח שנה\n$_label',
+          icon: Badge(
+            isLabelVisible: _pending > 0,
+            label: Text('$_pending'),
+            child: const Icon(Icons.calendar_month_outlined, size: 22),
+          ),
+          color: Colors.white,
+          style: IconButton.styleFrom(
+            minimumSize: const Size(48, 48),
+            backgroundColor: widget.selected ? Colors.white24 : Colors.transparent,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+          onPressed: () async {
+            await widget.onTap();
+            if (mounted) _load();
+          },
+        ),
+      );
 }
 
 class CalendarScreen extends StatefulWidget {
@@ -1077,7 +1079,7 @@ class _CalendarScreenState extends State<CalendarScreen>
                             child: Chip(
                               avatar: const Icon(Icons.wb_twilight, size: 18),
                               label: Text(
-                                  '${h['date'].toString().substring(0, 10)} · ${_holidayLabel(h)}',
+                                  '${_hebrew(_wall('${h['date'].toString().substring(0, 10)}T12:00'))} · ${_holidayLabel(h)}',
                                   style: const TextStyle(fontSize: 12)),
                             )),
                     ],

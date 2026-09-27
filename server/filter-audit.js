@@ -1,6 +1,8 @@
 'use strict';
 
 const { personalMessageVisible } = require('./conversation-history');
+const { DEFAULT_CONTENT_FILTER, UNFILTERED_ASSISTANT_IDS } = require('./content-filter-policy');
+const assistantIdsSql = UNFILTERED_ASSISTANT_IDS.map(id => `'${id}'::uuid`).join(',');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SQL = `
 CREATE TABLE IF NOT EXISTS filter_audit_metadata (
@@ -151,7 +153,10 @@ BEGIN
       AND (EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(NEW.delivery_summary->'deliveredTo','[]'::jsonb)) item WHERE item->>'id'=u.id::text)
         OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(NEW.delivery_summary->'blockedFor','[]'::jsonb)) item WHERE item->>'id'=u.id::text))
   LOOP
-    effective:=betshuva_effective_filter(recipient.content_filter,recipient.filter_override);
+    effective:=CASE WHEN NEW.group_id IS NULL AND
+      (NEW.sender_id IN (${assistantIdsSql}) OR NEW.recipient_id IN (${assistantIdsSql}))
+      THEN '${JSON.stringify(DEFAULT_CONTENT_FILTER)}'::jsonb
+      ELSE betshuva_effective_filter(recipient.content_filter,recipient.filter_override) END;
     scope_kind:=CASE WHEN NEW.group_id IS NULL THEN 'contact' ELSE 'group' END;
     target:=COALESCE(NEW.group_id,NEW.sender_id);
     decision:=CASE WHEN recipient.blocked THEN 'delivery_blocked_persisted' ELSE 'delivery_persisted' END;
@@ -224,11 +229,14 @@ async function recordFilterEvent(db, event) {
   if (!event || !/^[a-z][a-z0-9_]{0,63}$/.test(event.kind)) throw new TypeError('Invalid filter event kind');
   const details = JSON.stringify(event.details || {});
   if (Buffer.byteLength(details) > 32768) throw new TypeError('Filter event details exceed limit');
+  const audit = require('./system-audit').getAuditContext();
+  const correlated = !!audit?.operationId;
   const result = await db.query(`INSERT INTO filter_audit_events
-    (kind,user_id,actor_id,scope_type,scope_id,message_id,file_id,details)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING *`, [event.kind,
+    (kind,user_id,actor_id,scope_type,scope_id,message_id,file_id,details${correlated ? ',audit_operation_id,audit_parent_event_id' : ''})
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb${correlated ? ',$9,$10' : ''}) RETURNING *`, [event.kind,
     event.userId || null,event.actorId || null,event.scopeType || null,event.scopeId || null,
-    event.messageId || null,event.fileId || null,details]);
+    event.messageId || null,event.fileId || null,details,
+    ...(correlated ? [audit.operationId, audit.parentEventId || null] : [])]);
   return result.rows[0];
 }
 

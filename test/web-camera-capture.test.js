@@ -4,9 +4,26 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(
   __dirname, '..', 'flutter_app', 'lib', 'web_capture_picker_web.dart'), 'utf8');
+
+test('web camera keeps the default overlay capacity above existing video players', () => {
+  const bootstrap = fs.readFileSync(path.join(
+    __dirname, '..', 'flutter_app', 'web', 'flutter_bootstrap.js'), 'utf8');
+  const loads = [];
+  vm.runInNewContext(bootstrap
+    .replace('{{flutter_js}}', '')
+    .replace('{{flutter_build_config}}', ''), {
+    _flutter: {
+      buildConfig: { builds: [{ mainJsPath: 'main.dart.js' }] },
+      loader: { load: (options) => loads.push(options) },
+    },
+  });
+  assert.equal(loads.length, 1);
+  assert.equal(loads[0]?.config?.canvasKitMaximumSurfaces, undefined);
+});
 
 test('web camera explicitly starts and verifies the preview', () => {
   assert.match(source, /await _preview\.play\(\)/);
@@ -33,7 +50,7 @@ test('invalid recorded WebM is rejected before it can be uploaded', () => {
   assert.match(serverSource, /INVALID_VIDEO_CONTAINER/);
   assert.match(serverSource, /hasWebMSignature/);
   assert.match(mainSource, /isVideo \? 210 : 60/);
-  assert.match(mainSource, /הקובץ נשמר; בדיקת הבטיחות עדיין מתבצעת/);
+  assert.match(mainSource, /ההעלאה עדיין מתבצעת; הקובץ טרם נשלח/);
 });
 
 test('camera failures offer an in-dialog retry', () => {
@@ -69,8 +86,8 @@ test('private and group camera actions use the in-app web preview', () => {
   const group = mainSource.slice(
     mainSource.indexOf('class _GroupChatScreenState'),
     mainSource.indexOf('class ContentFilterSettingsScreen'));
-  assert.match(group, /label: 'מצלמה'[\s\S]{0,500}_capturePhoto\(\)/);
+  assert.match(group, /case ChatAttachmentAction.photo:[\s\S]{0,100}_capturePhoto\(\)/);
   assert.match(group, /photo = kIsWeb\s*\? await captureWebPhoto\(context, creatorId: creatorId\)/);
   assert.match(group, /await capturedPhotoFileName\(photo, creatorId: creatorId\)/);
-  assert.match(group, /await _uploadGroupFile\(photo, name, 'image'\)/);
+  assert.match(group, /await _uploadGroupFile\(photo, name, 'image',\s*extraFields: const \{'captureKind': 'camera_image'\}\)/);
 });

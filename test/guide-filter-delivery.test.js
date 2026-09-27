@@ -91,6 +91,7 @@ function harness(options = {}) {
     on(name, handler) { socketHandlers[name] = handler; },
     emit(event, data) { state.rejections.push({ event, data }); } };
   const context = vm.createContext({
+    ...require('./helpers/system-audit-stubs'),
     ...contentPolicy, shortFilterReason, formatGroupFilterNotice, console: { error(...args) { state.logs.push(args); }, warn() {} },
     app: { post(_route, ...handlers) { groupHttp = handlers.at(-1); } },
     auth() {}, messageRateLimit() {}, socket, SYSTEM_USER_ID: GUIDE,
@@ -168,6 +169,8 @@ for (const transport of ['http', 'socket']) {
       assert.equal(notice.fileName, 'original-server-name.png');
       assert.equal(notice.fileType, 'image');
       assert.ok(h.state.senderChecks.length >= 2, 'initial and transaction authorization');
+      assert.ok(h.state.senderChecks.every(check => check.kind === 'chat' && check.target === GUIDE),
+        'returned media uses the guide conversation policy, not unrelated general preferences');
       assert.ok(h.state.queries.some(entry => entry.transaction && /FOR SHARE/.test(entry.sql)));
       assert.equal(h.state.writes.length, 0, 'destination receives no saved message');
       assert.equal(h.state.relayed.length, 0, 'destination receives no realtime message');
@@ -225,7 +228,9 @@ test('client cannot label an allowed image as blocked video to manufacture a not
   const h = harness({ classification: { category: 'nonHumanImages',
     detectedCategories: ['nonHumanImages'], uncertain: false } });
   const response = await h.send('http', false, { fileType: 'video' });
-  assert.equal(response.statusCode, 403);
+  assert.equal(response.statusCode, 200);
+  assert.equal(h.state.writes.length, 1);
+  assert.equal(h.state.writes[0].values[3], 'image');
   assert.equal(h.state.notifications.length, 0);
   assert.equal(h.state.noticeAttempts.length, 0);
 });

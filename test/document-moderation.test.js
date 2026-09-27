@@ -125,3 +125,82 @@ test('pending documents cannot be previewed or downloaded before approval', () =
   assert.match(server,
     /moderation_status === 'pending'[\s\S]{0,220}status\(423\)/);
 });
+
+// This ordinary cross-reference-table PDF is accepted by pdf.js but rejected
+// with "bad XRef entry" by the legacy parser previously used for text.
+function makePdf(pageCount = 1) {
+  const stream = 'BT /F1 18 Tf 50 750 Td (Document sending test) Tj ET\n';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, i) => `${i + 5} 0 R`).join(' ')}] /Count ${pageCount} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`,
+    ...Array.from({ length: pageCount }, () =>
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>'),
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  pdf += offsets.slice(1).map(offset =>
+    `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+  pdf += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
+
+test('PDF scans rendered pages and extracts text with the same parser', async () => {
+  let scans = 0;
+  const scanImage = async bytes => {
+    const metadata = await sharp(bytes).metadata();
+    assert.equal(metadata.format, 'jpeg');
+    assert.ok(metadata.width > 0 && metadata.height > 0);
+    scans++;
+    return { blocked: false };
+  };
+  const result = await scanDocument(makePdf(2), 'application/pdf', { scanImage });
+  assert.equal(result.blocked, false);
+  assert.equal(scans, 2);
+  assert.deepEqual(result.documentVisualScan, { scanned: 2, total: 2 });
+  const blocked = await scanDocument(makePdf(), 'application/pdf', {
+    scanImage, blockedWords: ['DOCUMENT SENDING'],
+  });
+  assert.equal(blocked.blockedBy, 'documentText');
+  assert.equal(scans, 2);
+});
+
+test('PDF limits and incomplete visual scans cannot release the document', async () => {
+  const limited = await scanDocument(makePdf(2), 'application/pdf', {
+    environment: { DOCUMENT_MAX_PDF_PAGES: '1' },
+    scanImage: async () => assert.fail('over-limit PDF must not be scanned'),
+  });
+  assert.equal(limited.blockedBy, 'documentVisualLimit');
+  const pending = await scanDocument(makePdf(), 'application/pdf', {
+    scanImage: async () => ({ pending: true }),
+  });
+  assert.equal(pending.pending, true);
+  const invalid = await scanDocument(Buffer.from('not a PDF'), 'application/pdf', {
+    scanImage: async () => assert.fail('invalid PDF must not be scanned'),
+  });
+  assert.equal(invalid.blocked, true);
+  assert.equal(invalid.blockedBy, 'documentInvalid');
+  assert.notEqual(invalid.pending, true);
+});
+
+test('a truncated PDF is rejected while temporary image scan failures stay pending', async () => {
+  const invalid = await scanDocument(Buffer.from(
+    '%PDF-1.7\nIntentional invalid PDF test - no document objects.\n'), 'application/pdf', {
+    scanImage: async () => assert.fail('corrupt PDF must not reach image scanning'),
+  });
+  assert.equal(invalid.blockedBy, 'documentInvalid');
+  assert.equal(invalid.blocked, true);
+  assert.notEqual(invalid.pending, true);
+  const transient = await scanDocument(makePdf(), 'application/pdf', {
+    scanImage: async () => { throw new Error('temporary scan service outage'); },
+  });
+  assert.equal(transient.pending, true);
+  assert.notEqual(transient.blocked, true);
+});

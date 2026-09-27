@@ -10,28 +10,34 @@ const root = path.join(__dirname, '..');
 const server = fs.readFileSync(path.join(root, 'server', 'index.js'), 'utf8');
 const flutter = fs.readFileSync(path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
 const analyzer = fs.readFileSync(
-  path.join(root, '..', 'video-moderation-server', 'app', 'analyzer.py'), 'utf8');
+  path.join(root, 'video_moderation', 'app', 'analyzer.py'), 'utf8');
 
-async function scanFrames(frames, overrides = {}) {
+async function scanFrames(frames, overrides = {}, options = {}) {
   const source = server.slice(server.indexOf('async function scanVideo('),
     server.indexOf('function normalizeUploadFileName('));
   const context = {
     Buffer, Blob, FormData, AbortSignal, process: { env: {} }, console,
     VIDEO_MODERATION_URL: 'http://video.test', MAX_VIDEO_SECONDS: 30,
     videoDetectedCategories,
-    fetch: async () => ({ ok: true, json: async () => ({
+    stoppedVideoResult: require('../server/video-scan-controller').stoppedVideoResult,
+    fetch: async (_url, request) => {
+      assert.equal(request.body.get('sample_interval_seconds'), '5');
+      return { ok: true, json: async () => ({
       duration_seconds: 1.69, sampled_frames: frames.length, decision: 'allowed',
       labels: { people: 0.99, man: 0.99, woman: 0.99, child: 0.99, landscape: 0.99 },
       findings: [{ label: 'woman', confidence: 0.99, timestamp_seconds: 0 }],
       frame_samples: frames.map((_, index) => ({ timestamp_seconds: index * 0.5,
         jpeg_base64: Buffer.alloc(40, index).toString('base64') })),
       ...overrides,
-    }) }),
-    scanStaticImage: async buffer => frames[buffer[0]],
+    }) }; },
+    scanStaticImage: async (buffer, frameOptions) => {
+      options.onFrame?.(buffer[0], frameOptions);
+      return frames[buffer[0]];
+    },
   };
   vm.createContext(context);
   const scan = vm.runInContext(`${source}\nscanVideo`, context);
-  return JSON.parse(JSON.stringify(await scan(Buffer.from('video'), 'clip.mp4', 'video/mp4')));
+  return JSON.parse(JSON.stringify(await scan(Buffer.from('video'), 'clip.mp4', 'video/mp4', options)));
 }
 
 const nonHuman = () => ({ blocked: false, pending: false, classification: {
@@ -81,6 +87,49 @@ test('missing video samples remain pending', async () => {
   assert.equal(result.pending, true);
 });
 
+test('budgeted scans freeze frames before providers and carry a unique frame index', async () => {
+  const seen = [];
+  let frozen = false;
+  const result = await scanFrames([nonHuman(), nonHuman()], {}, {
+    tracking: { videoBudget: { scanId: 'scan', leaseToken: 'lease' } },
+    async freezeFrames(samples, count) {
+      assert.equal(samples.length, count);
+      frozen = true;
+    },
+    onFrame(index, options) {
+      assert.equal(frozen, true);
+      assert.equal(options.tracking.videoBudget.frameIndex, index);
+      seen.push(index);
+    },
+  });
+  assert.equal(result.pending, false);
+  assert.deepEqual(seen, [0, 1]);
+});
+
+test('a stopped required check halts new frame work and never becomes approved', async () => {
+  let started = 0;
+  const result = await scanFrames(Array.from({ length: 20 }, () => ({
+    scanStopped: true, reasonCode: 'credit_balance_exhausted',
+  })), {}, {
+    tracking: { videoBudget: { scanId: 'scan', leaseToken: 'lease' } },
+    freezeFrames: async () => null,
+    onFrame() { started++; },
+  });
+  assert.equal(result.scanStopped, true);
+  assert.equal(result.pending, false);
+  assert.equal(result.reasonCode, 'credit_balance_exhausted');
+  assert.ok(started <= 8, 'only initially in-flight frames may have started');
+});
+
+test('a changed manifest refuses all frame work', async () => {
+  const result = await scanFrames([nonHuman()], {}, {
+    freezeFrames: async () => require('../server/video-scan-controller')
+      .stoppedVideoResult('frame_manifest_changed'),
+    onFrame() { assert.fail('no provider may start for a changed manifest'); },
+  });
+  assert.equal(result.scanStopped, true);
+});
+
 test('videos are limited to thirty seconds in the UI and authoritative server scan', () => {
   assert.match(server, /const MAX_VIDEO_SECONDS = 30/);
   assert.match(server, /blockedBy: 'video_duration'/);
@@ -89,12 +138,11 @@ test('videos are limited to thirty seconds in the UI and authoritative server sc
   assert.match(analyzer, /MAX_VIDEO_SECONDS.*30/);
 });
 
-test('video samples and scene changes use the full still-image moderation path', () => {
+test('scheduled video samples use the full still-image moderation path', () => {
   assert.match(server, /await scanStaticImage\(imageBuffer/);
   assert.match(server, /video_frame:\$\{frameResult\.blockedBy/);
   assert.match(server, /fullyScannedFrames/);
-  assert.match(analyzer, /SCENE_CHANGE_THRESHOLD/);
-  assert.match(analyzer, /reason = "interval" if scheduled else "scene_change"/);
+  assert.match(analyzer, /sample_frame_indices/);
   assert.match(server, /videoFrameResult/);
   assert.match(server, /videoFrameSummary/);
   assert.match(flutter, /תמונות שנבדקו מתוך סרטונים/);

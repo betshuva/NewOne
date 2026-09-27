@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { projectProfileImages } = require('../server/profile-image-policy');
 const { normalizePhone } = require('../server/contact-phone-privacy');
+const { DEFAULT_CONTENT_FILTER, isUnfilteredAssistantConversation } = require('../server/content-filter-policy');
 
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 const viewerId = 'viewer-aviv';
@@ -91,6 +92,7 @@ function harness(method, route, { women = false } = {}) {
     } },
     authWithDbCheck() {}, searchRateLimit() {},
     getPool: async () => pool, projectProfileImages, normalizePhone,
+    DEFAULT_CONTENT_FILTER, isUnfilteredAssistantConversation,
     projectContactPhones: async (passedPool, ownerId, rows, options) => {
       assert.equal(passedPool, pool);
       assert.equal(ownerId, viewerId);

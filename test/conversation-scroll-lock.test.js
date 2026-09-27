@@ -406,8 +406,15 @@ test('contacts can be shared from app friends without exposing phone or email', 
   assert.match(cardSource, /UserAvatar\(picUrl: profilePicUrl/);
   assert.match(cardSource, /appUserId\.isNotEmpty \? 'פתח צ׳אט'/);
   assert.match(cardSource, /ChatScreen\(/);
-  assert.match(source, /_pickSharedContact\(context, widget\.token\)/);
-  assert.match(source, /_pickGroupSharedContact\(\s+context, widget\.token/);
+  assert.match(source,
+    /case ChatAttachmentAction\.contact:\s*await _sharePhoneContact\(\)/);
+  const privateShareStart = source.indexOf('Future<void> _sharePhoneContact()');
+  const privateShareEnd = source.indexOf('Future<void> _shareMyContact()', privateShareStart);
+  assert.ok(privateShareStart >= 0 && privateShareEnd > privateShareStart);
+  assert.match(source.slice(privateShareStart, privateShareEnd),
+    /await _pickSharedContact\(\s*context,\s*widget\.token\s*\)/);
+  assert.match(source,
+    /case ChatAttachmentAction\.contact:\s*final contact = await _pickGroupSharedContact\(\s*context,\s*widget\.token,\s*_members\s*,?\s*\)/);
 });
 
 test('listing links open in the desktop detail pane and keep mobile navigation', () => {
@@ -552,7 +559,28 @@ test('app screenshots can open a directly accessible issue without messaging Isr
   const screenshotItems = source.match(/value: 'screenshot'/g) || [];
   assert.ok(screenshotItems.length >= threeDotMenus.length,
     'every three-dot popup menu should expose screenshot capture');
-  assert.match(source, /label: 'צילום מסך'/);
+  for (const [state, handler, destination] of [
+    ['_ChatScreenState', '_handleChatMenuAction',
+      /AppScreenshotDestination\.user\(\s*widget\.recipient\['id'\]/],
+    ['_GroupChatScreenState', '_handleGroupMenuAction',
+      /AppScreenshotDestination\.group\(\s*_groupId\s*\)/],
+  ]) {
+    const start = source.indexOf(`class ${state} `);
+    const end = source.indexOf('\nclass ', start + 1);
+    assert.ok(start >= 0 && end > start, `${state} exists`);
+    const chatSource = source.slice(start, end);
+    assert.match(chatSource,
+      /value:\s*'screenshot',[\s\S]*?_CompactMenuItem\(\s*Icons\.screenshot_monitor_outlined,\s*'צילום מסך'\)/);
+    assert.match(chatSource, new RegExp(`onSelected:\\s*${handler}\\b`));
+    const handlerStart = chatSource.indexOf(`Future<void> ${handler}(`);
+    const actionStart = chatSource.indexOf("case 'screenshot':", handlerStart);
+    const actionEnd = chatSource.indexOf('break;', actionStart);
+    assert.ok(handlerStart >= 0 && actionStart > handlerStart && actionEnd > actionStart);
+    const action = chatSource.slice(actionStart, actionEnd);
+    assert.match(action,
+      /await openAppScreenshot\(\s*context,\s*token:\s*widget\.token,/);
+    assert.match(action, destination);
+  }
   assert.match(screenshotSource, /const _israelId = '00000000-0000-4000-8000-000000000002'/);
   assert.match(screenshotSource, /enum _EditTool \{ crop, blur, mark, text \}/);
   assert.match(screenshotSource, /BackdropFilter/);
@@ -571,8 +599,6 @@ test('app screenshots can open a directly accessible issue without messaging Isr
   assert.match(screenCaptureWebSource, /Duration\(milliseconds: 120\)/);
   assert.match(screenCaptureWebSource, /context\.drawImage\(video, 0, 0\)/);
   assert.match(screenCaptureWebSource, /track\.stop\(\)/);
-  assert.match(source, /Navigator\.of\(dialogContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
-  assert.match(source, /Navigator\.of\(sheetContext\)\.pop\(\);[\s\S]*?openAppScreenshot/);
   assert.match(screenshotSource, /destination\.kind == 'group'/);
   assert.match(screenshotSource, /צילום המסך נשלח לישראל/);
   assert.match(screenshotSource, /decoded\['status'\] == 'pending'/);
@@ -656,13 +682,13 @@ test('OpenAI and Gemini both decide modesty while local clothing scores are disa
     /classifyGeminiModesty\(buffer,/);
   assert.match(serverSource, /await Promise\.all/);
   assert.match(serverSource, /person_confirmed_by_openai/);
-  assert.match(serverSource, /enforceableViolation\(modestyVerification\)/);
+  assert.match(serverSource, /activeModestyReviews\.every\(enforceableViolation\)/);
   assert.match(serverSource,
-    /modestyReviewsDisagree && safetyConsensusClean[\s\S]*?blocked: false/);
+    /modestyReviewsDisagree &&[\s\S]*?safetyConsensusClean[\s\S]*?blocked: false/);
   assert.match(serverSource,
     /action: 'approved_by_clean_safety_consensus'/);
   assert.match(serverSource,
-    /MODERATION_CACHE_VERSION = '2026-09-22-verified-video-frames-15'/);
+    /MODERATION_CACHE_VERSION = `2026-09-27-visible-clothing-17:\$\{moderationProviderPolicy\(\)\}`/);
 });
 
 test('safety-rejected media cannot be served locally or restored from Drive', () => {

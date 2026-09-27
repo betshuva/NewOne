@@ -46,12 +46,10 @@ _flutter.buildConfig = {"engineRevision":"5d531788691ec3404cac0cee66ead4007b1773
 // own worker separately from index.html.
 for (const build of _flutter.buildConfig.builds) {
   if (build.mainJsPath === 'main.dart.js') {
-    build.mainJsPath = 'main.dart.js?v=20260922222400';
+    build.mainJsPath = 'main.dart.js?v=a9b2c8ce95635892';
   }
 }
 
-// Keep CanvasKit's GPU/WASM surface pool small. The app uses one primary view;
-// retaining the larger default pool wastes memory on constrained browsers.
-_flutter.loader.load({
-  config: { canvasKitMaximumSurfaces: 2 },
-});
+// Keep the default overlay pool: camera previews can appear over several
+// video players, even though the app has only one Flutter view.
+_flutter.loader.load();

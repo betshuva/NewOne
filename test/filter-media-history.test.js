@@ -23,6 +23,74 @@ test('tightening identifies mixed and unknown images but ignores unrelated chang
   assert.equal(imageAffectedByTightening(ALL,{...ALL,women:false},{detectedCategories:['men','women']}),true);
 });
 
+test('stopped videos clear previews and stale pending states for senders and recipients', async () => {
+  const userId = randomUUID(), otherId = randomUUID(), fileId = randomUUID();
+  const reason = 'Video scan reached its provider limit';
+  const messages = [userId, otherId].map(sender_id => ({
+    id: randomUUID(), sender_id, type: 'video', message_status: 'pending_scan',
+    file_url: '/test/video.mp4', fileUrl: '/test/video.mp4',
+    public_url: '/test/video.mp4', thumbnail_url: '/test/video.jpg',
+    blocked_preview_url: '/test/preview', preview_url: '/test/preview',
+    file_name: 'video.mp4', fileName: 'video.mp4', body: 'preview', text: 'preview',
+  }));
+  const db = { async query() { return { rows: messages.map(message => ({
+    ...message, moderation_status: 'stopped', scan_reason: reason,
+    action: 'keep', filter: ALL,
+  })) }; } };
+  const result = await projectFilteredHistory(db, userId, messages);
+  for (const row of result) {
+    assert.equal(row.message_status, 'stopped_scan');
+    assert.equal(row.moderation_status, 'stopped');
+    assert.equal(row.scan_reason, reason);
+    assert.equal(row.filter_hidden, true);
+    assert.equal(row.filter_kept, false);
+    for (const key of ['file_url', 'fileUrl', 'public_url', 'thumbnail_url',
+      'blocked_preview_url', 'preview_url', 'file_name', 'fileName', 'body', 'text'])
+      assert.equal(row[key], null, key);
+  }
+  const file = { id: fileId, user_id: userId, public_url: '/test/video.mp4',
+    file_type: 'video', moderation_status: 'stopped',
+    moderation_details: { stopped: true, scanStopped: true, pending: false,
+      blocked: false, reason, reasonCode: 'video_scan_budget_exhausted' } };
+  const ownedDb = { async query(sql) {
+    return { rows: sql.includes('SELECT sf.*') ? [file] : [{ general_filter: ALL }] };
+  } };
+  const own = await history.projectOwnScans(ownedDb, userId, [{
+    ...messages[0], id: 'scan_' + fileId,
+  }]);
+  const library = await history.projectFilterMediaLibrary(ownedDb, userId, [file]);
+  for (const [row] of [own, library]) {
+    assert.equal(row.message_status, 'stopped_scan');
+    assert.equal(row.moderation_status, 'stopped');
+    assert.equal(row.scan_reason, reason);
+    assert.equal(row.file_url, null);
+    assert.equal(row.public_url, null);
+    assert.equal(row.filter_hidden, true);
+  }
+});
+
+test('private assistant images remain visible under enforced preferences while ordinary contacts stay hidden',opts,async t=>{
+ const f=await fixture(t);
+ const assistantImages=[];
+ for(const assistant of policy.UNFILTERED_ASSISTANT_IDS){
+  await f.pool.query('INSERT INTO users VALUES($1,$2,$3)',[assistant,'Assistant',{...ALL,men:false,enforceGeneralFilter:true}]);
+  assistantImages.push(await f.image({from:f.me,to:assistant}),await f.image({from:assistant,to:f.me}));
+ }
+ const ordinary=await f.image();
+ const change=await f.save({...ALL,men:false,enforceGeneralFilter:true},'hide');
+ assert.equal(change.affectedCount,1);
+ let rows=await f.project();
+ for(const image of assistantImages) assert.equal(rows.find(row=>row.id===image.id).file_url,image.url);
+ assert.equal(rows.find(row=>row.id===ordinary.id).file_url,null);
+ const first=assistantImages[0];
+ await f.pool.query("INSERT INTO user_message_filter_actions VALUES($1,$2,'hide',now())",[f.me,first.id]);
+ assert.equal((await f.project()).find(row=>row.id===first.id).file_url,first.url);
+ await f.pool.query("UPDATE stored_files SET moderation_status='rejected' WHERE id=$1",[first.fileId]);
+ rows=await f.project();
+ assert.equal(rows.find(row=>row.id===first.id).file_url,null);
+ assert.equal(rows.find(row=>row.id===first.id).hidden_reason,'moderation');
+});
+
 async function fixture(t) {
   const config={connectionString:process.env.DATABASE_URL,
     ssl:process.env.DB_SSL==='true'?{rejectUnauthorized:process.env.DB_REJECT_UNAUTHORIZED!=='false'}:false};
@@ -371,6 +439,7 @@ test('hidden history, own scans and library retain the true moderation state wit
  for (const state of [
    {status:'pending',reason:'הסריקה טרם הושלמה',purged:null},
    {status:'rejected',reason:'התמונה לא אושרה בבדיקת הבטיחות',purged:null},
+   {status:'stopped',reason:'Scan stopped at its provider limit',purged:null},
    {status:'approved',reason:null,purged:'2026-09-17T12:00:00.000Z'},
  ]) {
    await f.pool.query(`UPDATE stored_files SET moderation_status=$1,

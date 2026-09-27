@@ -1,0 +1,41 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path');
+test('initiator, server executor and recipient stay distinct across collapse, filters and event mode',{skip:process.env.RUN_BROWSER_TESTS!=='1',timeout:60000},async t=>{
+ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),browser=await chromium.launch({headless:true,args:['--no-sandbox']});t.after(()=>browser.close());
+ const html=await fs.readFile(path.join(__dirname,'../admin-audit.html'));
+ const {COLUMN_IDS}=require('../server/audit-column-order');
+ for(const width of [1440,390])await t.test(String(width),async()=>{
+  const context=await browser.newContext({viewport:{width,height:950},locale:'he-IL'}),page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const root={id:'00000000-0000-4000-8000-000000000001',action:'upload_file',media_type:'video',created_at:'2026-09-27T08:00:00Z',root_event_id:'1',event_count:'3',sub_event_count:'2',status:'completed',initiator_id:'00000000-0000-4000-8000-000000000010',initiator_name:'יוזם בדיקה',initiator_short_id:'10',recipient_id:'00000000-0000-4000-8000-000000000005',recipient_type:'user',recipient_name:'נמען אחר',recipient_short_id:'5'};
+  const events=[{...root,id:'2',operation_id:root.id,kind:'upload_context',executor_type:'system',executor_id:'api',sub_event_index:'1',sub_event_total:'2'},{...root,id:'3',operation_id:root.id,kind:'scan_workflow_finished',executor_type:'worker',executor_id:'pending_scans',sub_event_index:'2',sub_event_total:'2'}];root.first_sub_event=events[0];
+  await page.addInitScript(()=>localStorage.setItem('bt_admin_token','mock-token'));
+  await page.route('**/*',async route=>{
+   const url=new URL(route.request().url());
+   if(url.hostname==='audit.test')return route.fulfill({contentType:'text/html',body:url.pathname.endsWith('.html')?html:''});
+   if(url.pathname.endsWith('/column-order'))return route.fulfill({json:{orders:{operations:COLUMN_IDS.operations.filter(k=>k!=='executor_id'),events:COLUMN_IDS.events.filter(k=>k!=='initiator_id')},widths:{operations:{initiator_id:270}}}});
+   if(url.pathname.endsWith('/catalog'))return route.fulfill({json:{actions:[]}});
+   if(url.pathname.endsWith('/operations'))return route.fulfill({json:{operations:[root],nextCursor:null}});
+   if(url.pathname.endsWith('/events'))return route.fulfill({json:{events,nextCursor:null}});
+   throw new Error(`Unexpected request ${url.pathname}`);
+  });
+  await page.goto('https://audit.test/admin-audit.html');await page.waitForFunction(()=>state.hasLoaded&&!state.loading&&columnOrdersLoaded);
+  const first=page.locator('[data-event-id="2"]');
+  assert.equal(await first.locator('[data-identity="initiator"]').innerText(),'יוזם בדיקה');assert.equal(await first.locator('[data-field="initiator_identifier"]').innerText(),'10');
+  assert.equal(await first.locator('[data-identity="executor"]').innerText(),'השרת (API)');
+  assert.doesNotMatch(await first.locator('.action-cell').innerText(),/יוזם בדיקה/);assert.equal(await first.locator('[data-field="executor_type"]').innerText(),'מערכת');
+  assert.doesNotMatch(await first.locator('[data-identity="initiator"]').innerText(),/נמען אחר|api/);
+  assert.equal(await page.locator('[data-column-id="initiator_id"] .column-resize').getAttribute('aria-valuenow'),'270');
+  assert.match(await page.locator('th[data-column-id="initiator_id"]').innerText(),/יוזם הפעולה/);
+  assert.match(await page.locator('th[data-column-id="executor_id"]').innerText(),/מבצע השלב/);
+  const color=await first.evaluate(n=>n.style.getPropertyValue('--group-color'));
+  await first.locator('[data-expand]').click();await page.waitForFunction(()=>[...state.pages.values()].every(p=>!p.loading));
+  assert.match(await page.locator('[data-event-id="3"] [data-identity="initiator"]').innerText(),/יוזם בדיקה/);assert.match(await page.locator('[data-event-id="3"] [data-field="executor_identifier"]').innerText(),/pending_scans/);
+  assert.equal(await page.locator('[data-event-id="3"]').evaluate(n=>n.style.getPropertyValue('--group-color')),color);
+  await first.locator('[data-expand]').click();assert.equal(await page.locator('tbody tr').count(),1);
+  await first.locator('[data-identity="initiator"]').scrollIntoViewIfNeeded();await page.screenshot({path:`/tmp/audit-actors-${width}.png`});
+  await page.locator('#events-tab').click();await page.waitForFunction(()=>state.mode==='events'&&!state.loading);
+  assert.match(await first.locator('[data-identity="initiator"]').innerText(),/יוזם בדיקה/);assert.equal(await first.locator('[data-identity="executor"]').innerText(),'השרת (API)');
+  const missing=await page.evaluate(()=>[singleFieldCell('initiator_id',{executor_type:'system',executor_id:'api'},{}).textContent,singleFieldCell('executor_id',null,{}).textContent]);assert.deepEqual(missing,['לא תועד','לא תועד']);
+  assert.deepEqual(errors,[]);await context.close();
+ });
+});

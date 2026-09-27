@@ -38,7 +38,7 @@ test('Gemini modesty review uses the shared strict policy and records usage', as
     MODESTY_RESPONSE_SCHEMA);
   assert.deepEqual(MODESTY_RESPONSE_SCHEMA.required,
     ['decision', 'confidence', 'violationClearlyVisible',
-      'visibleEvidence', 'reason']);
+      'visibleEvidence', 'visibleAreasDecision', 'uncertaintyReason', 'reason']);
   assert.equal(result.decision, 'modest');
   assert.equal(result.usage.totalTokens, 325);
 });
@@ -90,4 +90,16 @@ test('Gemini receives a metadata-free bounded scan copy', async () => {
   assert.equal(metadata.format, 'jpeg');
   assert.ok(metadata.width <= 768);
   assert.ok(metadata.height <= 768);
+});
+
+test('Gemini crop-only evidence is normalized without another paid request',async()=>{
+  let calls=0;
+  const result=await classifyGeminiModesty(Buffer.from('image'),{apiKey:'mock',skipImagePreparation:true,
+    fetchImpl:async()=>{calls++;return response({candidates:[{content:{parts:[{text:JSON.stringify({
+      decision:'uncertain',confidence:0.9,violationClearlyVisible:false,
+      visibleEvidence:'כתפיים וחזה מכוסים בחולצה',reason:'הרגליים מחוץ לתמונה',
+      visibleAreasDecision:'compliant',uncertaintyReason:'out_of_frame_only',
+    })}]}}]});}});
+  assert.equal(calls,1);assert.equal(result.available,true);assert.equal(result.decision,'modest');
+  assert.equal(result.ignoredOutOfFrameUncertainty,true);assert.equal(result.formatRepaired,false);
 });

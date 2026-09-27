@@ -49,6 +49,29 @@ Future<BuildContext> _mountScreen(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets('forwarding to an unapproved contact counts as pending, not sent', (tester) async {
+    final client = MockClient((request) async {
+      if (request.method == 'GET') return _json(_recoveredTargets(_path(request)));
+      return _json({'id': 'request-id', 'requestPending': true});
+    });
+    addTearDown(client.close);
+    final screen = await _mountScreen(tester);
+    final result = forwardChatMessages(screen, 'test-token', null,
+      [{'id': 'original', 'text': 'waiting message'}], client: client);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('forward-target-user:bob')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'העבר ל־1 יעדים'));
+    await tester.pumpAndSettle();
+    final outcome = await result;
+    expect(outcome.sentCount, 0);
+    expect(outcome.pendingCount, 1);
+    expect(outcome.completedMessageIndexes, {0});
+    expect(find.textContaining('ממתינים לאישור הנמען'), findsOneWidget);
+    expect(find.text('ההודעה הועברה'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
       'retry reloads all targets without sending or changing the message',
       (tester) async {

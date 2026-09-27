@@ -1,3 +1,5 @@
+import 'package:file_picker/file_picker.dart';
+import 'helpers/attachment_picker.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -6,6 +8,7 @@ import 'dart:typed_data';
 import 'package:betshuva/captured_photo_name.dart';
 import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -20,8 +23,15 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 // ignore: depend_on_referenced_packages
 import 'package:record_platform_interface/record_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+// ignore: depend_on_referenced_packages
+import 'package:video_player_platform_interface/video_player_platform_interface.dart'
+    as video_platform;
 
 import 'own_media_filter_test.dart' as fixtures;
+import 'helpers/photo_camera.dart';
+// ignore: depend_on_referenced_packages
+import 'package:camera_platform_interface/camera_platform_interface.dart'
+    show CameraPlatform, VideoCaptureOptions;
 
 class _Photo extends XFile {
   _Photo(
@@ -56,6 +66,38 @@ class _Picker extends fixtures.TestImagePicker {
     requestedSources.add(source);
     return _Photo();
   }
+}
+
+class _VideoCamera extends PhotoCamera {
+  _VideoCamera(super.photo);
+  int starts = 0;
+
+  @override
+  Future<void> startVideoCapturing(VideoCaptureOptions options) async {
+    starts++;
+  }
+
+  @override
+  Future<XFile> stopVideoRecording(int cameraId) async => photo;
+}
+
+class _VideoProbe extends video_platform.VideoPlayerPlatform {
+  @override
+  Future<void> init() async {}
+
+  @override
+  Future<int?> createWithOptions(
+          video_platform.VideoCreationOptions options) async =>
+      1;
+
+  @override
+  Stream<video_platform.VideoEvent> videoEventsFor(int playerId) =>
+      Stream.error(PlatformException(
+          code: 'decoder-unavailable-in-test',
+          message: 'No decoder in this upload-context test'));
+
+  @override
+  Future<void> dispose(int playerId) async {}
 }
 
 class _TemporaryPath extends PathProviderPlatform {
@@ -155,6 +197,7 @@ Future<_UploadedFile> _readMultipart(http.Request request) async {
 }
 
 void main() {
+  FilePicker.platform = AttachmentPicker([]);
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('captured photo uses its native capture timestamp and actual extension',
@@ -187,6 +230,71 @@ void main() {
 
   for (final group in [false, true]) {
     final scope = group ? 'group' : 'private';
+    testWidgets('$scope recorded video uploads explicit camera context',
+        (tester) async {
+      fixtures.size(tester);
+      SharedPreferences.setMockInitialValues({});
+      final directory =
+          Directory.systemTemp.createTempSync('betshuva-video-audit-widget-');
+      final file = File('${directory.path}/recording.mp4')
+        ..writeAsBytesSync([0, 0, 0, 24, 102, 116, 121, 112, 109, 112, 52, 50]);
+      final previousCamera = CameraPlatform.instance;
+      final camera = _VideoCamera(XFile(file.path, mimeType: 'video/mp4'));
+      CameraPlatform.instance = camera;
+      final previousVideo = video_platform.VideoPlayerPlatform.instance;
+      video_platform.VideoPlayerPlatform.instance = _VideoProbe();
+      addTearDown(() {
+        CameraPlatform.instance = previousCamera;
+        video_platform.VideoPlayerPlatform.instance = previousVideo;
+        directory.deleteSync(recursive: true);
+      });
+      final uploads = <_UploadedFile>[];
+      await http.runWithClient(() async {
+        await tester.pumpWidget(fixtures.chat(group));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.attach_file));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('צילום והקלטה'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('צילום וידאו'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('התחל צילום'));
+        await tester.pump(const Duration(seconds: 1));
+        expect(camera.starts, 1);
+        await tester.tap(find.text('עצור ושלח'));
+        for (var attempt = 0; attempt < 50 && uploads.isEmpty; attempt++) {
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 10)));
+          await tester.pump(const Duration(milliseconds: 300));
+        }
+        expect(uploads, hasLength(1));
+        expect(uploads.single.fields['captureKind'], 'camera_video');
+        expect(uploads.single.fields[group ? 'groupId' : 'toUserId'],
+            group ? 'group' : 'friend');
+        expect(uploads.single.mime, 'video/mp4');
+        expect(uploads.single.fields.containsKey('recordedAudio'), isFalse);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(seconds: 1));
+        expect(tester.takeException(), isNull);
+      },
+          () => MockClient((request) async {
+                if (fixtures.isHistory(request, group)) {
+                  return fixtures.json([]);
+                }
+                if (request.method == 'POST' &&
+                    request.url.path.endsWith('/upload')) {
+                  final upload = await _readMultipart(request);
+                  uploads.add(upload);
+                  return fixtures.json({
+                    'url': fixtures.url,
+                    'status': 'pending',
+                    'fileName': upload.name,
+                  });
+                }
+                return fixtures.defaultResponse(request);
+              }));
+    });
+
     for (final camera in [true, false]) {
       testWidgets(
           '$scope ${camera ? 'camera gets capture name' : 'gallery retains original name'}',
@@ -197,32 +305,55 @@ void main() {
         final picker = _Picker();
         ImagePickerPlatform.instance = picker;
         addTearDown(() => ImagePickerPlatform.instance = previous);
+        final previousFiles = FilePicker.platform;
+        final files =
+            AttachmentPicker([MemoryPickedFile('own-image.png', fixtures.png)]);
+        FilePicker.platform = files;
+        addTearDown(() => FilePicker.platform = previousFiles);
+        final previousCamera = CameraPlatform.instance;
+        final nativeCamera = PhotoCamera(_Photo());
+        CameraPlatform.instance = nativeCamera;
+        addTearDown(() => CameraPlatform.instance = previousCamera);
         final uploads = <_UploadedFile>[];
         await http.runWithClient(() async {
           await tester.pumpWidget(fixtures.chat(group));
           await tester.pumpAndSettle();
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
-          await tester.tap(find.text(
-              camera ? (group ? 'מצלמה' : 'צלם תמונה') : 'גלריה (עד 10)'));
+          if (camera) {
+            await tester.tap(find.text('צילום והקלטה'));
+            await tester.pumpAndSettle();
+          }
+          await tester.tap(find.text(camera ? 'צילום תמונה' : 'העלאת קבצים'));
           await tester.pump(const Duration(milliseconds: 100));
           await tester.pump(const Duration(milliseconds: 500));
+          if (camera) {
+            await tester.tap(find.text('צלם'));
+            await tester.pumpAndSettle();
+            expect(uploads, isEmpty);
+            await tester.tap(find.text('השתמש בתמונה'));
+            await tester.pump(const Duration(milliseconds: 100));
+            await tester.pump(const Duration(milliseconds: 500));
+          }
           expect(uploads, hasLength(1));
           final uploaded = uploads.single;
           expect(uploaded.mime, 'image/png');
           expect(uploaded.bytes, fixtures.png);
           expect(uploaded.fields.containsKey('recordedAudio'), isFalse);
+          expect(
+              uploaded.fields['captureKind'], camera ? 'camera_image' : null);
           expect(uploaded.fields[group ? 'groupId' : 'toUserId'],
               group ? 'group' : 'friend');
           if (camera) {
             expect(
                 uploaded.name,
                 matches(RegExp(
-                    r'^betshuva-photo-2026-09-23_14-07-36-25-ID-viewer(?:_\d+)?\.png$')));
-            expect(picker.requestedSources, [ImageSource.camera]);
+                    r'^betshuva-photo-2026-09-23_14-07-36-25-ID-742(?:_\d+)?\.png$')));
+            expect(nativeCamera.captures, 1);
+            expect(picker.requestedSources, isEmpty);
           } else {
             expect(uploaded.name, 'own-image.png');
-            expect(picker.requestedSources, [ImageSource.gallery]);
+            expect(files.calls, 1);
           }
           await tester.pumpWidget(const SizedBox.shrink());
           await tester.pump(const Duration(seconds: 1));
@@ -280,7 +411,7 @@ void main() {
           expect(
               recorder.recordingPath!.split('/').last,
               matches(RegExp(
-                  r'^betshuva-audio-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{2}-ID-viewer(?:_\d+)?\.wav$')));
+                  r'^betshuva-audio-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{2}-ID-742(?:_\d+)?\.wav$')));
           await tester.pump(const Duration(seconds: 1));
           await tester.tap(find.byIcon(Icons.stop_circle));
           await tester.pump();
@@ -297,6 +428,7 @@ void main() {
           expect(uploaded!.mime, 'audio/wav');
           expect(uploaded!.bytes, wav);
           expect(uploaded!.fields['recordedAudio'], 'true');
+          expect(uploaded!.fields['captureKind'], 'microphone');
           expect(uploaded!.fields[group ? 'groupId' : 'toUserId'],
               group ? 'group' : 'friend');
           if (pending) {

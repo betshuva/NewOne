@@ -95,7 +95,7 @@ async function scanVisuals(visuals, scanImage, kind) {
   };
 }
 
-async function renderPdfPages(buffer, limits) {
+async function extractPdf(buffer, limits) {
   const [{ getDocument }, { createCanvas, DOMMatrix, ImageData, Path2D }] =
     await Promise.all([
       import('pdfjs-dist/legacy/build/pdf.mjs'),
@@ -106,15 +106,21 @@ async function renderPdfPages(buffer, limits) {
   globalThis.ImageData ||= ImageData;
   globalThis.Path2D ||= Path2D;
   const loadingTask = getDocument({ data: new Uint8Array(buffer),
-    isEvalSupported: false, useSystemFonts: false });
+    isEvalSupported: false, useSystemFonts: false,
+    standardFontDataUrl: require('node:path').join(
+      require('node:path').dirname(require.resolve('pdfjs-dist/package.json')),
+      'standard_fonts/') });
   const pdf = await loadingTask.promise;
-  if (pdf.numPages > limits.maxPdfPages)
-    throw Object.assign(new Error(`PDF contains ${pdf.numPages} pages`),
-      { code: 'DOCUMENT_VISUAL_LIMIT' });
   const pages = [];
+  const text = [];
   try {
+    if (pdf.numPages > limits.maxPdfPages)
+      throw Object.assign(new Error(`PDF contains ${pdf.numPages} pages`),
+        { code: 'DOCUMENT_VISUAL_LIMIT' });
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
+      const content = await page.getTextContent();
+      text.push(content.items.map(item => item.str || '').join(' '));
       const base = page.getViewport({ scale: 1 });
       const scale = Math.min(2,
         Math.sqrt(limits.maxRenderPixels / Math.max(1, base.width * base.height)));
@@ -128,7 +134,7 @@ async function renderPdfPages(buffer, limits) {
   } finally {
     await pdf.destroy();
   }
-  return pages;
+  return { text: text.join('\n').toLowerCase(), images: pages };
 }
 
 async function extractDocx(buffer, limits) {
@@ -222,10 +228,11 @@ async function scanDocument(buffer, mimetype, { scanImage, blockedWords = [],
     let visuals = [];
     let kind = 'תמונה';
     if (mimetype === 'application/pdf') {
-      const pdfParse = require('pdf-parse');
-      const parsed = await pdfParse(buffer);
-      text = String(parsed.text || '').toLowerCase();
-      visuals = await renderPdfPages(buffer, limits);
+      // Use the same parser for text and page rendering. The older pdf-parse
+      // parser rejects PDFs that our renderer can read, leaving them pending.
+      const parsed = await extractPdf(buffer, limits);
+      text = parsed.text;
+      visuals = parsed.images;
       kind = 'עמוד';
     } else if (mimetype ===
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
@@ -273,6 +280,13 @@ async function scanDocument(buffer, mimetype, { scanImage, blockedWords = [],
       blocked: true,
       blockedBy: 'documentPassword',
       reason: 'המסמך מוגן בסיסמה ולכן לא ניתן לסרוק ולאשר אותו',
+      error: decodeError,
+    };
+    if (error?.name === 'InvalidPDFException' ||
+        /^(Invalid PDF structure|The PDF file is empty)/i.test(decodeError)) return {
+      blocked: true,
+      blockedBy: 'documentInvalid',
+      reason: 'קובץ ה־PDF פגום או אינו תקין. יש לבחור קובץ תקין ולנסות שוב',
       error: decodeError,
     };
     return {

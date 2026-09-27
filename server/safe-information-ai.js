@@ -225,7 +225,6 @@ async function generateSafeInformationAnswer(options) {
   if (!input.length || input.at(-1).content !== question)
     input.push({ role: 'user', content: question });
   const model = options.model || 'gpt-5.6-luna';
-  const startedAt = performance.now();
   let response;
   let data;
   let marketplaceChecked = false;
@@ -239,8 +238,8 @@ async function generateSafeInformationAnswer(options) {
   const listingUrls = new Set();
   const verifiedListings = new Map();
   const searchSources = new Map();
-  const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-  let usageReported = false;
+  let requestInFlight=false;
+  let requestStartedAt=performance.now();
   const canSearch = !options.isTeen && typeof options.searchMarketplace === 'function';
   const explicitWeb = /באינטרנט|ברשת|אתר(?:ים)? חיצוני|מקור רשמי|מחיר שוק|https?:\/\//i.test(question);
   const listingQuestion = /מודע(?:ה|ת|ות)|מסיר[הת]|למכירה|betshuva:\/\/listing\//i.test(question) ||
@@ -276,6 +275,7 @@ async function generateSafeInformationAnswer(options) {
       : forceComparison || (explicitWeb && round === 0 && webPermitted)
         ? { type: 'web_search' } : 'auto';
     if (forceComparison) comparisonRequested = true;
+    requestInFlight=true;requestStartedAt=performance.now();
     response = await (options.fetchImpl || globalThis.fetch)(
       'https://api.openai.com/v1/responses', {
         method: 'POST',
@@ -308,9 +308,14 @@ async function generateSafeInformationAnswer(options) {
         signal: AbortSignal.timeout(35000),
       });
       data = await response.json().catch(() => ({}));
-      for (const [key, source] of [['inputTokens', 'input_tokens'], ['outputTokens', 'output_tokens'], ['totalTokens', 'total_tokens']])
-        usage[key] += Number(data.usage?.[source] || 0);
-      usageReported ||= Boolean(data.usage);
+      const callUsage={inputTokens:Number(data.usage?.input_tokens||0),outputTokens:Number(data.usage?.output_tokens||0),totalTokens:Number(data.usage?.total_tokens||0),
+        cachedInputTokens:Number(data.usage?.input_tokens_details?.cached_tokens||0),cacheWriteTokens:data.usage?.input_tokens_details?.cache_write_tokens??null,
+        webSearchCalls:(data.output||[]).filter(item=>item.type==='web_search_call'&&item.status==='completed').length};
+      await recordProviderCall({provider:'openai',model,operation:'safe_information',tracking:{userId:options.userId,workflow:'safe_information'},
+        status:response.ok?'completed':'failed',usage:callUsage,usageReported:Boolean(data.usage),durationMs:Math.round(performance.now()-requestStartedAt),
+        errorCode:response.ok?null:data?.error?.code||`HTTP_${response.status}`});
+      requestInFlight=false;
+
       if (!response.ok) throw new Error(data?.error?.message || `OpenAI HTTP ${response.status}`);
       for (const item of data.output || []) {
         if (item.type !== 'web_search_call' || item.status !== 'completed') continue;
@@ -380,23 +385,12 @@ async function generateSafeInformationAnswer(options) {
       }
     }
   } catch (error) {
-    await recordProviderCall({ provider: 'openai', model,
-      operation: 'safe_information', tracking: { userId: options.userId,
-        workflow: 'safe_information' }, status: 'failed',
-      durationMs: Math.round(performance.now() - startedAt),
-      errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
+    if(requestInFlight)await recordProviderCall({provider:'openai',model,operation:'safe_information',tracking:{userId:options.userId,workflow:'safe_information'},
+      status:'failed',usageReported:false,durationMs:Math.round(performance.now()-requestStartedAt),errorCode:error?.code||error?.name||'REQUEST_FAILED'});
     if (appraisal) return appraisalFallback();
     throw error;
   }
   const part = outputPart(data);
-  await recordProviderCall({ provider: 'openai', model,
-    operation: 'safe_information', tracking: { userId: options.userId,
-      workflow: 'safe_information' },
-    status: response?.ok && part?.text ? 'completed' : 'failed', usage,
-    usageReported,
-    durationMs: Math.round(performance.now() - startedAt),
-    errorCode: response?.ok ? (part?.text ? null : 'EMPTY_RESPONSE')
-      : data?.error?.code || `HTTP_${response?.status || 'UNAVAILABLE'}` });
   if (requireComparison && !comparisonCompleted) return appraisalFallback();
   if (appraisal && !part?.text) return appraisalFallback();
   if (!response.ok)

@@ -1,8 +1,10 @@
 'use strict';
 
 const {
+  DEFAULT_CONTENT_FILTER,
   contentAllowedByFilter,
   imageAllowedByFilter,
+  isUnfilteredAssistantConversation,
   resolveScopedContentFilter,
 } = require('./content-filter-policy');
 const { recordFilterDecision } = require('./filter-audit');
@@ -15,8 +17,8 @@ function senderScope(contextType, contextId) {
   return { type: 'general', id: null };
 }
 
-// Read the sender's current settings at every send/delivery decision. Cached
-// moderation approves the file's safety, not its use under current preferences.
+// Personal viewing and receiving preferences, also used by history projections.
+// These settings do not authorize or restrict delivery to another account.
 async function getEffectiveSenderFilter(db, userId, contextType, contextId) {
   const scope = senderScope(contextType, contextId);
   const result = await db.query(`SELECT u.content_filter AS general_filter,
@@ -35,6 +37,8 @@ async function getEffectiveSenderFilter(db, userId, contextType, contextId) {
   if (!row) throw Object.assign(new Error('המשתמש אינו זמין לשליחת תוכן'), {
     status: 403, code: 'SENDER_USER_NOT_FOUND',
   });
+  if (scope.type === 'contact' && isUnfilteredAssistantConversation(userId, scope.id))
+    return { ...DEFAULT_CONTENT_FILTER };
   return resolveScopedContentFilter(row.general_filter, row.scoped_filter);
 }
 
@@ -44,12 +48,15 @@ function documentContainsImages(classification) {
     classification.category || classification.uncertain === true));
 }
 
-// A contact's receiving choices and the group's delivery policy remain separate
-// checks. This guard adds the sender's own visual preferences to those checks.
+// Preserve personal filtering for standalone media and self-conversations.
+// Outbound delivery is authorized by the destination policy in the send routes;
+// do not apply the sender's personal receiving/viewing choices a second time.
 async function assertSenderMediaAllowed(db, {
   userId, contextType, contextId, type, classification,
   fileId, fileUrl, messageId, source = 'sender_media',
 }) {
+  if (contextId && ['chat', 'contact', 'group'].includes(contextType) &&
+      String(contextId) !== String(userId)) return null;
   if (type !== 'image' && type !== 'video' &&
       !(type === 'document' && documentContainsImages(classification))) return null;
   const policy = await getEffectiveSenderFilter(db, userId, contextType, contextId);

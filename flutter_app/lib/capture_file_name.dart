@@ -5,6 +5,14 @@ String? normalizeCaptureCreatorId(String value) {
   return RegExp(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$').hasMatch(id) ? id : null;
 }
 
+String? captureCreatorIdForUser(Map<String, dynamic>? user) {
+  final shortId = user?['short_id']?.toString() ?? '';
+  if (RegExp(r'^[1-9][0-9]*$').hasMatch(shortId)) return shortId;
+  // During profile loading, older sessions may only have their UUID. The
+  // upload API replaces that UUID with the account's assigned short number.
+  return normalizeCaptureCreatorId(user?['id']?.toString() ?? '');
+}
+
 final captureFileNames = CaptureFileNameGenerator();
 
 class CaptureFileNameGenerator {

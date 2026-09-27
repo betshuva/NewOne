@@ -10,8 +10,6 @@ for (const build of _flutter.buildConfig.builds) {
   }
 }
 
-// Keep CanvasKit's GPU/WASM surface pool small. The app uses one primary view;
-// retaining the larger default pool wastes memory on constrained browsers.
-_flutter.loader.load({
-  config: { canvasKitMaximumSurfaces: 2 },
-});
+// Keep the default overlay pool: camera previews can appear over several
+// video players, even though the app has only one Flutter view.
+_flutter.loader.load();

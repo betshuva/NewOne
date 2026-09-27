@@ -60,7 +60,7 @@ test('confirmed personal deletion preserves received copies and checks concurren
       CREATE TABLE cloud_backup_accounts(user_id uuid,status text,encrypted_refresh_token text);
       CREATE TABLE pending_scans(id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,user_id uuid,
         to_user_id uuid,group_id uuid,file_url text,file_name text,file_type text);
-      CREATE TABLE message_requests(id uuid DEFAULT gen_random_uuid() PRIMARY KEY,sender_id uuid,
+      CREATE TABLE message_requests(status text NOT NULL DEFAULT 'pending',id uuid DEFAULT gen_random_uuid() PRIMARY KEY,sender_id uuid,
         recipient_id uuid,file_url text);
       CREATE TABLE listings(id uuid PRIMARY KEY,image_url text,title text);
       CREATE TABLE listing_images(id uuid PRIMARY KEY,listing_id uuid,url text);

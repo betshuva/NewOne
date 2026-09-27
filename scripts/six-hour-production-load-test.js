@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
+if (process.env.NODE_TEST_CONTEXT !== undefined) {
+  throw new Error('Production load scripts must be run explicitly, not through test discovery.');
+}
+
 require('dotenv').config({ quiet: true });
 const bcrypt = require('bcryptjs');
 const sharp = require('sharp');

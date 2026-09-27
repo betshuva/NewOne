@@ -34,7 +34,7 @@ http.Response _json(Object data) => http.Response(jsonEncode(data), 200,
     headers: {'content-type': 'application/json; charset=utf-8'});
 
 Finder get _entry =>
-    find.byKey(const ValueKey('personal-media-conversation-entry'));
+    find.byKey(const ValueKey('personal-media-shortcut'));
 
 Finder _inConversations(Finder finder) => find.descendant(
       of: find.byType(ConversationsScreen),
@@ -189,6 +189,7 @@ void main() {
       final media = find.byType(PersonalMediaScreen);
       expect(media, findsOneWidget);
       expect(tester.widget<PersonalMediaScreen>(media).embedded, isTrue);
+      expect(tester.widget<Semantics>(_entry).properties.selected, isTrue);
       expect(tester.getRect(media).left, closeTo(0, .1));
       expect(
           tester.getRect(media).right,
@@ -253,7 +254,7 @@ void main() {
     });
   });
 
-  testWidgets('personal media is searchable and absent from unread/groups',
+  testWidgets('personal shortcuts stay available during search and conversation filtering',
       (tester) async {
     await _withShell(tester, (_) async {
       final users = tester
@@ -261,6 +262,13 @@ void main() {
           .users;
       expect(users.any((u) => u['name'] == 'המדיה שלי'), isFalse);
       expect(_entry, findsOneWidget);
+      final calendar = find.byKey(const ValueKey('calendar-shortcut'));
+      final chats = _inConversations(find.text('שיחות'));
+      expect(tester.getCenter(calendar).dx, greaterThan(tester.getCenter(_entry).dx));
+      expect(tester.getCenter(_entry).dx, greaterThan(tester.getCenter(chats).dx));
+      expect(tester.getCenter(_entry).dy, closeTo(tester.getCenter(chats).dy, 1));
+      expect(_inConversations(find.text('לוח שנה')), findsNothing);
+      expect(_inConversations(find.text('המדיה שלי')), findsNothing);
       await tester.tap(_inConversations(find.byIcon(Icons.search)));
       await tester.pumpAndSettle();
       final search = _inConversations(find.byType(TextField));
@@ -268,10 +276,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(_entry, findsOneWidget);
       expect(_inConversations(find.text(_friend['name']!)), findsNothing);
-      expect(find.text('אין שיחות להצגה'), findsNothing);
+      expect(find.text('אין שיחות להצגה'), findsOneWidget);
       await tester.enterText(search, 'ראשון');
       await tester.pumpAndSettle();
-      expect(_entry, findsNothing);
+      expect(_entry, findsOneWidget);
       expect(_inConversations(find.text(_friend['name']!)), findsOneWidget);
       await tester.enterText(search, '');
       await tester.pumpAndSettle();
@@ -282,7 +290,7 @@ void main() {
           matching: find.text(label),
         ));
         await tester.pumpAndSettle();
-        expect(_entry, findsNothing);
+        expect(_entry, findsOneWidget);
       }
       await tester.tap(find.descendant(
         of: find.byType(BottomNavigationBar),
@@ -332,13 +340,14 @@ void main() {
     });
   });
   testWidgets(
-      'calendar friend opens desktop calendar and contact navigation closes it',
+      'calendar shortcut opens desktop calendar and contact navigation closes it',
       (tester) async {
     await _withShell(tester, (requests) async {
-      await tester.tap(find.byKey(const ValueKey('calendar-friend')));
+      await tester.tap(find.byKey(const ValueKey('calendar-shortcut')));
       await tester.pumpAndSettle();
       expect(find.byType(CalendarScreen), findsOneWidget);
       expect(find.byType(ConversationsScreen), findsOneWidget);
+      expect(tester.widget<Semantics>(find.byKey(const ValueKey('calendar-shortcut'))).properties.selected, isTrue);
       expect(tester.getRect(find.byType(CalendarScreen)).left, closeTo(0, .1));
       await tester.tap(_inConversations(find.text(_friend['name']!)));
       await tester.pumpAndSettle();
@@ -351,10 +360,10 @@ void main() {
     });
   });
   testWidgets(
-      'calendar friend opens full screen on mobile and returns to conversations',
+      'calendar shortcut opens full screen on mobile and returns to conversations',
       (tester) async {
     await _withShell(tester, (_) async {
-      await tester.tap(find.byKey(const ValueKey('calendar-friend')));
+      await tester.tap(find.byKey(const ValueKey('calendar-shortcut')));
       await tester.pumpAndSettle();
       expect(find.byType(CalendarScreen), findsOneWidget);
       expect(find.byType(ConversationsScreen), findsNothing);

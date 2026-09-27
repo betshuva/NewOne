@@ -10,14 +10,35 @@ const main = fs.readFileSync(
 const scanner = fs.readFileSync(
   path.join(__dirname, '..', 'flutter_app', 'lib', 'document_scanner.dart'),
   'utf8');
+const attachmentMenu = fs.readFileSync(
+  path.join(__dirname, '..', 'flutter_app', 'lib', 'chat_attachment_menu.dart'),
+  'utf8');
 
 test('private and group menus offer document scanning by photo', () => {
-  const labels = main.match(/label: 'סריקת מסמך בצילום'/g) || [];
-  assert.equal(labels.length, 2);
-  assert.match(main,
-    /_recipientAllowsText[\s\S]*?_scanDocument\(\)/);
-  assert.match(main,
-    /_groupAllowsText[\s\S]*?_scanDocument\(\)/);
+  assert.match(attachmentMenu,
+    /_item\(\s*'סריקת מסמך',\s*[\w.]+,\s*[\w.]+,\s*action:\s*ChatAttachmentAction\.scan,\s*allowed:\s*widget\.textAllowed\s*,?\s*\)/);
+  const menus = main.match(
+    /Future<void>\s+_showAttachMenu\(\)\s+async\s*\{[\s\S]*?\n  \}/g,
+  ) || [];
+  assert.equal(menus.length, 2);
+  for (const scope of ['recipient', 'group']) {
+    const allowsText = `_${scope}AllowsText`;
+    const matchingMenus = menus.filter((menu) =>
+      new RegExp(`textAllowed:\\s*${allowsText}\\b`).test(menu));
+    assert.equal(matchingMenus.length, 1, `${scope} uses its text permission`);
+    const menu = matchingMenus[0];
+    assert.match(menu, /await\s+showChatAttachmentMenu\(/);
+    const permissionSwitch = menu.match(
+      /final\s+allowed\s*=\s*switch\s*\(action\)\s*\{([\s\S]*?)\};/,
+    );
+    assert.ok(permissionSwitch, `${scope} checks the selected action`);
+    assert.match(permissionSwitch[1],
+      new RegExp(`_\\s*=>\\s*${allowsText}\\b`));
+    assert.doesNotMatch(permissionSwitch[1], /ChatAttachmentAction\.scan/,
+      `${scope} scanning uses the default text permission`);
+    assert.match(menu,
+      /if\s*\(!allowed\)\s*\{[^}]*\breturn;\s*\}\s*switch\s*\(action\)\s*\{[\s\S]*?case\s+ChatAttachmentAction\.scan:\s*await\s+_scanDocument\(\);/);
+  }
 });
 
 test('document scanner supports preview, removal and up to twenty PDF pages', () => {

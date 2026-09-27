@@ -3,6 +3,7 @@
 const sharp = require('sharp');
 const { MODESTY_POLICY_PROMPT, parseModestyDecision } = require('./modesty-verification');
 const { recordProviderCall } = require('./provider-usage-log');
+const { guardModerationProvider, providerRequestSignal } = require('./moderation-provider-guard');
 
 const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 const MODESTY_RESPONSE_SCHEMA = {
@@ -12,10 +13,12 @@ const MODESTY_RESPONSE_SCHEMA = {
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     violationClearlyVisible: { type: 'boolean' },
     visibleEvidence: { type: 'string' },
+    visibleAreasDecision: { type: 'string', enum: ['compliant', 'violation', 'uncertain'] },
+    uncertaintyReason: { type: 'string', enum: ['none', 'out_of_frame_only', 'visible_area_ambiguous'] },
     reason: { type: 'string' },
   },
   required: ['decision', 'confidence', 'violationClearlyVisible',
-    'visibleEvidence', 'reason'],
+    'visibleEvidence', 'visibleAreasDecision', 'uncertaintyReason', 'reason'],
   additionalProperties: false,
 };
 
@@ -28,6 +31,12 @@ async function prepareGeminiImage(buffer) {
 }
 
 async function classifyGeminiModesty(buffer, options = {}) {
+  const apiKey = String(options.apiKey ?? process.env.GEMINI_API_KEY ?? '').trim();
+  return guardModerationProvider({ provider: 'gemini', operation: 'modesty',
+    apiKey, options, run: () => requestGeminiModesty(buffer, options) });
+}
+
+async function requestGeminiModesty(buffer, options) {
   const startedAt = performance.now();
   const apiKey = String(options.apiKey ?? process.env.GEMINI_API_KEY ?? '').trim();
   if (!apiKey)
@@ -37,14 +46,16 @@ async function classifyGeminiModesty(buffer, options = {}) {
   try {
     const prepared = options.skipImagePreparation ? buffer : await prepareGeminiImage(buffer);
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    const usage = { inputTokens: 0, outputTokens: 0, thoughtTokens: 0,
+    const usage = { cachedInputTokens: 0, inputTokens: 0, outputTokens: 0, thoughtTokens: 0,
       totalTokens: 0 };
     const generate = async (contents, operation) => {
       const requestStartedAt = performance.now();
-      let response;
       let data = {};
+      let result;
+      let callUsage = null;
+      let text = '';
       try {
-        response = await fetchImpl(endpoint, {
+        const response = await fetchImpl(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -59,64 +70,62 @@ async function classifyGeminiModesty(buffer, options = {}) {
           responseJsonSchema: MODESTY_RESPONSE_SCHEMA,
         },
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: providerRequestSignal(options, 30000),
         });
-        data = await response.json().catch(() => ({}));
-        const callUsage = {
+        const payload = await response.json().catch(() => ({}));
+        data = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+        callUsage = {
           inputTokens: Number(data.usageMetadata?.promptTokenCount || 0),
+          cachedInputTokens: Number(data.usageMetadata?.cachedContentTokenCount || 0),
           outputTokens: Number(data.usageMetadata?.candidatesTokenCount || 0),
           thoughtTokens: Number(data.usageMetadata?.thoughtsTokenCount || 0),
           totalTokens: Number(data.usageMetadata?.totalTokenCount || 0),
         };
         for (const key of Object.keys(usage)) usage[key] += callUsage[key];
-        await recordProviderCall({ provider: 'gemini', model, operation,
-          tracking: options.tracking, status: response.ok ? 'completed' : 'failed',
-          usage: callUsage, usageReported: Boolean(data.usageMetadata),
-          durationMs: Math.round(performance.now() - requestStartedAt),
-          errorCode: response.ok ? null : data?.error?.status || `HTTP_${response.status}` });
-        if (!response.ok)
-        throw new Error(data?.error?.message || `Gemini HTTP ${response.status}`);
-        return data;
+        if (!response.ok) throw Object.assign(new Error(data?.error?.message || `Gemini HTTP ${response.status}`),
+          { code: data?.error?.status || `HTTP_${response.status}` });
+        const providerBlock = data.promptFeedback?.blockReason || data.candidates?.[0]?.finishReason === 'SAFETY';
+        if (providerBlock) result = { configured: true, available: true, status: 'safety_blocked', model,
+          decision: 'non_modest', confidence: 1, reason: 'Gemini safety filter blocked the image' };
+        else {
+          const parts = data.candidates?.[0]?.content?.parts;
+          text = Array.isArray(parts)
+            ? parts.map(part => typeof part?.text === 'string' ? part.text : '').join('') : '';
+          const decision = parseModestyDecision(text);
+          if (!decision) throw Object.assign(new Error('Gemini returned an invalid modesty result after schema enforcement'),
+            { code: 'INVALID_RESPONSE' });
+          result = { configured: true, available: true, status: 'completed', model, ...decision };
+        }
       } catch (error) {
-        if (!response) await recordProviderCall({ provider: 'gemini', model,
-          operation, tracking: options.tracking, status: 'failed',
-          durationMs: Math.round(performance.now() - requestStartedAt),
-          errorCode: error?.code || error?.name || 'REQUEST_FAILED' });
-        throw error;
+        result = { configured: true, available: false, status: 'error', model,
+          errorCode: String(error?.code || error?.name || 'REQUEST_FAILED'),
+          error: String(error?.message || error).slice(0, 300) };
       }
+      result.durationMs = Math.round(performance.now() - requestStartedAt);
+      await recordProviderCall({ provider: 'gemini', model, operation,
+        tracking: options.tracking, status: result.available ? 'completed' : 'failed',
+        usage: callUsage, usageReported: Boolean(data.usageMetadata),
+        durationMs: result.durationMs, errorCode: result.errorCode, result });
+      return { result, text };
     };
-    let data = await generate([{ role: 'user', parts: [
+    let generated = await generate([{ role: 'user', parts: [
       { text: MODESTY_POLICY_PROMPT },
       { inlineData: { mimeType: 'image/jpeg', data: prepared.toString('base64') } },
     ] }], 'modesty');
-    const finishReason = data.candidates?.[0]?.finishReason;
-    const providerBlock = data.promptFeedback?.blockReason || finishReason === 'SAFETY';
-    if (providerBlock) {
-      return { configured: true, available: true, status: 'safety_blocked', model,
-        decision: 'non_modest', confidence: 1,
-        reason: 'Gemini safety filter blocked the image', usage,
-        durationMs: Math.round(performance.now() - startedAt) };
-    }
-    let text = (data.candidates?.[0]?.content?.parts || [])
-      .map(part => part.text || '').join('');
-    let result = parseModestyDecision(text);
+    const text = generated.text;
     let formatRepaired = false;
-    if (!result && text.trim()) {
-      data = await generate([{ role: 'user', parts: [{ text:
+    if (generated.result.errorCode === 'INVALID_RESPONSE' && text.trim() && !options.tracking?.videoBudget) {
+      generated = await generate([{ role: 'user', parts: [{ text:
         `Convert the following attempted classification to the required JSON schema. ` +
         `Preserve its meaning and do not inspect or invent image details:\n${text.slice(0, 2000)}`,
       }] }], 'modesty_format_repair');
-      text = (data.candidates?.[0]?.content?.parts || [])
-        .map(part => part.text || '').join('');
-      result = parseModestyDecision(text);
       formatRepaired = true;
     }
-    if (!result) throw new Error('Gemini returned an invalid modesty result after schema enforcement');
-    return { configured: true, available: true, status: 'completed', model,
-      ...result, usage, formatRepaired,
-      durationMs: Math.round(performance.now() - startedAt) };
+    Object.assign(generated.result, { usage, formatRepaired, durationMs: Math.round(performance.now() - startedAt) });
+    return generated.result;
   } catch (error) {
     return { configured: true, available: false, status: 'error', model,
+      errorCode: String(error?.code || error?.name || 'INVALID_RESPONSE'),
       error: String(error?.message || error).slice(0, 300),
       durationMs: Math.round(performance.now() - startedAt) };
   }

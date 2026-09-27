@@ -132,9 +132,12 @@ Future<XFile?> scanDocumentToPdf(
       '${now.hour.toString().padLeft(2, '0')}'
       '${now.minute.toString().padLeft(2, '0')}'
       '${now.second.toString().padLeft(2, '0')}';
+  final fileName = 'betshuva-document-scan-$stamp.pdf';
   return XFile.fromData(
     pdfBytes,
-    name: 'document_scan_$stamp.pdf',
+    name: fileName,
+    // Native XFile derives its name from path even for in-memory data.
+    path: fileName,
     mimeType: 'application/pdf',
   );
 }

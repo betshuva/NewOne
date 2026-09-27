@@ -1,0 +1,17 @@
+services:
+  video-moderation:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      MAX_VIDEO_SECONDS: "30"
+      MODEL_DEVICE: "-1"
+      UNSAFE_THRESHOLD: "0.75"
+      REVIEW_THRESHOLD: "0.50"
+      MAX_VIDEO_MB: "200"
+    volumes:
+      - model-cache:/root/.cache
+
+volumes:
+  model-cache:

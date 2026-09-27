@@ -412,3 +412,94 @@ test('OpenAI JSON parser rejects unsupported decisions', () => {
   { decision: 'person', confidence: 0.96, reason: '',
     personCategories: ['men', 'children'] });
 });
+
+async function withoutOpenAI(run) {
+  const original = process.env.MODERATION_OPENAI_ENABLED;
+  process.env.MODERATION_OPENAI_ENABLED = 'false';
+  try { return await run(); }
+  finally {
+    if (original === undefined) delete process.env.MODERATION_OPENAI_ENABLED;
+    else process.env.MODERATION_OPENAI_ENABLED = original;
+  }
+}
+
+test('Gemini replaces OpenAI for contradictory demographics when OpenAI is disabled', () => withoutOpenAI(async () => {
+  let reviews = 0;
+  const tracking = { workflow: 'test', videoBudget: { frameIndex: 1 } };
+  const result = await verifyPersonClassification(Buffer.from('image'), localFalsePositive, {
+    tracking,
+    scanObjects: async () => ({ available: true, personDetected: true, persons: [{}] }),
+    scanFaces: noFaces,
+    classifyOpenAI: async () => assert.fail('OpenAI is disabled'),
+    classifyGemini: async (_buffer, options) => {
+      reviews++;
+      assert.equal(options.tracking, tracking);
+      return { available: true, decision: 'person', personCategories: ['men'], confidence: 0.95 };
+    },
+  });
+  assert.equal(reviews, 1);
+  assert.deepEqual(result.classification.detectedCategories, ['men']);
+  assert.equal(result.verification.decision, 'demographics_reviewed_by_gemini');
+  assert.equal(result.verification.providers.openai, undefined);
+  assert.equal(result.verification.providers.gemini.available, true);
+}));
+
+test('Gemini unavailable or uncertain corrective review never accepts contradictory local categories', () => withoutOpenAI(async () => {
+  for (const review of [{ configured: false, available: false },
+    { available: false, status: 'error' }, { available: true, decision: 'uncertain', confidence: 0.6 },
+    { available: true, decision: 'non_human', confidence: 0.9 },
+    { available: true, decision: 'person', personCategory: 'uncertain', confidence: 0.9 }]) {
+    const result = await verifyPersonClassification(Buffer.from('image'), localFalsePositive, {
+      scanObjects: async () => ({ available: true, personDetected: true, persons: [{}] }),
+      scanFaces: noFaces,
+      classifyOpenAI: async () => assert.fail('OpenAI is disabled'),
+      classifyGemini: async () => review,
+    });
+    assert.equal(result.classification.uncertain, true);
+    assert.equal(result.classification.uncertainStage, 'demographics');
+    assert.equal(result.verification.decision, 'uncertain');
+    assert.equal(result.verification.providers.openai, undefined);
+  }
+}));
+
+test('Gemini can correct non-human images or confirm people without OpenAI', () => withoutOpenAI(async () => {
+  for (const [review, category, decision] of [
+    [{ available: true, decision: 'non_human', confidence: 0.95 }, 'nonHumanImages', 'non_human_confirmed_by_gemini'],
+    [{ available: true, decision: 'person', personCategories: ['women'], confidence: 0.95 }, 'women', 'person_confirmed_by_gemini'],
+  ]) {
+    const result = await verifyPersonClassification(Buffer.from('image'), localFalsePositive, {
+      scanObjects: noObjects, scanFaces: noFaces,
+      classifyOpenAI: async () => assert.fail('OpenAI is disabled'),
+      classifyGemini: async () => review,
+    });
+    assert.equal(result.classification.category, category);
+    assert.equal(result.classification.uncertain, false);
+    assert.equal(result.verification.decision, decision);
+    assert.equal(result.verification.providers.openai, undefined);
+  }
+}));
+
+test('Gemini failure preserves uncertain human evidence instead of approving missing checks', () => withoutOpenAI(async () => {
+  for (const review of [{ available: false, status: 'error' },
+    { configured: false, available: false }, { available: true, decision: 'uncertain' }]) {
+    const result = await verifyPersonClassification(Buffer.from('image'), localFalsePositive, {
+      scanObjects: noObjects, scanFaces: noFaces,
+      classifyOpenAI: async () => assert.fail('OpenAI is disabled'),
+      classifyGemini: async () => review,
+    });
+    assert.equal(result.classification.uncertain, true);
+    assert.deepEqual(result.classification.detectedCategories, ['men', 'children']);
+    assert.equal(result.verification.decision, 'uncertain');
+  }
+}));
+
+test('confident Google non-human consensus needs neither Gemini nor OpenAI', () => withoutOpenAI(async () => {
+  const result = await verifyPersonClassification(Buffer.from('image'), {
+    category: 'nonHumanImages', detectedCategories: ['nonHumanImages'], uncertain: false,
+  }, {
+    scanObjects: noObjects, scanFaces: noFaces,
+    classifyOpenAI: async () => assert.fail('OpenAI is disabled'),
+    classifyGemini: async () => assert.fail('No multimodal review is needed'),
+  });
+  assert.equal(result.verification.decision, 'non_human_google_consensus');
+}));

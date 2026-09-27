@@ -11,10 +11,32 @@ import 'package:image_picker/image_picker.dart';
 import 'capture_file_name.dart';
 
 Future<Uint8List> _blobBytes(html.Blob blob) async {
-  final reader = html.FileReader()..readAsArrayBuffer(blob);
-  await reader.onLoad.first;
-  final result = reader.result;
-  return result is ByteBuffer ? Uint8List.view(result) : result as Uint8List;
+  final reader = html.FileReader();
+  final loaded = Completer<void>();
+  void fail() {
+    if (!loaded.isCompleted) {
+      loaded.completeError(StateError('Could not read camera capture'));
+    }
+  }
+
+  final subscriptions = [
+    reader.onLoad.listen((_) {
+      if (!loaded.isCompleted) loaded.complete();
+    }),
+    reader.onError.listen((_) => fail()),
+    reader.onAbort.listen((_) => fail()),
+  ];
+  try {
+    reader.readAsArrayBuffer(blob);
+    await loaded.future.timeout(const Duration(seconds: 10));
+    final result = reader.result;
+    return result is ByteBuffer ? Uint8List.view(result) : result as Uint8List;
+  } finally {
+    for (final subscription in subscriptions) {
+      await subscription.cancel();
+    }
+    if (reader.readyState == html.FileReader.LOADING) reader.abort();
+  }
 }
 
 Future<XFile?> captureWebPhoto(BuildContext context,
@@ -49,7 +71,9 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   html.MediaRecorder? _recorder;
   final List<html.Blob> _chunks = [];
   bool _ready = false, _recording = false, _startingRecording = false;
+  bool _savingRecording = false, _closing = false;
   bool _capturingPhoto = false;
+  int _cameraAttempt = 0;
   int _seconds = 0;
   String? _error;
   Timer? _timer;
@@ -70,6 +94,7 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
       ..setAttribute('playsinline', 'true')
       ..style.width = '100%'
       ..style.height = '100%'
+      ..style.display = 'block'
       ..style.objectFit = 'cover'
       ..style.backgroundColor = 'black';
     ui_web.platformViewRegistry.registerViewFactory(_viewType, (_) => _preview);
@@ -77,6 +102,8 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   }
 
   Future<void> _openCamera() async {
+    final attempt = ++_cameraAttempt;
+    html.MediaStream? openedStream;
     if (mounted) {
       setState(() {
         _ready = false;
@@ -87,27 +114,44 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
       for (final track in _stream?.getTracks() ?? <html.MediaStreamTrack>[]) {
         track.stop();
       }
+      _stream = null;
+      _preview.srcObject = null;
       final stream = await html.window.navigator.mediaDevices?.getUserMedia({
         'video': {'facingMode': 'environment'},
         'audio': widget.videoMode,
       });
       if (stream == null) throw Exception('camera unavailable');
+      openedStream = stream;
+      if (!mounted || _closing || attempt != _cameraAttempt) {
+        for (final track in stream.getTracks()) {
+          track.stop();
+        }
+        return;
+      }
       _stream = stream;
       _preview.srcObject = stream;
       if (_preview.readyState < 1) {
         await _preview.onLoadedMetadata.first
             .timeout(const Duration(seconds: 8));
       }
-      await _preview.play();
+      await _preview.play().timeout(const Duration(seconds: 8));
       if (_preview.videoWidth <= 0 || _preview.videoHeight <= 0) {
         await _preview.onCanPlay.first.timeout(const Duration(seconds: 8));
       }
-      if (_preview.paused) await _preview.play();
-      if (mounted) {
+      if (_preview.paused) {
+        await _preview.play().timeout(const Duration(seconds: 8));
+      }
+      if (mounted && !_closing && attempt == _cameraAttempt) {
         setState(() => _ready = true);
       }
     } catch (error) {
-      if (mounted) {
+      for (final track
+          in openedStream?.getTracks() ?? <html.MediaStreamTrack>[]) {
+        track.stop();
+      }
+      if (mounted && !_closing && attempt == _cameraAttempt) {
+        _stream = null;
+        _preview.srcObject = null;
         setState(() {
           _ready = false;
           _error =
@@ -131,14 +175,15 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
           kind: 'photo', extension: 'jpg', creatorId: widget.creatorId);
       canvas.context2D.drawImage(_preview, 0, 0);
       final bytes = await _blobBytes(await canvas.toBlob('image/jpeg', 0.9));
-      if (!mounted) return;
+      if (!mounted || _closing) return;
       if (bytes.isEmpty) throw Exception('empty camera image');
+      _closing = true;
       Navigator.pop(
         context,
         XFile.fromData(bytes, name: name, mimeType: 'image/jpeg'),
       );
     } catch (_) {
-      if (mounted) {
+      if (mounted && !_closing) {
         setState(() {
           _capturingPhoto = false;
           _error = 'לא ניתן לעבד את התמונה. יש לנסות לצלם שוב.';
@@ -159,13 +204,23 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   }
 
   Future<void> _startRecording() async {
-    if (_stream == null || !_ready || _startingRecording) return;
+    if (_stream == null ||
+        !_ready ||
+        _startingRecording ||
+        _recording ||
+        _savingRecording ||
+        _closing) {
+      return;
+    }
     setState(() {
       _startingRecording = true;
       _error = null;
     });
     try {
-      if (_preview.paused) await _preview.play();
+      if (_preview.paused) {
+        await _preview.play().timeout(const Duration(seconds: 8));
+      }
+      if (!mounted || _closing) return;
       _chunks.clear();
       final mime = _supportedMime();
       final recorder = mime == null
@@ -175,56 +230,58 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
           kind: 'video', extension: 'webm', creatorId: widget.creatorId);
       _recorder = recorder;
       recorder.addEventListener('dataavailable', (event) {
+        if (_closing || _recorder != recorder) return;
         final data = (event as dynamic).data as html.Blob?;
         if (data != null && data.size > 0) _chunks.add(data);
       });
       recorder.addEventListener('error', (_) {
+        if (_closing || _recorder != recorder) return;
+        _recorder = null;
         _timer?.cancel();
         _recordingClock.stop();
         if (mounted) {
           setState(() {
             _recording = false;
             _startingRecording = false;
+            _savingRecording = false;
             _error = 'הדפדפן הפסיק את ההקלטה. נסה שוב או בחר סרטון מהמכשיר.';
           });
         }
       });
       recorder.addEventListener('stop', (_) async {
+        if (!mounted || _closing || _recorder != recorder) return;
         _timer?.cancel();
         _recordingClock.stop();
-        if (_chunks.isEmpty) {
-          if (mounted) {
+        setState(() {
+          _recording = false;
+          _savingRecording = true;
+        });
+        try {
+          if (_chunks.isEmpty) throw StateError('No camera recording data');
+          final outputMime = mime ?? 'video/webm';
+          final bytes = await _blobBytes(html.Blob(_chunks, outputMime));
+          if (!mounted || _closing || _recorder != recorder) return;
+          if (bytes.isEmpty) throw StateError('Empty camera recording');
+          final isWebM = bytes.length >= 4 &&
+              bytes[0] == 0x1A &&
+              bytes[1] == 0x45 &&
+              bytes[2] == 0xDF &&
+              bytes[3] == 0xA3;
+          if (!isWebM) throw StateError('Invalid WebM camera recording');
+          _closing = true;
+          Navigator.pop(
+              context,
+              XFile.fromData(bytes,
+                  name: name, mimeType: outputMime.split(';').first));
+        } catch (_) {
+          if (mounted && !_closing && _recorder == recorder) {
+            _recorder = null;
             setState(() {
-              _recording = false;
-              _error = 'לא התקבל וידאו מהמצלמה. נסה שוב או בחר סרטון מהמכשיר.';
+              _savingRecording = false;
+              _error = 'לא ניתן לשמור את הסרטון. נסה שוב או בחר סרטון מהמכשיר.';
             });
           }
-          return;
         }
-        final outputMime = mime ?? 'video/webm';
-        final bytes = await _blobBytes(html.Blob(_chunks, outputMime));
-        if (!mounted) return;
-        if (bytes.isEmpty) {
-          setState(() => _error = 'ההקלטה יצאה ריקה. יש לנסות שוב.');
-          return;
-        }
-        final isWebM = bytes.length >= 4 &&
-            bytes[0] == 0x1A &&
-            bytes[1] == 0x45 &&
-            bytes[2] == 0xDF &&
-            bytes[3] == 0xA3;
-        if (!isWebM) {
-          setState(() {
-            _recording = false;
-            _error =
-                'הדפדפן יצר קובץ וידאו לא תקין. יש לנסות שוב או לבחור סרטון מהמכשיר.';
-          });
-          return;
-        }
-        Navigator.pop(
-            context,
-            XFile.fromData(bytes,
-                name: name, mimeType: outputMime.split(';').first));
       });
       // A single final MediaRecorder blob is the most interoperable WebM.
       // Concatenating timed chunks can produce an invalid container in some
@@ -255,6 +312,7 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
         setState(() {
           _recording = false;
           _startingRecording = false;
+          _savingRecording = false;
           _error = 'לא ניתן להתחיל הקלטה בדפדפן. נסה שוב או בחר סרטון מהמכשיר.';
         });
       }
@@ -262,25 +320,38 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   }
 
   void _stopRecording() {
+    if (_savingRecording || _closing || _recorder?.state != 'recording') return;
     _timer?.cancel();
     _recordingClock.stop();
-    if (_recorder?.state == 'recording') _recorder?.stop();
-    if (mounted) setState(() => _recording = false);
+    if (mounted) {
+      setState(() {
+        _recording = false;
+        _savingRecording = true;
+      });
+    }
+    _recorder?.stop();
   }
 
   void _close() {
-    if (_recording) _recorder?.stop();
+    if (_closing) return;
+    _closing = true;
+    if (_recorder?.state == 'recording') _recorder?.stop();
     Navigator.pop(context);
   }
 
   @override
   void dispose() {
+    _closing = true;
+    _cameraAttempt++;
     _timer?.cancel();
     _recordingClock.stop();
+    if (_recorder?.state == 'recording') _recorder?.stop();
     for (final track in _stream?.getTracks() ?? <html.MediaStreamTrack>[]) {
       track.stop();
     }
-    _preview.srcObject = null;
+    _preview
+      ..pause()
+      ..srcObject = null;
     super.dispose();
   }
 
@@ -317,7 +388,15 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
                       aspectRatio: 16 / 9,
                       child: ClipRRect(
                           borderRadius: BorderRadius.circular(12),
-                          child: HtmlElementView(viewType: _viewType))),
+                          child: Stack(fit: StackFit.expand, children: [
+                            HtmlElementView(viewType: _viewType),
+                            if (!_ready)
+                              const ColoredBox(
+                                color: Colors.black,
+                                child:
+                                    Center(child: CircularProgressIndicator()),
+                              ),
+                          ]))),
                 if (_recording) ...[
                   const SizedBox(height: 10),
                   Directionality(
@@ -339,17 +418,24 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
               FilledButton.icon(
                   style: FilledButton.styleFrom(
                       backgroundColor: _recording ? Colors.red : null),
-                  onPressed: !_ready || _startingRecording
+                  onPressed: !_ready || _startingRecording || _savingRecording
                       ? null
                       : _recording
                           ? _stopRecording
                           : _startRecording,
-                  icon:
-                      Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
-                  label: Text(_startingRecording
-                      ? 'מתחיל...'
-                      : _recording
-                          ? 'עצור ושמור'
-                          : 'התחל צילום')),
+                  icon: _savingRecording
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : Icon(
+                          _recording ? Icons.stop : Icons.fiber_manual_record),
+                  label: Text(_savingRecording
+                      ? 'שומר...'
+                      : _startingRecording
+                          ? 'מתחיל...'
+                          : _recording
+                              ? 'עצור ושמור'
+                              : 'התחל צילום')),
           ]);
 }

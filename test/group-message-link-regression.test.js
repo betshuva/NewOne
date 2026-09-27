@@ -38,6 +38,7 @@ function groupHarness({ isTeen = false, member = { role: 'member', send_permissi
     emit(event, payload) { events.push({ event, payload }); },
   };
   vm.runInNewContext(handlerSource, {
+    ...require('./helpers/system-audit-stubs'),
     socket,
     normalizeBuiltinStickerId: () => null,
     allowSocketEvent: () => true,
@@ -130,6 +131,8 @@ for (const [description, member] of [
     assert.deepEqual(harness.errors, []);
     assert.equal(harness.queries.length, 1);
     assert.match(harness.queries[0].sql, /FROM group_members/);
-    assert.equal(harness.events.length, 0);
+    assert.equal(harness.events.length, 1);
+    assert.equal(harness.events[0].event,'message:rejected');
+    assert.equal(harness.events[0].payload.code,member?'GROUP_ADMIN_ONLY':'NOT_GROUP_MEMBER');
   });
 }

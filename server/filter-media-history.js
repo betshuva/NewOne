@@ -1,6 +1,7 @@
 'use strict';
 
-const { resolveScopedContentFilter, contentAllowedByFilter } = require('./content-filter-policy');
+const { resolveScopedContentFilter, contentAllowedByFilter,
+  isUnfilteredAssistantConversation } = require('./content-filter-policy');
 const { personalMessageVisible } = require('./conversation-history');
 const { recordFilterEvent } = require('./filter-audit');
 const { getEffectiveSenderFilter } = require('./sender-content-filter');
@@ -31,6 +32,10 @@ async function lockFilterOwner(db, userId) {
   const row = await db.query('SELECT content_filter FROM users WHERE id=$1 FOR UPDATE', [userId]);
   if (!row.rows.length) throw error(404, 'USER_NOT_FOUND', 'המשתמש לא נמצא');
   await db.query("SELECT set_config('app.actor_id',$1,true)", [userId]);
+  const audit = require('./system-audit').getAuditContext();
+  if (audit?.operationId) await db.query(
+    "SELECT set_config('app.audit_operation_id',$1,true), set_config('app.audit_parent_event_id',$2,true)",
+    [audit.operationId, audit.parentEventId || '']);
   return row.rows[0].content_filter;
 }
 
@@ -62,6 +67,8 @@ async function prepareFilterHistoryChange(db, userId, scope, nextFilter, action)
         OR ($2 IN ('group','group_personal') AND m.group_id=$3::uuid))`,
   [userId, scope.kind, scope.id || null]);
   const affected = rows.rows.filter(row => {
+    if (!row.group_id && isUnfilteredAssistantConversation(row.sender_id, row.recipient_id))
+      return false;
     const currentScope = row.group_id
       ? row.member_filter ?? (row.creator_id === userId ? row.group_filter : null)
       : row.contact_filter;
@@ -125,13 +132,13 @@ async function finishFilterHistoryChange(pool, userId, change, deleteOwnMedia) {
 async function projectFilteredHistory(db, userId, messages, { groupId = null, preserveClearedCopies = false } = {}) {
   const ids = messages.filter(row => UUID.test(String(row.id))).map(row => row.id);
   if (!ids.length) return messages;
-  const state = await db.query(`SELECT m.id,m.sender_id,m.type,
+  const state = await db.query(`SELECT m.id,m.sender_id,m.recipient_id,m.group_id,m.type,
       a.action,EXISTS(SELECT 1 FROM message_user_deletions d
         WHERE d.user_id=$1 AND d.message_id=m.id) AS deleted,
       COALESCE(sf.moderation_details->'classification',owned_copy.moderation_details->'classification') AS classification,
-      CASE WHEN sf.moderation_status IN ('pending','rejected') THEN sf.moderation_status
+      CASE WHEN sf.moderation_status IN ('pending','rejected','stopped') THEN sf.moderation_status
         ELSE COALESCE(owned_copy.moderation_status,sf.moderation_status) END AS moderation_status,
-      CASE WHEN sf.moderation_status IN ('pending','rejected') THEN sf.moderation_details->>'reason'
+      CASE WHEN sf.moderation_status IN ('pending','rejected','stopped') THEN sf.moderation_details->>'reason'
         ELSE COALESCE(owned_copy.moderation_details->>'reason',sf.moderation_details->>'reason') END AS scan_reason,
       CASE WHEN owned_copy.id IS NOT NULL THEN owned_copy.content_purged_at ELSE sf.content_purged_at END AS content_purged_at,
       (SELECT e.details->'groupPolicy' FROM filter_audit_events e
@@ -155,14 +162,26 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
     const row = byId.get(message.id);
     if (!row) return [message];
     if ((!preserveClearedCopies && row.deleted) || row.action === 'delete') return [];
+    if (row.moderation_status === 'stopped') return [{
+      ...message, file_url: null, fileUrl: null, public_url: null,
+      blocked_preview_url: null, thumbnail_url: null, preview_url: null,
+      body: null, text: null, file_name: null, fileName: null,
+      message_status: 'stopped_scan', moderation_status: 'stopped',
+      scan_reason: row.scan_reason || null,
+      content_purged_at: row.content_purged_at || null,
+      filter_hidden: true, hidden_reason: 'moderation', filter_kept: false,
+    }];
     if (row.type !== 'image') {
       if (row.sender_id === userId) return [message];
       return groupId && !contentAllowedByFilter(row.filter, row.type, row.classification) ? [] : [message];
     }
     const safe = row.moderation_status === 'approved' && !row.content_purged_at;
-    const hidden = !safe || row.action === 'hide' ||
+    const unfilteredAssistant = !row.group_id &&
+      isUnfilteredAssistantConversation(row.sender_id, row.recipient_id);
+    const preferenceHidden = row.action === 'hide' ||
       (row.action !== 'keep' && (!contentAllowedByFilter(row.filter, 'image', row.classification) ||
         (row.delivery_group_filter && !contentAllowedByFilter(row.delivery_group_filter, 'image', row.classification))));
+    const hidden = !safe || (!unfilteredAssistant && preferenceHidden);
     if (hidden) return [{ ...message, file_url: null, fileUrl: null, body: null,
       text: null, file_name: null, fileName: null, filter_hidden: true,
       moderation_status: row.moderation_status || null,
@@ -175,7 +194,7 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
 
 // Synthetic scan/request rows have no message ID and therefore cannot have a
 // historical keep grant. Read the authoritative owned file state before showing
-// any preview; pending or rejected content must never reveal its upload URL.
+// any preview; pending, rejected or stopped content cannot reveal its upload URL.
 async function projectOwnScans(db, userId, rows, { contextType = null, contextId = null } = {}) {
   const visual = rows.filter(row => ['image', 'video'].includes(row.type || row.file_type));
   if (!visual.length) return rows;
@@ -201,14 +220,20 @@ async function projectOwnScans(db, userId, rows, { contextType = null, contextId
     return { ...row, file_url: null, fileUrl: null, public_url: null,
       blocked_preview_url: null, thumbnail_url: null, preview_url: null,
       body: null, text: null, file_name: null, fileName: null,
+      ...(file?.moderation_status === 'stopped' ? { message_status: 'stopped_scan' } : {}),
       moderation_status: file?.moderation_status || null,
-      scan_reason: file?.moderation_details?.reason || null,
+      scan_reason: row.scan_reason || file?.moderation_details?.reason || null,
       content_purged_at: file?.content_purged_at || null,
       filter_hidden: true, hidden_reason: safe ? 'content_filter' : 'moderation', filter_kept: false };
   }));
 }
 
 async function projectFilterMediaLibrary(db, userId, items) {
+  const stoppedVideos = items.filter(row => row.file_type === 'video' && row.moderation_status === 'stopped');
+  if (stoppedVideos.length) {
+    const stopped = new Map((await projectOwnScans(db, userId, stoppedVideos)).map(row => [row.id, row]));
+    items = items.map(row => stopped.get(row.id) || row);
+  }
   const representatives = new Map(items.filter(row => row.file_type === 'image')
     .flatMap(row => (row.duplicate_ids || [row.id]).map(id => [id, row.id])));
   const ids = [...representatives.keys()];
@@ -262,7 +287,7 @@ function registerFilterHistoryRoutes(app, { auth, getPool, notifyUser }) {
           AND received.user_id=$1 AND received.status='ready'
         LEFT JOIN stored_files owned_copy ON owned_copy.id=received.stored_file_id AND owned_copy.user_id=$1
         WHERE m.id=$2 AND m.type='image'
-          AND (CASE WHEN sf.moderation_status IN ('pending','rejected') THEN sf.moderation_status
+          AND (CASE WHEN sf.moderation_status IN ('pending','rejected','stopped') THEN sf.moderation_status
             ELSE COALESCE(owned_copy.moderation_status,sf.moderation_status) END)='approved'
           AND (CASE WHEN owned_copy.id IS NOT NULL THEN owned_copy.content_purged_at ELSE sf.content_purged_at END) IS NULL
           AND ${personalMessageVisible('m', '$1')} FOR SHARE OF m`, [req.user.id, req.params.messageId]);

@@ -100,8 +100,18 @@ test('received media appears once with its conversations and is retained until p
       await release();assert.equal(removed.length,0);
       assert.equal((await db.query('SELECT released_at FROM stored_files')).rows[0].released_at,null);
     });
-    await t.test('a verified backup can release local bytes after all personal references are hidden',async()=>{
+    await t.test('pending delivery retains verified backup bytes even after all personal references are hidden',async()=>{
       await db.query('INSERT INTO message_user_deletions VALUES($1,$2)',[inGroup,owner]);
+      await db.query("INSERT INTO pending_scans VALUES('/my-copy')");
+      await release();assert.equal(removed.length,0);
+      await db.query('DELETE FROM pending_scans');
+      await db.query("UPDATE stored_files SET moderation_details='{\"pending\":true}'");
+      await release();assert.equal(removed.length,0);
+      await db.query("UPDATE stored_files SET moderation_details=NULL,moderation_status='pending'");
+      await release();assert.equal(removed.length,0);
+      await db.query("UPDATE stored_files SET moderation_status='approved'");
+    });
+    await t.test('a verified backup can release local bytes after all personal references are hidden',async()=>{
       const result=await library(owner,{scope:'unassigned'});
       assert.equal(result.items.length,1);assert.equal(result.items[0].canDelete,true);
       assert.equal(result.items[0].destinations.length,0);

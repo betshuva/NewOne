@@ -1,35 +1,20 @@
+import 'package:file_picker/file_picker.dart';
+import 'helpers/attachment_picker.dart';
 import 'package:betshuva/main.dart';
 import 'package:flutter/material.dart';
+// ignore: depend_on_referenced_packages
+import 'package:camera_platform_interface/camera_platform_interface.dart'
+    show CameraPlatform;
+import 'helpers/photo_camera.dart';
+import 'own_media_filter_test.dart' show TestImageFile;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-// ignore: depend_on_referenced_packages
-import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _CancelledImagePicker extends ImagePickerPlatform {
-  final calls = <ImageSource>[];
-
-  @override
-  Future<XFile?> getImageFromSource({
-    required ImageSource source,
-    ImagePickerOptions options = const ImagePickerOptions(),
-  }) async {
-    calls.add(source);
-    return null;
-  }
-
-  @override
-  Future<List<XFile>> getMultiImageWithOptions({
-    MultiImagePickerOptions options = const MultiImagePickerOptions(),
-  }) async {
-    calls.add(ImageSource.gallery);
-    return [];
-  }
-}
-
 void main() {
+  FilePicker.platform = AttachmentPicker([]);
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     final font = FontLoader('NotoSansHebrew')
@@ -41,14 +26,17 @@ void main() {
         'attachment actions close the menu and preserve chat '
         '(nested navigator: $nested)', (tester) async {
       SharedPreferences.setMockInitialValues({});
+      final previousCamera = CameraPlatform.instance;
+      CameraPlatform.instance = PhotoCamera(TestImageFile());
+      addTearDown(() => CameraPlatform.instance = previousCamera);
       tester.view.physicalSize = const Size(1920, 1080);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      final previousPicker = ImagePickerPlatform.instance;
-      final picker = _CancelledImagePicker();
-      ImagePickerPlatform.instance = picker;
-      addTearDown(() => ImagePickerPlatform.instance = previousPicker);
+      final previousPicker = FilePicker.platform;
+      final picker = AttachmentPicker([]);
+      FilePicker.platform = picker;
+      addTearDown(() => FilePicker.platform = previousPicker);
       final chat = ChatScreen(
         token: 'test-token',
         me: const {'id': 'test-user'},
@@ -68,18 +56,35 @@ void main() {
         ));
         await tester.pumpAndSettle();
         final chatState = tester.state(find.byType(ChatScreen));
-        for (final label in ['צלם תמונה', 'גלריה (עד 10)']) {
+        for (final label in ['צילום תמונה', 'העלאת קבצים']) {
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
-          expect(find.text('שיתוף קובץ עם חבר לבדיקה'), findsOneWidget);
+          expect(find.text('העלאת קבצים'), findsOneWidget);
+          expect(find.text('צילום מסך'), findsNothing);
+          final anchor = tester.getRect(find.byIcon(Icons.attach_file));
+          final menu = tester
+              .getRect(find.byKey(const ValueKey('chat-attachment-menu')));
+          expect(menu.width, lessThanOrEqualTo(244));
+          expect(menu.bottom, lessThan(anchor.top));
+          expect((menu.right - anchor.right).abs(), lessThan(20));
+          if (label == 'צילום תמונה') {
+            await tester.tap(find.text('צילום והקלטה'));
+            await tester.pumpAndSettle();
+          }
           await tester.tap(find.text(label));
           await tester.pumpAndSettle();
-          expect(find.text('שיתוף קובץ עם חבר לבדיקה'), findsNothing);
+          expect(
+              find.byKey(const ValueKey('chat-attachment-menu')), findsNothing);
+          if (label == 'צילום תמונה') {
+            expect(find.text('צילום תמונה'), findsOneWidget);
+            await tester.tap(find.byIcon(Icons.close));
+            await tester.pumpAndSettle();
+          }
           expect(find.byType(ChatScreen), findsOneWidget);
           expect(tester.state(find.byType(ChatScreen)), same(chatState));
           expect(tester.takeException(), isNull);
         }
-        expect(picker.calls, [ImageSource.camera, ImageSource.gallery]);
+        expect(picker.calls, 1);
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pumpAndSettle();
       },
@@ -97,6 +102,48 @@ void main() {
                 }
                 return http.Response('{}', 200);
               }));
-    });
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  }
+  for (final scale in [1.3, 2.0]) {
+    testWidgets('mobile attachment menu fits enlarged text at $scale',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      tester.view.physicalSize = const Size(720, 1600);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await http.runWithClient(() async {
+        await tester.pumpWidget(MaterialApp(
+          theme: ThemeData(useMaterial3: false, fontFamily: 'NotoSansHebrew'),
+          builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(scale)),
+              child: child!),
+          home: ChatScreen(
+              token: 'token',
+              me: const {'id': 'font-test'},
+              recipient: const {'id': 'peer', 'name': 'חבר לבדיקה'},
+              socket: null),
+        ));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.attach_file));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        await tester.ensureVisible(find.text('שיתוף איש קשר'));
+        await tester.tap(find.text('שיתוף איש קשר'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('שתף את הפרטים שלי'));
+        await tester.pumpAndSettle();
+        expect(find.text('שתף את הפרטים שלי').hitTestable(), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      },
+          () => MockClient((request) async => http.Response(
+              request.url.path.contains('/messages/') && request.method == 'GET'
+                  ? '[]'
+                  : '{}',
+              200)));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
   }
 }
