@@ -1,3 +1,4 @@
+const { imageBlockReason } = require('./moderation-user-reason');
 require('dotenv').config();
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.turn') });
 const express = require('express');
@@ -6892,7 +6893,8 @@ function mediaLibraryReferenceSql() {
 function mediaLibraryItem(row) {
   return {
     id: row.id, name: row.original_name, url: row.public_url, filterHidden: row.filter_hidden === true,
-    hiddenReason: row.hidden_reason || null, scanReason: row.scan_reason || null,
+    hiddenReason: row.hidden_reason || null, scanReason: imageBlockReason(row.scan_reason || row.moderation_details?.reason || null, row.file_type,
+      row.moderation_status === 'rejected' ? row.moderation_details?.blockedBy : null),
     contentPurged: !!row.content_purged_at,
     sourceMessageId: row.filter_source_message_id || null,
     mimeType: row.mime_type, fileType: row.file_type,
@@ -7046,7 +7048,7 @@ async function persistFullImageRescan(pool, loaded, scanResult, requestedBy) {
     removedMessages: messages.length,
   });
   return {
-    status: 'rejected', reason: scanResult.reason,
+    status: 'rejected', reason: imageBlockReason(scanResult.reason, loaded.file.file_type, scanResult.blockedBy),
     classification: scanResult.classification,
     removedMessages: messages.length,
     blockedPreviewUrl: requestedBy === file.user_id
@@ -9205,7 +9207,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
         toUserId: req.body.toUserId, fileId: storedInsert.rows[0].id,
         kind: 'moderation', reason: scanResult.reason });
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
-        fileType: allowed.dbType, status: 'rejected', reason: scanResult.reason,
+        fileType: allowed.dbType, status: 'rejected', reason: imageBlockReason(scanResult.reason, allowed.dbType, scanResult.blockedBy),
         blockedPreviewUrl, previewExpiresAt,
         classification: scanResult.classification || null,
         handledByScanBot: scanBotUpload, scanReport });
@@ -14201,7 +14203,7 @@ async function retryPendingScans() {
           if (sid) io.to(sid).emit('scan:rejected', {
             fileName: row.file_name, fileUrl: row.file_url,
             groupId: row.group_id || null, toUserId: row.to_user_id || null,
-            reason: scanResult.reason,
+            reason: imageBlockReason(scanResult.reason, row.file_type, scanResult.blockedBy),
             blockedPreviewUrl: row.file_type === 'image' && rejectedFile?.id
               ? `/betshuva-app/api/blocked-media/${rejectedFile.id}` : null,
             previewExpiresAt: rejectedFile?.blocked_content_expires_at || null,

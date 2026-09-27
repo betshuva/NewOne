@@ -1,3 +1,4 @@
+import 'moderation_user_reason.dart';
 import 'scan_explanation.dart';
 import 'contact_request_status.dart';
 import 'chat_attachment_menu.dart';
@@ -1893,7 +1894,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.35';
+const kVersion = '1.3.36';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -28121,6 +28122,7 @@ class _UploadResultCard extends StatelessWidget {
 
 String _imageBlockTitle(Object? reason) {
   final text = reason?.toString() ?? '';
+  if (isModestyBlockReason(text)) return modestyImageMessage;
   if (text.contains('הסינון של הקבוצה') ||
       text.contains('הגדרות הסינון של הקבוצה') ||
       text.contains('הגדרות הקבוצה')) {

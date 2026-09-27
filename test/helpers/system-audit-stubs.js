@@ -16,3 +16,5 @@ module.exports = {
   auditedMediaQuery: (db, sql, values) => db.query(sql, values),
   setAuditTransactionContext: async () => {},
 };
+
+Object.assign(module.exports, require('../../server/moderation-user-reason'));

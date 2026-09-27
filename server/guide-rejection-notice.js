@@ -1,5 +1,6 @@
 'use strict';
 
+const { imageBlockReason, MODESTY_IMAGE_MESSAGE } = require('./moderation-user-reason');
 const { createHash } = require('node:crypto');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -25,10 +26,10 @@ async function notifyGuideRejectedSend({ pool, guideUserId, guideUserName = 'י�
       !['chat', 'group', 'general'].includes(targetType) ||
       (targetType === 'general' ? targetId != null : !UUID.test(String(targetId))))
     throw new TypeError('Invalid sender-only rejection notice');
-  const explanation = safeReason(reason) || (kind === 'sender_filter'
+  const explanation = safeReason(imageBlockReason(reason, fileType)) || (kind === 'sender_filter'
     ? 'סוג התוכן חסום בהגדרות הסינון שלך' : 'הקובץ לא עבר את בדיקת התוכן');
   const verb = fileType === 'image' || fileType === 'audio' ? 'לא נשלחה' : 'לא נשלח';
-  const body = `${TYPES[fileType]} ${verb}. ${
+  const body = explanation === MODESTY_IMAGE_MESSAGE ? explanation : `${TYPES[fileType]} ${verb}. ${
     kind === 'sender_filter' ? 'לפי הגדרות הסינון שלך' : 'לפי בדיקת התוכן'}: ${explanation}`;
   const key = createHash('sha256').update(JSON.stringify([
     userId.toLowerCase(), fileId.toLowerCase(), targetType, targetId?.toLowerCase() || null,

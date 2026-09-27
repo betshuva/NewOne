@@ -1,3 +1,4 @@
+import 'moderation_user_reason.dart';
 import 'scan_explanation.dart';
 import 'dart:async';
 import 'dart:math' as math;
@@ -62,6 +63,22 @@ class BlockedImageNotice extends StatelessWidget {
       );
 
   void _showDetails(BuildContext context) {
+    if (isModestyBlockReason(reason)) {
+      showDialog<void>(
+          context: context,
+          builder: (dialogContext) => Directionality(
+              textDirection: TextDirection.rtl,
+              child: AlertDialog(
+                key: const ValueKey('blocked-image-details'),
+                content: const Text(modestyImageMessage),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('סגור'))
+                ],
+              )));
+      return;
+    }
     showDialog<void>(
       context: context,
       builder: (dialogContext) => Directionality(

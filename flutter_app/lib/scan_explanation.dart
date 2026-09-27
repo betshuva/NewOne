@@ -1,3 +1,4 @@
+import 'moderation_user_reason.dart';
 import 'package:flutter/material.dart';
 
 String scanClassificationText(Object? value) {
@@ -28,6 +29,7 @@ String scanExplanation(Map<String, dynamic> message) {
   final approved = ['sent', 'delivered', 'read', 'approved'].contains(status);
   final reason =
       (message['scanReason'] ?? message['scan_reason'] ?? '').toString().trim();
+  if (blocked && isModestyBlockReason(reason)) return modestyImageMessage;
   final state = blocked
       ? 'נחסם'
       : pending

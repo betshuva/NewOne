@@ -1,3 +1,4 @@
+import 'moderation_user_reason.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -181,6 +182,11 @@ String hiddenImageMessage({
     status: status,
     contentPurged: contentPurged,
   );
+  if ((kind == _HiddenImageKind.rejected || kind == _HiddenImageKind.purged) &&
+      ['rejected', 'rejected_scan'].contains(status?.trim().toLowerCase()) &&
+      isModestyBlockReason(reason)) {
+    return modestyImageMessage;
+  }
   return switch (kind) {
     _HiddenImageKind.contentFilter => 'התמונה מוסתרת לפי בחירת הסינון שלך',
     _HiddenImageKind.pending => 'התמונה ממתינה לסריקה ולאישור',
