@@ -7,7 +7,7 @@ import 'dart:ui_web' as ui_web;
 import 'package:flutter/material.dart';
 import 'message_hover.dart';
 import 'media_playback_progress.dart';
-import 'playback_time_dialog.dart';
+import 'media_pointer_barrier.dart';
 
 class NativeWebVideoPlayer extends StatefulWidget {
   final String url;
@@ -43,6 +43,12 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer>
   bool _allowPlay = false;
   bool _resumeAfterRestore = false;
   bool _saveFailed = false;
+  bool _routeIsCurrent = true;
+
+  void _updatePointerEvents() {
+    _container.style.pointerEvents =
+        _routeIsCurrent && mediaPointerBarriers.value == 0 ? 'auto' : 'none';
+  }
 
   bool _current(int generation) => mounted && generation == _generation;
 
@@ -143,20 +149,6 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer>
     }
   }
 
-  Future<void> _jumpToTime() async {
-    if (!_video.duration.isFinite || _video.duration <= 0) return;
-    final generation = _generation;
-    final position = await showPlaybackTimeDialog(context,
-        position: Duration(milliseconds: (_video.currentTime * 1000).round()),
-        duration: Duration(milliseconds: (_video.duration * 1000).round()));
-    if (position == null || !_current(generation)) return;
-    await _setPosition(position.inMilliseconds, generation);
-    if (!_current(generation)) return;
-    _positionMs = (_video.currentTime * 1000).round();
-    _dirty = true;
-    await _savePosition();
-  }
-
   void _showDetails(bool visible) {
     _video.controls = visible;
     _optionsButton?.style.visibility = visible ? 'visible' : 'hidden';
@@ -187,6 +179,8 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer>
       ..style.borderRadius = '10px'
       ..style.overflow = 'hidden'
       ..append(_video);
+    mediaPointerBarriers.addListener(_updatePointerEvents);
+    _updatePointerEvents();
     _detailSubscriptions.add(_video.onLoadedMetadata.listen((_) => _restore()));
     _detailSubscriptions.add(_video.onPlay.listen((_) {
       if (_allowPlay) { _allowPlay = false; return; }
@@ -258,6 +252,10 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // DOM media does not participate in Flutter's hit testing. A menu/dialog
+    // above this route must receive clicks instead of the underlying video.
+    _routeIsCurrent = ModalRoute.isCurrentOf(context) != false;
+    _updatePointerEvents();
     _showDetails(MessageHover.detailsVisible(context));
   }
 
@@ -290,6 +288,7 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer>
     _savePosition();
     ++_generation;
     WidgetsBinding.instance.removeObserver(this);
+    mediaPointerBarriers.removeListener(_updatePointerEvents);
     _saveTimer?.cancel();
     _contextMenuSubscription?.cancel();
     _optionsSubscription?.cancel();
@@ -306,13 +305,11 @@ class _NativeWebVideoPlayerState extends State<NativeWebVideoPlayer>
   @override
   Widget build(BuildContext context) => SizedBox(
         width: 280,
-        height: _saveFailed ? 276 : 254,
+        height: _saveFailed ? 244 : 222,
         child: Column(children: [Expanded(child: ClipRRect(
           borderRadius: BorderRadius.circular(10),
           child: HtmlElementView(viewType: _viewType),
         )),
-          TextButton(onPressed: _ready && !_starting ? _jumpToTime : null,
-              child: const Text('מעבר לזמן')),
           if (_saveFailed) const Text('שמירת ההתקדמות אינה זמינה כרגע',
               style: TextStyle(fontSize: 10)),
         ]),

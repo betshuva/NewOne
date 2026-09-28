@@ -26,7 +26,7 @@ function servingFixture() {
   } };
   vm.runInNewContext(source.slice(start, end), {
     app: { use(mount, callback) { if (typeof mount === 'string') mounts.set(mount, callback); } },
-    express: { static() { return () => {}; } },
+    publicStatic: require('../server/public-static').publicStatic,
     require, __dirname: path.dirname(require.resolve('../server/index.js')),
     path, UPLOAD_ROOT: '/isolated-uploads', UPLOAD_PUBLIC_BASE: '/betshuva-app/uploads',
     getPool: async () => db,

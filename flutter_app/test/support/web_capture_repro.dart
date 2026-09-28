@@ -11,6 +11,7 @@ import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 
 import 'package:betshuva/native_video_player_web.dart';
+import 'package:betshuva/chat_attachment_menu.dart';
 import 'package:betshuva/web_capture_picker_web.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -103,6 +104,16 @@ class _CaptureRepro extends StatefulWidget {
 
 class _CaptureReproState extends State<_CaptureRepro> {
   String _result = 'No capture';
+  final _attachmentKey = GlobalKey();
+
+  Future<void> _attachments() async {
+    final action = await showChatAttachmentMenu(context: context,
+        anchorKey: _attachmentKey, imagesAllowed: true, videoAllowed: true,
+        textAllowed: true, blockedLabel: 'blocked');
+    if (!mounted) return;
+    if (action == ChatAttachmentAction.video) await _capture(true);
+    if (action == ChatAttachmentAction.photo) await _capture(false);
+  }
 
   Future<void> _capture(bool video) async {
     final file = video
@@ -126,6 +137,9 @@ class _CaptureReproState extends State<_CaptureRepro> {
                 for (var i = 0; i < widget.views; i++)
                   NativeWebVideoPlayer(url: widget.backgroundUrl!),
               ])),
+        Align(alignment: Alignment.centerRight, child: IconButton(
+            key: _attachmentKey, tooltip: 'Attachments',
+            onPressed: _attachments, icon: const Icon(Icons.attach_file))),
         FilledButton(
             onPressed: () => _capture(true), child: const Text('Open video')),
         const SizedBox(height: 16),

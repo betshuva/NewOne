@@ -98,17 +98,18 @@ function uploadChunks(port, userId, toUserId, { captureKind } = {}) {
   });
 }
 
-test('unwrapped multipart callbacks reproduce the missing business events despite the HTTP event', async t => {
+test('upgraded multipart parser preserves audit context even without the defensive wrapper', async t => {
   const { db, port } = await multipartServer(t, false);
   const result = await uploadChunks(port, randomUUID(), randomUUID());
   assert.equal(result.status, 200);
-  assert.deepEqual(result.body.beforeAwait, [null, null]);
-  assert.deepEqual(result.body.afterAwait, [null, null]);
+  const expected = [result.operationId, result.body.requestContext.parentEventId];
+  assert.deepEqual(result.body.beforeAwait, expected);
+  assert.deepEqual(result.body.afterAwait, expected);
   assert.ok(result.body.requestContext.operationId);
   await flush();
   assert.equal(db.writes.filter(write => write.sql.startsWith('WITH operation')).length, 1);
   assert.deepEqual(db.writes.filter(write => !write.sql.startsWith('WITH operation'))
-    .map(write => write.values[2]), ['http_response']);
+    .map(write => write.values[2]), ['upload_received', 'http_response']);
 });
 
 test('restored multipart requests retain distinct server roots and child IDs after asynchronous parsing', async t => {

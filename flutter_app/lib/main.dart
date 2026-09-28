@@ -1,3 +1,4 @@
+import 'chat_upload_history.dart';
 import 'package:permission_handler/permission_handler.dart' as permissions;
 import 'device_contact_cache.dart';
 import 'unified_search.dart';
@@ -1903,7 +1904,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.37';
+const kVersion = '1.3.38';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2111,6 +2112,9 @@ Future<_FileUploadResult> _uploadFileRequest({
       final decoded = jsonDecode(body);
       if (decoded is Map<String, dynamic>) data = decoded;
     } catch (_) {}
+    if (fields['clientUploadId'] != null) {
+      data = {...data, 'clientUploadId': fields['clientUploadId']};
+    }
 
     if (_isScanStopped(data)) {
       return _FileUploadResult(_FileUploadOutcome.failed,
@@ -23159,24 +23163,10 @@ class _ChatScreenState extends State<ChatScreen> {
               .where((m) => m['status'] == 'uploading' ||
                   (m['id'] as String? ?? '').startsWith('temp_'))
               .toList();
-          _messages.clear();
-          _messages.addAll(normalized);
-          for (final p in pending) {
-            // Only the upload completion handler can replace an active upload.
-            // History may change before it has a server ID or a file URL.
-            if (p['status'] == 'uploading') {
-              _messages.add(p);
-              continue;
-            }
-            final alreadySaved = p['outboxId'] != null
-                ? normalized.any((m) => m['clientMessageId'] == p['outboxId'])
-                : p['fileUrl'] != null
-                ? _messages.any((message) => message['fileUrl'] == p['fileUrl'])
-                : _messages.any((message) => message['text'] == p['text']);
-            if (!alreadySaved) {
-              _messages.add(p);
-            }
-          }
+          _messages
+            ..clear()
+            ..addAll(mergeChatUploadHistory(normalized, pending,
+                matchLegacyText: true));
           _loading = false;
         });
         if (!initialHistory) _scrollToBottom();
@@ -23259,6 +23249,7 @@ class _ChatScreenState extends State<ChatScreen> {
       'fileType': sticker != null ? 'sticker' : (isFile ? msgType : null),
       if (sticker != null) 'stickerId': sticker.id,
       'fileDeleted': map['file_deleted'] == true,
+      'clientUploadId': map['client_upload_id'],
       'filterHidden': map['filter_hidden'] == true,
       'hiddenReason': map['hidden_reason'],
       'moderationStatus': map['moderation_status'],
@@ -25001,6 +24992,7 @@ class _ChatScreenState extends State<ChatScreen> {
       for (var index = 0; index < files.length; index++) {
         _messages.add({
           'id': uploadMessageIds[index],
+          'clientUploadId': uploadMessageIds[index],
           'text': files[index].name,
           'from': widget.me?['id'],
           'time': _nowTime(),
@@ -25022,6 +25014,7 @@ class _ChatScreenState extends State<ChatScreen> {
         token: widget.token,
         fields: {
           'toUserId': widget.recipient['id'].toString(),
+          'clientUploadId': uploadMessageIds[files.indexOf(file)],
           'scanReport': 'true',
         },
       ),
@@ -25158,6 +25151,7 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         _messages.add({
           'id': uploadMessageId,
+          'clientUploadId': uploadMessageId,
           'text': fileName,
           'from': widget.me?['id'],
           'time': _nowTime(),
@@ -25202,6 +25196,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'toUserId': widget.recipient['id'].toString(),
         if (!isLibrarySticker) 'scanReport': 'true',
         ...extraFields,
+        'clientUploadId': uploadMessageId,
       },
     );
     if (navigator != null && navigator.mounted && navigator.canPop()) {
@@ -25261,6 +25256,7 @@ class _ChatScreenState extends State<ChatScreen> {
           } else {
             _messages.add({
               'id': _newUploadMessageId('temp_'),
+              'clientUploadId': data['clientUploadId'],
               'text': fileName,
               'from': widget.me?['id'],
               'time': _nowTime(),
@@ -25297,6 +25293,7 @@ class _ChatScreenState extends State<ChatScreen> {
           } else {
             _messages.add({
               'id': _newUploadMessageId('temp_'),
+              'clientUploadId': data['clientUploadId'],
               'text': fileName,
               'from': widget.me?['id'],
               'time': _nowTime(),
@@ -26019,6 +26016,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                 )
                               else if (_isScanStopped(msg))
                                 _ScanStoppedCard(message: msg)
+                              else if (isPendingOwnUpload(msg))
+                                _pendingOwnUploadCard(msg)
                               else if (msg['filterHidden'] == true)
                                 FilterHiddenImage(
                                   key: ValueKey('hidden-${msg['id']}'),
@@ -27127,6 +27126,7 @@ class _OpenIssuesNotification extends Notification {
 
 class VoiceMessagePlayer extends StatefulWidget {
   final String url;
+  final String? fileName;
   final bool isMe;
   final String? senderAvatarUrl;
   final String senderName;
@@ -27135,6 +27135,7 @@ class VoiceMessagePlayer extends StatefulWidget {
   const VoiceMessagePlayer({
     super.key,
     required this.url,
+    this.fileName,
     required this.isMe,
     this.senderAvatarUrl,
     required this.senderName,
@@ -27150,7 +27151,6 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
     with WidgetsBindingObserver {
   late AudioPlayer _player;
   MediaPlaybackProgress? _progress;
-  http.Client? _download;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Timer? _saveTimer;
   int _generation = 0;
@@ -27188,8 +27188,6 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
 
   void _retireSource() {
     ++_generation;
-    _download?.close();
-    _download = null;
     for (final subscription in _subscriptions) {
       subscription.cancel();
     }
@@ -27214,23 +27212,28 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
     _busy = false;
     _seeking = false;
     _dragMs = null;
+    void onMediaError(Object error, StackTrace stack) {
+      if (_current(generation)) {
+        setState(() { _loading = false; _loadFailed = true; _playing = false; });
+      }
+    }
     _subscriptions.add(player.onPositionChanged.listen((value) {
       if (!_current(generation) || _loading || _seeking || !_playing) return;
       setState(() { _position = _bounded(value); _dirty = true; });
-    }));
+    }, onError: onMediaError));
     _subscriptions.add(player.onDurationChanged.listen((value) {
       if (_current(generation) && value > Duration.zero) {
         setState(() => _duration = value);
       }
-    }));
+    }, onError: onMediaError));
     _subscriptions.add(player.onPlayerStateChanged.listen((value) {
       if (_current(generation)) setState(() => _playing = value == PlayerState.playing);
-    }));
+    }, onError: onMediaError));
     _subscriptions.add(player.onPlayerComplete.listen((_) {
       if (!_current(generation)) return;
       setState(() { _playing = false; _position = Duration.zero; _dirty = true; });
       _savePosition();
-    }));
+    }, onError: onMediaError));
     _preparing = _prepareSource(player, generation, widget.url, _progress);
   }
 
@@ -27243,33 +27246,34 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
   Future<bool> _prepareSource(AudioPlayer player, int generation, String url,
       MediaPlaybackProgress? progress) async {
     try {
-      if (kIsWeb) {
-        final client = _download = http.Client();
-        final response = await client.get(Uri.parse(_absoluteMediaUrl(url)));
-        client.close();
-        if (!_current(generation)) return false;
-        _download = null;
-        if (response.statusCode != 200 || response.bodyBytes.length < 256) {
-          throw StateError('audio download failed');
-        }
-        final lowerUrl = Uri.parse(url).path.toLowerCase();
-        final mimeType = lowerUrl.endsWith('.webm') ? 'audio/webm'
-            : lowerUrl.endsWith('.wav') ? 'audio/wav'
-            : lowerUrl.endsWith('.mp3') ? 'audio/mpeg' : 'audio/mp4';
-        await player.setSource(BytesSource(response.bodyBytes, mimeType: mimeType));
-      } else {
-        await player.setSourceUrl(_absoluteMediaUrl(url));
-      }
+      // Let the browser buffer and seek by HTTP range instead of downloading
+      // the entire recording and copying it into an in-memory data URI.
+      final savedPosition = progress?.load();
+      final path = Uri.parse(url).path.toLowerCase();
+      final mimeType = switch (path.split('.').last) {
+        'mp3' => 'audio/mpeg',
+        'm4a' || 'mp4' => 'audio/mp4',
+        'aac' => 'audio/aac',
+        'wav' => 'audio/wav',
+        'ogg' || 'opus' => 'audio/ogg',
+        'webm' => 'audio/webm',
+        'flac' => 'audio/flac',
+        _ => null,
+      };
+      await player.setSourceUrl(_absoluteMediaUrl(url), mimeType: mimeType);
       if (!_current(generation)) return false;
       await player.setReleaseMode(ReleaseMode.stop);
       var duration = await player.getDuration();
+      if ((duration == null || duration <= Duration.zero) && _duration > Duration.zero) {
+        duration = _duration;
+      }
       if (duration == null || duration <= Duration.zero) {
         duration = await player.onDurationChanged.firstWhere((v) => v > Duration.zero)
             .timeout(const Duration(seconds: 8), onTimeout: () => Duration.zero);
       }
       if (!_current(generation)) return false;
       if (duration > Duration.zero) _duration = duration;
-      final saved = await progress?.load();
+      final saved = await savedPosition;
       if (!_current(generation)) return false;
       _saveFailed = progress != null && saved == null;
       if (saved != null && saved > 0 && saved < _duration.inMilliseconds) {
@@ -27335,7 +27339,7 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
         await player.resume();
       }
     } catch (_) {
-      if (_current(generation)) {
+      if (mounted && _current(generation)) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('לא ניתן לנגן את ההודעה הקולית')));
       }
@@ -27355,8 +27359,10 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
       setState(() { _position = position; _dirty = true; });
       await _savePosition();
     } catch (_) {
-      if (_current(generation)) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('לא ניתן לעבור לזמן המבוקש')));
+      if (mounted && _current(generation)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('לא ניתן לעבור לזמן המבוקש')));
+      }
     } finally {
       if (_current(generation)) setState(() => _seeking = false);
     }
@@ -27388,7 +27394,20 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
     final totalMs = _duration.inMilliseconds;
     final canSeek = !_loading && !_loadFailed && !_seeking && !_busy && totalMs > 0;
     final shownPosition = Duration(milliseconds: (_dragMs ?? _position.inMilliseconds.toDouble()).round());
-    return SizedBox(width: 285, child: Row(children: [
+    final explicitName = widget.fileName?.trim();
+    final segments = Uri.tryParse(widget.url)?.pathSegments ?? const <String>[];
+    final fileName = explicitName?.isNotEmpty == true ? explicitName!
+        : segments.isNotEmpty && segments.last.isNotEmpty ? segments.last : 'הקלטה';
+    return SizedBox(width: 285, child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
+          child: Tooltip(message: fileName, child: Text(fileName,
+            maxLines: 2, overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontSize: 12, color: kSubtext)))),
+        Row(children: [
       IconButton(
         onPressed: _loading || _busy ? null : _loadFailed ? () {
           _retireSource(); setState(_createSource);
@@ -27416,6 +27435,7 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
         if (_saveFailed) const Text('שמירת ההתקדמות אינה זמינה כרגע',
             style: TextStyle(fontSize: 10, color: kSubtext)),
       ])),
+    ]),
     ]));
   }
 }
@@ -27861,6 +27881,14 @@ class _DocumentModerationCard extends StatelessWidget {
         ),
       );
 }
+
+Widget _pendingOwnUploadCard(Map<String, dynamic> message) =>
+    _UploadProcessingCard(
+      fileName: message['fileName']?.toString() ?? '',
+      fileType: message['fileType']?.toString() ?? 'image',
+      startedAt: DateTime.tryParse(message['createdAt']?.toString() ?? '') ?? DateTime.now(),
+      scanning: true,
+    );
 
 class _UploadProcessingCard extends StatefulWidget {
   final String fileName;
@@ -29459,6 +29487,7 @@ class _MessageBubble extends StatelessWidget {
                     VoiceMessagePlayer(
                       token: token,
                       url: fileUrl,
+                      fileName: message['fileName']?.toString(),
                       isMe: isMe,
                       senderAvatarUrl: senderAvatarUrl,
                       senderName: senderName,
@@ -31613,6 +31642,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
       'isFile': isFile,
       'fileDeleted': map['file_deleted'] == true,
+      'clientUploadId': map['client_upload_id'],
       'filterHidden': map['filter_hidden'] == true,
       'hiddenReason': map['hidden_reason'],
       'moderationStatus': map['moderation_status'],
@@ -32406,17 +32436,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   message['status'] == 'uploading' ||
                   message['id']?.toString().startsWith('temp_') == true)
               .toList();
-          _messages.clear();
-          _messages.addAll(normalized);
-          for (final message in pending) {
-            // An in-flight upload belongs to its completion handler, even
-            // when the server history refreshes during scanning.
-            if (message['status'] == 'uploading' || !_messages.any((saved) =>
-                saved['fileUrl'] != null &&
-                saved['fileUrl'] == message['fileUrl'])) {
-              _messages.add(message);
-            }
-          }
+          _messages
+            ..clear()
+            ..addAll(mergeChatUploadHistory(normalized, pending));
           _loading = false;
         });
         http.put(
@@ -32492,6 +32514,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         'deliverySummary': map['delivery_summary'],
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
       'fileDeleted': map['file_deleted'] == true,
+      'clientUploadId': map['client_upload_id'],
       'filterHidden': map['filter_hidden'] == true,
       'hiddenReason': map['hidden_reason'],
       'moderationStatus': map['moderation_status'],
@@ -33359,6 +33382,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       for (var index = 0; index < files.length; index++) {
         _messages.add({
           'id': uploadMessageIds[index],
+          'clientUploadId': uploadMessageIds[index],
           'text': files[index].name,
           'senderName': widget.me?['name'] as String? ?? '',
           'time': _nowTime(),
@@ -33379,7 +33403,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         file: file,
         fileName: file.name,
         token: widget.token,
-        fields: {'groupId': _groupId},
+        fields: {'groupId': _groupId,
+          'clientUploadId': uploadMessageIds[files.indexOf(file)]},
       ),
       completed,
       onResult: (index, file, result) async {
@@ -33485,6 +33510,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       setState(() {
         _messages.add({
           'id': uploadMessageId,
+          'clientUploadId': uploadMessageId,
           'text': fileName,
           'senderName': widget.me?['name'] as String? ?? '',
           'time': _nowTime(),
@@ -33526,7 +33552,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       file: file,
       fileName: fileName,
       token: widget.token,
-      fields: {'groupId': _groupId, ...extraFields},
+      fields: {'groupId': _groupId, ...extraFields,
+        'clientUploadId': uploadMessageId},
     );
     if (navigator != null && navigator.mounted && navigator.canPop()) {
       navigator.pop();
@@ -33581,6 +33608,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           } else {
             _messages.add({
               'id': _newUploadMessageId('temp_group_file_'),
+              'clientUploadId': data['clientUploadId'],
               'text': fileName,
               'senderName': widget.me?['name'] as String? ?? '',
               'time': _nowTime(),
@@ -33620,6 +33648,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           } else {
             _messages.add({
               'id': _newUploadMessageId('temp_group_file_'),
+              'clientUploadId': data['clientUploadId'],
               'text': fileName,
               'senderName': widget.me?['name'] as String? ?? '',
               'time': _nowTime(),
@@ -35173,6 +35202,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             if (_isScanStopped(msg)) {
                               return withSender(_ScanStoppedCard(message: msg));
                             }
+                            if (isPendingOwnUpload(msg)) {
+                              return withSender(Align(
+                                alignment: Alignment.centerRight,
+                                child: _pendingOwnUploadCard(msg),
+                              ));
+                            }
                             if (msg['filterHidden'] == true) {
                               return withSender(Align(alignment: Alignment.centerRight,
                                 child: FilterHiddenImage(
@@ -35586,6 +35621,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                               children: [
                                                                 VoiceMessagePlayer(
                                                                     token: widget.token,
+                                                                    fileName: msg['fileName']?.toString(),
                                                                     url: msg[
                                                                             'fileUrl']
                                                                         as String,
@@ -39472,7 +39508,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                         ? NativeWebVideoPlayer(url: _absoluteMediaUrl(url), progressApi: kApi, token: widget.token)
                         : _ChatVideoPlayer(url: url),
                   )
-                : VoiceMessagePlayer(url: url, token: widget.token, isMe: true, senderName: name),
+                : VoiceMessagePlayer(url: url, fileName: name, token: widget.token, isMe: true, senderName: name),
           ),
           actions: [
             TextButton(

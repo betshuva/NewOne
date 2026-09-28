@@ -1,5 +1,6 @@
 // Legacy MediaRecorder bridge required by the current Flutter web integration.
 // ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
+import 'media_pointer_barrier.dart';
 import 'dart:async';
 import 'dart:html' as html;
 import 'dart:typed_data';
@@ -45,7 +46,7 @@ Future<XFile?> captureWebPhoto(BuildContext context,
         context: context,
         barrierDismissible: false,
         builder: (_) =>
-            _WebCameraDialog(videoMode: false, creatorId: creatorId));
+            MediaPointerBarrier(child: _WebCameraDialog(videoMode: false, creatorId: creatorId)));
 
 Future<XFile?> captureWebVideo(BuildContext context,
         {required String creatorId}) =>
@@ -53,7 +54,7 @@ Future<XFile?> captureWebVideo(BuildContext context,
         context: context,
         barrierDismissible: false,
         builder: (_) =>
-            _WebCameraDialog(videoMode: true, creatorId: creatorId));
+            MediaPointerBarrier(child: _WebCameraDialog(videoMode: true, creatorId: creatorId)));
 
 class _WebCameraDialog extends StatefulWidget {
   final bool videoMode;

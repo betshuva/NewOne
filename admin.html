@@ -813,7 +813,7 @@ async function loadTable(name, offset=0) {
     const res  = await fetch(`${API}/api/admin/db/${name}?limit=${PAGE}&offset=${offset}`,
       {headers:{Authorization:`Bearer ${token}`}});
     const data = await res.json();
-    if (!res.ok) { main.innerHTML=`<div class="loader" style="color:var(--red)">${data.error}</div>`; return; }
+    if (!res.ok) { main.innerHTML=`<div class="loader" style="color:var(--red)">${escHtml(data.error)}</div>`; return; }
     currentRows  = data.rows;
     currentTotal = data.total;
 
@@ -842,10 +842,10 @@ async function loadTable(name, offset=0) {
             ${data.rows.map(row=>`<tr>
               ${cols.map(c=>`<td title="${escHtml(String(row[c]??''))}">${renderCell(c,row[c])}</td>`).join('')}
               ${canEdit?`<td class="td-actions">
-                <button class="btn-edit" onclick="openEdit('${name}','${escHtml(String(row[pk]??''))}')">✏️</button>
+                <button class="btn-edit" onclick="openEdit('${name}',${jsAttr(String(row[pk]??''))})">✏️</button>
                 ${name==='users'
-                  ?`<button class="btn-del" title="מחק משתמש" onclick="openUserDeleteModal('${escHtml(String(row[pk]??''))}','${escHtml(String(row.name??''))}','${escHtml(String(row.email??''))}')">🗑 מחק</button>`
-                  :`<button class="btn-del" onclick="deleteRow('${name}','${escHtml(String(row[pk]??''))}')">🗑️</button>`
+                  ?`<button class="btn-del" title="מחק משתמש" onclick="openUserDeleteModal(${jsAttr(String(row[pk]??''))},${jsAttr(String(row.name??''))},${jsAttr(String(row.email??''))})">🗑 מחק</button>`
+                  :`<button class="btn-del" onclick="deleteRow('${name}',${jsAttr(String(row[pk]??''))})">🗑️</button>`
                 }
               </td>`:''}
             </tr>`).join('')}
@@ -858,7 +858,7 @@ async function loadTable(name, offset=0) {
         <button class="pag-btn" onclick="loadTable('${name}',${offset+PAGE})" ${offset+PAGE>=data.total?'disabled':''}>הבא ▶</button>
       </div>`;
   } catch(e) {
-    main.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`;
+    main.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -876,10 +876,10 @@ async function searchTable(q, name) {
     data.rows.map(row=>`<tr>
       ${cols.map(c=>`<td title="${escHtml(String(row[c]??''))}">${renderCell(c,row[c])}</td>`).join('')}
       ${canEdit?`<td class="td-actions">
-        <button class="btn-edit" onclick="openEdit('${name}','${escHtml(String(row[pk]??''))}')">✏️</button>
+        <button class="btn-edit" onclick="openEdit('${name}',${jsAttr(String(row[pk]??''))})">✏️</button>
         ${name==='users'
-          ?`<button class="btn-del" title="מחק משתמש" onclick="openUserDeleteModal('${escHtml(String(row[pk]??''))}','${escHtml(String(row.name??''))}','${escHtml(String(row.email??''))}')">🗑 מחק</button>`
-          :`<button class="btn-del" onclick="deleteRow('${name}','${escHtml(String(row[pk]??''))}')">🗑️</button>`
+          ?`<button class="btn-del" title="מחק משתמש" onclick="openUserDeleteModal(${jsAttr(String(row[pk]??''))},${jsAttr(String(row.name??''))},${jsAttr(String(row.email??''))})">🗑 מחק</button>`
+          :`<button class="btn-del" onclick="deleteRow('${name}',${jsAttr(String(row[pk]??''))})">🗑️</button>`
         }
       </td>`:''}
     </tr>`).join('');
@@ -903,7 +903,16 @@ function fmtDate(iso) {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Serialize JavaScript arguments before escaping the containing HTML attribute.
+function jsAttr(value) { return escHtml(JSON.stringify(String(value ?? ''))); }
+function safeMediaUrl(value) {
+  try {
+    const url = new URL(String(value || ''), location.href);
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+  } catch (_) { return ''; }
 }
 
 // ── Edit ──────────────────────────────────────────────────────────
@@ -1159,7 +1168,7 @@ function renderVisionCard(r, idx) {
   if (blocked && r.fileUrl) {
     // חסומות עם תמונה שמורה — מציג תמונה + כותרת חסום
     thumbHtml = `<div style="position:relative">
-      <img class="vc-img" src="${escHtml(r.fileUrl)}" loading="lazy"
+      <img class="vc-img" src="${escHtml(safeMediaUrl(r.fileUrl))}" loading="lazy"
         onerror="this.outerHTML='<div class=\\'vc-nothumb\\'>⛔</div>'">
       <div style="position:absolute;top:6px;right:6px;background:rgba(248,81,73,.9);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px">⛔ נחסם</div>
     </div>`;
@@ -1172,7 +1181,7 @@ function renderVisionCard(r, idx) {
       ${triggerLabels?`<span style="font-size:10px;color:var(--text2)">${escHtml(triggerLabels)}</span>`:''}
     </div>`;
   } else if (isImg && r.fileUrl) {
-    thumbHtml = `<img class="vc-img" src="${escHtml(r.fileUrl)}" loading="lazy"
+    thumbHtml = `<img class="vc-img" src="${escHtml(safeMediaUrl(r.fileUrl))}" loading="lazy"
       onerror="this.outerHTML='<div class=\\'vc-nothumb\\'>🖼️</div>'">`;
   } else {
     thumbHtml = `<div class="vc-nothumb">${r.fileType==='document'?'📄':r.fileType==='audio'?'🎵':'📎'}</div>`;
@@ -1234,8 +1243,8 @@ function openVisionDetail(idx) {
   document.getElementById('vd-title').textContent = r.fileName || '—';
   document.getElementById('vd-body').innerHTML = `
     <div style="display:flex;gap:16px;flex-wrap:wrap">
-      ${isImg && r.fileUrl ? `<img src="${escHtml(r.fileUrl)}" style="max-width:220px;max-height:180px;border-radius:8px;object-fit:cover;cursor:pointer;border:1px solid var(--border)"
-        onclick="openLightbox('${escHtml(r.fileUrl)}','${escHtml(r.fileName||'')}')">` : ''}
+      ${isImg && r.fileUrl ? `<img src="${escHtml(safeMediaUrl(r.fileUrl))}" style="max-width:220px;max-height:180px;border-radius:8px;object-fit:cover;cursor:pointer;border:1px solid var(--border)"
+        onclick="openLightbox(${jsAttr(r.fileUrl)},${jsAttr(r.fileName||'')})">` : ''}
       <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:6px">
         <div><span style="color:var(--text2);font-size:12px">סטטוס:</span>
           <strong style="color:${blocked?'var(--red)':'var(--green)'};margin-right:6px">${blocked?'⛔ נחסם':'✅ אושר'}</strong>
@@ -1245,7 +1254,7 @@ function openVisionDetail(idx) {
         <div><span style="color:var(--text2);font-size:12px">גודל:</span> <span style="margin-right:6px">${r.fileSize?(r.fileSize/1024).toFixed(1)+' KB':'—'}</span></div>
         <div><span style="color:var(--text2);font-size:12px">סוג:</span> <span style="margin-right:6px">${r.fileType||'—'}</span></div>
         ${r.reason?`<div style="color:var(--red);font-size:12px;margin-top:4px">⚠️ ${escHtml(r.reason)}</div>`:''}
-        ${r.fileUrl?`<a href="${escHtml(r.fileUrl)}" target="_blank" style="color:var(--blue-light);font-size:12px">🔗 פתח קובץ</a>`:''}
+        ${r.fileUrl?`<a href="${escHtml(safeMediaUrl(r.fileUrl))}" target="_blank" style="color:var(--blue-light);font-size:12px">🔗 פתח קובץ</a>`:''}
       </div>
     </div>
     ${rescanResult ? `<div style="margin-top:14px;padding:10px 14px;border-radius:8px;background:rgba(210,153,34,.08);border:1px solid rgba(210,153,34,.3);color:var(--orange);font-size:12px">
@@ -1355,7 +1364,7 @@ async function loadVision(offset=0) {
       <button class="pag-btn" onclick="loadVision(${Math.max(0,offset-VISION_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
       <span>רשומות ${offset+1}–${offset+rows.length}</span>
       <button class="pag-btn" onclick="loadVision(${offset+VISION_PAGE})" ${rows.length<VISION_PAGE?'disabled':''}>הבא ▶</button>`;
-  } catch(e) { grid.innerHTML=`<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`; }
+  } catch(e) { grid.innerHTML=`<div class="loader" style="color:var(--red)">שגיאה: ${escHtml(e.message)}</div>`; }
 }
 
 async function loadGoogleVisionStatus() {
@@ -1888,8 +1897,8 @@ function renderActItem(a) {
   // Image thumb
   let thumbHtml = '';
   if (details.fileUrl && details.fileType === 'image') {
-    thumbHtml = `<br><img class="act-thumb" src="${escHtml(details.fileUrl)}"
-      loading="lazy" onclick="openLightbox('${escHtml(details.fileUrl)}','${escHtml(details.fileName||'')}')"
+    thumbHtml = `<br><img class="act-thumb" src="${escHtml(safeMediaUrl(details.fileUrl))}"
+      loading="lazy" onclick="openLightbox(${jsAttr(details.fileUrl)},${jsAttr(details.fileName||'')})"
       onerror="this.style.display='none'"/>`;
   }
 
@@ -1949,7 +1958,7 @@ async function loadActivity(offset = 0) {
       <span>רשומות ${offset+1}–${offset+rows.length}</span>
       <button class="pag-btn" onclick="loadActivity(${offset+ACT_PAGE})" ${rows.length<ACT_PAGE?'disabled':''}>הבא ▶</button>`;
   } catch(e) {
-    if (feed) feed.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`;
+    if (feed) feed.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -2009,7 +2018,7 @@ async function loadPermPanel() {
           </tr>`).join('')}
         </tbody>
       </table>`;
-  } catch(e) { document.getElementById('perm-table-wrap').innerHTML=`<div class="loader" style="color:var(--red)">${e.message}</div>`; }
+  } catch(e) { document.getElementById('perm-table-wrap').innerHTML=`<div class="loader" style="color:var(--red)">${escHtml(e.message)}</div>`; }
 }
 
 async function addPerm() {
@@ -2073,8 +2082,8 @@ function switchScanTab(type) {
 
 function thumbCell(fileUrl, fileName, fileType) {
   if (fileUrl && fileType === 'image') {
-    return `<div class="thumb-wrap" onclick="openLightbox('${escHtml(fileUrl)}','${escHtml(fileName||'')}')">
-              <img src="${escHtml(fileUrl)}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'thumb-none\\'>🖼️</span>'"/>
+    return `<div class="thumb-wrap" onclick="openLightbox(${jsAttr(fileUrl)},${jsAttr(fileName||'')})">
+              <img src="${escHtml(safeMediaUrl(fileUrl))}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=\\'thumb-none\\'>🖼️</span>'"/>
             </div>`;
   }
   if (fileType === 'document') return '<div class="thumb-wrap"><span class="thumb-none">📄</span></div>';
@@ -2099,7 +2108,7 @@ async function loadScanPanel(type, offset) {
     const res  = await fetch(`${API}/api/admin/scans?type=${type}&limit=${SCAN_PAGE}&offset=${offset}`,
       { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
-    if (!res.ok) { wrap.innerHTML = `<div class="loader" style="color:var(--red)">${data.error}</div>`; return; }
+    if (!res.ok) { wrap.innerHTML = `<div class="loader" style="color:var(--red)">${escHtml(data.error)}</div>`; return; }
 
     document.getElementById('scan-badge-' + type).textContent = data.total.toLocaleString();
     if (!data.rows.length) { wrap.innerHTML = '<div class="empty">אין רשומות</div>'; return; }
@@ -2196,7 +2205,7 @@ async function loadScanPanel(type, offset) {
       <span>${offset+1}–${Math.min(offset+SCAN_PAGE,total)} מתוך ${total.toLocaleString()}</span>
       <button class="pag-btn" onclick="loadScanPanel('${type}',${offset+SCAN_PAGE})" ${offset+SCAN_PAGE>=total?'disabled':''}>הבא ▶</button>`;
   } catch (e) {
-    wrap.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`;
+    wrap.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -2267,7 +2276,7 @@ async function loadFiles(offset=0) {
         <td title="${escHtml(r.original_name)}">${escHtml(r.original_name)}</td>
         <td>${formatBytes(r.file_size)}</td><td>${escHtml(r.mime_type||r.file_type||'—')}</td>
         <td>${r.context_type==='chat'?'שיחה':r.context_type==='group'?'קבוצה':'כללי'}</td>
-        <td><a href="${escHtml(r.public_url)}" target="_blank" rel="noopener" style="color:var(--blue-light)">פתח ↗</a></td>
+        <td><a href="${escHtml(safeMediaUrl(r.public_url))}" target="_blank" rel="noopener" style="color:var(--blue-light)">פתח ↗</a></td>
       </tr>`).join('')}</tbody></table>`;
     pag.innerHTML=`<button class="pag-btn" onclick="loadFiles(${Math.max(0,offset-FILES_PAGE)})" ${offset===0?'disabled':''}>◀ הקודם</button>
       <span>${offset+1}–${Math.min(offset+FILES_PAGE,data.total)} מתוך ${data.total.toLocaleString()}</span>
@@ -2368,7 +2377,7 @@ async function loadAdminListings() {
   try {
     const res  = await fetch(`${API}/api/listings?${params}`, { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
-    if (!Array.isArray(data)) { grid.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${data.error||'תגובה לא צפויה'}</div>`; return; }
+    if (!Array.isArray(data)) { grid.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${escHtml(data.error||'תגובה לא צפויה')}</div>`; return; }
 
     // Stats
     const stats = document.getElementById('lst-stats');
@@ -2397,22 +2406,22 @@ async function loadAdminListings() {
       card.innerHTML = `
         <div class="lst-card-img-wrap" style="position:relative;flex-shrink:0">
           ${item.image_url
-            ? `<img class="lst-card-img" src="${item.image_url}" alt="" style="display:block"/>`
+            ? `<img class="lst-card-img" src="${escHtml(safeMediaUrl(item.image_url))}" alt="" style="display:block"/>`
             : `<div class="lst-card-img" style="display:flex;align-items:center;justify-content:center;font-size:28px">🛍</div>`}
         </div>
         <div class="lst-card-body">
           <span class="lst-badge ${badgeCls}">${badgeTxt}</span>
-          ${item.category ? `<span style="font-size:11px;color:var(--text2);margin-right:6px">${item.category}</span>` : ''}
-          <div class="lst-title" title="${item.title}">${item.title}</div>
-          ${item.description ? `<div class="lst-meta" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.description}</div>` : ''}
+          ${item.category ? `<span style="font-size:11px;color:var(--text2);margin-right:6px">${escHtml(item.category)}</span>` : ''}
+          <div class="lst-title" title="${escHtml(item.title)}">${escHtml(item.title)}</div>
+          ${item.description ? `<div class="lst-meta" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${escHtml(item.description)}</div>` : ''}
           <div class="lst-meta" style="margin-top:6px">
-            👤 ${item.seller_name}
-            ${item.city ? ` &nbsp;📍 ${item.city}` : ''}
+            👤 ${escHtml(item.seller_name)}
+            ${item.city ? ` &nbsp;📍 ${escHtml(item.city)}` : ''}
           </div>
           <div class="lst-meta">📅 ${date}</div>
           <div style="display:flex;gap:10px;margin-top:8px">
-            <span style="background:#eff6ff;border-radius:8px;padding:3px 10px;font-size:12px;color:#1d4ed8">👁 ${item.view_count||0} צפיות</span>
-            <span style="background:#f0fdf4;border-radius:8px;padding:3px 10px;font-size:12px;color:#15803d">💬 ${item.contact_count||0} פניות</span>
+            <span style="background:#eff6ff;border-radius:8px;padding:3px 10px;font-size:12px;color:#1d4ed8">👁 ${escHtml(item.view_count||0)} צפיות</span>
+            <span style="background:#f0fdf4;border-radius:8px;padding:3px 10px;font-size:12px;color:#15803d">💬 ${escHtml(item.contact_count||0)} פניות</span>
           </div>
         </div>
         <div class="lst-actions">
@@ -2422,7 +2431,7 @@ async function loadAdminListings() {
       card.onclick = () => openAdminListingDetail(item.id);
       grid.appendChild(card);
     });
-  } catch(e) { grid.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${e.message}</div>`; }
+  } catch(e) { grid.innerHTML = `<div class="loader" style="color:var(--red)">שגיאה: ${escHtml(e.message)}</div>`; }
 }
 
 async function markListingDone(id) {
@@ -2465,7 +2474,7 @@ async function openAdminListingDetail(id) {
       <button onclick="this.closest('.lst-overlay').remove()" style="position:absolute;top:12px;left:12px;background:none;border:none;font-size:22px;cursor:pointer;color:var(--text2)">✕</button>
       ${images.length ? `
         <div style="position:relative;border-radius:12px;overflow:hidden;margin-bottom:16px">
-          <img src="${images[ci]}" style="width:100%;max-height:320px;object-fit:cover;display:block"/>
+          <img src="${escHtml(safeMediaUrl(images[ci]))}" style="width:100%;max-height:320px;object-fit:cover;display:block"/>
           ${images.length > 1 ? `
             <button onclick="ciPrev()" style="position:absolute;top:50%;right:8px;transform:translateY(-50%);background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer">›</button>
             <button onclick="ciNext()" style="position:absolute;top:50%;left:8px;transform:translateY(-50%);background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer">‹</button>
@@ -2476,23 +2485,23 @@ async function openAdminListingDetail(id) {
           ` : ''}
           ${images.length > 1 ? `
             <div style="display:flex;gap:6px;padding:8px;flex-wrap:wrap;background:var(--bg2)">
-              ${images.map((url,i)=>`<img src="${url}" onclick="ciGo(${i})" style="width:52px;height:52px;object-fit:cover;border-radius:6px;cursor:pointer;opacity:${i===ci?1:.5};border:2px solid ${i===ci?'var(--blue)':'transparent'};transition:all .2s"/>`).join('')}
+              ${images.map((url,i)=>`<img src="${escHtml(safeMediaUrl(url))}" onclick="ciGo(${i})" style="width:52px;height:52px;object-fit:cover;border-radius:6px;cursor:pointer;opacity:${i===ci?1:.5};border:2px solid ${i===ci?'var(--blue)':'transparent'};transition:all .2s"/>`).join('')}
             </div>` : ''}
         </div>` : ''}
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
         <span style="background:${isFree?'#d1fae5':'#ede9fe'};color:${isFree?'#065f46':'#5b21b6'};border-radius:8px;padding:4px 12px;font-weight:700;font-size:14px">${isFree?'חינם':'₪'+Math.round(item.price||0)}</span>
-        ${item.category?`<span style="color:var(--text2);font-size:13px">${item.category}</span>`:''}
+        ${item.category?`<span style="color:var(--text2);font-size:13px">${escHtml(item.category)}</span>`:''}
         ${isSold?`<span style="background:#f3f4f6;color:#6b7280;border-radius:8px;padding:4px 12px;font-size:13px">נסגר</span>`:''}
       </div>
-      <h2 style="margin:0 0 8px;font-size:18px">${item.title}</h2>
-      ${item.description?`<p style="color:var(--text2);line-height:1.7;margin-bottom:12px">${item.description}</p>`:''}
+      <h2 style="margin:0 0 8px;font-size:18px">${escHtml(item.title)}</h2>
+      ${item.description?`<p style="color:var(--text2);line-height:1.7;margin-bottom:12px">${escHtml(item.description)}</p>`:''}
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-        <span style="background:#eff6ff;border-radius:8px;padding:4px 12px;font-size:13px;color:#1d4ed8">👁 ${item.view_count||0} צפיות</span>
-        <span style="background:#f0fdf4;border-radius:8px;padding:4px 12px;font-size:13px;color:#15803d">💬 ${item.contact_count||0} פניות</span>
-        ${item.city?`<span style="color:var(--text2);font-size:13px">📍 ${item.city}</span>`:''}
+        <span style="background:#eff6ff;border-radius:8px;padding:4px 12px;font-size:13px;color:#1d4ed8">👁 ${escHtml(item.view_count||0)} צפיות</span>
+        <span style="background:#f0fdf4;border-radius:8px;padding:4px 12px;font-size:13px;color:#15803d">💬 ${escHtml(item.contact_count||0)} פניות</span>
+        ${item.city?`<span style="color:var(--text2);font-size:13px">📍 ${escHtml(item.city)}</span>`:''}
       </div>
       <div style="background:var(--bg1);border-radius:10px;padding:12px;margin-bottom:16px;font-size:14px">
-        👤 <strong>${item.seller_name}</strong>
+        👤 <strong>${escHtml(item.seller_name)}</strong>
         &nbsp;·&nbsp; 📅 ${new Date(item.created_at).toLocaleDateString('he-IL')}
       </div>
       <div style="display:flex;gap:8px">

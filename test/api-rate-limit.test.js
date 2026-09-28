@@ -276,7 +276,7 @@ function registrationHandler(getPool) {
   let handler;
   vm.runInNewContext(section("app.get('/api/registration-status',", '// Short-lived TURN REST credentials.'), {
     app: { get(path, callback) { assert.equal(path, '/api/registration-status'); handler = callback; } },
-    jwt, JWT_SECRET: secret, getPool,
+    jwt, ...require('../server/session-security'), JWT_SECRET: secret, getPool,
   });
   return handler;
 }

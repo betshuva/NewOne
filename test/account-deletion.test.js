@@ -57,7 +57,8 @@ test('data reset preserves login identity and a usable saved session', async () 
     transferOwnedGroups: async () => {},
     deleteStoredFile: async () => true,
     accountModerationError: () => null,
-    jwt: { verify: () => ({ id: 'existing-user' }) }, JWT_SECRET: 'test', console,
+    verifySession: () => ({ id: 'existing-user' }),
+    sessionCurrent: require('../server/session-security').sessionCurrent, JWT_SECRET: 'test', console,
   });
   vm.runInContext(routeSource('async function auth(req, res, next)',
     '// Allows a saved session'), context);

@@ -85,7 +85,8 @@ function harness({ classification = MEN, result, scanDelay = false,
       const names = ['user_id', 'original_name', 'storage_path', 'public_url', 'mime_type',
         'file_type', 'file_size', 'context_type', 'context_id', 'content_sha256', 'visual_fingerprint'];
       const file = { id: values[11], moderation_status: 'pending' };
-      assert.deepEqual([...values.slice(12)], [null, null]);
+      assert.deepEqual([...values.slice(12, 14)], [null, null]);
+      file.client_upload_id = values[14];
       assert.ok(activeUploadFileIds.has(file.id), 'reserve ownership before inserting the file');
       names.forEach((name, index) => { file[name] = values[index]; });
       if (file.visual_fingerprint) file.visual_fingerprint = JSON.parse(file.visual_fingerprint);
@@ -219,6 +220,18 @@ test('uncached videos enter the durable queue without scanning inside the upload
   assert.equal(api.state.files[0].moderation_status, 'pending');
   assert.equal(api.state.files[0].moderation_details.pending, true);
   assert.equal(api.activeUploadFileIds.size, 0);
+});
+
+test('pending uploads retain a bounded client identity for owner history reconciliation', async () => {
+  for (const key of ['uploading_group_123_1', 'uploading_group_123_2', '', '<invalid>', 'x'.repeat(161)]) {
+    const api = harness();
+    const response = await api.upload({ name: 'same.mp4', mime: 'video/mp4',
+      bytes: '0000ftypisom', body: { groupId: 'group', clientUploadId: key } });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.status, 'pending');
+    assert.equal(api.state.files[0].client_upload_id,
+      key.startsWith('uploading_') ? key : null);
+  }
 });
 
 test('WebM audio selected as video is stored and returned as audio without a video scan', async () => {

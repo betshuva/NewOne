@@ -6,6 +6,8 @@ import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:ui_web' as ui_web;
 import 'package:betshuva/native_video_player_web.dart';
+import 'package:betshuva/chat_attachment_menu.dart';
+import 'package:betshuva/media_pointer_barrier.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -46,6 +48,43 @@ html.VideoElement _videoIn(WidgetTester tester) {
 }
 
 void main() {
+  testWidgets('root attachment menu shields video inside a nested navigator until dismissed', (tester) async {
+    final registry = _ViewRegistry();
+    ui_web.debugOverridePlatformViewRegistry(registry);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform_views, registry.handle);
+    addTearDown(() {
+      ui_web.debugOverridePlatformViewRegistry(null);
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform_views, null);
+    });
+    final anchor = GlobalKey();
+    ChatAttachmentAction? selected;
+    await tester.pumpWidget(MaterialApp(home: Navigator(
+      pages: [MaterialPage(child: Builder(builder: (context) => Scaffold(body: Column(children: [
+        const NativeWebVideoPlayer(url: ''),
+        IconButton(key: anchor, icon: const Icon(Icons.attach_file), onPressed: () async {
+          selected = await showChatAttachmentMenu(context: context,
+              anchorKey: anchor, imagesAllowed: true, videoAllowed: true,
+              textAllowed: true, blockedLabel: 'blocked');
+        }),
+      ]))))], onDidRemovePage: (_) {},
+    )));
+    await tester.pumpAndSettle();
+    final container = _videoIn(tester).parent!;
+    expect(container.style.pointerEvents, 'auto');
+    await tester.tap(find.byIcon(Icons.attach_file)); await tester.pumpAndSettle();
+    expect(container.style.pointerEvents, 'none');
+    await tester.tap(find.text('צילום והקלטה')); await tester.pumpAndSettle();
+    expect(container.style.pointerEvents, 'none');
+    await tester.tap(find.text('צילום וידאו')); await tester.pumpAndSettle();
+    expect(selected, ChatAttachmentAction.video);
+    expect(container.style.pointerEvents, 'auto');
+    expect(mediaPointerBarriers.value, 0);
+    await tester.tap(find.byIcon(Icons.attach_file)); await tester.pumpAndSettle();
+    expect(container.style.pointerEvents, 'none');
+    await tester.pumpWidget(const SizedBox.shrink()); await tester.pump();
+    expect(mediaPointerBarriers.value, 0);
+  });
+
   testWidgets('real web video restores, seeks and saves per authenticated user', (tester) async {
     final registry = _ViewRegistry();
     ui_web.debugOverridePlatformViewRegistry(registry);
@@ -83,8 +122,13 @@ void main() {
     Future<void> mount(String token) async {
       await tester.pumpWidget(MaterialApp(home: Scaffold(body: NativeWebVideoPlayer(
         url: url, token: token, progressApi: 'https://example.test/api'))));
-      await settleUntil(() => find.byType(TextButton).evaluate().isNotEmpty &&
-          tester.widget<TextButton>(find.byType(TextButton)).onPressed != null);
+      await settleUntil(() {
+        final video = _videoIn(tester);
+        final expected = saved['Bearer $token']!['positionMs']! / 1000;
+        return video.readyState >= 2 && !video.seeking &&
+            (video.currentTime - expected).abs() < .1;
+      });
+      expect(find.text('מעבר לזמן'), findsNothing);
     }
     await http.runWithClient(() async {
       try {
@@ -96,10 +140,8 @@ void main() {
         step = 'native seek';
         video.currentTime = 3;
         await settleUntil(() => saved['Bearer alice']!['positionMs'] == 3000);
-        step = 'exact seek';
-        await tester.tap(find.text('מעבר לזמן')); await tester.pumpAndSettle();
-        await tester.enterText(find.byType(TextField), '0:04');
-        await tester.tap(find.text('מעבר')); await tester.pumpAndSettle();
+        step = 'second native seek';
+        video.currentTime = 4;
         await settleUntil(() => saved['Bearer alice']!['positionMs'] == 4000);
         expect(video.currentTime, closeTo(4, .1));
 
@@ -107,9 +149,9 @@ void main() {
         step = 'play';
         await tester.runAsync(() async {
           try { await video.play(); }
-          catch (error) { print('Browser start interrupted while refreshing progress: $error'); }
+          catch (error) { debugPrint('Browser start interrupted while refreshing progress: $error'); }
         });
-        await settleUntil(() => !video!.paused && video.currentTime > 4.1);
+        await settleUntil(() => !video.paused && video.currentTime > 4.1);
         step = 'pause';
         video.pause();
         await settleUntil(() => saved['Bearer alice']!['positionMs']! > 4100);
@@ -130,9 +172,9 @@ void main() {
         await settleUntil(() => saved['Bearer alice']!['positionMs'] == 0);
       } catch (error, stack) {
         // Browser console exceptions are otherwise collapsed by flutter test.
-        print('Video progress regression at $step: $error; saved=$saved\n$stack');
+        debugPrint('Video progress regression at $step: $error; saved=$saved\n$stack');
         final video = _videoIn(tester);
-        print('Video state: time=${video.currentTime}, paused=${video.paused}, duration=${video.duration}, ready=${video.readyState}, error=${video.error}');
+        debugPrint('Video state: time=${video.currentTime}, paused=${video.paused}, duration=${video.duration}, ready=${video.readyState}, error=${video.error}');
         rethrow;
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());

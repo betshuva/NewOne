@@ -4,6 +4,11 @@ const { imageBlockReason } = require('./moderation-user-reason');
 require('dotenv').config();
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.turn') });
 const express = require('express');
+const { publicStatic } = require('./public-static');
+const { trustedProxyAddress, securityHeaders } = require('./http-security');
+const { verifySession, signSession, sessionCurrent } = require('./session-security');
+const { validResetInput, resetPassword } = require('./password-reset');
+const { consumeOtp } = require('./otp-security');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
@@ -601,7 +606,8 @@ function builtinExpressionResult() {
 let firebaseMessaging = null;
 function getFirebaseMessaging() {
   if (firebaseMessaging) return firebaseMessaging;
-  const credentialsPath = path.join(__dirname, '..', 'firebase-service-account.json');
+  const credentialsPath = process.env.FIREBASE_CREDENTIALS_PATH ||
+    path.join(__dirname, '..', 'firebase-service-account.json');
   const credentials = require(credentialsPath);
   const app = getApps()[0] || initializeApp({ credential: cert(credentials) });
   firebaseMessaging = getMessaging(app);
@@ -721,8 +727,8 @@ async function resolveAllowedUpload(file) {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  // Busboy emits a limit event at equality; route checks enforce the inclusive cap.
-  limits: { fileSize: MAX_AUDIO_BYTES + 1 },
+  // Multer 2.4 enforces this as an inclusive byte limit.
+  limits: { fileSize: MAX_AUDIO_BYTES },
 });
 
 const VIDEO_MODERATION_URL = process.env.VIDEO_MODERATION_URL ||
@@ -2343,6 +2349,7 @@ const mailer = nodemailer.createTransport({
     user: process.env.EMAIL_FROM,
     pass: process.env.EMAIL_APP_PASSWORD,
   },
+  requireTLS: true,
   tls: { rejectUnauthorized: true },
 });
 
@@ -2459,6 +2466,7 @@ async function migrateDatabase() {
 
     // ── Users – new columns ────────────────────────────────────────
     await pool.query(SHORT_USER_ID_SCHEMA);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -3016,6 +3024,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ALTER COLUMN moderation_status SET DEFAULT 'pending'`);
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS moderation_details JSONB`);
+    await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS client_upload_id TEXT`);
     await pool.query(`ALTER TABLE stored_files ADD COLUMN IF NOT EXISTS blocked_content_expires_at TIMESTAMPTZ`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS support_issue_attachments (
@@ -3756,27 +3765,10 @@ app.set('io', io);
 app.disable('x-powered-by');
 // Nginx runs on the same host. Trust only the local reverse proxy when resolving req.ip.
 app.set('trust proxy', 'loopback');
-// Nginx supplies the original address as X-Real-IP. Express resolves req.ip from
-// X-Forwarded-For, so copy the trusted local proxy value when that header is absent.
-// Never accept X-Real-IP from a client connected directly to Node.
-app.use((req, _res, next) => {
-  const remoteAddress = req.socket?.remoteAddress || '';
-  const realIp = req.get('x-real-ip');
-  if (isLoopbackAddress(remoteAddress) && realIp && !req.get('x-forwarded-for')) {
-    req.headers['x-forwarded-for'] = realIp.trim();
-  }
-  next();
-});
+app.use(trustedProxyAddress);
+app.use(securityHeaders);
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
-app.use((req, res, next) => {
-  res.set({
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'strict-origin-when-cross-origin',
-    'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(self)',
-  });
-  next();
-});
 app.use((req, res, next) => {
   const requestPath = req.path.toLowerCase();
   const blockedDirectories = [
@@ -3928,8 +3920,8 @@ const serveReleasedDriveMedia = async (req, res, next) => {
 // Keep both mounts so direct/internal and public URLs share the same Drive fallback.
 app.use(UPLOAD_PUBLIC_BASE, serveReleasedDriveMedia);
 app.use('/uploads', serveReleasedDriveMedia);
-app.use(express.static(require('path').join(__dirname, '..')));
-app.use('/app', express.static(require('path').join(__dirname, '..', 'flutter_web')));
+app.use(publicStatic(path.join(__dirname, '..')));
+app.use('/app', publicStatic(path.join(__dirname, '..', 'flutter_web')));
 
 // Baseline protection for all API routes. Sensitive/write-heavy routes below
 // receive additional, stricter per-account or per-user limits.
@@ -4061,14 +4053,14 @@ async function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    req.user = verifySession(token, JWT_SECRET);
     const pool = await getPool();
     const result = await pool.query(
-      `SELECT name,gender,phone, email_verified, phone_verified, birth_date,
+      `SELECT session_version,name,gender,phone, email_verified, phone_verified, birth_date,
               moderation_state, moderation_reason, moderation_until,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [req.user.id]);
-    if (!result.rows.length)
+    if (!result.rows.length || !sessionCurrent(req.user, result.rows[0]))
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
     const moderationError = accountModerationError(result.rows[0]);
     if (moderationError) return res.status(moderationError.status).json(moderationError);
@@ -4105,7 +4097,7 @@ app.get('/api/registration-status', async (req, res) => {
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
   let tokenUser;
   try {
-    tokenUser = jwt.verify(token, JWT_SECRET);
+    tokenUser = verifySession(token, JWT_SECRET);
     if (!tokenUser || typeof tokenUser.id !== 'string' || tokenUser.purpose != null)
       return res.status(401).json({ error: 'טוקן לא תקין' });
   } catch (_) {
@@ -4114,8 +4106,8 @@ app.get('/api/registration-status', async (req, res) => {
   try {
     const pool = await getPool();
     const result = await pool.query(
-      'SELECT name,gender,phone,email_verified,phone_verified,birth_date FROM users WHERE id=$1', [tokenUser.id]);
-    if (!result.rows.length)
+      'SELECT session_version,name,gender,phone,email_verified,phone_verified,birth_date FROM users WHERE id=$1', [tokenUser.id]);
+    if (!result.rows.length || !sessionCurrent(tokenUser, result.rows[0]))
       return res.status(401).json({ error: 'המשתמש אינו קיים' });
     const user = result.rows[0];
     res.json({
@@ -4165,14 +4157,14 @@ async function authWithDbCheck(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    req.user = verifySession(token, JWT_SECRET);
     const pool = await getPool();
     const exists = await pool.query(
-      `SELECT name,gender,phone, email_verified, phone_verified, birth_date,
+      `SELECT session_version,name,gender,phone, email_verified, phone_verified, birth_date,
               moderation_state, moderation_reason, moderation_until,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [req.user.id]);
-    if (!exists.rows.length) {
+    if (!exists.rows.length || !sessionCurrent(req.user, exists.rows[0])) {
       console.warn(`[AUTH] ghost session — id:${req.user.id} email:${req.user.email}`);
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
     }
@@ -4196,14 +4188,14 @@ async function authWithDbCheck(req, res, next) {
 // ── Socket.io ────────────────────────────────────────────────────
 io.use(async (socket, next) => {
   try {
-    socket.user = jwt.verify(socket.handshake.auth.token, JWT_SECRET);
+    socket.user = verifySession(socket.handshake.auth.token, JWT_SECRET);
     const pool = await getPool();
     const exists = await pool.query(
-      `SELECT name,gender,phone, email_verified, phone_verified, birth_date,
+      `SELECT session_version,name,gender,phone, email_verified, phone_verified, birth_date,
               moderation_state, moderation_reason, moderation_until,
               (birth_date IS NULL OR birth_date > CURRENT_DATE - INTERVAL '18 years') AS is_teen
        FROM users WHERE id = $1`, [socket.user.id]);
-    if (!exists.rows.length) {
+    if (!exists.rows.length || !sessionCurrent(socket.user, exists.rows[0])) {
       console.warn(`[SOCKET] user_not_found — id:${socket.user.id} email:${socket.user.email} name:${socket.user.name}`);
       return next(new Error('user_not_found'));
     }
@@ -4920,7 +4912,7 @@ app.post('/api/registration/send-code', authRateLimit, otpRateLimit, async (req,
       : await pool.query('SELECT id FROM users WHERE phone=$1', [phone]);
     if (exists.rows.length) return res.status(409).json({ error: method === 'email' ? 'האימייל כבר רשום' : 'מספר הטלפון כבר רשום' });
     const value = method === 'email' ? email : phone;
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = crypto.randomInt(100000, 1000000).toString();
     const appSignature = typeof req.body.appSignature === 'string' &&
       /^[A-Za-z0-9+/]{11}$/.test(req.body.appSignature)
         ? req.body.appSignature : null;
@@ -4975,7 +4967,7 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
   const verifyByPhone = verificationMethod === 'phone';
   let verificationProof;
   try {
-    verificationProof = jwt.verify(req.body.verificationProof || '', JWT_SECRET);
+    verificationProof = jwt.verify(req.body.verificationProof || '', JWT_SECRET, { algorithms: ['HS256'] });
   } catch (_) {
     return res.status(400).json({ error: 'יש להשלים אימות משתמש תחילה' });
   }
@@ -5044,7 +5036,7 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
     }
 
     if (hasPhone && !verifyByPhone) {
-      const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const smsCode = crypto.randomInt(100000, 1000000).toString();
       otpStore.set(cleanPhone, { code: smsCode, expires: Date.now() + 10 * 60 * 1000, name });
       sendEmail({
         to: `${cleanPhone}@019sms.co.il`,
@@ -5055,7 +5047,7 @@ app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) =
 
     logActivity(user.id, 'register', { email: email || null, phone: cleanPhone }, req.ip);
     await claimAppInvite(user.id, req.body.inviteId || null);
-    const authToken = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    const authToken = signSession(user, JWT_SECRET);
     res.json({ pending: false, token: authToken, user, phone: cleanPhone, hasEmail, hasPhone,
       verificationMethod: verifyByPhone ? 'phone' : 'email' });
   } catch (e) {
@@ -5090,19 +5082,21 @@ app.post('/api/login', authRateLimit, credentialRateLimit, async (req, res) => {
     const pool = await getPool();
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
-    if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash)))
+    if (!user || !user.password_hash || typeof password !== 'string' ||
+        (user.phone && password === `otp_${user.phone.replace(/\D/g, '')}`) ||
+        !(await bcrypt.compare(password, user.password_hash)))
       return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
     const moderationError = accountModerationError(user);
     if (moderationError) return res.status(moderationError.status).json(moderationError);
     if (!user.phone) {
-      const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+      const token = signSession(user, JWT_SECRET);
       return res.status(403).json({ error: 'יש להזין מספר טלפון', code: 'PHONE_REQUIRED', token });
     }
     if (!user.email_verified && !user.phone_verified)
       return res.status(403).json({ error: 'יש לאמת את הטלפון או האימייל תחילה', code: 'VERIFICATION_REQUIRED' });
 
     await provisionSystemConversation(pool, user.id);
-    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    const token = signSession(user, JWT_SECRET);
     const { password_hash, ...safeUser } = user;
     logActivity(user.id, 'login', { email: user.email }, req.ip);
     res.json({ token, user: safeUser });
@@ -5127,7 +5121,7 @@ app.post('/api/resend-verification', authRateLimit, otpRateLimit, async (req, re
 
     if (method === 'phone') {
       if (!user.phone) return res.status(400).json({ error: 'לא הוזן מספר טלפון לחשבון' });
-      const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const smsCode = crypto.randomInt(100000, 1000000).toString();
       otpStore.set(user.phone, {
         code: smsCode, expires: Date.now() + 10 * 60 * 1000, name: user.name,
       });
@@ -5215,7 +5209,7 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
     if (byGoogle.rows.length) {
       const user  = byGoogle.rows[0];
       console.log(`[GOOGLE] login by google_id — user:${user.name} email:${user.email}`);
-      const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+      const token = signSession(user, JWT_SECRET);
       logActivity(user.id, 'google_login', { email: user.email }, req.ip);
       const { password_hash, ...safeUser } = user;
       return res.json({ token, user: safeUser });
@@ -5234,7 +5228,7 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
                profile_pic_url=COALESCE(profile_pic_url, $2)
            WHERE id=$3`,
           [googleId, picture || null, user.id]);
-        const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+        const token = signSession(user, JWT_SECRET);
         logActivity(user.id, 'google_login', { email: user.email }, req.ip);
         const { password_hash, ...safeUser } = user;
         return res.json({ token, user: safeUser });
@@ -5262,7 +5256,7 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
     const user  = inserted.rows[0];
     await provisionSystemConversation(pool, user.id);
     await claimAppInvite(user.id, req.body.inviteId || null);
-    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    const token = signSession(user, JWT_SECRET);
     logActivity(user.id, 'google_register', { email: user.email }, req.ip);
     // הודע לכל המחוברים על משתמש חדש
     req.app.get('io').emit('users:new', {
@@ -5923,6 +5917,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
     const scans = await pool.query(`
       SELECT
         'scan_' || sf.id::text AS id,
+        sf.client_upload_id,
         sf.user_id AS sender_id,
         sf.context_id AS recipient_id,
         sf.file_type AS type,
@@ -7439,7 +7434,7 @@ app.get('/api/backup/google/callback', async (req, res) => {
   const finish = (result) => res.redirect(303, `${appBase}/?backup=${encodeURIComponent(result)}`);
   if (req.query.error || !req.query.code || !req.query.state) return finish('cancelled');
   try {
-    const state = jwt.verify(String(req.query.state), JWT_SECRET);
+    const state = jwt.verify(String(req.query.state), JWT_SECRET, { algorithms: ['HS256'] });
     if (state.purpose !== 'personal_drive_oauth' || !state.userId) return finish('invalid_state');
     const tokens = await personalDrive.exchangeCode(String(req.query.code));
     const encrypted = personalDrive.encryptRefreshToken(tokens.refresh_token, state.userId);
@@ -8938,14 +8933,16 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
       `INSERT INTO stored_files
        (user_id, original_name, storage_path, public_url, mime_type, file_type,
         file_size, context_type, context_id, moderation_status, content_sha256,
-        visual_fingerprint,id,audit_operation_id,audit_parent_event_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14)
+        visual_fingerprint,id,audit_operation_id,audit_parent_event_id,client_upload_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15)
        RETURNING id`,
       [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
        file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' :
          req.body.listingImage === 'true' ? 'listing' : 'general',
        req.body.groupId || req.body.toUserId || null, contentSha256,
-       visualFingerprint ? JSON.stringify(visualFingerprint) : null, activeUploadFileId, ...auditIds()]);
+       visualFingerprint ? JSON.stringify(visualFingerprint) : null, activeUploadFileId, ...auditIds(),
+       typeof req.body.clientUploadId === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(req.body.clientUploadId)
+         ? req.body.clientUploadId : null]);
     if (reused) await observeAudit(pool, { kind: 'media_reused', status: 'completed',
       targetType: 'file', targetId: reused.id, details: { cacheHit: true, storedFileId: reused.id } });
     const scanTracking = { storedFileId: storedInsert.rows[0].id,
@@ -9715,6 +9712,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
     const scans = await pool.query(`
       SELECT
         'scan_' || sf.id::text AS id,
+        sf.client_upload_id,
         sf.user_id AS sender_id,
         sf.file_type AS type,
         sf.original_name AS body,
@@ -11907,9 +11905,9 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
     const bearer = req.headers.authorization?.split(' ')[1];
     if (bearer) {
       try {
-        const tokenUser = jwt.verify(bearer, JWT_SECRET);
-        const exists = await pool.query('SELECT 1 FROM users WHERE id=$1', [tokenUser.id]);
-        authenticatedUser = exists.rows.length > 0;
+        const tokenUser = verifySession(bearer, JWT_SECRET);
+        const exists = await pool.query('SELECT session_version FROM users WHERE id=$1', [tokenUser.id]);
+        authenticatedUser = sessionCurrent(tokenUser, exists.rows[0]);
       } catch (_) {}
     }
     if (!existingPhone.rows.length && !authenticatedUser) {
@@ -11931,12 +11929,14 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
     try {
       const pool = await getPool();
       const emailExists = await pool.query(
-        'SELECT id FROM users WHERE email=$1 AND phone != $2', [cleanEmail, clean]);
+        'SELECT id FROM users WHERE lower(email)=lower($1) AND phone IS DISTINCT FROM $2', [cleanEmail, clean]);
       if (emailExists.rows.length)
         return res.status(400).json({ error: 'כתובת האימייל כבר רשומה' });
-    } catch (_) {}
+    } catch (_) {
+      return res.status(503).json({ error: 'לא ניתן לבדוק את החשבון כרגע' });
+    }
   }
-  const code    = Math.floor(100000 + Math.random() * 900000).toString();
+  const code    = crypto.randomInt(100000, 1000000).toString();
   const expires = Date.now() + 5 * 60 * 1000;
   const appSignature = typeof req.body.appSignature === 'string' &&
     /^[A-Za-z0-9+/]{11}$/.test(req.body.appSignature)
@@ -11967,8 +11967,8 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
 app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res) => {
   const { phone, code, name } = req.body;
   const clean = (phone || '').replace(/\D/g, '');
-  const entry = otpStore.get(clean);
-  if (!entry || entry.code !== code || Date.now() > entry.expires)
+  const entry = consumeOtp(otpStore, clean, code);
+  if (!entry)
     return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
   const requestedName = typeof name === 'string' ? name.trim() : '';
   const userName  = requestedName || entry.name || '';
@@ -11977,23 +11977,21 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
     const pool = await getPool();
     // Check existing user by phone
     const byPhone = await pool.query(
-      `SELECT id, name, email FROM users WHERE phone=$1
+      `SELECT id, name, email, session_version FROM users WHERE phone=$1
        ORDER BY phone_verified DESC, created_at DESC LIMIT 1`, [clean]);
     let user;
     if (byPhone.rows.length) {
       otpStore.delete(clean);
       user = byPhone.rows[0];
-      await pool.query('UPDATE users SET phone_verified=TRUE, email_verified=TRUE WHERE id=$1', [user.id]);
+      await pool.query('UPDATE users SET phone_verified=TRUE WHERE id=$1', [user.id]);
     } else {
       // Check by email
       const byEmail = await pool.query(
-        'SELECT id, name, email FROM users WHERE lower(email)=lower($1) ORDER BY email_verified DESC LIMIT 1',
+        'SELECT id, name, email, session_version FROM users WHERE lower(email)=lower($1) ORDER BY email_verified DESC LIMIT 1',
         [userEmail]);
       if (byEmail.rows.length) {
         otpStore.delete(clean);
-        user = byEmail.rows[0];
-        await pool.query(
-          'UPDATE users SET phone_verified=TRUE, email_verified=TRUE, phone=$1 WHERE id=$2', [clean, user.id]);
+        return res.status(409).json({ error: 'האימייל משויך לחשבון קיים. יש להתחבר אליו לפני קישור טלפון' });
       } else {
         // New user — verified by OTP
         if (entry.acceptedTerms !== true || entry.ageConfirmed !== true)
@@ -12006,12 +12004,12 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
         const agePolicy = validateRegistrationAge(entry.birthDate);
         if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
         otpStore.delete(clean);
-        const hash   = await bcrypt.hash(`otp_${clean}`, 10);
+        const hash = null; // SMS-only accounts do not have a password.
         const result = await pool.query(
           `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified,
                               terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter)
-           VALUES ($1, $2, $3, $4, TRUE, TRUE, now(), '2026-08-23', TRUE, $5, $6, $7)
-           RETURNING id, name, email`,
+           VALUES ($1, $2, $3, $4, TRUE, FALSE, now(), '2026-08-23', TRUE, $5, $6, $7)
+           RETURNING id, name, email, session_version`,
           [userName, userEmail, clean, hash, entry.gender, agePolicy.birthDate,
            JSON.stringify(entry.contentFilter || NEW_ACCOUNT_CONTENT_FILTER)]);
         user = result.rows[0];
@@ -12022,7 +12020,7 @@ app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res)
       }
     }
     await provisionSystemConversation(pool, user.id);
-    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    const token = signSession(user, JWT_SECRET);
     logActivity(user.id, 'otp_login', { phone: clean }, null);
     res.json({ token, user });
   } catch (e) {
@@ -12043,8 +12041,8 @@ app.post('/api/link-phone', auth, otpRateLimit, async (req, res) => {
     const canSkipSms = account.rows[0]?.email_verified === true;
     if (!canSkipSms) {
       if (!code) return res.status(400).json({ error: 'נדרש קוד אימות' });
-      const entry = otpStore.get(clean);
-      if (!entry || entry.code !== code || Date.now() > entry.expires)
+      const entry = consumeOtp(otpStore, clean, code);
+      if (!entry)
         return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
       otpStore.delete(clean);
     }
@@ -12056,9 +12054,9 @@ app.post('/api/link-phone', auth, otpRateLimit, async (req, res) => {
        phone_verified=CASE WHEN $3 THEN phone_verified ELSE TRUE END
        WHERE id=$2`, [clean, req.user.id, canSkipSms]);
     logActivity(req.user.id, 'link_phone', { phone: clean }, req.ip);
-    const userResult = await pool.query('SELECT id, name, email FROM users WHERE id=$1', [req.user.id]);
+    const userResult = await pool.query('SELECT id, name, email, session_version FROM users WHERE id=$1', [req.user.id]);
     const user = userResult.rows[0];
-    const token = jwt.sign({ id: user.id, name: user.name, email: user.email }, JWT_SECRET);
+    const token = signSession(user, JWT_SECRET);
     res.json({ ok: true, token });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -12067,14 +12065,14 @@ app.post('/api/link-phone', auth, otpRateLimit, async (req, res) => {
 app.post('/api/verify-phone', authRateLimit, credentialRateLimit, async (req, res) => {
   const { phone, code } = req.body;
   const cleanPhone = (phone || '').replace(/\D/g, '');
-  const entry = otpStore.get(cleanPhone);
-  if (!entry || entry.code !== code || Date.now() > entry.expires)
+  const entry = consumeOtp(otpStore, cleanPhone, code);
+  if (!entry)
     return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
   otpStore.delete(cleanPhone);
   try {
     const pool = await getPool();
     const candidates = await pool.query(
-      `SELECT id, name, email, email_verified, phone_verified
+      `SELECT id, name, email, session_version, email_verified, phone_verified
        FROM users WHERE phone=$1
        ORDER BY phone_verified DESC, created_at DESC`, [cleanPhone]);
     const verified = candidates.rows.find(user => user.phone_verified === true);
@@ -12082,9 +12080,9 @@ app.post('/api/verify-phone', authRateLimit, credentialRateLimit, async (req, re
     if (!user) return res.status(400).json({ error: 'משתמש לא נמצא' });
     await pool.query('UPDATE users SET phone_verified=TRUE WHERE id=$1', [user.id]);
     const result = await pool.query(
-      'SELECT id, name, email, email_verified FROM users WHERE id=$1', [user.id]);
+      'SELECT id, name, email, session_version, email_verified FROM users WHERE id=$1', [user.id]);
     const verifiedUser = result.rows[0];
-    const token = jwt.sign({ id: verifiedUser.id, name: verifiedUser.name, email: verifiedUser.email }, JWT_SECRET);
+    const token = signSession(verifiedUser, JWT_SECRET);
     res.json({ ok: true, token });
   } catch (e) {
     if (e.code === '23505')
@@ -12095,7 +12093,9 @@ app.post('/api/verify-phone', authRateLimit, credentialRateLimit, async (req, re
 
 // ── Verify Email (HTML page) ─────────────────────────────────────
 app.get('/verify-email', async (req, res) => {
-  const token = (req.query.token || '').replace(/[^a-f0-9]/g, '');
+  const token = typeof req.query.token === 'string' && /^[a-f0-9]{64}$/.test(req.query.token)
+    ? req.query.token : '';
+  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
   const ok = (msg, redirectUrl = null) => res.send(`<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>אימות אימייל – בתשובה</title><style>body{font-family:Arial,sans-serif;background:#F0F4F0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}.card{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:400px;text-align:center}h2{color:#1B4332}</style></head><body><div class="card">${msg}</div>${redirectUrl ? `<script>setTimeout(function(){location.href=${JSON.stringify(redirectUrl)}},1200)</script>` : ''}</body></html>`);
   try {
     const pool = await getPool();
@@ -12143,11 +12143,16 @@ async function adminAuth(req, res, next) {
   const token  = header.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: 'לא מחובר' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    req.user = verifySession(token, JWT_SECRET);
     const pool   = await getPool();
-    const result = await pool.query('SELECT permission FROM admin_permissions WHERE user_id = $1', [req.user.id]);
+    const result = await pool.query(`SELECT a.permission,u.session_version,u.moderation_state,u.moderation_reason,u.moderation_until
+       FROM admin_permissions a JOIN users u ON u.id=a.user_id WHERE a.user_id=$1`, [req.user.id]);
     if (!result.rows.length)
       return res.status(403).json({ error: 'אין הרשאת גישה לדשבורד' });
+    if (!sessionCurrent(req.user, result.rows[0]))
+      return res.status(401).json({ error: 'יש להתחבר מחדש' });
+    const moderationError = accountModerationError(result.rows[0]);
+    if (moderationError) return res.status(moderationError.status).json(moderationError);
     req.adminPerm = result.rows[0].permission; // 'view' or 'edit'
     return requestAudit(req, res, next);
   } catch {
@@ -13335,26 +13340,28 @@ app.post('/api/forgot-password', authRateLimit, otpRateLimit, async (req, res) =
 
 // ── Reset Password API ───────────────────────────────────────────
 app.post('/api/reset-password', authRateLimit, credentialRateLimit, async (req, res) => {
-  const { token, password } = req.body;
-  if (!token || !password) return res.status(400).json({ error: 'חסרים שדות' });
-  if (password.length < 6) return res.status(400).json({ error: 'הסיסמה חייבת להיות לפחות 6 תווים' });
+  const { token, password } = req.body || {};
+  if (!validResetInput(token, password))
+    return res.status(400).json({ error: 'נדרשים קישור תקין וסיסמה באורך 6 תווים לפחות ועד 72 בתים' });
   try {
-    const pool = await getPool();
-    const result = await pool.query(
-      'SELECT user_id FROM password_reset_tokens WHERE token = $1 AND used = FALSE AND expires_at > now()',
-      [token]);
-    if (!result.rows.length) return res.status(400).json({ error: 'הקישור לא תקין או פג תוקף' });
-    const { user_id } = result.rows[0];
-    const hash = await bcrypt.hash(password, 10);
-    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, user_id]);
-    await pool.query('UPDATE password_reset_tokens SET used = TRUE WHERE token = $1', [token]);
+    const userId = await resetPassword(await getPool(), token, password);
+    if (!userId) return res.status(400).json({ error: 'הקישור לא תקין או פג תוקף' });
+    for (const socket of io.sockets.sockets.values()) {
+      if (socket.user?.id === userId) socket.disconnect(true);
+    }
+    res.set('Cache-Control', 'no-store');
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('reset-password:', e.code || e.name);
+    res.status(500).json({ error: 'לא ניתן לאפס את הסיסמה כרגע' });
+  }
 });
 
 // ── Reset Password HTML page ─────────────────────────────────────
 app.get('/reset-password', (req, res) => {
-  const token = (req.query.token || '').replace(/[^a-f0-9]/g, '');
+  const token = typeof req.query.token === 'string' && /^[a-f0-9]{64}$/.test(req.query.token)
+    ? req.query.token : '';
+  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
   res.send(`<!DOCTYPE html>
 <html dir="rtl" lang="he">
 <head>

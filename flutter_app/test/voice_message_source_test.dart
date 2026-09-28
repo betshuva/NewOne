@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+// ignore: depend_on_referenced_packages
 import 'package:audioplayers_platform_interface/audioplayers_platform_interface.dart';
 import 'package:betshuva/main.dart' show VoiceMessagePlayer;
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -17,6 +17,9 @@ class _AudioPlatform extends AudioplayersPlatformInterface {
   final positions = <String, int>{};
   final seeks = <int>[];
   final mimeTypes = <String?>[];
+  final requestedSources = <String>[];
+  int failedSources = 0;
+  Future<void> Function(String)? sourceGate;
 
   @override
   Future<void> create(String playerId) async {
@@ -30,19 +33,26 @@ class _AudioPlatform extends AudioplayersPlatformInterface {
   Future<void> setSourceUrl(String playerId, String url,
       {bool? isLocal, String? mimeType}) async {
     sources[playerId] = url;
-    events[playerId]!.add(
+    requestedSources.add(url);
+    mimeTypes.add(mimeType);
+    if (failedSources > 0) {
+      failedSources--;
+      events[playerId]!.addError(StateError('media unavailable'));
+      return;
+    }
+    await sourceGate?.call(url);
+    events[playerId]?.add(
         const AudioEvent(eventType: AudioEventType.prepared, isPrepared: true));
   }
 
   @override
   Future<void> setSourceBytes(String playerId, Uint8List bytes, {String? mimeType}) {
-    mimeTypes.add(mimeType);
-    return setSourceUrl(playerId, 'https://example.test/${bytes.first == 1 ? 'first' : 'second'}.mp3');
+    throw StateError('Audio must stream by URL, never buffer the entire file');
   }
 
   @override
   Future<int?> getDuration(String playerId) async =>
-      sources[playerId]!.endsWith('first.mp3') ? 1598000 : 4009000;
+      Uri.parse(sources[playerId]!).path.endsWith('first.mp3') ? 1598000 : 4009000;
 
   @override
   Future<int?> getCurrentPosition(String playerId) async => positions[playerId] ?? 0;
@@ -83,7 +93,7 @@ http.Response _media(http.Request request) => http.Response.bytes(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('web audio shows a failed download, retries and detects MP3 with query parameters', (tester) async {
+  testWidgets('streaming audio shows a source error, retries and preserves query parameters', (tester) async {
     final previousPlatform = AudioplayersPlatformInterface.instance;
     final previousGlobal = GlobalAudioplayersPlatformInterface.instance;
     final platform = _AudioPlatform();
@@ -93,7 +103,7 @@ void main() {
       AudioplayersPlatformInterface.instance = previousPlatform;
       GlobalAudioplayersPlatformInterface.instance = previousGlobal;
     });
-    var requests = 0;
+    platform.failedSources = 1;
     await http.runWithClient(() async {
       try {
         await tester.pumpWidget(const MaterialApp(home: Scaffold(body: VoiceMessagePlayer(
@@ -104,19 +114,18 @@ void main() {
         await tester.tap(find.byIcon(Icons.refresh));
         await tester.pump(const Duration(milliseconds: 100));
         await tester.pump(const Duration(milliseconds: 100));
-        expect(requests, 2);
+        expect(platform.requestedSources, List.filled(2, 'https://example.test/first.mp3?v=release'));
+        expect(find.text('first.mp3'), findsOneWidget);
         expect(find.text('0:00 / 26:38'), findsOneWidget);
-        expect(platform.mimeTypes, ['audio/mpeg']);
+        expect(platform.mimeTypes, ['audio/mpeg', 'audio/mpeg']);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump(const Duration(seconds: 1));
       }
     }, () => MockClient((request) async {
-      requests++;
-      expect(request.url.queryParameters['v'], 'release');
-      return requests == 1 ? http.Response('unavailable', 503) : _media(request);
+      throw StateError('Do not eagerly download audio through HTTP');
     }));
-  }, skip: !kIsWeb);
+  });
 
   testWidgets('seek, precise jump, pause and remount preserve account progress', (tester) async {
     final previousPlatform = AudioplayersPlatformInterface.instance;
@@ -210,6 +219,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(body: VoiceMessagePlayer(
           url: 'https://example.test/$file.mp3',
+          fileName: 'שיעור $file.mp3',
           isMe: true,
           senderName: 'Sender',
         )),
@@ -220,8 +230,11 @@ void main() {
 
     await http.runWithClient(() async { try {
       await mount('first');
+      expect(find.text('שיעור first.mp3'), findsOneWidget);
       expect(find.text('0:00 / 26:38'), findsOneWidget);
       await mount('second');
+      expect(find.text('שיעור second.mp3'), findsOneWidget);
+      expect(find.text('שיעור first.mp3'), findsNothing);
       await tester.tap(find.byIcon(Icons.play_arrow));
       await tester.pump();
       expect(platform.resumedSources, ['https://example.test/second.mp3']);
@@ -232,7 +245,7 @@ void main() {
     } }, () => MockClient((request) async => _media(request)));
   });
 
-  testWidgets('a late web download cannot replace a newer recording', (tester) async {
+  testWidgets('late preparation cannot replace a newer streamed recording', (tester) async {
     final previousPlatform = AudioplayersPlatformInterface.instance;
     final previousGlobal = GlobalAudioplayersPlatformInterface.instance;
     final platform = _AudioPlatform();
@@ -242,7 +255,8 @@ void main() {
       AudioplayersPlatformInterface.instance = previousPlatform;
       GlobalAudioplayersPlatformInterface.instance = previousGlobal;
     });
-    final slow = Completer<http.Response>();
+    final slow = Completer<void>();
+    platform.sourceGate = (url) => url.endsWith('first.mp3') ? slow.future : Future.value();
     await http.runWithClient(() async {
       Future<void> mount(String file) async {
         await tester.pumpWidget(MaterialApp(home: Scaffold(body: VoiceMessagePlayer(
@@ -254,7 +268,7 @@ void main() {
         await mount('first');
         await mount('second');
         expect(find.text('0:00 / 66:49'), findsOneWidget);
-        slow.complete(http.Response.bytes(List.filled(512, 1), 200));
+        slow.complete();
         await tester.pump(const Duration(milliseconds: 100));
         await tester.tap(find.byIcon(Icons.play_arrow)); await tester.pump();
         expect(platform.resumedSources, ['https://example.test/second.mp3']);
@@ -263,7 +277,8 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump(const Duration(seconds: 1));
       }
-    }, () => MockClient((request) => request.url.path.endsWith('first.mp3')
-        ? slow.future : Future.value(_media(request))));
-  }, skip: !kIsWeb);
+    }, () => MockClient((request) async {
+      throw StateError('Do not eagerly download audio through HTTP');
+    }));
+  });
 }

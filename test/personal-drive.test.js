@@ -45,7 +45,7 @@ test('OAuth callback never accepts a user id directly from its query string', ()
   const callback = source.slice(source.indexOf("app.get('/api/backup/google/callback'"),
     source.indexOf("app.get('/api/backup/google/status'"));
   assert.match(callback, /purpose !== 'personal_drive_oauth'/);
-  assert.match(callback, /jwt\.verify\(String\(req\.query\.state\), JWT_SECRET\)/);
+  assert.match(callback, /jwt\.verify\(String\(req\.query\.state\), JWT_SECRET, \{ algorithms: \['HS256'\] \}\)/);
   assert.doesNotMatch(callback, /req\.query\.userId/);
 });
 
@@ -123,7 +123,7 @@ test('safe release is immediate after verification and protects active reference
 test('released media uses an encrypted adaptive LRU Drive cache', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
   const route = source.slice(source.indexOf('const serveReleasedDriveMedia'),
-    source.indexOf("app.use(express.static"));
+    source.indexOf("app.use(publicStatic"));
   assert.match(source, /DRIVE_MEDIA_CACHE_MAX_BYTES[\s\S]*?20 \* 1024 \* 1024 \* 1024/);
   assert.match(source, /accessCount >= 10[\s\S]*?72 \* 60 \* 60/);
   assert.match(source, /accessCount >= 4[\s\S]*?48 \* 60 \* 60/);

@@ -15,7 +15,7 @@ function configuredFolderId() {
 function credentialsPath() {
   return process.env.GOOGLE_DRIVE_CREDENTIALS_PATH
     ? path.resolve(process.env.GOOGLE_DRIVE_CREDENTIALS_PATH)
-    : path.join(__dirname, '..', 'firebase-service-account.json');
+    : process.env.FIREBASE_CREDENTIALS_PATH || path.join(__dirname, '..', 'firebase-service-account.json');
 }
 
 function googleDriveConfigured() {

@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'media_pointer_barrier.dart';
 
 enum ChatAttachmentAction {
   upload,
@@ -39,7 +40,9 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
     barrierLabel: 'סגירת תפריט הצירוף',
     barrierColor: Colors.transparent,
     transitionDuration: const Duration(milliseconds: 120),
-    pageBuilder: (menuContext, animation, secondaryAnimation) => Directionality(
+    pageBuilder: (menuContext, animation, secondaryAnimation) =>
+        MediaPointerBarrier(
+            child: Directionality(
       textDirection: TextDirection.rtl,
       child: CustomSingleChildLayout(
         delegate: _AttachmentMenuLayout(
@@ -55,7 +58,7 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
           allowPaste: allowPaste,
         ),
       ),
-    ),
+    )),
     transitionBuilder: (context, animation, secondaryAnimation, child) =>
         FadeTransition(opacity: animation, child: child),
   );
@@ -201,7 +204,8 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                         action: ChatAttachmentAction.scan,
                         allowed: widget.textAllowed),
                     _item('אימוג׳י ומדבקות', Icons.emoji_emotions_outlined,
-                        Colors.amber.shade800, action: ChatAttachmentAction.expression,
+                        Colors.amber.shade800,
+                        action: ChatAttachmentAction.expression,
                         allowed: widget.textAllowed),
                     _item('שיתוף איש קשר', Icons.contact_phone_outlined,
                         Colors.teal,
