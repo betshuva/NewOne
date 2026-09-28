@@ -64,7 +64,7 @@ test('audit check columns render and filter in desktop and mobile histories', {
         if (url.hostname === 'audit.test') {
           if (url.pathname === '/admin-audit.html') return route.fulfill({ contentType: 'text/html', body: html });
           if (url.pathname.endsWith('/MaterialIcons-Audit.otf')) return route.fulfill({
-            contentType: 'font/otf', body: await fs.readFile(path.join(directory, 'assets/fonts/MaterialIcons-Audit.otf')) });
+            contentType: 'font/otf', body: await fs.readFile(path.join(directory, 'assets/fonts/MaterialIcons-Audit.otf')).catch(()=>fs.readFile(path.join(directory, 'assets/fonts/MaterialIcons-Regular.otf'))) });
           return route.fulfill({ status: 404, body: '' });
         }
         assert.equal(url.origin, 'https://betshuva.com');

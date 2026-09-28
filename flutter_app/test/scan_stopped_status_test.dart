@@ -164,6 +164,8 @@ Future<void> _unmount(WidgetTester tester) async {
 void _expectStopped() {
   expect(find.byKey(const ValueKey('scan-stopped-$_id')), findsOneWidget);
   expect(find.text('הסריקה נעצרה'), findsOneWidget);
+  expect(find.text('הקובץ לא נשלח'), findsOneWidget);
+  expect(find.text('התמונה מוצגת רק לך ולא נשלחה'), findsNothing);
   expect(find.text('$_reason\nבוצעו 4 מתוך 6 בדיקות'), findsOneWidget);
   expect(find.byKey(const ValueKey('hidden-$_id')), findsNothing);
   expect(find.byType(VideoThumbnail), findsNothing);

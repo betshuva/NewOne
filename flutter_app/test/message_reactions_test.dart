@@ -7,6 +7,73 @@ import 'package:http/testing.dart';
 import 'package:betshuva/message_reactions.dart';
 
 void main() {
+  testWidgets('a single reaction has no count; counts start at two',
+      (tester) async {
+    final client = MockClient((_) async => http.Response(
+        jsonEncode([
+          {'emoji': '👍', 'count': 1, 'mine': false},
+          {'emoji': '❤️', 'count': 2, 'mine': false},
+          {'emoji': '😂', 'count': 12, 'mine': false},
+        ]),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'}));
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: MessageReactions(
+      api: 'https://test/api',
+      token: 'token',
+      messageId: 'counts',
+      client: client,
+      cache: MessageReactionsCache(),
+      showAddButton: false,
+    ))));
+    await tester.pumpAndSettle();
+    expect(find.text('👍'), findsOneWidget);
+    expect(find.text('👍 1'), findsNothing);
+    expect(find.text('❤️ 2'), findsOneWidget);
+    expect(find.text('😂 12'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
+  testWidgets(
+      'quick emoji buttons add, replace and remove a reaction with one tap',
+      (tester) async {
+    final writes = <dynamic>[];
+    final client = MockClient((request) async {
+      if (request.method == 'GET') return http.Response('[]', 200);
+      final emoji = jsonDecode(request.body)['emoji'];
+      writes.add(emoji);
+      return http.Response(
+          jsonEncode(emoji == null
+              ? []
+              : [
+                  {'emoji': emoji, 'count': 1, 'mine': true}
+                ]),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'});
+    });
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+            body: SizedBox(
+                width: 260,
+                child: MessageReactions(
+                    api: 'https://test/api',
+                    token: 'token',
+                    messageId: 'quick',
+                    client: client,
+                    cache: MessageReactionsCache(),
+                    quickChoices: true,
+                    showAddButton: false)))));
+    await tester.pumpAndSettle();
+    for (final emoji in ['👍', '❤️', '❤️']) {
+      await tester.tap(find.byTooltip('תגובה $emoji'));
+      await tester.pumpAndSettle();
+    }
+    expect(writes, ['👍', '❤️', null]);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    client.close();
+  });
   testWidgets('tap own reaction removes it and another emoji replaces it',
       (tester) async {
     final writes = <dynamic>[];
@@ -38,16 +105,16 @@ void main() {
                 messageId: 'id',
                 client: client))));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('👍 1'));
+    await tester.tap(find.text('👍'));
     await tester.pumpAndSettle();
     expect(writes, [null]);
-    expect(find.text('👍 1'), findsNothing);
+    expect(find.text('👍'), findsNothing);
     await tester.tap(find.byTooltip('תגובה להודעה'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('❤️'));
     await tester.pumpAndSettle();
     expect(writes, [null, '❤️']);
-    expect(find.text('❤️ 1'), findsOneWidget);
+    expect(find.text('❤️'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -81,12 +148,12 @@ void main() {
     expect(reads, 1);
     response.complete(_response('👍'));
     await tester.pumpAndSettle();
-    expect(find.text('👍 1'), findsNWidgets(2));
+    expect(find.text('👍'), findsNWidgets(2));
     await tester.pumpWidget(const SizedBox());
     await tester.pumpWidget(view());
     await tester.pumpAndSettle();
     expect(reads, 1);
-    expect(find.text('👍 1'), findsNWidgets(2));
+    expect(find.text('👍'), findsNWidgets(2));
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -137,12 +204,12 @@ void main() {
     await tester.pumpWidget(_view(client, cache, token: 'old-token'));
     await tester.pumpWidget(_view(client, cache, token: 'new-token'));
     await tester.pumpAndSettle();
-    expect(find.text('❤️ 1'), findsOneWidget);
+    expect(find.text('❤️'), findsOneWidget);
     oldResponse.complete(_response('👍'));
     await tester.pumpAndSettle();
     expect(tokens, ['Bearer old-token', 'Bearer new-token']);
-    expect(find.text('👍 1'), findsNothing);
-    expect(find.text('❤️ 1'), findsOneWidget);
+    expect(find.text('👍'), findsNothing);
+    expect(find.text('❤️'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -178,7 +245,7 @@ void main() {
       await tester.pumpWidget(_view(client, cache, messageId: 'fourth'));
       await tester.pumpAndSettle();
       expect(reads, ['Bearer token', 'Bearer another-account', 'Bearer token']);
-      expect(find.text('👍 1'), findsOneWidget);
+      expect(find.text('👍'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       client.close();
     });
@@ -204,16 +271,16 @@ void main() {
     now = now.add(const Duration(minutes: 1));
     await tester.pump(const Duration(minutes: 1));
     expect(reads, 2);
-    await tester.tap(find.text('👍 1'));
+    await tester.tap(find.text('👍'));
     await tester.pumpAndSettle();
-    expect(find.text('👍 1'), findsNothing);
+    expect(find.text('👍'), findsNothing);
     staleResponse.complete(_response('👍'));
     await tester.pumpAndSettle();
     await tester.pumpWidget(const SizedBox());
     await tester.pumpWidget(_view(client, cache));
     await tester.pumpAndSettle();
     expect(reads, 2);
-    expect(find.text('👍 1'), findsNothing);
+    expect(find.text('👍'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });
@@ -230,11 +297,11 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pumpWidget(_view(client, cache));
     await tester.pumpAndSettle();
-    expect(find.text('👍 1'), findsOneWidget);
+    expect(find.text('👍'), findsOneWidget);
     now = now.add(const Duration(minutes: 1));
     await tester.pump(const Duration(minutes: 1));
     await tester.pumpAndSettle();
-    expect(find.text('👍 1'), findsNothing);
+    expect(find.text('👍'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     client.close();
   });

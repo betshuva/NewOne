@@ -15,8 +15,8 @@ return the saved receipt instead of sending twice.
 Verified built-in stickers sent to Israel are persisted without generating an
 assistant answer. A caller's claim that a file is a sticker does not exempt it:
 file classification comes from approved stored-file metadata; sticker IDs pass
-the normal server allowlist. Ordinary image questions and voice input remain
-supported.
+the normal server allowlist. Ordinary image questions remain supported. Voice recordings are delivered as
+audio only; transcription and voice-question processing are disabled.
 
 Image classification symbols open a scan explanation with recorded categories,
 uncertainty and available status/reason. The blocked-image marker also opens

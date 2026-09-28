@@ -3,19 +3,21 @@ const {decryptMessageText}=require('./message-at-rest');
 const SEND_LABELS={sent:'נשלח — נשמר בשרת',partial:'נשלח לחלק מהנמענים',blocked:'נחסם',failed:'נכשל',pending:'ממתין',not_sent:'לא נשלח',unknown:'לא ידוע',not_applicable:'לא רלוונטי'};
 const DELIVERY_LABELS={read:'דווח שנקרא',server_delivered:'השרת סימן מסירה — אין אישור מהמכשיר',unconfirmed:'אין אישור מסירה מהמכשיר',not_sent:'לא נשלח',not_applicable:'לא רלוונטי'};
 const TYPE_LABELS={text:'טקסט',image:'תמונה',video:'וידאו',audio:'הקלטה / קובץ קול',document:'קובץ',sticker:'מדבקה'};
+const OBJECT_STATUS_LABELS={sent:'נשלח',blocked:'נחסם',blocked_for_recipient:'נחסם למשתמש',partial:'נשלח לחלק מהנמענים — נחסם לאחרים',pending:'ממתין',stopped:'הסריקה נעצרה — לא נשלח',failed:'לא נשלח — תקלה',not_sent:'לא נשלח',unknown:'טרם תועדה תוצאה',not_applicable:'לא רלוונטי'};
 const DISPATCH_FIELDS={dispatch_state:'text',dispatch_reason:'text',dispatch_code:'text',dispatch_delivery:'text',dispatch_sent_count:'number',dispatch_failed_count:'number',dispatch_message_type:'text',dispatch_file_name:'text',dispatch_content:'text',dispatch_message_id:'text'};
+DISPATCH_FIELDS.object_status='text';
 const DISPATCH_SQL=String.raw`
 CREATE OR REPLACE FUNCTION system_audit_dispatch(op_id uuid) RETURNS jsonb LANGUAGE plpgsql STABLE AS $$
 DECLARE op audit_operations; ev jsonb; msg jsonb; file_row jsonb; pending_row jsonb; request_row jsonb; evidence jsonb;
   rid uuid; rtype text; rname text; rshort text; state text:='unknown'; delivery text:='unconfirmed';
-  reason text; reason_code text; msg_type text; sent_count int; failed_count int; count_messages int:=0;
+  reason text; reason_code text; object_state text; msg_type text; sent_count int; failed_count int; count_messages int:=0;
   summary jsonb; content_context jsonb; messages_json jsonb:='[]'; ids uuid[]; sending boolean; has_persisted boolean; is_broadcast boolean;
 BEGIN
  SELECT * INTO op FROM audit_operations WHERE id=op_id;
  SELECT COALESCE(jsonb_agg(to_jsonb(e) ORDER BY e.id),'[]'::jsonb) INTO ev FROM audit_events e WHERE e.operation_id=op_id;
  is_broadcast:=op.action='send_system_message' OR EXISTS(SELECT 1 FROM jsonb_array_elements(ev) e WHERE e->>'kind'='send_system_message' OR e->'details'->>'httpRoute'='/api/admin/system-message');
  sending:=is_broadcast OR op.action IN('send_message','send_group_message','send_file','send_file_delayed','send_group_file_delayed','upload_file','blocked_upload','blocked_upload_delayed','group_file_delivery_rejected');
- IF NOT sending THEN RETURN jsonb_build_object('dispatch_state','not_applicable','dispatch_delivery','not_applicable'); END IF;
+ IF NOT sending THEN RETURN jsonb_build_object('dispatch_state','not_applicable','dispatch_delivery','not_applicable','object_status','not_applicable'); END IF;
  rid:=op.recipient_id;rtype:=op.recipient_type;rname:=op.recipient_name;rshort:=op.recipient_short_id;
  IF rid IS NULL AND op.action IN('send_message','send_group_message') AND op.target_type IN('user','group') THEN rid:=op.target_id;rtype:=op.target_type; END IF;
  IF rid IS NULL THEN
@@ -62,6 +64,14 @@ BEGIN
    reason:=COALESCE(file_row->'moderation_details'->>'reason',file_row->'moderation_details'->>'error');
    reason_code:=COALESCE(file_row->'moderation_details'->>'reasonCode',file_row->'moderation_details'->>'blockedBy',reason_code);
  END IF;
+ -- Older uploads returned only HTTP 200 for a destination-filter refusal.
+ -- Classify that result from the approved file and the recorded policy decision.
+ IF file_row->>'moderation_status'='approved' AND file_row->'moderation_details'->>'blocked' IS DISTINCT FROM 'true'
+   AND (file_row->'moderation_details'->>'destinationFilterRejected'='true' OR file_row->'moderation_details'->>'senderFilterRejected'='true')
+   AND EXISTS(SELECT 1 FROM jsonb_array_elements(ev) e WHERE e->>'kind'='decision_blocked'
+     AND e->>'reason_code' IN('content_filter','sender_content_filter','recipient_content_filter')) THEN
+   reason_code:='content_filter';
+ END IF;
  IF count_messages>0 THEN
    state:='sent';sent_count:=count_messages;failed_count:=0;
    IF rtype='group' THEN
@@ -92,8 +102,20 @@ BEGIN
    ELSE sent_count:=0;IF rtype='user' AND state IN('failed','blocked') THEN failed_count:=1;END IF;END IF;
  END IF;
  IF state IN('blocked','failed','not_sent') THEN delivery:='not_sent';reason:=COALESCE(reason,'הסיבה המפורטת לא תועדה');reason_code:=COALESCE(reason_code,op.reason_code);END IF;
+ -- A per-recipient policy refusal is different from global media rejection.
+ -- Keep real sends, partial group delivery, pending scans and technical stops distinct.
+ object_state:=state;
+ IF state='blocked' AND file_row->>'moderation_status' IS DISTINCT FROM 'rejected' AND
+   (file_row->'moderation_details'->>'destinationFilterRejected'='true'
+    OR reason_code IN('recipient_content_filter','destination_content_filtered','group_content_filter',
+      'contact_or_group_access','contact_request_declined','recipient_blocked_sender','teen_mutual_contact_required')) THEN
+   object_state:='blocked_for_recipient';
+ ELSIF state='failed' AND (file_row->>'moderation_status'='stopped'
+   OR reason_code IN('scan_stopped','scan_incomplete','budget_exhausted','deadline_exceeded','required_provider_unavailable')) THEN
+   object_state:='stopped';
+ END IF;
  msg_type:=COALESCE(msg->>'type',op.media_type,file_row->>'file_type',pending_row->>'file_type',request_row->>'type',content_context->>'messageType');
- RETURN jsonb_build_object('dispatch_state',state,'dispatch_reason',left(reason,500),'dispatch_code',reason_code,
+ RETURN jsonb_build_object('object_status',object_state,'dispatch_state',state,'dispatch_reason',left(reason,500),'dispatch_code',reason_code,
  'dispatch_delivery',delivery,'dispatch_sent_count',sent_count,'dispatch_failed_count',failed_count,
  'dispatch_message_type',msg_type,'dispatch_message_id',msg->>'id','message_body',COALESCE(msg->>'body',request_row->>'body',content_context->>'dispatchBody'),
  'dispatch_file_name',COALESCE(msg->>'file_name',file_row->>'original_name',pending_row->>'file_name',request_row->>'file_name',content_context->>'dispatchFileName'),
@@ -101,10 +123,10 @@ BEGIN
  'recipients',CASE WHEN rtype='group' OR is_broadcast THEN summary ELSE NULL END);
 END $$;
 `;
-function enabled(filters){return filters.dispatch||Object.keys(filters.columnFilters||{}).some(k=>k in DISPATCH_FIELDS)||filters.sort in DISPATCH_FIELDS;}
+function enabled(filters){return filters.dispatch||Object.keys(filters.columnFilters||{}).some(k=>k in DISPATCH_FIELDS||k==='stopped_file')||filters.sort in DISPATCH_FIELDS||filters.sort==='stopped_file';}
 function wrapQuery(query,filters){
  if(!enabled(filters))return query;
- const text=query.text.replaceAll('audit_operations o','dispatch_operations o').replace('e.*,o.','e.*,o.dispatch,o.');
+ const text=query.text.replaceAll('audit_operations o','dispatch_operations o').replace('e.*,','e.*,o.dispatch,');
  return {...query,text:`WITH dispatch_evidence AS MATERIALIZED (SELECT b.*,system_audit_dispatch(b.id) AS dispatch FROM audit_operations b),
  dispatch_operations AS MATERIALIZED (SELECT p.*,d.dispatch FROM dispatch_evidence d CROSS JOIN LATERAL jsonb_populate_record(NULL::audit_operations,
  to_jsonb(d)||jsonb_strip_nulls(jsonb_build_object('recipient_id',d.dispatch->'recipient_id','recipient_type',d.dispatch->'recipient_type','recipient_name',d.dispatch->'recipient_name','recipient_short_id',d.dispatch->'recipient_short_id'))) p) ${text}`};
@@ -124,4 +146,4 @@ async function prepareQuery(db,query){
  values.push(JSON.stringify(content));text=text.replaceAll(`o.dispatch->>'${field}'`,`($${values.length}::jsonb->>o.id::text)`);}
  return {values,text};
 }
-module.exports={DISPATCH_SQL,DISPATCH_FIELDS,SEND_LABELS,DELIVERY_LABELS,TYPE_LABELS,enabled,wrapQuery,presentDispatch,prepareQuery,contentPreview};
+module.exports={DISPATCH_SQL,DISPATCH_FIELDS,SEND_LABELS,DELIVERY_LABELS,TYPE_LABELS,OBJECT_STATUS_LABELS,enabled,wrapQuery,presentDispatch,prepareQuery,contentPreview};

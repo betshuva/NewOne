@@ -14,6 +14,50 @@ const { FILTER_MEDIA_SCHEMA, imageAffectedByTightening, prepareFilterHistoryChan
 const opts = { skip: process.env.RUN_DB_TESTS !== '1' };
 const male = { category: 'men', detectedCategories: ['men'], uncertain: false };
 
+test('retained destination-filter attempts stay visible only to their owner after reload', async () => {
+  const userId = randomUUID(), targetId = randomUUID(), fileId = randomUUID();
+  for (const contextType of ['group', 'chat']) {
+    const file = { id: fileId, user_id: userId, public_url: '/test/retained.jpg',
+      file_type: 'image', context_type: contextType, context_id: targetId,
+      moderation_status: 'approved', content_purged_at: null,
+      moderation_details: { blocked: false, destinationFilterRejected: true,
+        classification: male } };
+    const row = { id: `scan_${fileId}`, sender_id: userId, type: 'image',
+      file_url: file.public_url, message_status: 'rejected_scan',
+      forward_allowed: true, image_classification: male };
+    const project = async (fileChange = {}, rowChange = {}, viewer = userId) => {
+      const stored = { ...file, ...fileChange };
+      const db = { async query(sql, values) {
+        return { rows: sql.includes('SELECT sf.*')
+          ? stored.user_id === values[0] ? [stored] : []
+          : [{ general_filter: { ...ALL, men: false }, scoped_filter: null }] };
+      } };
+      return (await history.projectOwnScans(db, viewer, [{ ...row, ...rowChange }],
+        { contextType, contextId: targetId }))[0];
+    };
+    const preview = await project();
+    assert.equal(preview.file_url, file.public_url);
+    assert.equal(preview.filter_hidden, false);
+    assert.equal(preview.message_status, 'rejected_scan');
+    assert.equal(preview.forward_allowed, true);
+    assert.deepEqual(preview.image_classification.detectedCategories, ['men']);
+    for (const change of [
+      { moderation_status: 'pending' }, { moderation_status: 'rejected' },
+      { moderation_status: 'stopped' }, { content_purged_at: new Date() },
+      { context_id: randomUUID() },
+      { moderation_details: { classification: male, blocked: false } },
+      { moderation_details: { classification: male, blocked: true, destinationFilterRejected: true } },
+    ]) {
+      const hidden = await project(change);
+      assert.equal(hidden.file_url, null);
+      assert.equal(hidden.filter_hidden, true);
+    }
+    assert.equal((await project({}, {}, randomUUID())).file_url, null);
+    assert.equal((await project({}, { id: fileId })).file_url, null);
+    assert.equal((await project({}, { sender_id: randomUUID() })).file_url, null);
+  }
+});
+
 test('tightening identifies mixed and unknown images but ignores unrelated changes', () => {
   assert.equal(imageAffectedByTightening(ALL,{...ALL,men:false},male),true);
   assert.equal(imageAffectedByTightening(ALL,{...ALL,women:false},male),false);
@@ -332,19 +376,18 @@ test('already blocked own images prompt once on unchanged save, and explicit hid
  assert.equal((await f.save(blocked)).affectedCount,0);
 });
 
-test('contact actions include own messages to that contact and never change recipient history',opts,async t=>{
+test('contact history changes affect incoming images only and preserve outgoing images',opts,async t=>{
  const f=await fixture(t),own=await f.image({from:f.me,to:f.sender}),other=await f.image({from:f.me,to:f.other});
  const incoming=await f.image();
  const change=await f.save({...ALL,men:false},'delete',{kind:'contact',id:f.sender});
- assert.equal(change.affectedCount,2);assert.deepEqual(change.fileIds,[own.fileId]);
- const mine=await f.project();assert.equal(mine.some(r=>r.id===own.id),false);assert.equal(mine.some(r=>r.id===incoming.id),false);
+ assert.equal(change.affectedCount,1);assert.deepEqual(change.fileIds,[]);
+ const mine=await f.project();
+ assert.equal(mine.find(r=>r.id===own.id).file_url,own.url);
+ assert.equal(mine.some(r=>r.id===incoming.id),false);
  assert.equal(mine.find(r=>r.id===other.id).file_url,other.url);
  assert.equal((await f.project(f.sender)).find(r=>r.id===own.id).file_url,own.url);
  assert.equal((await f.pool.query('SELECT deleted_for_everyone FROM messages WHERE id=$1',[own.id])).rows[0].deleted_for_everyone,false);
- const ids=[];const result=await history.finishFilterHistoryChange(f.pool,f.me,change,async(_pool,user,id)=>{
-   assert.equal(user,f.me);ids.push(id);throw Object.assign(new Error('still shared'),{code:'MEDIA_IN_USE'});
- });
- assert.deepEqual(ids,[own.fileId]);assert.equal(result.retainedSharedFiles,1);
+ assert.equal((await f.pool.query('SELECT * FROM user_message_filter_actions WHERE message_id=$1',[own.id])).rows.length,0);
 });
 
 test('own group images obey personal member choices without changing another member',opts,async t=>{
@@ -400,7 +443,7 @@ test('own library originals survive ordinary conversation clearing but never fil
  rows=await history.projectFilterMediaLibrary(f.pool,f.me,items);assert.equal(rows[0].public_url,null);
 });
 
-test('synthetic own scans never reveal pending media and apply contact policy after approval',opts,async t=>{
+test('synthetic own scans preserve safety and ignore the destination receiving preference',opts,async t=>{
  const f=await fixture(t),image=await f.image({from:f.me,to:f.sender});
  const input=[{id:'scan_'+image.fileId,sender_id:f.me,recipient_id:f.sender,type:'image',file_url:image.url,blocked_preview_url:'/blocked/private'}];
  await f.pool.query("UPDATE stored_files SET moderation_status='pending' WHERE id=$1",[image.fileId]);
@@ -409,7 +452,7 @@ test('synthetic own scans never reveal pending media and apply contact policy af
  await f.pool.query("UPDATE stored_files SET moderation_status='approved' WHERE id=$1",[image.fileId]);
  await f.pool.query('UPDATE user_contacts SET filter_override=$1 WHERE owner_id=$2 AND contact_id=$3',[{...ALL,men:false},f.me,f.sender]);
  rows=await history.projectOwnScans(f.pool,f.me,input,{contextType:'chat',contextId:f.sender});
- assert.equal(rows[0].file_url,null);assert.equal(rows[0].hidden_reason,'content_filter');
+ assert.equal(rows[0].file_url,image.url);assert.equal(rows[0].filter_hidden,false);
  rows=await history.projectOwnScans(f.pool,f.me,input,{contextType:'chat',contextId:f.other});
  assert.equal(rows[0].file_url,image.url);
 });
@@ -472,4 +515,36 @@ test('hidden history, own scans and library retain the true moderation state wit
  const [filteredLibrary]=await history.projectFilterMediaLibrary(f.pool,f.me,[library]);
  assert.equal(filteredLibrary.hidden_reason,'content_filter');
  assert.equal(filteredLibrary.moderation_status,'approved');
+});
+
+
+test('private outgoing approved images ignore contact receiving filters across history and library reloads',opts,async t=>{
+ const f=await fixture(t),sent=await f.image({from:f.me,to:f.sender}),received=await f.image();
+ await f.pool.query('UPDATE user_contacts SET filter_override=$1 WHERE owner_id=$2 AND contact_id=$3',
+   [{...ALL,men:false},f.me,f.sender]);
+ let rows=await f.project();
+ assert.equal(rows.find(r=>r.id===sent.id).file_url,sent.url);
+ assert.equal(rows.find(r=>r.id===sent.id).filter_hidden,false);
+ assert.equal(rows.find(r=>r.id===received.id).file_url,null);
+ assert.equal(rows.find(r=>r.id===received.id).hidden_reason,'content_filter');
+ assert.equal((await history.projectFilterMediaLibrary(f.pool,f.me,
+   [{id:sent.fileId,file_type:'image',public_url:sent.url}]))[0].public_url,sent.url);
+ // The counterpart still receives according to their own filter.
+ await f.pool.query('INSERT INTO user_contacts(owner_id,contact_id,filter_override) VALUES($1,$2,$3)',
+   [f.sender,f.me,{...ALL,men:false}]);
+ assert.equal((await f.project(f.sender)).find(r=>r.id===sent.id).file_url,null);
+ // A receiving setting never grants access to unsafe or purged source content.
+ for (const status of ['pending','rejected','stopped']) {
+   await f.pool.query('UPDATE stored_files SET moderation_status=$1 WHERE id=$2',[status,sent.fileId]);
+   assert.equal((await f.project()).find(r=>r.id===sent.id).file_url,null);
+ }
+ await f.pool.query("UPDATE stored_files SET moderation_status='approved',content_purged_at=now() WHERE id=$1",[sent.fileId]);
+ assert.equal((await f.project()).find(r=>r.id===sent.id).file_url,null);
+});
+
+test('contact filter changes need no historical choice when only outgoing images exist',opts,async t=>{
+ const f=await fixture(t),sent=await f.image({from:f.me,to:f.sender});
+ const change=await f.save({...ALL,men:false},undefined,{kind:'contact',id:f.sender});
+ assert.equal(change.affectedCount,0);
+ assert.equal((await f.project())[0].file_url,sent.url);
 });

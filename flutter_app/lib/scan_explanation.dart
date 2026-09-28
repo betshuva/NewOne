@@ -30,6 +30,9 @@ String scanExplanation(Map<String, dynamic> message) {
   final reason =
       (message['scanReason'] ?? message['scan_reason'] ?? '').toString().trim();
   if (blocked && isModestyBlockReason(reason)) return modestyImageMessage;
+  if (blocked && isFilterBlockReason(reason)) {
+    return '$filterOnlyMessage\nזוהו: ${scanClassificationText(message['classification'])}\n$reason\n$retainedFilterFileMessage';
+  }
   final state = blocked
       ? 'נחסם'
       : pending
@@ -49,7 +52,11 @@ Future<void> showScanExplanation(
       builder: (dialogContext) => Directionality(
           textDirection: TextDirection.rtl,
           child: AlertDialog(
-            title: const Text('פרטי הסריקה'),
+            title: Text(isFilterBlockReason(
+                    (message['scanReason'] ?? message['scan_reason'])
+                        ?.toString())
+                ? 'פרטי הסינון'
+                : 'פרטי הסריקה'),
             content: SingleChildScrollView(
                 child: SelectableText(scanExplanation(message))),
             actions: [

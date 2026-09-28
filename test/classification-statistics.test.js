@@ -50,7 +50,7 @@ test('administrators can view classification reliability by time range', () => {
   assert.match(client, /בדיקות ופעולות שבוצעו מאוחר יותר/);
   assert.match(client, /מידע להשוואה בלבד/);
   assert.match(client, /רק דורשות טיפול/);
-  assert.match(client, /סריקה מלאה מחדש/);
+  assert.doesNotMatch(client, /סריקה מלאה מחדש/);
   assert.match(client, /מה כדאי לעשות עכשיו/);
   assert.match(client, /האם בדיקות ההמשך נחוצות/);
   assert.match(client, /עלות לפי יומן הקריאות/);

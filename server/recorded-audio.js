@@ -8,8 +8,8 @@ const { performance } = require('node:perf_hooks');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
-const MAX_INPUT_BYTES = 25 * 1024 * 1024;
-const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const { MAX_AUDIO_BYTES: MAX_INPUT_BYTES } = require('./audio-moderation');
+const MAX_OUTPUT_BYTES = MAX_INPUT_BYTES;
 const MAX_PENDING_CONVERSIONS = 4;
 const INPUT_FORMATS = Object.freeze({
   'audio/wav': 'wav',
@@ -37,14 +37,14 @@ async function runConversion(buffer, fileName, mimeType) {
           path.join(__dirname, '..', '.venv-whisper', 'bin', 'python'),
         [path.join(__dirname, '..', 'scripts', 'recorded_audio_mp3.py'),
           input, output, INPUT_FORMATS[mimeType]],
-        { timeout: 30_000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 },
+        { timeout: 600_000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 },
       );
     } catch (error) {
       let details;
       try { details = JSON.parse(String(error.stderr || '').trim().split('\n').at(-1)); }
       catch (_) {}
-      if (details?.code === 'AUDIO_DURATION_EXCEEDED')
-        throw audioError(details.code, 'Recording exceeds two minutes');
+      if (details?.code === 'AUDIO_SIZE_EXCEEDED')
+        throw audioError(details.code, 'Recording exceeds 150MB');
       if (details?.code === 'AUDIO_ENCODER_UNAVAILABLE' || error.code === 'ENOENT')
         throw audioError('AUDIO_CONVERSION_UNAVAILABLE', 'Recording encoder is unavailable');
       throw audioError('INVALID_AUDIO', 'Recording could not be converted');
@@ -52,7 +52,7 @@ async function runConversion(buffer, fileName, mimeType) {
     const details = JSON.parse(result.stdout.trim());
     const size = (await fs.stat(output)).size;
     if (!Number.isFinite(details.durationSeconds) || details.durationSeconds <= 0 ||
-        details.durationSeconds > 120 || size <= 0 || size > MAX_OUTPUT_BYTES)
+        size <= 0 || size > MAX_OUTPUT_BYTES)
       throw audioError('INVALID_AUDIO', 'Invalid converted recording');
     const converted = await fs.readFile(output);
     const extension = path.extname(fileName);

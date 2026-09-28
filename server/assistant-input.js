@@ -1,7 +1,7 @@
 'use strict';
 
 async function resolveAssistantInput({ text, fileUrl, fileName, trustedStickerId }, {
-  loadApprovedFile, decryptTranscript,
+  loadApprovedFile,
 }) {
   if (!fileUrl && trustedStickerId) return { question: trustedStickerId,
     file: { type: 'sticker', silent: true } };
@@ -13,8 +13,7 @@ async function resolveAssistantInput({ text, fileUrl, fileName, trustedStickerId
   if (!file) throw Object.assign(new Error('הקובץ אינו נגיש או שטרם אושר בסריקה'), { status: 403 });
   let question;
   if (file.file_type === 'audio') {
-    question = String(decryptTranscript(file.moderation_details) || '').trim();
-    if (!question) throw Object.assign(new Error('לא זוהה דיבור ברור בהקלטה. נסה להקליט שוב.'), { status: 422 });
+    return { question: '', file: { url: fileUrl, name: file.original_name || fileName, type: 'audio', silent: true } };
   } else {
     question = String(text || (file.file_type === 'image'
       ? 'התמונה ששלחתי אושרה. הסבר לי ישירות מה נמצא בסריקה.'

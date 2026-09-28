@@ -9,8 +9,7 @@ from fractions import Fraction
 import av
 
 
-MAX_SECONDS = 120
-MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+MAX_OUTPUT_BYTES = 150 * 1024 * 1024
 
 
 class RecordingError(ValueError):
@@ -20,7 +19,7 @@ class RecordingError(ValueError):
 
 
 def convert(input_path, output_path, input_format):
-    resource.setrlimit(resource.RLIMIT_CPU, (20, 20))
+    resource.setrlimit(resource.RLIMIT_CPU, (600, 600))
     resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024, 768 * 1024 * 1024))
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES))
     if "libmp3lame" not in av.codecs_available:
@@ -51,6 +50,8 @@ def convert(input_path, output_path, input_format):
                     frame.pts = samples_written
                     frame.time_base = Fraction(1, 44100)
                     samples_written += frame.samples
+                    if samples_written * 96000 / 44100 / 8 > MAX_OUTPUT_BYTES - 4096:
+                        raise RecordingError("AUDIO_SIZE_EXCEEDED", "encoded recording exceeds 150MB")
                     for packet in encoded.encode(frame):
                         target.mux(packet)
 
@@ -58,8 +59,6 @@ def convert(input_path, output_path, input_format):
                 if not frame.sample_rate or frame.sample_rate > 192000:
                     raise ValueError("unsupported recording sample rate")
                 duration += Fraction(frame.samples, frame.sample_rate)
-                if duration > MAX_SECONDS:
-                    raise RecordingError("AUDIO_DURATION_EXCEEDED", "recording exceeds two minutes")
                 frame.pts = None
                 write(resampler.resample(frame))
             if duration <= 0:

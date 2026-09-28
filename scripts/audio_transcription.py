@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Probe and locally transcribe one audio file for the moderation queue."""
+"""Read audio duration without speech recognition."""
 
 import argparse
 import json
-import os
 import sys
 from fractions import Fraction
 
@@ -17,58 +16,49 @@ def audio_duration(path: str) -> float:
             raise ValueError("no audio stream")
         stream = streams[0]
         # MP3 container duration includes encoder padding. Decoded samples honor
-        # gapless metadata, keeping an exact two-minute recording within its limit.
+        # gapless metadata so the displayed duration excludes encoder padding.
         if stream.codec_context.name in {"mp3", "mp3float"}:
             duration = Fraction(0)
             for frame in container.decode(stream):
                 duration += Fraction(frame.samples, frame.sample_rate)
-                if duration > 120:
-                    break
             return float(duration)
         if stream.duration is not None and stream.time_base is not None:
             return float(stream.duration * stream.time_base)
         if container.duration is not None:
             return float(container.duration / av.time_base)
-        raise ValueError("audio duration is unavailable")
+        # Browser WebM recordings may omit duration metadata.
+        duration = Fraction(0)
+        for frame in container.decode(stream):
+            duration += Fraction(frame.samples, frame.sample_rate)
+        return float(duration)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("probe", "transcribe"))
+    parser.add_argument("mode", choices=("probe", "webm-type"))
     parser.add_argument("path")
     args = parser.parse_args()
 
-    duration = audio_duration(args.path)
-    if args.mode == "probe":
-        print(json.dumps({"durationSeconds": duration}))
+    if args.mode == "webm-type":
+        # Force the container demuxer: filenames and browser MIME types are
+        # ambiguous, and must never cause video to take the audio-only path.
+        with open(args.path, "rb") as source:
+            if source.read(4) != bytes.fromhex("1a45dfa3"):
+                raise ValueError("invalid WebM signature")
+        with av.open(args.path, format="matroska",
+                     options={"protocol_whitelist": "file"}) as container:
+            types = [stream.type for stream in container.streams]
+            if "video" in types:
+                kind = "video"
+            elif types and all(kind == "audio" for kind in types):
+                kind = "audio"
+            else:
+                raise ValueError("no supported WebM media tracks")
+        print(json.dumps({"mime": kind + "/webm"}))
         return 0
 
-    from faster_whisper import WhisperModel
-
-    model_name = os.environ.get("WHISPER_MODEL", "small")
-    model_dir = os.environ.get("WHISPER_MODEL_DIR")
-    model = WhisperModel(
-        model_name,
-        device="cpu",
-        compute_type="int8",
-        download_root=model_dir,
-        cpu_threads=1,
-        num_workers=1,
-    )
-    segments, info = model.transcribe(
-        args.path,
-        language="he",
-        beam_size=3,
-        vad_filter=True,
-        condition_on_previous_text=False,
-    )
-    transcript = " ".join(segment.text.strip() for segment in segments).strip()
-    print(json.dumps({
-        "durationSeconds": duration,
-        "language": info.language,
-        "languageProbability": info.language_probability,
-        "transcript": transcript,
-    }, ensure_ascii=False))
+    duration = audio_duration(args.path)
+    print(json.dumps({"durationSeconds": duration}))
     return 0
 
 

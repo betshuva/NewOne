@@ -2,7 +2,7 @@
 // Shared with the inline web editor; the parity test keeps both copies identical.
 function createAuditColumnFormats(){
  const numeric=new Set(['dispatch_sent_count','dispatch_failed_count','event_count','attempt','step_total','provider_calls_used','provider_calls_limit','person_count','face_count','confidence','http_status','affected_count','frame_index','input_tokens','output_tokens','cached_input_tokens','total_tokens','cost_ils','operation_input_tokens','operation_output_tokens','operation_total_tokens','operation_cost_ils','fx_rate','event_id','parent_event_id','initiator_identifier','recipient_identifier']);
- const controls=new Set(['expand','select','details','preview','findings','dispatch_recipients']);
+ const controls=new Set(['expand','select','details','preview','stopped_evidence','findings','dispatch_recipients']);
  const dates=['dd/MM/yy HH:mm:ss.SS','dd/MM/yyyy HH:mm:ss','dd/MM/yyyy','dd/MM/yy','yyyy-MM-dd','HH:mm:ss.SS','HH:mm'];
  const durations=['mm:ss','hh:mm:ss','seconds'];
  const types={auto:'ברירת מחדל',text:'טקסט',number:'מספר',currency:'מטבע',percent:'אחוזים',date:'תאריך ושעה',duration:'משך זמן'};

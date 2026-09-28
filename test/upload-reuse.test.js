@@ -14,6 +14,10 @@ const routeStart = source.indexOf("app.post('/api/upload',");
 const routeEnd = source.indexOf('// ── Groups: list mine', routeStart);
 assert.ok(routeStart > 0 && routeEnd > routeStart);
 const VERSION = 'test-current';
+const realResolveAllowedUpload = vm.runInNewContext(source.slice(
+  source.indexOf('const ALLOWED_TYPES ='), source.indexOf('const upload = multer(')) +
+  ';resolveAllowedUpload', { Buffer, path: require('node:path'),
+  probeWebmMime: require('../server/audio-moderation').probeWebmMime });
 const ALL = { text: true, video: true, nonHumanImages: true,
   men: true, women: true, children: true };
 const MEN = { category: 'men', detectedCategories: ['men'], uncertain: false };
@@ -24,7 +28,7 @@ let fixtureId = 0;
 
 function harness({ classification = MEN, result, scanDelay = false,
   fingerprint = null, trustedBuiltinExpression = false, conversionError = null,
-  audioDuration = 10, onScan, realSenderGuard = false } = {}) {
+  audioDuration = 10, onScan, realSenderGuard = false, realUploadResolver = false } = {}) {
   const activeUploadFileIds = new Set();
   const state = { files: [], queries: [], blobs: [], scans: 0, audits: [], reports: [],
     pending: [], gifs: [], senderReads: [], recipientReads: [], senderAllowed: true,
@@ -129,9 +133,10 @@ function harness({ classification = MEN, result, scanDelay = false,
     app: { post(_route, ...handlers) { handler = handlers.at(-1); } },
     auth() {}, uploadRateLimit() {}, upload: { single() {} },
     BLOCKED_TYPES: [], MODERATION_CACHE_VERSION: VERSION, SCAN_BOT_ID: 'scan-bot',
-    MAX_AUDIO_SECONDS: 120,
+    approvedAudioResult: vm.runInNewContext(source.slice(source.indexOf('function approvedAudioResult('),
+      source.indexOf('// Legacy queued recordings')) + ';approvedAudioResult'),
     normalizeUploadFileName: value => value,
-    resolveAllowedUpload: file => ({ dbType: file.mimetype.startsWith('audio/') ? 'audio'
+    resolveAllowedUpload: realUploadResolver ? realResolveAllowedUpload : file => ({ dbType: file.mimetype.startsWith('audio/') ? 'audio'
       : file.mimetype.startsWith('video/') ? 'video' : 'image',
       mime: file.mimetype, maxMB: 10 }),
     probeAudio: async (buffer, name) => {
@@ -180,12 +185,12 @@ function harness({ classification = MEN, result, scanDelay = false,
     requestPendingScanRetry() {}, logActivity() {}, console: { log() {}, error() {}, warn() {} },
   });
   return { state, activeUploadFileIds, async upload({ body = {}, owner = state.owner, name = 'photo.png',
-    bytes = 'same content', mime = 'image/png' } = {}) {
+    bytes = 'same content', mime = 'image/png', reportedSize } = {}) {
     const buffer = Buffer.from(bytes);
     const res = { statusCode: 200, status(code) { this.statusCode = code; return this; },
       json(value) { this.body = clone(value); return this; } };
     await handler({ user: { id: owner }, body, ip: '127.0.0.1',
-      file: { buffer, originalname: name, mimetype: mime, size: buffer.length } }, res);
+      file: { buffer, originalname: name, mimetype: mime, size: reportedSize ?? buffer.length } }, res);
     return res;
   } };
 }
@@ -214,6 +219,55 @@ test('uncached videos enter the durable queue without scanning inside the upload
   assert.equal(api.state.files[0].moderation_status, 'pending');
   assert.equal(api.state.files[0].moderation_details.pending, true);
   assert.equal(api.activeUploadFileIds.size, 0);
+});
+
+test('WebM audio selected as video is stored and returned as audio without a video scan', async () => {
+  const api = harness({ realUploadResolver: true });
+  const bytes = fs.readFileSync(require.resolve('./fixtures/webm-audio.webm'));
+  for (const mime of ['video/webm', 'application/octet-stream', 'audio/webm']) {
+    const response = await api.upload({ name: 'recording.webm', mime, bytes });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.fileType, 'audio');
+    assert.ok(response.body.url);
+    assert.equal(api.state.files.at(-1).moderation_status, 'approved');
+  }
+  assert.equal(api.state.audioProbes.length, 3);
+  assert.equal(api.state.pending.length, 0);
+  assert.equal(api.state.scans, 0);
+  assert.equal(api.state.files[0].file_type, 'audio');
+  assert.equal(api.state.files[0].mime_type, 'audio/webm');
+});
+
+test('a WebM containing video still enters video scanning even when declared audio', async () => {
+  const api = harness({ realUploadResolver: true });
+  const bytes = fs.readFileSync(require.resolve('./fixtures/webm-video.webm'));
+  for (const name of ['clip.webm', 'disguised.mp3']) {
+    const response = await api.upload({ name, mime: 'audio/webm', bytes });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.fileType, 'video');
+    assert.equal(response.body.status, 'pending');
+  }
+  assert.equal(api.state.audioProbes.length, 0);
+  assert.equal(api.state.pending.length, 2);
+});
+
+test('unreadable WebM is rejected before storing or queueing it', async () => {
+  const api = harness({ realUploadResolver: true });
+  const response = await api.upload({ name: 'broken.webm', mime: 'video/webm',
+    bytes: Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00]) });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, 'INVALID_WEBM_CONTAINER');
+  assert.equal(api.state.files.length, 0);
+  assert.equal(api.state.pending.length, 0);
+});
+
+test('detected WebM audio accepts duration beyond two minutes', async () => {
+  const api = harness({ realUploadResolver: true, audioDuration: 121 });
+  const response = await api.upload({ name: 'recording.webm', mime: 'video/webm',
+    bytes: fs.readFileSync(require.resolve('./fixtures/webm-audio.webm')) });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.fileType, 'audio');
+  assert.equal(api.state.files.length, 1);
 });
 
 test('repeat upload reuses approved owner file and preserves a renamed library entry', async () => {
@@ -427,13 +481,13 @@ test('reused GIF still applies explicit rights and title, and scan bot still rec
   assert.equal(api.state.blobs.length, 1);
 });
 
-test('new voice recordings are converted before hashing, storage, and pending moderation', async () => {
+test('new voice recordings are converted and approved without a transcription queue', async () => {
   const api = harness();
   const name = 'betshuva-audio-2026-09-23_14-07-36-25-ID-742_2.webm';
   const result = await api.upload({ name, mime: 'audio/webm', bytes: 'original WebM recording',
     body: { recordedAudio: 'true', toUserId: 'friend' } });
   assert.equal(result.statusCode, 200);
-  assert.equal(result.body.status, 'pending');
+  assert.notEqual(result.body.status, 'pending');
   assert.equal(api.state.audioConversions.length, 1);
   assert.equal(api.state.audioProbes.length, 0);
   const file = api.state.files[0];
@@ -443,10 +497,9 @@ test('new voice recordings are converted before hashing, storage, and pending mo
   assert.equal(file.file_size, Buffer.byteLength('encoded MP3 recording'));
   assert.equal(file.content_sha256, crypto.createHash('sha256').update('encoded MP3 recording').digest('hex'));
   assert.ok(file.public_url.endsWith('.mp3'));
-  assert.equal(file.moderation_status, 'pending');
-  assert.equal(api.state.pending.length, 1, 'conversion never replaces moderation');
-  assert.ok(api.state.pending[0].values.includes(file.original_name));
-  assert.ok(api.state.pending[0].values.includes('audio/mpeg'));
+  assert.equal(file.moderation_status, 'approved');
+  assert.equal(file.moderation_details.audio.transcription, 'disabled');
+  assert.equal(api.state.pending.length, 0, 'audio never queues for transcription');
   assert.equal(api.state.recipientReads.length, 1);
 });
 
@@ -461,7 +514,7 @@ test('legacy recordings store and return the assigned short creator number after
   assert.equal(result.body.fileName, `${stem}742_2.mp3`);
   assert.equal(api.state.files[0].original_name, result.body.fileName);
   assert.ok(api.state.blobs[0].endsWith(`${stem}742_2.mp3`));
-  assert.ok(api.state.pending[0].values.includes(result.body.fileName));
+  assert.equal(api.state.pending.length, 0);
 });
 
 test('selected/imported audio preserves its original bytes, extension, and content type', async () => {
@@ -491,10 +544,10 @@ test('recording flag does not convert a non-audio upload', async () => {
   assert.equal(api.state.files.length, 0);
 });
 
-test('recording failures and duration excess cannot create storage or moderation records', async () => {
+test('recording failures cannot create storage or moderation records', async () => {
   for (const [conversionError, status] of [
     ['INVALID_AUDIO', 400],
-    ['AUDIO_DURATION_EXCEEDED', 400],
+    ['AUDIO_SIZE_EXCEEDED', 400],
     ['AUDIO_CONVERSION_BUSY', 503],
     ['AUDIO_CONVERSION_UNAVAILABLE', 503],
   ]) {
@@ -507,12 +560,6 @@ test('recording failures and duration excess cannot create storage or moderation
     assert.equal(api.state.blobs.length, 0);
     assert.equal(api.state.pending.length, 0);
   }
-  const api = harness({ audioDuration: 121 });
-  const result = await api.upload({ name: 'voice.wav', mime: 'audio/wav',
-    body: { recordedAudio: 'true' } });
-  assert.equal(result.statusCode, 400);
-  assert.equal(result.body.code, 'AUDIO_DURATION_EXCEEDED');
-  assert.equal(api.state.files.length, 0);
 });
 
 test('matching upload locks queue fairly, release once, and do not block other hashes or owners', async () => {
@@ -636,4 +683,19 @@ test('recipient-only upload policy does not bypass a failed safety scan', async 
   const api=harness({realSenderGuard:true,result:{blocked:true,reason:'unsafe-test-content',classification:MEN}});
   const result=await api.upload({body:{toUserId:'friend'}});
   assert.equal(result.body.status,'rejected');assert.equal(result.body.reason,'unsafe-test-content');
+});
+
+test('audio accepts exactly 150MB and long duration while other file caps remain enforced', async () => {
+  for (const [name, mime, size, status] of [
+    ['long.mp3', 'audio/mpeg', 150 * 1024 * 1024, 200],
+    ['large.mp3', 'audio/mpeg', 150 * 1024 * 1024 + 1, 400],
+    ['large.mp4', 'video/mp4', 51 * 1024 * 1024, 400],
+    ['large.pdf', 'application/pdf', 26 * 1024 * 1024, 400],
+  ]) {
+    const api = harness({ realUploadResolver: true, audioDuration: 24 * 3600 });
+    const response = await api.upload({ name, mime, bytes: '0000ftypisom', reportedSize: size });
+    assert.equal(response.statusCode, status, name);
+    assert.equal(api.state.files.length, status === 200 ? 1 : 0);
+    if (status === 200) assert.equal(api.state.files[0].moderation_details.audio.durationSeconds, 86400);
+  }
 });

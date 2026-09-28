@@ -34,6 +34,7 @@ function historyHandler(method, route, rowSets) {
     app: { [method](...args) { handler = args.at(-1); } },
     auth() {},
     getPool: async () => pool,
+    ...require('../server/chat-history-window'),
     teenContactAllowed: async () => true,
     messageAfterConversationClear: () => 'TRUE',
     decryptAudioTranscript: () => null,

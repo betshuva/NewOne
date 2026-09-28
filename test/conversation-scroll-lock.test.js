@@ -31,14 +31,10 @@ test('the guide is displayed as Israel throughout the active application', () =>
   assert.match(serverSource, /SAFE_INFORMATION_USER_NAME = 'מידע בטוח · AI'/);
 });
 
-test('conversation refreshes do not pull users away from older messages', () => {
-  const guardedScrollMethods = source.match(
-    /void _scrollToBottom\(\{bool force = false\}\)[\s\S]*?if \(!shouldScroll\) return;/g,
-  ) || [];
-  assert.equal(guardedScrollMethods.length, 2);
-  assert.match(source, /_scrollCtrl\.position\.pixels <= 80/);
-  assert.match(source,
-    /maxScrollExtent - _scrollCtrl\.position\.pixels <=\s*80/);
+test('both conversations share the guarded history scroll controller', () => {
+  assert.equal((source.match(/_scrollCtrl\.scrollToLatest\(force: force\)/g) || []).length, 2);
+  const history = fs.readFileSync(path.join(__dirname, '..', 'flutter_app', 'lib', 'chat_history_list.dart'), 'utf8');
+  assert.match(history, /!force && position\.maxScrollExtent - position\.pixels > 80/);
 });
 
 test('pending friendship messages are retried after startup and resume races', () => {
@@ -54,7 +50,7 @@ test('group messages use chronological scrolling without a reversed web edge', (
   const groupStart = source.indexOf('class GroupChatScreen');
   const groupSource = source.slice(groupStart);
   assert.match(groupSource,
-    /ListView\.builder\([\s\S]*?final messageIndex = i - \(hasFilterNotice \? 1 : 0\)/);
+    /ChatHistoryList\([\s\S]*?final messageIndex = i - \(hasFilterNotice \? 1 : 0\)/);
   assert.doesNotMatch(groupSource.slice(0, groupSource.indexOf('final messageIndex')),
     /reverse: true/);
 });
@@ -343,7 +339,7 @@ test('failed upload attempts are not persisted as chat messages', () => {
   assert.doesNotMatch(source.slice(groupResultStart, groupResultEnd), /_messages\.add/);
 });
 
-test('voice recordings use web opus, reject empty data, and preload duration', () => {
+test('voice recordings use web opus and reject empty data', () => {
   const privateVoiceStart = source.indexOf(
     'Future<void> _toggleVoiceRecording()',
   );
@@ -369,22 +365,13 @@ test('voice recordings use web opus, reject empty data, and preload duration', (
   assert.match(groupVoiceSource, /AudioEncoder\.opus/);
   assert.match(groupVoiceSource, /bytes\.length < 256/);
 
-  const playerStart = source.indexOf('class _VoiceMessagePlayerState');
-  const playerEnd = source.indexOf('class _ChatVideoPlayer', playerStart);
-  const playerSource = source.slice(playerStart, playerEnd);
-  assert.match(playerSource, /_prepareSource\(\);/);
-  assert.match(playerSource, /await _player\.getDuration\(\)/);
-  assert.match(playerSource, /טוען הקלטה\.\.\./);
-  assert.match(playerSource, /הטעינה נכשלה — לחצו לניסיון חוזר/);
-  assert.match(playerSource, /await _player\.resume\(\)/);
-  assert.match(playerSource, /initialDurationSeconds/);
+  // Player loading, duration and source changes are exercised by the Flutter widget tests.
   assert.match(source, /audio_duration_seconds/);
 });
 
-test('private and group voice recording display a two-minute countdown', () => {
-  const countdowns = source.match(/120 - _recordSeconds/g) || [];
-  assert.ok(countdowns.length >= 4);
-  assert.match(source, /נותרו \$\{\(\(120 - _recordSeconds\)/);
+test('private and group voice recording display elapsed time without a countdown', () => {
+  assert.equal((source.match(/זמן הקלטה:/g) || []).length, 2);
+  assert.doesNotMatch(source, /120 - _recordSeconds/);
 });
 
 test('contacts can be shared from app friends without exposing phone or email', () => {
@@ -513,7 +500,7 @@ test('destination filter rejection remains forwardable while safety rejection st
   assert.match(source,
     /status == 'rejected_scan' && message\['forwardAllowed'\] != true/);
   assert.match(source,
-    /הקובץ עבר את בדיקת הבטיחות\. ניתן להעביר אותו/);
+    /retainedFilterFileMessage/);
 });
 
 test('multiple chat items can be forwarded to multiple users and groups', () => {
@@ -544,10 +531,12 @@ test('desktop chat composers stay compact and keep attachment controls on the ri
     source.indexOf("hintText: _recipientAllowsText"),
   );
   assert.match(privateComposer, /Icons\.attach_file/);
-  assert.match(privateComposer, /Icons\.verified_user_outlined/);
+  assert.doesNotMatch(privateComposer, /Icons\.verified_user_outlined/);
+  assert.doesNotMatch(privateComposer, /Icons\.emoji_emotions_outlined/);
+  assert.match(privateComposer, /Icons\.mic/);
   assert.ok(
     privateComposer.indexOf('Icons.attach_file') <
-      privateComposer.indexOf('Icons.verified_user_outlined'),
+      privateComposer.indexOf('Icons.mic'),
   );
 });
 

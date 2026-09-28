@@ -147,7 +147,7 @@ for (const delayed of [false, true]) {
           file_url: '/private/image.png', file_name: 'image.png', file_type: 'image' },
         SCAN_BOT_ID: 'bot', onlineUsers: new Map(), outcomePersisted: false,
         assertSenderMediaAllowed: async () => {
-          if (rejection === 'sender_filter') throw Object.assign(Error('סינון אישי'), { code: 'SENDER_CONTENT_FILTERED' });
+          if (['sender_filter', 'moderation'].includes(rejection)) throw Object.assign(Error('סינון אישי'), { code: 'SENDER_CONTENT_FILTERED' });
         },
         completePending: async (_, operation) => operation(pool),
         notifyRejectedSend: async (_, notice) => notices.push(notice),
@@ -155,11 +155,11 @@ for (const delayed of [false, true]) {
       };
       let code;
       if (delayed) {
-        code = section('        try {\n          await assertSenderMediaAllowed(pool, { userId: row.user_id,',
+        code = section('        try {\n          if (!scanResult.blocked) await assertSenderMediaAllowed(pool, { userId: row.user_id,',
           '        // Re-evaluate the current policy after a delayed scan,');
         code = `for(let attempt=0;attempt<1;attempt++){${code}}`;
       } else {
-        code = section('    if (!scanResult?.pending) {\n      try {\n        await assertSenderMediaAllowed(',
+        code = section('    if (!scanResult?.pending && !scanResult?.blocked) {\n      try {\n        await assertSenderMediaAllowed(',
           '    if (!scanResult?.pending && groupFilter &&');
       }
       await vm.runInNewContext(`(async()=>{${code}})()`, scope);

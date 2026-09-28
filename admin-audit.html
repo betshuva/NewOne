@@ -35,8 +35,9 @@ th{background:#21262d;color:var(--muted);font-weight:600}#audit-table>thead{posi
 td.time,td.code{font-family:monospace;direction:ltr;text-align:right;font-size:11px}.audit-select{width:18px;height:18px;min-height:18px;accent-color:var(--blue);cursor:pointer}.selection-control{text-align:center}.selection-control .audit-select{vertical-align:middle}.row-actions{display:flex;gap:4px;flex-wrap:wrap}.row-actions .icon{width:32px;height:32px;font-size:16px}
 .value{display:block;max-height:3.2em;overflow:hidden;line-height:1.6}.status{color:var(--green)}.status[data-status=failed],.status[data-status=blocked],.status[data-status=rejected]{color:var(--error)}
 .status[data-status=pending],.status[data-status=queued],.status[data-status=partial]{color:#e4bd66}.status[data-status=running]{color:var(--blue)}.status[data-status=observed],.status[data-status=cancelled],.status[data-status=skipped]{color:var(--muted)}
-.status[data-status=unknown]{color:var(--muted)}.status-icon{font-size:16px;margin-inline-end:5px}
+.status[data-status=unknown]{color:var(--muted)}.status[data-outcome=filtered]{color:#e4bd66}.status-icon{font-size:16px;margin-inline-end:5px}
 .check-cell .value,.check-result .value{max-height:none}.check-context{display:block;color:var(--muted);font-size:11px;line-height:1.6;margin-top:4px;overflow-wrap:anywhere}
+.image-filter{border:0;background:transparent;color:var(--blue);text-decoration:underline;text-align:inherit;padding:0;white-space:normal;overflow-wrap:anywhere;width:100%}
 .check-preview{display:block;position:relative;width:64px;height:48px;min-height:48px;padding:0;margin-top:8px;overflow:hidden;border-radius:4px;background:#0b0e12}.check-preview img{display:block;width:100%;height:100%;object-fit:contain}.preview-placeholder{font-size:11px;color:var(--muted)}#preview-dialog{width:min(960px,94vw);max-height:92dvh}.preview-viewer{height:min(70dvh,720px);min-height:120px;display:grid;place-items:center;background:#0b0e12;padding:8px}.preview-viewer img{width:100%;height:100%;min-width:0;min-height:0;object-fit:contain}.preview-caption{padding:10px 18px;line-height:1.6;overflow-wrap:anywhere}
 .check-result[data-check-outcome=passed]{color:var(--green)}.check-result[data-check-outcome=blocked],.check-result[data-check-outcome=failed],.check-result[data-check-outcome=stopped]{color:var(--error)}.check-result[data-check-outcome=uncertain]{color:#e4bd66}.check-result[data-check-outcome=skipped],.check-result[data-check-outcome=unknown]{color:var(--muted)}
 td.time .value{max-height:none;white-space:pre-line}
@@ -57,6 +58,7 @@ pre{font:12px/1.7 monospace;direction:ltr;text-align:left;white-space:pre-wrap;o
 
 #settings-dialog{width:min(1120px,96vw);max-height:92dvh}#settings-dialog[open]{display:flex;flex-direction:column}.settings-body{padding:12px 18px;overflow:auto}.settings-intro{margin:0 0 12px;color:var(--muted);line-height:1.6}.settings-search{display:block;width:100%;margin-bottom:12px;box-sizing:border-box}.settings-row{display:grid;grid-template-columns:76px minmax(140px,1fr) minmax(135px,1fr) minmax(210px,2fr) minmax(145px,1fr);gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}.settings-row label{display:flex;flex-direction:column;gap:5px;font-size:12px}.settings-row input,.settings-row select{min-width:0;width:100%;box-sizing:border-box}.settings-row .settings-options{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.settings-options label{max-width:100%;flex:1;min-width:72px}.settings-options label.check{flex-direction:row;align-items:center;min-width:100px}.settings-options input[type=checkbox]{width:auto}.settings-preview{direction:ltr;unicode-bidi:plaintext;overflow-wrap:anywhere;white-space:pre-wrap}.settings-footer{padding:12px 18px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line)}.settings-footer .primary{margin-inline-start:auto}.settings-name{font-weight:600}.settings-preview-label{color:var(--muted);font-size:12px}.settings-error{padding:8px 18px}.settings-hint{font-size:12px;color:var(--muted)}
 @media(max-width:700px){.settings-row{grid-template-columns:70px minmax(0,1fr);gap:10px}.settings-row>.settings-format,.settings-row>.settings-options,.settings-row>.settings-example{grid-column:1/-1}.settings-body{padding:10px 12px}.settings-row .settings-options{align-items:flex-start}.settings-footer{padding:10px 12px}}
+.media-open{display:block;margin:6px 0;white-space:normal}.preview-viewer video,.preview-viewer iframe{width:100%;height:100%;min-width:0;min-height:0;border:0;object-fit:contain}.preview-viewer audio{max-width:100%}#preview-download{display:block;padding:8px 18px}#preview-dialog [hidden]{display:none!important}
 </style>
 </head>
 <body>
@@ -73,14 +75,14 @@ pre{font:12px/1.7 monospace;direction:ltr;text-align:left;white-space:pre-wrap;o
 <dialog id="settings-dialog" aria-labelledby="settings-title"><div class="dialog-head"><h2 id="settings-title">הגדרות עמודות</h2><button id="settings-close" type="button" aria-label="סגור הגדרות עמודות">סגור</button></div><div class="settings-body"><p class="settings-intro">שנו מיקום בין 1 ל־<span id="settings-count"></span>; שאר העמודות יזוזו וימוספרו מחדש. הפורמט משפיע על התצוגה בלבד. מטבע משנה את הסמל, ללא המרת שער. מספר במשך זמן מוצג בשניות. אחוזים: 0.25 מוצג כ־25%; רמת ביטחון נשמרת כבר באחוזים.</p><input id="settings-search" class="settings-search" type="search" placeholder="חיפוש עמודה" aria-label="חיפוש עמודה"><div id="settings-list"></div></div><div id="settings-error" class="settings-error error" role="alert"></div><div class="settings-footer"><button id="settings-reset" type="button">איפוס סדר ופורמטים</button><button id="settings-cancel" type="button">ביטול</button><button id="settings-save" class="primary" type="button">שמירה</button></div></dialog>
 <dialog id="column-dialog" aria-labelledby="column-title"><div class="dialog-head"><h2 id="column-title"></h2><button id="column-close" class="icon" title="סגור סינון" aria-label="סגור סינון"><span class="material-icons" aria-hidden="true">&#xe16a;</span></button></div><div class="column-body"><label id="column-field-label">שדה<select id="column-field"></select></label><div id="column-editor"></div><div id="column-error" class="column-message error" role="alert"></div></div><div class="column-footer"><button id="column-clear">נקה עמודה</button><button id="column-cancel">ביטול</button><button id="column-apply" class="primary">אישור</button></div></dialog>
 <dialog id="detail-dialog" aria-labelledby="detail-title"><div class="dialog-head"><h2 id="detail-title">פרטי רישום</h2><button id="copy-root" class="icon" title="העתק מזהה פעולה" aria-label="העתק מזהה פעולה"><span class="material-icons" aria-hidden="true">&#xe190;</span></button><button id="close-dialog" class="icon" title="סגור" aria-label="סגור"><span class="material-icons" aria-hidden="true">&#xe16a;</span></button></div><pre id="detail-json"></pre></dialog>
-<dialog id="preview-dialog" aria-labelledby="preview-title"><div class="dialog-head"><h2 id="preview-title">התמונה שנבדקה</h2><button id="close-preview" class="icon" title="סגור תמונה" aria-label="סגור תמונה"><span class="material-icons" aria-hidden="true">&#xe16a;</span></button></div><div class="preview-viewer"><div id="preview-status" class="meta" role="status">טוען תמונה...</div><img id="preview-image" alt="התמונה שנבדקה בסריקה" hidden></div><div id="preview-caption" class="preview-caption meta"></div></dialog>
+<dialog id="preview-dialog" aria-labelledby="preview-title"><div class="dialog-head"><h2 id="preview-title">תצוגה</h2><button id="close-preview" class="icon" title="סגור תצוגה" aria-label="סגור תצוגה"><span class="material-icons" aria-hidden="true">&#xe16a;</span></button></div><div class="preview-viewer"><div id="preview-status" class="meta" role="status">טוען תמונה...</div><img id="preview-image" alt="תצוגת תמונה" hidden><video id="preview-video" controls playsinline hidden></video><audio id="preview-audio" controls hidden></audio><iframe id="preview-pdf" title="תצוגת PDF" hidden></iframe></div><div id="preview-caption" class="preview-caption meta"></div><a id="preview-download" hidden>הורד את הקובץ</a></dialog>
 <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description"><div class="dialog-head"><h2 id="delete-title"></h2></div><div class="delete-body"><p id="delete-label"></p><p id="delete-id" class="code"></p><p id="delete-description"></p><div id="delete-error" class="error" role="alert"></div></div><div class="delete-footer"><button id="delete-cancel" type="button">ביטול</button><button id="delete-confirm" class="danger" type="button"><span class="material-icons" aria-hidden="true">&#xe1bb;</span> מחק תיעוד</button></div></dialog>
 <script>
 'use strict';
 /* Shared column format engine: server/audit-column-formats.js */
 function createAuditColumnFormats(){
  const numeric=new Set(['dispatch_sent_count','dispatch_failed_count','event_count','attempt','step_total','provider_calls_used','provider_calls_limit','person_count','face_count','confidence','http_status','affected_count','frame_index','input_tokens','output_tokens','cached_input_tokens','total_tokens','cost_ils','operation_input_tokens','operation_output_tokens','operation_total_tokens','operation_cost_ils','fx_rate','event_id','parent_event_id','initiator_identifier','recipient_identifier']);
- const controls=new Set(['expand','select','details','preview','findings','dispatch_recipients']);
+ const controls=new Set(['expand','select','details','preview','stopped_evidence','findings','dispatch_recipients']);
  const dates=['dd/MM/yy HH:mm:ss.SS','dd/MM/yyyy HH:mm:ss','dd/MM/yyyy','dd/MM/yy','yyyy-MM-dd','HH:mm:ss.SS','HH:mm'];
  const durations=['mm:ss','hh:mm:ss','seconds'];
  const types={auto:'ברירת מחדל',text:'טקסט',number:'מספר',currency:'מטבע',percent:'אחוזים',date:'תאריך ושעה',duration:'משך זמן'};
@@ -138,6 +140,7 @@ let settingsDraft=null,settingsSaving=false;
 const DISPATCH_SEND_LABELS={sent:'נשלח — נשמר בשרת',partial:'נשלח לחלק מהנמענים',blocked:'נחסם',failed:'נכשל',pending:'ממתין',not_sent:'לא נשלח',unknown:'לא ידוע',not_applicable:'לא רלוונטי'};
 const DISPATCH_DELIVERY_LABELS={read:'דווח שנקרא',server_delivered:'השרת סימן מסירה — אין אישור מהמכשיר',unconfirmed:'אין אישור מסירה מהמכשיר',not_sent:'לא נשלח',not_applicable:'לא רלוונטי'};
 const DISPATCH_TYPE_LABELS={text:'טקסט',image:'תמונה',video:'וידאו',audio:'הקלטה / קובץ קול',document:'קובץ',sticker:'מדבקה'};
+const OBJECT_STATUS_LABELS={sent:'נשלח',blocked:'נחסם',blocked_for_recipient:'נחסם למשתמש',partial:'נשלח לחלק מהנמענים — נחסם לאחרים',pending:'ממתין',stopped:'הסריקה נעצרה — לא נשלח',failed:'לא נשלח — תקלה',not_sent:'לא נשלח',unknown:'טרם תועדה תוצאה',not_applicable:'לא רלוונטי'};
 const API = 'https://betshuva.com/betshuva-app/api/admin/audit';
 const STATUS_LABELS = {accepted:'התקבל',queued:'בתור',running:'בתהליך',pending:'ממתין',stored:'נשמר בשרת',persisted:'נשמר בשרת',completed:'הושלם',succeeded:'הצליח',cancelled:'בוטל',partial:'חלקי',observed:'תועד',approved:'אושר',delivered:'נמסר',read:'נקרא',failed:'נכשל',blocked:'נחסם',rejected:'נדחה',skipped:'דולג',unknown:'לא ידוע'};
 const KIND_LABELS = {message_persisted:'הודעה נשמרה בשרת',delivery_persisted:'הודעה נשמרה בשרת',operation_started:'הפעולה החלה',operation_completed:'הפעולה הושלמה',operation_failed:'הפעולה נכשלה',client_displayed:'דיווח תצוגה מהמכשיר',media_stored:'מדיה נשמרה בשרת',media_moderation_changed:'מצב סינון המדיה עודכן',scan_queued:'סריקה נוספה לתור',scan_attempt_started:'ניסיון סריקה החל',scan_waiting:'סריקה ממתינה',scan_attempt_failed:'ניסיון סריקה נכשל',scan_workflow_finished:'תהליך הסריקה הסתיים',scan_queue_removed:'רשומת הסריקה הוסרה מהתור',http_response:'תגובת שרת לבקשה',http_connection_closed:'חיבור הבקשה נסגר',provider_call_finished:'קריאה לספק הסתיימה',scan_cache_used:'תוצאת סריקה מהמטמון',push_provider_result:'תשובת ספק ההתראות',push_skipped:'שליחת התראה דולגה',message_retry_reused:'ניסיון חוזר השתמש בהודעה קיימת',server_message_status_changed:'מצב הודעה בשרת עודכן',message_delivery_state_changed:'מצב מסירת הודעה עודכן',contact_request_pending:'בקשת קשר ממתינה',contact_request_status_changed:'מצב בקשת קשר עודכן'};
@@ -156,7 +159,8 @@ const COLUMN_SCHEMAS = {
     ["action", "פעולה", 180, ["display_action", "media_type", "capture_kind"]],
     ["kind", "פעולת משנה", 200, ["kind"]],
     ["step_index", "שלב", 150, ["step_index", "step_total"]],
-    ["operation_status", "מצב הפעולה כולה", 180, ["operation_status"]],
+    ["object_status", "סטטוס האובייקט", 240, ["object_status"]],
+    ["operation_status", "מצב הסריקה", 180, ["scan_status"]],
     ["status", "מצב השלב", 140, ["status"]],
     ["initiator_id", "שם יוזם הפעולה", 180, ["initiator_id"]],
     ["initiator_identifier", "מזהה יוזם הפעולה", 160, ["initiator_identifier"]],
@@ -213,7 +217,9 @@ const COLUMN_SCHEMAS = {
     ["frame_index", "מספר תמונה", 110, ["frame_index"]],
     ["frame_timestamp", "זמן התמונה בסרטון", 150, ["frame_timestamp"]],
     ["cache_hit", "תוצאה מהמטמון", 130, ["cache_hit"]],
-    ["preview", "תצוגת תמונה", 130, []],
+    ["scan_image", "שם התמונה", 300, ["scan_image"]],
+    ["preview", "תצוגה", 130, []],
+    ["stopped_evidence", "קובץ שנחסם או שעצר את הסריקה", 340, ["stopped_file"]],
     ["target_type", "סוג יעד", 140, ["target_type"]],
     ["target_id", "מזהה יעד", 180, ["target_id"]],
     ["source", "מקור", 110, ["source"]],
@@ -251,7 +257,8 @@ const COLUMN_SCHEMAS = {
     ["created_at", "זמן מקומי", 180, ["created_at"]],
     ["action", "פעולה", 180, ["display_action"]],
     ["kind", "פעולת משנה", 200, ["kind"]],
-    ["operation_status", "מצב הפעולה כולה", 180, ["operation_status"]],
+    ["object_status", "סטטוס האובייקט", 240, ["object_status"]],
+    ["operation_status", "מצב הסריקה", 180, ["scan_status"]],
     ["status", "מצב השלב", 140, ["status"]],
     ["initiator_id", "שם יוזם הפעולה", 180, ["initiator_id"]],
     ["initiator_identifier", "מזהה יוזם הפעולה", 160, ["initiator_identifier"]],
@@ -308,7 +315,9 @@ const COLUMN_SCHEMAS = {
     ["frame_index", "מספר תמונה", 110, ["frame_index"]],
     ["frame_timestamp", "זמן התמונה בסרטון", 150, ["frame_timestamp"]],
     ["cache_hit", "תוצאה מהמטמון", 130, ["cache_hit"]],
-    ["preview", "תצוגת תמונה", 130, []],
+    ["scan_image", "שם התמונה", 300, ["scan_image"]],
+    ["preview", "תצוגה", 130, []],
+    ["stopped_evidence", "קובץ שנחסם או שעצר את הסריקה", 340, ["stopped_file"]],
     ["target_type", "סוג יעד", 140, ["target_type"]],
     ["target_id", "מזהה יעד", 180, ["target_id"]],
     ["source", "מקור", 110, ["source"]],
@@ -354,12 +363,17 @@ const NUMBER_FIELDS = new Set(['operation_total_tokens','operation_cost_ils','in
 const DURATION_FIELDS=new Set(['duration_ms','elapsed_ms','frame_timestamp']);
 const PARENT_FIELDS=new Set(['operation_total_tokens','operation_cost_ils','operation_usage_status','operation_input_tokens','operation_output_tokens','dispatch_state','dispatch_reason','dispatch_code','dispatch_delivery','dispatch_sent_count','dispatch_failed_count','dispatch_message_type','dispatch_content','dispatch_file_name','dispatch_message_id','dispatch_recipients','action','display_action','event_count','duration_ms','operation_status','operation_reason','operation_reason_code','initiator_identifier','recipient_identifier','operation_id','step_total','provider_calls_used','provider_calls_limit']);
 const FIELD_LABELS = {created_at:'זמן מקומי',action:'פעולה',initiator_id:'יוזם הפעולה',recipient_id:'נמען',recipient_type:'סוג נמען',media_type:'סוג מדיה',capture_kind:'מקור הצילום / ההקלטה',target_type:'סוג יעד',target_id:'מזהה יעד',source:'מקור',status:'מצב',reason_code:'סיבה',event_count:'מספר אירועים',duration_ms:'זמן כולל לפעולה (דקות:שניות)',kind:'אירוע',executor_id:'מבצע פעולת המשנה',attempt:'ניסיון',operation_id:'מזהה פעולה',parent_event_id:'מזהה אירוע קודם'};
+PARENT_FIELDS.add('object_status');
+PARENT_FIELDS.add('stopped_file');
 Object.assign(FIELD_LABELS,{step_index:'מספר שלב',step_total:'סך שלבים',display_action:'פעולה',kind:'פעולת משנה',check_type:'מה נבדק',check_outcome:'תוצאת הבדיקה'});
 for(const columns of Object.values(COLUMN_SCHEMAS))for(const [key,title,,fields]of columns)for(const field of fields)if(!FIELD_LABELS[field])FIELD_LABELS[field]=title;
 const state = {mode:'operations',rows:[],cursor:null,boundary:null,hasLoaded:false,applied:{},columns:{operations:{},events:{}},actions:[],coverage:null,started:null,expanded:new Set(),pages:new Map(),generation:0,request:0,catalogRequest:0,loading:false,failedMore:false,exporting:false,token:null,controller:null,liveTimer:null,liveController:null,liveRequest:0,liveRunning:false,liveFailures:0,liveError:null,lastUpdated:null,pageHidden:false};
 const AUTO_REFRESH_MS=5000;
 const sorting={operations:null,events:null};
 const columnOrders={operations:null,events:null};
+// A file drill-down carries the visible order without overwriting saved tab preferences.
+let imageFilterColumnOrder=null;
+function currentColumnOrder(mode){return (mode==='events'&&imageFilterColumnOrder)||columnOrders[mode]||defaultColumnOrder(mode);}
 let columnOrdersLoaded=false,columnOrdersSaving=false;
 const pendingColumnOrders=new Map();
 let columnDrag=null,columnResize=null;
@@ -589,6 +603,9 @@ function safeDetails(value,depth=0){
   if(typeof value==='string')return value.length>500?value.slice(0,500)+'...':value;
   return value==null||['number','boolean'].includes(typeof value)?value:'[omitted]';
 }
+const FILTER_REASON_CODES=new Set(['content_filter','sender_content_filter','sender_content_filtered','destination_content_filtered','recipient_content_filter']);
+function filterRefusal(row){return FILTER_REASON_CODES.has(row?.reason_code)||FILTER_REASON_CODES.has(row?.details?.reasonCode)||(['blocked','not_sent'].includes(row?.dispatch?.dispatch_state)&&FILTER_REASON_CODES.has(row?.dispatch?.dispatch_code));}
+const FILTER_STATUS_LABEL='לא נשלח — הגדרות סינון';
 function statusLabel(code){return STATUS_LABELS[code]||String(code||'לא ידוע');}
 function actor(row,event=false){
   if(event){const label=EXECUTOR_LABELS[row.executor_type];return label?`${label}: ${row.executor_name||(row.executor_type==='system'&&row.executor_id==='api'?'השרת (API)':row.executor_id)||'לא תועד'}`:'מבצע לא ידוע';}
@@ -767,6 +784,9 @@ function releaseCheckPreviews(all=false){
 function clearActivePreview(){
   const current=activePreview;activePreview=null;current?.controller.abort();if(current?.objectUrl)URL.revokeObjectURL(current.objectUrl);
   byId('preview-image').removeAttribute('src');byId('preview-image').hidden=true;
+  for(const id of ['preview-video','preview-audio']){const player=byId(id);player.pause();player.removeAttribute('src');player.load();player.hidden=true;}
+  byId('preview-pdf').removeAttribute('src');byId('preview-pdf').hidden=true;
+  byId('preview-download').removeAttribute('href');byId('preview-download').hidden=true;
 }
 async function openCheckPreview(row){
   const url=previewRequestUrl(row.checkPreviewFullUrl||row.checkPreviewUrl,row.id);if(!url)return;
@@ -779,8 +799,93 @@ async function openCheckPreview(row){
     current.objectUrl=URL.createObjectURL(blob);image.src=current.objectUrl;image.hidden=false;status.hidden=true;
   }catch(error){if(error.status===401||error.status===403)previewAuthorizationFailed=true;if(activePreview!==current)return;status.textContent=error.name==='AbortError'?'טעינת התמונה לא הושלמה':error.message;status.classList.add('error');}
 }
+const AUDIT_MEDIA_TYPES={image:['image/jpeg','image/png','image/webp','image/gif'],video:['video/mp4','video/webm','video/quicktime'],audio:['audio/mpeg','audio/aac','audio/mp4','audio/webm','audio/ogg','audio/wav','audio/x-wav'],document:['application/pdf']};
+function mediaLabel(type){return {image:'תמונה',video:'וידאו',audio:'הקלטה',document:'PDF'}[type]||'קובץ';}
+function auditMediaRequestUrl(media){
+  const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if(!media||!uuid.test(media.id||'')||!uuid.test(media.operationId||'')||!AUDIT_MEDIA_TYPES[media.mediaType])return null;
+  try{const base=new URL(API),url=new URL(media.url,base.origin),suffix=`/operations/${media.operationId}/media/${media.id}`;
+    if(url.origin!==base.origin||url.username||url.password||url.search||url.hash||!['/api/admin/audit',base.pathname].some(prefix=>url.pathname===prefix+suffix))return null;
+    return API+suffix;
+  }catch(_){return null;}
+}
+async function fetchAuditMedia(media,{token,signal}={}){
+  const url=auditMediaRequestUrl(media);if(!url||!token)throw new Error('הקובץ אינו זמין');
+  const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal,cache:'no-store',redirect:'error'});
+  if(!response.ok)throw Object.assign(new Error(response.status===401||response.status===403?'אין הרשאה לצפייה בקובץ':response.status===404?'הקובץ נמחק או אינו זמין':'לא ניתן לפתוח את הקובץ כרגע'),{status:response.status});
+  const mime=(response.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
+  if(!AUDIT_MEDIA_TYPES[media.mediaType].includes(mime)||Number(response.headers.get('content-length'))>50*1024*1024)throw new Error('הקובץ אינו זמין לתצוגה');
+  const blob=await response.blob();if(!blob.size||blob.size>50*1024*1024)throw new Error('הקובץ אינו זמין לתצוגה');return blob;
+}
+async function openAuditMedia(media){
+  if(!auditMediaRequestUrl(media))return;
+  cancelAutoRefresh();clearActivePreview();const current={controller:new AbortController(),objectUrl:null};activePreview=current;
+  const status=byId('preview-status');status.hidden=false;status.textContent='טוען '+mediaLabel(media.mediaType)+'...';status.classList.remove('error');
+  byId('preview-caption').textContent=media.name||mediaLabel(media.mediaType);byId('preview-dialog').showModal();
+  const timeout=setTimeout(()=>current.controller.abort(),120000);
+  try{
+    const blob=await fetchAuditMedia(media,{token:state.token,signal:current.controller.signal});if(activePreview!==current)return;
+    current.objectUrl=URL.createObjectURL(blob);
+    const viewer=byId({image:'preview-image',video:'preview-video',audio:'preview-audio',document:'preview-pdf'}[media.mediaType]);
+    viewer.src=current.objectUrl;viewer.hidden=false;status.hidden=true;
+    const download=byId('preview-download');download.href=current.objectUrl;download.download=media.name||'media';download.hidden=false;
+  }catch(error){if(activePreview!==current)return;status.hidden=false;status.textContent=error.name==='AbortError'?'טעינת הקובץ לא הושלמה':error.message;status.classList.add('error');}
+  finally{clearTimeout(timeout);}
+}
+function auditMediaCell(evidence,operation){
+  // A check's evidence belongs to this event, never to the operation's first frame.
+  const type=evidence.check_type||evidence.details?.checkType;
+  if(isAuditCheck(evidence)&&(evidence.checkPreviewUrl||Number.isSafeInteger(evidence.details?.frameIndex)||
+    !['audio_transcription','video_frames','document_content','media_moderation'].includes(type))){
+    const td=element('td'),preview=checkPreviewButton(evidence);
+    if(preview)td.append(preview);
+    else td.append(element('span','תמונת הבדיקה אינה זמינה'));
+    return td;
+  }
+  const td=element('td'),items=operation.operationMedia||evidence.operationMedia||[];
+  if(items.length){
+    for(const media of items){
+      const label='פתח '+mediaLabel(media.mediaType),node=element('button',media.available?label:'הקובץ אינו זמין',{type:'button',class:'media-open','data-audit-media':media.id,title:media.name||label});
+      node.disabled=!media.available||!auditMediaRequestUrl(media);node.onclick=()=>openAuditMedia(media);td.append(node);
+    }
+  }else{
+    const preview=checkPreviewButton(operationPreviewRow(evidence,operation));
+    if(preview)td.append(preview);else td.append(element('span',operation.media_type?'הקובץ אינו זמין':'-'));
+  }
+  return td;
+}
 function knownCheckValue(labels,code){return typeof code==='string'&&Object.hasOwn(labels,code)?labels[code]:null;}
 function checkLabel(row){return typeof row.checkLabel==='string'&&row.checkLabel.trim()?row.checkLabel:knownCheckValue(CHECK_TYPE_LABELS,row.check_type||row.details?.checkType)||'-';}
+function isAuditCheck(row){return checkLabel(row)!=='-';}
+function validImageFilterKey(key){return typeof key==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:(?:image|frame:(?:[0-8]?[0-9])?:(?:0|[1-9][0-9]{0,11})?)$/i.test(key);}
+function filterToImage(key,name){
+  if(!validImageFilterKey(key)||state.exporting||!columnOrdersLoaded)return;
+  if(state.mode!=='events')imageFilterColumnOrder=normalizedColumnOrder('events',currentColumnOrder(state.mode));
+  state.applied={};
+  for(const mode of ['operations','events'])state.columns[mode]={scan_image:{values:[key.toLowerCase()],exclude:false}};
+  state.mode='events';sorting.events={field:'created_at',direction:'asc'};
+  for(const mode of ['operations','events'])byId(`${mode}-tab`).setAttribute('aria-selected',String(mode==='events'));
+  byId('table-wrap').scrollTop=0;notice(`מוצגות הבדיקות של: ${name}`);load();
+}
+function imageFilterName(name,key){
+  if(!validImageFilterKey(key))return element('span',name||'-',{class:'value'});
+  const node=element('button',name||'הצג בדיקות תמונה',{type:'button',class:'image-filter value',
+    title:'הצג רק את הבדיקות של תמונה זו','data-image-filter':key});
+  node.disabled=state.loading||state.exporting||!columnOrdersLoaded;node.onclick=()=>filterToImage(key,name||'תמונה');return node;
+}
+function scanStatusCell(row,operation){
+  if(!isAuditCheck(row))return row.id?statusCell(row,operation):cell('-');
+  const raw=row.check_outcome||row.details?.checkOutcome,code=knownCheckValue(CHECK_OUTCOME_LABELS,raw)?raw:'not_recorded',
+    label=CHECK_OUTCOME_LABELS[code],
+    status={passed:'completed',blocked:'blocked',uncertain:'pending',failed:'failed',stopped:'failed',skipped:'skipped'}[code]||'unknown',
+    td=statusCell({status});
+  const icon=td.firstElementChild.firstElementChild;
+  td.firstElementChild.replaceChildren(icon,document.createTextNode(label));
+  td.dataset.scanStatus=knownCheckValue(CHECK_OUTCOME_LABELS,code)?code:'not_recorded';
+  td.title=[checkLabel(row),checkContext(row),checkResultLabel(row)].filter(Boolean).join(' · ');
+  td.firstElementChild.title=td.title;
+  return td;
+}
 function checkResultLabel(row){return typeof row.checkResultLabel==='string'&&row.checkResultLabel.trim()?row.checkResultLabel:knownCheckValue(CHECK_OUTCOME_LABELS,row.check_outcome||row.details?.checkOutcome)||(checkLabel(row)==='-'?'-':'תוצאה לא תועדה');}
 function checkContext(row){
   const details=row.details||{},parts=[],provider=knownCheckValue(PROVIDER_LABELS,details.provider||row.provider||(row.executor_type==='provider'?row.executor_id:null));
@@ -799,7 +904,7 @@ function timeCell(raw){const td=cell(time(raw).replace(' ','\n'),true);td.classL
 function rowActions(row){const td=element('td');const actions=element('div',null,{class:'row-actions'});const detail=button('code','פרטי רישום',()=>showDetails(row));detail.dataset.detailsId=row.id;const copy=button('copy','העתק מזהה פעולה',()=>copyRoot(row.operation_id||row.id));actions.append(detail,copy);if(canDelete){const target=deletionTarget(row),remove=button('delete',target.root?'מחיקת אירוע הפתיחה דרך הפעולה הראשית':target.kind==='operations'?'מחק פעולה ראשית ופעולות משנה':'מחק פעולת משנה',()=>openDelete(row));remove.classList.add('danger');remove.dataset.deleteId=target.id;remove.dataset.deleteKind=target.kind;remove.disabled=target.root||deleteBusy||state.loading||state.exporting||[...state.pages.values()].some(page=>page.loading);actions.append(remove);}td.append(actions);return td;}
 const CHANGE_LABELS={Text:'טקסט',Image:'תמונות',Video:'סרטונים',Audio:'קול',Document:'מסמכים',Men:'גברים',Women:'נשים',Children:'ילדים',NonHumanImages:'נוף וחפצים',EnforceGeneralFilter:'אכיפת הסינון הכללי'};
 const TARGET_LABELS={general:'סינון כללי',contact:'סינון איש קשר',group:'סינון קבוצה',user:'משתמש',message:'הודעה',file:'קובץ',stored_file:'קובץ',pending_scan:'סריקה בתור'};
-const AUDIT_REASON_LABELS={scan_stopped:'הסריקה נעצרה',scan_incomplete:'בדיקה נדרשת לא הושלמה',required_provider_unavailable:'שירות בדיקה נדרש אינו זמין',budget_exhausted:'מכסת הבדיקות לסרטון מוצתה',deadline_exceeded:'הסריקה חרגה מהזמן המותר',credit_balance_exhausted:'אין יתרת קרדיט אצל ספק הבדיקה',provider_suspended:'ספק הבדיקה מושהה',provider_not_configured:'ספק בדיקה נדרש אינו מוגדר',legacy_budget_unknown:'לא ניתן לאמת את מספר הבדיקות הקודמות',frame_manifest_changed:'התמונות שנדגמו אינן תואמות לסריקה הקודמת',scan_version_changed:'גרסת הסריקה השתנתה ונדרש אישור לבדיקה נוספת',operation_outcome_unknown:'תוצאת בקשת בדיקה קודמת אינה ידועה',provider_guard_unavailable:'לא ניתן לאמת את מכסת הבדיקות',source_unavailable:'לא ניתן לקרוא את קובץ הסרטון',queue_processed:'הטיפול בתור הסתיים',media_not_allowed:'המדיה לא אושרה',outcome_unknown:'התוצאה אינה ידועה',request_removed_without_acceptance:'הבקשה הוסרה ללא אישור',request_entry_removed:'רשומת הבקשה הוסרה',permission_denied:'אין הרשאה',unauthorized:'נדרשת הזדהות',forbidden:'אין הרשאה',not_found:'היעד לא נמצא',timeout:'תם זמן ההמתנה',provider_error:'שגיאה אצל ספק השירות',filter_blocked:'נחסם לפי הגדרות הסינון'};
+const AUDIT_REASON_LABELS={client_file_too_large:'הקובץ גדול מדי — נדחה בדפדפן לפני העלאה',scan_stopped:'הסריקה נעצרה',scan_incomplete:'בדיקה נדרשת לא הושלמה',required_provider_unavailable:'שירות בדיקה נדרש אינו זמין',budget_exhausted:'מכסת הבדיקות לסרטון מוצתה',deadline_exceeded:'הסריקה חרגה מהזמן המותר',credit_balance_exhausted:'אין יתרת קרדיט אצל ספק הבדיקה',provider_suspended:'ספק הבדיקה מושהה',provider_not_configured:'ספק בדיקה נדרש אינו מוגדר',legacy_budget_unknown:'לא ניתן לאמת את מספר הבדיקות הקודמות',frame_manifest_changed:'התמונות שנדגמו אינן תואמות לסריקה הקודמת',scan_version_changed:'גרסת הסריקה השתנתה ונדרש אישור לבדיקה נוספת',operation_outcome_unknown:'תוצאת בקשת בדיקה קודמת אינה ידועה',provider_guard_unavailable:'לא ניתן לאמת את מכסת הבדיקות',source_unavailable:'לא ניתן לקרוא את קובץ הסרטון',queue_processed:'הטיפול בתור הסתיים',media_not_allowed:'המדיה לא אושרה',outcome_unknown:'התוצאה אינה ידועה',request_removed_without_acceptance:'הבקשה הוסרה ללא אישור',request_entry_removed:'רשומת הבקשה הוסרה',permission_denied:'אין הרשאה',unauthorized:'נדרשת הזדהות',forbidden:'אין הרשאה',not_found:'היעד לא נמצא',timeout:'תם זמן ההמתנה',provider_error:'שגיאה אצל ספק השירות',filter_blocked:'נחסם לפי הגדרות הסינון'};
 function auditChanges(row){
   const details=row.details||{},entries=[];
   for(const [key,label]of Object.entries(CHANGE_LABELS)){
@@ -851,6 +956,7 @@ function scanBudgetText(row){
     ?`נוצלו ${used} מתוך מכסה של ${limit} קריאות בדיקה`:'';
 }
 function operationOutcome(root){
+  if(['blocked','rejected'].includes(root.status)&&filterRefusal(root))return {headline:FILTER_STATUS_LABEL,reason:root.dispatch?.dispatch_reason||'השליחה נעצרה לפי הגדרות הסינון',budget:''};
   const failed=['failed','blocked','rejected'].includes(root.status),scan=root.status_source==='scan_workflow_finished';
   const headline=scan&&root.status==='failed'?'הסריקה נעצרה — הפעולה לא הושלמה':`מצב הפעולה כולה: ${statusLabel(root.status)}`;
   const detailed=root.scan_summary?.status===root.status?root.scan_summary:null;
@@ -860,7 +966,7 @@ function operationOutcome(root){
   return {headline,reason:reason?auditReason({reason_code:reason}):failed?'הסיבה לא תועדה':'',
     budget:scanBudgetText(detailed)||scanBudgetText(evidence)};
 }
-function statusCell(row){const td=cell(statusLabel(row.status));td.classList.add('status');td.dataset.status=String(row.status||'unknown');const icon=['failed','blocked','rejected'].includes(row.status)?0xe238:['running','pending','queued'].includes(row.status)?0xe556:['completed','succeeded','approved','stored','persisted','delivered','read'].includes(row.status)?0xe1f6:0xe30b;td.firstElementChild.prepend(element('span',String.fromCodePoint(icon),{class:'material-icons status-icon','aria-hidden':'true'}));return td;}
+function statusCell(row,parent){const filtered=['blocked','rejected'].includes(row.status)&&(filterRefusal(row)||(row.kind==='http_response'&&row.status===parent?.status&&filterRefusal(parent)));const td=cell(filtered?FILTER_STATUS_LABEL:statusLabel(row.status));if(filtered){td.dataset.outcome='filtered';td.title='השליחה נעצרה לפי הגדרות הסינון';}td.classList.add('status');td.dataset.status=String(row.status||'unknown');const icon=filtered?0xe152:['failed','blocked','rejected'].includes(row.status)?0xe238:['running','pending','queued'].includes(row.status)?0xe556:['completed','succeeded','approved','stored','persisted','delivered','read'].includes(row.status)?0xe1f6:0xe30b;td.firstElementChild.prepend(element('span',String.fromCodePoint(icon),{class:'material-icons status-icon','aria-hidden':'true'}));return td;}
 function operationHue(id){let hash=0;for(const character of String(id))hash=(hash*31+character.charCodeAt(0))%65521;return (hash*137.508)%360;}
 function groupStyle(node,id){const hue=operationHue(id);node.style.setProperty('--group-color',`hsl(${hue} 60% 55%)`);node.style.setProperty('--group-tint',`hsl(${hue} 35% 17%)`);node.style.setProperty('--child-tint',`hsl(${hue} 22% 11%)`);}
 function chronologicalChildren(rows,root){
@@ -899,12 +1005,13 @@ function subEventPosition(row,root){
   return /^[1-9]\d*$/.test(index)&&/^[1-9]\d*$/.test(total)&&BigInt(index)<=BigInt(total)?`${index} מתוך ${total}`:'';
 }
 function operationReasonCode(root){
+  if(['blocked','rejected'].includes(root.status)&&filterRefusal(root))return root.dispatch?.dispatch_code||root.reason_code;
   const scan=root.status_source==='scan_workflow_finished',detail=root.scan_summary?.status===root.status?root.scan_summary:null;
   let reason=root.reason_code||(root.outcome_event?.status===root.status?root.outcome_event?.reason_code:null);
   if(scan&&(!reason||['scan_stopped','queue_processed'].includes(reason)))reason=detail?.reason_code||reason;
   return reason||null;
 }
-function reasonText(code){if(!code)return '-';return auditReason({reason_code:code}).replace(/ \(HTTP \d{3}\)$/,'');}
+function reasonText(code){if(!code)return '-';if(FILTER_REASON_CODES.has(code))return 'השליחה נעצרה לפי הגדרות הסינון';return auditReason({reason_code:code}).replace(/ \(HTTP \d{3}\)$/,'');}
 function stageDescription(row){
   if(row.kind==='http_response')return 'תשובת השרת לבקשה';
   if(row.kind==='http_connection_closed')return 'החיבור לשרת נסגר';
@@ -921,7 +1028,7 @@ function dispatchCell(key,operation){
       byId('detail-json').textContent=lines.join('\n')||'לא תועדו נמענים';byId('copy-root').hidden=true;byId('detail-dialog').showModal();
     }));return td;
   }
-  const value=data[key];let text=key==='dispatch_state'?DISPATCH_SEND_LABELS[value]||'לא ידוע':key==='dispatch_delivery'?DISPATCH_DELIVERY_LABELS[value]||'לא ידוע':key==='dispatch_message_type'?DISPATCH_TYPE_LABELS[value]||value:value;
+  const value=data[key];let text=key==='dispatch_state'?(value==='blocked'&&filterRefusal(operation)?FILTER_STATUS_LABEL:DISPATCH_SEND_LABELS[value]||'לא ידוע'):key==='dispatch_delivery'?DISPATCH_DELIVERY_LABELS[value]||'לא ידוע':key==='dispatch_message_type'?DISPATCH_TYPE_LABELS[value]||value:value;
   if(key==='dispatch_content'&&!text)text=na?'לא רלוונטי':data.dispatch_message_type&&data.dispatch_message_type!=='text'?'אין טקסט נלווה':'לא תועד';
   const td=cell(text==null?(na?'לא רלוונטי':'-'):text);
   if(key==='dispatch_content'&&data.message_body&&data.message_body.length>160)td.append(button('code','הצג תוכן הודעה מלא',()=>{byId('detail-json').textContent=data.message_body;byId('copy-root').hidden=true;byId('detail-dialog').showModal();}));
@@ -958,14 +1065,39 @@ function singleFieldCell(key,row,root){
   let value;
   if(USAGE_FIELDS.includes(key))return usageCell(key,row,operation);
   if(key.startsWith('dispatch_'))return dispatchCell(key,operation);
+  if(key==='object_status'){
+    const data=operation.dispatch||{},code=data.object_status||'unknown',td=cell(OBJECT_STATUS_LABELS[code]||OBJECT_STATUS_LABELS.unknown);
+    td.classList.add('status','check-cell');td.dataset.objectStatus=code;
+    td.dataset.status={sent:'completed',blocked:'blocked',blocked_for_recipient:'blocked',partial:'partial',pending:'pending',stopped:'pending',failed:'failed',not_sent:'cancelled'}[code]||'unknown';
+    if(data.dispatch_reason){td.title=data.dispatch_reason;td.firstElementChild.title=data.dispatch_reason;}
+    return td;
+  }
   if(key==='created_at')return timeCell(evidence.created_at||operation.created_at);
   if(key==='elapsed_ms')return timingCell(row?elapsedFromRoot(row,operation):'-','elapsed');
   if(key==='duration_ms')return timingCell(formatDuration(operation.duration_ms),'total');
-  if(key==='status')return row?statusCell(row):cell('-');
-  if(key==='operation_status')return statusCell(operation);
+  if(key==='status')return row?statusCell(row,operation):cell('-');
+  if(key==='operation_status')return scanStatusCell(evidence,operation);
   if(key==='check_type'){const td=cell(checkLabel(evidence));td.classList.add('check-cell');return td;}
   if(key==='check_outcome'){const code=evidence.check_outcome||details.checkOutcome,td=cell(knownCheckValue(CHECK_OUTCOME_LABELS,code)||(checkLabel(evidence)==='-'?'-':'תוצאה לא תועדה'));td.classList.add('check-result');td.dataset.checkOutcome=code||'unknown';return td;}
-  if(key==='preview'){const td=element('td'),preview=checkPreviewButton(operationPreviewRow(evidence,operation));if(preview)td.append(preview);else td.append(element('span','-'));return td;}
+  if(key==='preview')return auditMediaCell(evidence,operation);
+  if(key==='stopped_evidence'){
+    const td=element('td'),stopped=operation.stoppedEvidence;td.classList.add('check-cell');
+    if(operation.dispatch?.object_status==='blocked_for_recipient')return td;
+    if(!stopped)return cell('-');
+    for(const item of stopped.items||[]){
+      const block=element('div');block.append(imageFilterName(item.name,item.key));
+      const preview=item.preview?checkPreviewButton(item.preview):null;
+      if(preview)block.append(preview);else block.append(element('span','התמונה אינה זמינה',{class:'check-context'}));
+      if(item.reason)block.append(element('span',item.reason,{class:'check-context'}));
+      td.append(block);
+    }
+    if(!stopped.items?.length)td.append(element('span',stopped.message||'לא תועדה תמונה מסוימת שגרמה לעצירה'));
+    return td;
+  }
+  if(key==='scan_image'){
+    const td=element('td');td.append(imageFilterName(evidence.scanImage?.name,evidence.scanImage?.key));td.classList.add('check-cell');
+    return td;
+  }
   if(key==='findings'){const td=element('td');if(evidence.checkResultLabel&&evidence.checkResultLabel!=='-'){const open=button('code','הצג ממצאי בדיקה',()=>{cancelAutoRefresh();byId('detail-json').textContent=checkResultLabel(evidence);byId('copy-root').hidden=true;byId('detail-dialog').showModal();});td.append(open);}else td.append(element('span','-'));return td;}
   if(key==='details')return rowActions(row||operation);
   switch(key){
@@ -1121,7 +1253,7 @@ async function openColumnSettings(){
  if(!columnOrdersLoaded)return;
  if(columnOrdersSaving){notice('שמירת סדר העמודות מתבצעת. אפשר לפתוח את ההגדרות לאחר סיומה.');return;}
  if(pendingColumnOrders.size){await flushColumnOrders();if(pendingColumnOrders.size)return;}
- cancelAutoRefresh();settingsDraft={mode:state.mode,order:columnOrders[state.mode].slice(),formats:JSON.parse(JSON.stringify(columnFormats[state.mode]))};
+ cancelAutoRefresh();settingsDraft={mode:state.mode,order:currentColumnOrder(state.mode).slice(),formats:JSON.parse(JSON.stringify(columnFormats[state.mode]))};
  byId('settings-title').textContent='הגדרות עמודות — '+(state.mode==='operations'?'פעולות משתמש':'כל האירועים');byId('settings-count').textContent=settingsDraft.order.length;byId('settings-search').value='';byId('settings-error').textContent='';renderSettings();byId('settings-dialog').showModal();byId('settings-search').focus();
 }
 function closeColumnSettings(){if(settingsSaving)return;settingsDraft=null;byId('settings-dialog').close();scheduleAutoRefresh();}
@@ -1131,13 +1263,16 @@ async function saveColumnSettings(){
  try{
   const response=await fetch(`${API}/column-settings/${draft.mode}`,{method:'PUT',headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/json'},body:JSON.stringify({order:draft.order,formats:draft.formats}),signal:controller.signal});
   if(!response.ok)throw Error('שמירת ההגדרות נכשלה. השינויים נשארו כאן וניתן לנסות שוב.');
-  const data=await response.json();columnOrders[draft.mode]=normalizedColumnOrder(draft.mode,data.order);columnFormats[draft.mode]=columnFormatTools.normalize(data.formats,defaultColumnOrder(draft.mode));settingsSaving=false;closeColumnSettings();render();notice('סדר העמודות והפורמטים נשמרו בחשבון');
+  const data=await response.json();columnOrders[draft.mode]=normalizedColumnOrder(draft.mode,data.order);if(draft.mode==='events')imageFilterColumnOrder=null;columnFormats[draft.mode]=columnFormatTools.normalize(data.formats,defaultColumnOrder(draft.mode));settingsSaving=false;closeColumnSettings();render();notice('סדר העמודות והפורמטים נשמרו בחשבון');
  }catch(error){byId('settings-error').textContent=error.name==='AbortError'?'השרת לא השיב בזמן. ניתן לנסות לשמור שוב.':error.message;}
  finally{clearTimeout(timer);settingsSaving=false;byId('settings-dialog').removeAttribute('aria-busy');for(const control of byId('settings-dialog').querySelectorAll('input,select,button'))control.disabled=false;byId('settings-save').textContent='שמירה';if(settingsDraft)renderSettings();}
 }
 
 function normalizedColumnOrder(mode,saved){
   const defaults=defaultColumnOrder(mode),order=[...new Set((Array.isArray(saved)?saved:[]).filter(key=>defaults.includes(key)))];
+  if(!order.includes('scan_image')&&order.includes('preview'))order.splice(order.indexOf('preview'),0,'scan_image');
+  if(!order.includes('stopped_evidence')&&order.includes('preview'))order.splice(order.indexOf('preview')+1,0,'stopped_evidence');
+  if(!order.includes('object_status')&&order.includes('operation_status'))order.splice(order.indexOf('operation_status'),0,'object_status');
   if(mode==='operations'&&order.includes('action')&&!order.includes('kind'))order.splice(order.indexOf('action')+1,0,'kind');
   let anchor='kind';for(const key of ['change_context','before_value','after_value','event_explanation']){if(!order.includes(key)&&order.includes(anchor))order.splice(order.indexOf(anchor)+1,0,key);anchor=key;}
   if(mode==='operations'&&order.includes('initiator_id')&&!order.includes('executor_id'))order.splice(order.indexOf('initiator_id')+1,0,'executor_id');
@@ -1220,6 +1355,7 @@ async function loadColumnOrders(){
 }
 function saveColumnOrder(order,label){
   if(!columnOrdersLoaded)return;
+  if(state.mode==='events')imageFilterColumnOrder=null;
   columnOrders[state.mode]=order;pendingColumnOrders.set(state.mode,order.slice());render();flushColumnOrders();
 }
 async function flushColumnOrders(){
@@ -1241,9 +1377,9 @@ async function flushColumnOrders(){
   finally{columnOrdersSaving=false;}
 }
 function moveColumn(source,target,before){
-  const order=columnOrders[state.mode].slice();if(source===target||!order.includes(source)||!order.includes(target))return;
+  const order=currentColumnOrder(state.mode).slice();if(source===target||!order.includes(source)||!order.includes(target))return;
   order.splice(order.indexOf(source),1);order.splice(order.indexOf(target)+(before?0:1),0,source);
-  if(order.every((key,index)=>key===columnOrders[state.mode][index]))return;
+  if(order.every((key,index)=>key===currentColumnOrder(state.mode)[index]))return;
   saveColumnOrder(order,'מיקום העמודה עודכן');
   [...byId('audit-table').tHead.querySelectorAll('th')].find(th=>th.dataset.columnId===source)?.focus({preventScroll:true});
 }
@@ -1271,7 +1407,7 @@ function trackColumnDrag(){
   drag.frame=requestAnimationFrame(trackColumnDrag);
 }
 function enableColumnReordering(table){
-  const defaults=defaultColumnOrder(state.mode),order=columnOrders[state.mode]||defaults;
+  const defaults=defaultColumnOrder(state.mode),order=currentColumnOrder(state.mode);
   const headings=[...table.tHead.rows[0].cells];
   for(const [index,th]of headings.entries()){
     th.dataset.columnId=defaults[index];th.tabIndex=0;th.setAttribute('aria-disabled',String(!columnOrdersLoaded));
@@ -1295,7 +1431,7 @@ function enableColumnReordering(table){
     th.onpointercancel=th.onlostpointercapture=()=>finishColumnDrag();
     th.onkeydown=event=>{
       if(!columnOrdersLoaded||event.target!==th||!event.altKey||!['ArrowLeft','ArrowRight'].includes(event.key))return;
-      event.preventDefault();const current=columnOrders[state.mode],index=current.indexOf(th.dataset.columnId),step=event.key==='ArrowLeft'?1:-1;
+      event.preventDefault();const current=currentColumnOrder(state.mode),index=current.indexOf(th.dataset.columnId),step=event.key==='ArrowLeft'?1:-1;
       if(current[index+step])moveColumn(th.dataset.columnId,current[index+step],step<0);
     };
   }
@@ -1394,18 +1530,19 @@ function initialize(){
   byId('detail-dialog').addEventListener('close',()=>scheduleAutoRefresh());
   byId('close-preview').onclick=()=>byId('preview-dialog').close();
   byId('preview-dialog').addEventListener('close',()=>{clearActivePreview();scheduleAutoRefresh();});
+  for(const id of ['preview-video','preview-audio'])byId(id).onerror=()=>{if(!activePreview||byId(id).hidden)return;byId('preview-status').hidden=false;byId('preview-status').textContent='הדפדפן אינו מצליח לנגן את הקובץ. אפשר להוריד אותו ולפתוח בנגן מתאים';};
   byId('preview-image').onerror=()=>{if(!activePreview)return;clearActivePreview();byId('preview-status').hidden=false;byId('preview-status').textContent='התמונה אינה זמינה';};
   byId('select-visible').onclick=()=>{for(const input of byId('audit-table').querySelectorAll('[data-audit-select]')){if(selectedAuditRows.size>=200)break;input.checked=true;selectedAuditRows.set(input.dataset.auditSelect,JSON.parse(input.dataset.target));}renderSelection();};
   byId('clear-selection').onclick=()=>{selectedAuditRows.clear();render();scheduleAutoRefresh();};
   byId('delete-selected').onclick=()=>openBulkDelete(false);byId('delete-all').onclick=()=>openBulkDelete(true);
   byId('delete-cancel').onclick=closeDelete;byId('delete-confirm').onclick=confirmDelete;
   byId('delete-dialog').addEventListener('cancel',event=>{event.preventDefault();closeDelete();});
-  for(const mode of ['operations','events'])byId(`${mode}-tab`).onclick=()=>{if(state.mode===mode)return;state.mode=mode;for(const value of ['operations','events'])byId(`${value}-tab`).setAttribute('aria-selected',String(value===mode));load();};
+  for(const mode of ['operations','events'])byId(`${mode}-tab`).onclick=()=>{if(state.mode===mode)return;imageFilterColumnOrder=null;state.mode=mode;for(const value of ['operations','events'])byId(`${value}-tab`).setAttribute('aria-selected',String(value===mode));load();};
   byId('refresh').onclick=()=>{catalog();load();};byId('more').onclick=()=>load(true);byId('export').onclick=exportCsv;byId('coverage').onclick=()=>showDetails({recordingStartedAt:state.started,coverage:state.coverage});byId('close-dialog').onclick=()=>byId('detail-dialog').close();
   window.addEventListener('storage',event=>{if(['bt_admin_token','bt_token'].includes(event.key)){cancelAutoRefresh();window.location.reload();}});
   catalog();load();
 }
-if(typeof module!=='undefined'&&module.exports)module.exports={operationPreviewRow,buildQuery,mergeRows,safeDetails,statusLabel,actor,time,actionLabel,mediaActionLabel,recipientLabel,checkLabel,checkResultLabel,checkContext,optionLabel,previewRequestUrl,fetchCheckPreview,apiRequest,deletionTarget,deleteAuditRecord,withColumnFilters,selectedValue,toggleColumnValue,rangeFilter,dateInputValue,auditRowKey,compareAuditKeys,readAuditWindow,readAllEvents,hierarchyQuery,operationHue,chronologicalChildren,childCount,subEventPosition,normalizedColumnOrder,childColumnQuery,elapsedFromRoot,AUTO_REFRESH_MS,AUTO_REFRESH_MAX_REQUESTS,MAX_EXPORT_BYTES,operationOutcome,scanBudgetText,formatDuration,durationFilterValue};
+if(typeof module!=='undefined'&&module.exports)module.exports={auditMediaRequestUrl,fetchAuditMedia,operationPreviewRow,buildQuery,mergeRows,safeDetails,statusLabel,actor,time,actionLabel,mediaActionLabel,recipientLabel,checkLabel,checkResultLabel,checkContext,optionLabel,previewRequestUrl,fetchCheckPreview,apiRequest,deletionTarget,deleteAuditRecord,withColumnFilters,selectedValue,toggleColumnValue,rangeFilter,dateInputValue,auditRowKey,compareAuditKeys,readAuditWindow,readAllEvents,hierarchyQuery,operationHue,chronologicalChildren,childCount,subEventPosition,normalizedColumnOrder,childColumnQuery,elapsedFromRoot,AUTO_REFRESH_MS,AUTO_REFRESH_MAX_REQUESTS,MAX_EXPORT_BYTES,operationOutcome,scanBudgetText,formatDuration,durationFilterValue};
 if(typeof document!=='undefined')initialize();
 </script>
 </body>

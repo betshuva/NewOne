@@ -54,6 +54,8 @@ const ACTION_GROUPS = {
     ['blocked_chat_text', 'חסימת טקסט בשיחה'], ['send_system_message', 'שליחת הודעת מערכת'],
   ],
   media: [
+    ['save_media_progress', 'שמירת נקודת המשך בהקלטה או בווידאו'],
+    ['repair_audio_type', 'תיקון סיווג קובץ קול'],
     ['upload_file', 'העלאת קובץ'], ['upload_pending', 'הוספת העלאה לתור הסריקה'],
     ['blocked_upload', 'חסימת העלאה'], ['blocked_upload_delayed', 'חסימת העלאה שהמתינה בתור'],
     ['blocked_listing_image', 'חסימת תמונה במודעה'],
@@ -245,7 +247,7 @@ const FILTER_CHANGE_KEYS = Object.freeze([
 
 const SAFE_DETAILS_KEYS = Object.freeze([
   'dispatchBody','dispatchFileName','dispatchReason',
-  'reasonCode', 'blockedBy', 'messageType', 'fileType', 'mimeType', 'fileSize',
+  'reasonCode', 'blockedBy', 'messageType', 'fileType', 'mimeType', 'fileSize', 'maxBytes', 'clientReported',
   'durationMs', 'attempt', 'affectedCount', 'recipientCount', 'deliveredCount',
   'blockedCount', 'cacheHit', 'workflow', 'provider', 'model', 'operation', 'code',
   'policyRevisionId', 'providerCallId', 'storedFileId', 'messageId', 'requestId',
@@ -265,7 +267,7 @@ const SAFE_DETAILS_KEYS = Object.freeze([
 ]);
 
 const NUMERIC_KEYS = new Set([
-  'fileSize', 'durationMs', 'attempt', 'affectedCount', 'recipientCount', 'deliveredCount', 'blockedCount',
+  'fileSize', 'maxBytes', 'durationMs', 'attempt', 'affectedCount', 'recipientCount', 'deliveredCount', 'blockedCount',
   'eventCount', 'count', 'byteCount', 'memberCount', 'scanAttempt',
   'acceptedCount', 'failedCount',
   'frameCount', 'providerCallsUsed', 'providerCallsLimit',
@@ -278,7 +280,7 @@ const IDENTIFIER_KEYS = new Set([
   'queueId', 'sourceFileId', 'rootEventId',
   'auditOperationId',
 ]);
-const BOOLEAN_KEYS = new Set(['cacheHit', 'truncated', 'auditOnly', ...FILTER_CHANGE_KEYS]);
+const BOOLEAN_KEYS = new Set(['cacheHit', 'truncated', 'auditOnly', 'clientReported', ...FILTER_CHANGE_KEYS]);
 const CHECK_NUMERIC_LIMITS = { checkConfidencePct: 100, checkPersonCount: 10000,
   checkFaceCount: 10000, frameIndex: 89, frameTimestampMs: 86400000 };
 const STATUS_KEYS = new Set(['moderationStatus', 'previousStatus', 'nextStatus']);

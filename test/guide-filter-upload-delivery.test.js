@@ -25,6 +25,7 @@ async function upload({ group = false, type = 'image', filter = { ...all, men: f
   let response;
   const pool = { async query(sql) {
     assert.match(sql, /UPDATE stored_files SET moderation_status='approved'/);
+    assert.match(sql, /blocked_content_expires_at=NULL/);
     approved = true;
     return { rows: [] };
   } };
@@ -56,6 +57,7 @@ for (const group of [false, true]) {
       const result = await upload({ group, type, filter: { ...all, [key]: false } });
       assert.equal(result.response.status, 'rejected');
       assert.equal(result.response.forwardAllowed, true);
+      assert.equal(result.response.code, 'DESTINATION_CONTENT_FILTERED');
       assert.equal(result.calls.length, 1);
       const call = result.calls[0];
       assert.equal(call.userId, 'sender');
@@ -91,6 +93,7 @@ async function delayed({ group = false, permitted = true, allowed = false } = {}
   const pool = { async query(sql) {
     if (sql.includes('SELECT 1 FROM blocked_users')) return { rows: permitted ? [] : [{ blocked: true }] };
     assert.match(sql, /UPDATE stored_files SET moderation_status='approved'/);
+    assert.match(sql, /blocked_content_expires_at=NULL/);
     approved = true;
     return { rows: [] };
   } };
@@ -122,11 +125,14 @@ for (const group of [false, true]) {
     assert.equal(result.notices.length, 1);
     assert.equal(result.notices[0].userId, 'sender');
     assert.equal(result.rejected.length, 1);
+    assert.equal(result.rejected[0][2].forwardAllowed, true);
+    assert.equal(result.rejected[0][2].code, 'DESTINATION_CONTENT_FILTERED');
   });
   test(`delayed ${group ? 'group' : 'private'} contact/access failure is not mislabeled as filter warning`, async () => {
     const denied = await delayed({ group, permitted: false });
     assert.equal(denied.notices.length, 0);
     assert.equal(denied.rejected.length, 1);
+    assert.equal(denied.rejected[0][2].code, undefined);
     const allowed = await delayed({ group, allowed: true });
     assert.equal(allowed.notices.length, 0);
     assert.equal(allowed.rejected.length, 0);

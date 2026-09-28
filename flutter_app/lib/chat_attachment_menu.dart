@@ -9,6 +9,7 @@ enum ChatAttachmentAction {
   scan,
   contact,
   myContact,
+  expression,
   paste
 }
 
@@ -198,6 +199,9 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                     _item('סריקת מסמך', Icons.document_scanner_outlined,
                         Colors.orange,
                         action: ChatAttachmentAction.scan,
+                        allowed: widget.textAllowed),
+                    _item('אימוג׳י ומדבקות', Icons.emoji_emotions_outlined,
+                        Colors.amber.shade800, action: ChatAttachmentAction.expression,
                         allowed: widget.textAllowed),
                     _item('שיתוף איש קשר', Icons.contact_phone_outlined,
                         Colors.teal,

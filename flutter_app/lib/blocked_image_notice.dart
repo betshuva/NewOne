@@ -6,7 +6,7 @@ import 'dart:math' as math;
 import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
 
-/// Shows only a blocked marker on the image; details live in its options menu.
+/// Shows the delivery marker and saved people categories on the image.
 class BlockedImageNotice extends StatelessWidget {
   const BlockedImageNotice({
     super.key,
@@ -33,9 +33,47 @@ class BlockedImageNotice extends StatelessWidget {
   final DateTime? previewExpiresAt;
   final VoidCallback? onMoreActions;
 
+  bool get _filterOnly => isFilterBlockReason(reason);
+
   static const _border = Color(0xFFF0B8B8);
   static const _background = Color(0xFFFFF7F7);
   static const _text = Color(0xFF243746);
+
+  List<Widget> _classificationMarkers() {
+    final detected = classification?['detectedCategories'];
+    final categories = detected is List && detected.isNotEmpty
+        ? detected.toSet()
+        : {
+            if (classification?['uncertain'] != true)
+              classification?['category']
+          };
+    return [
+      for (final category in ['men', 'children'])
+        if (categories.contains(category))
+          Padding(
+            padding: const EdgeInsets.only(left: 4),
+            child: Tooltip(
+              message: category == 'men' ? 'גברים' : 'ילדים',
+              triggerMode: TooltipTriggerMode.tap,
+              child: Container(
+                key: ValueKey('image-category-$category'),
+                width: 30,
+                height: 30,
+                decoration: const BoxDecoration(
+                  color: Color(0xFFF7FBFF),
+                  shape: BoxShape.circle,
+                  boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 3)],
+                ),
+                child: Icon(
+                  category == 'men' ? Icons.man : Icons.child_care,
+                  size: 20,
+                  color: const Color(0xFF1E6FA8),
+                ),
+              ),
+            ),
+          ),
+    ];
+  }
 
   Widget _textLine(String text, {double size = 12, bool bold = false}) => Text(
         text,
@@ -52,8 +90,9 @@ class BlockedImageNotice extends StatelessWidget {
   Widget _frame(List<Widget> children) => Container(
         padding: const EdgeInsets.all(9),
         decoration: BoxDecoration(
-          color: _background,
-          border: Border.all(color: _border),
+          color: _filterOnly ? const Color(0xFFFFF8E8) : _background,
+          border: Border.all(
+              color: _filterOnly ? const Color(0xFFF2D28B) : _border),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Column(
@@ -85,7 +124,8 @@ class BlockedImageNotice extends StatelessWidget {
         textDirection: TextDirection.rtl,
         child: AlertDialog(
           key: const ValueKey('blocked-image-details'),
-          title: const Text('פרטי החסימה', textAlign: TextAlign.right),
+          title: Text(_filterOnly ? 'פרטי הסינון' : 'פרטי החסימה',
+              textAlign: TextAlign.right),
           content: SizedBox(
             width: 360,
             child: SingleChildScrollView(
@@ -110,13 +150,17 @@ class BlockedImageNotice extends StatelessWidget {
                   const SizedBox(height: 7),
                   _frame([
                     _textLine(onlyYouText, size: 11),
-                    if (previewExpiresAt != null) ...[
+                    if (_filterOnly &&
+                        !reason.contains(retainedFilterFileMessage))
+                      _textLine(retainedFilterFileMessage, size: 11),
+                    if (!_filterOnly && previewExpiresAt != null) ...[
                       const SizedBox(height: 5),
                       _PreviewExpiryText(
                         expiresAt: previewExpiresAt!,
                         builder: (text) => _textLine(text, size: 11),
                       ),
-                    ] else if (expiryText?.isNotEmpty == true) ...[
+                    ] else if (!_filterOnly &&
+                        expiryText?.isNotEmpty == true) ...[
                       const SizedBox(height: 5),
                       _textLine(expiryText!, size: 11),
                     ],
@@ -169,21 +213,54 @@ class BlockedImageNotice extends StatelessWidget {
                           children: [
                             image,
                             Positioned(
+                              right: 40,
+                              top: 6,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: _classificationMarkers(),
+                              ),
+                            ),
+                            if (_filterOnly)
+                              const Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                child: ColoredBox(
+                                  color: Color(0xFFFFF4D7),
+                                  child: Padding(
+                                    padding: EdgeInsets.all(5),
+                                    child: Text('לא נשלחה — הגדרות סינון',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: Color(0xFF765000))),
+                                  ),
+                                ),
+                              ),
+                            Positioned(
                               right: 6,
                               top: 6,
                               child: GestureDetector(
                                 onTap: () => _showDetails(context),
                                 child: Tooltip(
-                                  message: 'התמונה נחסמה',
+                                  message: _filterOnly
+                                      ? filterOnlyMessage
+                                      : 'התמונה נחסמה',
                                   child: Container(
                                     key: const ValueKey('blocked-image-marker'),
                                     padding: const EdgeInsets.all(5),
-                                    decoration: const BoxDecoration(
-                                      color: Color(0xFFE53935),
+                                    decoration: BoxDecoration(
+                                      color: _filterOnly
+                                          ? const Color(0xFFB77900)
+                                          : const Color(0xFFE53935),
                                       shape: BoxShape.circle,
                                     ),
-                                    child: const Icon(Icons.gpp_bad_outlined,
-                                        color: Colors.white, size: 20),
+                                    child: Icon(
+                                        _filterOnly
+                                            ? Icons.filter_alt_outlined
+                                            : Icons.gpp_bad_outlined,
+                                        color: Colors.white,
+                                        size: 20),
                                   ),
                                 ),
                               ),
@@ -194,34 +271,36 @@ class BlockedImageNotice extends StatelessWidget {
                     ),
                     SizedBox(
                       width: 40,
-                      child: PopupMenuButton<String>(
-                        key: const ValueKey('blocked-image-menu'),
-                        tooltip: 'אפשרויות תמונה',
-                        icon: const Icon(Icons.more_vert,
-                            color: Color(0xFF1E6FA8)),
-                        onSelected: (value) {
-                          if (value == 'details') {
-                            _showDetails(context);
-                          } else {
-                            onMoreActions?.call();
-                          }
-                        },
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(
-                            value: 'details',
-                            child: Text('פרטי החסימה',
-                                textAlign: TextAlign.right,
-                                textDirection: TextDirection.rtl),
-                          ),
-                          if (onMoreActions != null)
-                            const PopupMenuItem(
-                              value: 'more',
-                              child: Text('אפשרויות נוספות',
-                                  textAlign: TextAlign.right,
-                                  textDirection: TextDirection.rtl),
+                      child: onMoreActions != null
+                          ? IconButton(
+                              key: const ValueKey('blocked-image-menu'),
+                              tooltip: 'אפשרויות תמונה',
+                              icon: const Icon(Icons.more_vert,
+                                  color: Color(0xFF1E6FA8)),
+                              onPressed: onMoreActions,
+                            )
+                          : PopupMenuButton<String>(
+                              key: const ValueKey('blocked-image-menu'),
+                              tooltip: 'אפשרויות תמונה',
+                              icon: const Icon(Icons.more_vert,
+                                  color: Color(0xFF1E6FA8)),
+                              onSelected: (value) {
+                                if (value == 'details') {
+                                  _showDetails(context);
+                                }
+                              },
+                              itemBuilder: (_) => [
+                                PopupMenuItem(
+                                  value: 'details',
+                                  child: Text(
+                                      _filterOnly
+                                          ? 'פרטי הסינון'
+                                          : 'פרטי החסימה',
+                                      textAlign: TextAlign.right,
+                                      textDirection: TextDirection.rtl),
+                                ),
+                              ],
                             ),
-                        ],
-                      ),
                     ),
                   ],
                 ),

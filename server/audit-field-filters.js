@@ -1,7 +1,10 @@
 'use strict';
 const {COST_FIELDS,USAGE_LABELS,fieldSql:costFieldSql}=require('./audit-costs');
-const {DISPATCH_FIELDS,SEND_LABELS,DELIVERY_LABELS,TYPE_LABELS}=require('./audit-dispatch');
+const {DISPATCH_FIELDS,SEND_LABELS,DELIVERY_LABELS,TYPE_LABELS,OBJECT_STATUS_LABELS}=require('./audit-dispatch');
 const {EVENT_KIND_LABELS}=require('./system-audit-catalog');
+const {checkOutcomeSql,CHECK_OUTCOME_LABELS}=require('./audit-check-presentation');
+const {imageKeySql,imageNameSql}=require('./audit-image-names');
+const {problemFileEventSql}=require('./audit-problem-file');
 const AUDIT_REASON_LABELS={scan_stopped:'הסריקה נעצרה',scan_incomplete:'בדיקה נדרשת לא הושלמה',required_provider_unavailable:'שירות בדיקה נדרש אינו זמין',budget_exhausted:'מכסת הבדיקות לסרטון מוצתה',deadline_exceeded:'הסריקה חרגה מהזמן המותר',credit_balance_exhausted:'אין יתרת קרדיט אצל ספק הבדיקה',provider_suspended:'ספק הבדיקה מושהה',provider_not_configured:'ספק בדיקה נדרש אינו מוגדר',legacy_budget_unknown:'לא ניתן לאמת את מספר הבדיקות הקודמות',frame_manifest_changed:'התמונות שנדגמו אינן תואמות לסריקה הקודמת',scan_version_changed:'גרסת הסריקה השתנתה ונדרש אישור לבדיקה נוספת',operation_outcome_unknown:'תוצאת בקשת בדיקה קודמת אינה ידועה',provider_guard_unavailable:'לא ניתן לאמת את מכסת הבדיקות',source_unavailable:'לא ניתן לקרוא את קובץ הסרטון',queue_processed:'הטיפול בתור הסתיים',media_not_allowed:'המדיה לא אושרה',outcome_unknown:'התוצאה אינה ידועה',request_removed_without_acceptance:'הבקשה הוסרה ללא אישור',request_entry_removed:'רשומת הבקשה הוסרה',permission_denied:'אין הרשאה',unauthorized:'נדרשת הזדהות',forbidden:'אין הרשאה',not_found:'היעד לא נמצא',timeout:'תם זמן ההמתנה',provider_error:'שגיאה אצל ספק השירות',filter_blocked:'נחסם לפי הגדרות הסינון'};
 const STATUS_LABELS={accepted:'התקבל',queued:'בתור',running:'בתהליך',pending:'ממתין',stored:'נשמר בשרת',persisted:'נשמר בשרת',completed:'הושלם',succeeded:'הצליח',cancelled:'בוטל',partial:'חלקי',observed:'תועד',approved:'אושר',delivered:'נמסר',read:'נקרא',failed:'נכשל',blocked:'נחסם',rejected:'נדחה',skipped:'דולג',unknown:'לא ידוע'};
 const EXECUTOR_LABELS={user:'משתמש',admin:'מנהל',service:'שירות',worker:'שירות',system:'מערכת',provider:'ספק',client:'מכשיר'};
@@ -25,6 +28,9 @@ const OPERATION_OUTCOME_JOINS = `    LEFT JOIN LATERAL (SELECT e.id::text AS id,
 `;
 
 const FIELDS={
+ scan_status:['text','step'],
+ scan_image:['text','step'],
+ stopped_file:['text','parent'],
  operation_status:['text','parent'],operation_reason:['text','parent'],operation_reason_code:['text','parent'],
  initiator_identifier:['text','parent'],recipient_identifier:['text','parent'],operation_id:['uuid','parent'],
  step_total:['number','parent'],step_index:['number','step'],
@@ -58,6 +64,10 @@ function fieldSql(alias,key,mode){
  const d=`${alias}.details`,value=name=>`${d}->>${literal(name)}`,integer=name=>integerSql(value(name));
  switch(key){
   case 'operation_status':return 'o.status';
+  case 'scan_status':return `COALESCE(${checkOutcomeSql(alias)},${alias}.status)`;
+  case 'scan_image':return imageKeySql(alias);
+  case 'stopped_file':return `(CASE WHEN o.dispatch->>'object_status' IS DISTINCT FROM 'blocked_for_recipient'
+    THEN (SELECT problem.target_id::text FROM (${problemFileEventSql()}) problem) END)`;
   case 'operation_reason':case 'operation_reason_code':return mode==='operations'?operationReasonSql():"NULLIF(o.reason_code,'')";
   case 'initiator_identifier':return 'COALESCE(o.initiator_short_id,o.initiator_id::text)';
   case 'recipient_identifier':return 'COALESCE(o.recipient_short_id,o.recipient_id::text)';
@@ -103,6 +113,10 @@ function reasonLabelSql(expression){
    ELSE CASE WHEN ${literal(JSON.stringify(AUDIT_REASON_LABELS))}::jsonb ? (${expression}) THEN ${generic} ELSE 'קוד סיבה מתועד: '||(${expression}) END END)`;
 }
 function fieldLabelSql(key,expression){
+ if(key==='stopped_file')return imageNameSql(`(${expression})||':image'`);
+ if(key==='object_status')return mappedSql(expression,OBJECT_STATUS_LABELS);
+ if(key==='scan_image')return imageNameSql(expression);
+ if(key==='scan_status')return mappedSql(expression,{...STATUS_LABELS,...CHECK_OUTCOME_LABELS});
  if(['usage_status','operation_usage_status'].includes(key))return mappedSql(expression,USAGE_LABELS);
  if(key==='dispatch_state')return mappedSql(expression,SEND_LABELS);
  if(key==='dispatch_delivery')return mappedSql(expression,DELIVERY_LABELS);

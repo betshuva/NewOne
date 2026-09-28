@@ -66,42 +66,6 @@ test('local image stages share the exact scanned preview and video frame context
   }
 });
 
-test('audio history records the check outcome without transcript or encryption material', async () => {
-  const events = [];
-  const scan = load('scanAudio', 'function decryptAudioTranscript', {
-    MAX_AUDIO_SECONDS: 120,
-    transcribeAudio: async () => ({ durationSeconds: 2, transcript: 'private spoken content' }),
-    moderateChatText: () => ({ blocked: true }), transcriptDigest: () => 'private-digest',
-    encryptMessageText: () => 'private-encrypted-content',
-    recordProviderCheck: async event => events.push(event),
-  });
-  const result = await scan(Buffer.from('audio'), 'recording.mp3');
-  assert.equal(result.blocked, true);
-  const summary = sanitizeAuditDetails(moderationCheckSummary('local', events[0].operation, events[0].result));
-  assert.equal(summary.checkOutcome, 'blocked');
-  assert.deepEqual(summary.checkFindings, ['speech_detected', 'harmful_text']);
-  assert.doesNotMatch(JSON.stringify(summary), /private|transcriptEncrypted|transcriptHash/);
-});
-
-test('audio retry history retains the source file, workflow, and actual attempt', async () => {
-  const events = [];
-  const tracking = { storedFileId: fileId, userId: 'user', workflow: 'retry', attempt: 3 };
-  const scan = load('scanAudio', 'function decryptAudioTranscript', {
-    MAX_AUDIO_SECONDS: 120,
-    transcribeAudio: async () => ({ durationSeconds: 2, transcript: '' }),
-    moderateChatText: () => ({ blocked: false }), transcriptDigest: () => 'digest',
-    recordProviderCheck: async event => events.push(event),
-  });
-  const result = await scan(Buffer.from('audio'), 'recording.mp3', { tracking });
-  assert.equal(result.blocked, false);
-  assert.equal(events.length, 1);
-  assert.equal(events[0].tracking, tracking);
-  assert.equal(events[0].tracking.storedFileId, fileId);
-  assert.equal(events[0].tracking.workflow, 'retry');
-  assert.equal(events[0].tracking.attempt, 3);
-  assert.match(source, /scanAudio\(buffer, row\.file_name, \{ tracking: \{\s*storedFileId: row\.stored_file_id, userId: row\.user_id, workflow: 'retry', attempt \} \}\)/);
-});
-
 test('animated image frames retain source tracking for their individual previews', async () => {
   const frames = [Buffer.from('frame one'), Buffer.from('frame two')];
   const options = { tracking: { storedFileId: fileId, userId: 'user' } };
@@ -125,19 +89,13 @@ test('animated image frames retain source tracking for their individual previews
   assert.deepEqual(seen, frames);
 });
 
-test('unavailable audio and document scans record failure without changing the original outcome', async () => {
+test('unavailable document scans record failure without changing the original outcome', async () => {
   const events = [];
-  const scanAudio = load('scanAudio', 'function decryptAudioTranscript', {
-    console: { error() {} }, transcribeAudio: async () => { throw new Error('offline'); },
-    recordProviderCheck: async event => events.push(event),
-  });
-  assert.equal((await scanAudio(Buffer.from('audio'), 'voice.mp3')).pending, true);
-  assert.equal(moderationCheckSummary('local', events[0].operation, events[0].result).checkOutcome, 'failed');
   const scanDocument = load('scanDocument', 'const mailer =', {
     BLOCKED_WORDS: [], scanImage() {},
     scanDocumentContent: async () => { throw new Error('decode failed'); },
     recordProviderCheck: async event => events.push(event),
   });
   await assert.rejects(scanDocument(Buffer.from('document'), 'application/pdf'), /decode failed/);
-  assert.equal(moderationCheckSummary('local', events[1].operation, events[1].result).checkOutcome, 'failed');
+  assert.equal(moderationCheckSummary('local', events[0].operation, events[0].result).checkOutcome, 'failed');
 });

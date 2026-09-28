@@ -8,12 +8,13 @@ const test = require('node:test');
 const source = fs.readFileSync(
   path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
 
-test('voice messages show the recorder profile photo instead of a generic icon', () => {
+test('voice messages use the small sender header without a duplicate player avatar', () => {
   const player = source.slice(
     source.indexOf('class VoiceMessagePlayer'),
     source.indexOf('class _ChatVideoPlayer'));
   assert.match(player, /final String\? senderAvatarUrl/);
-  assert.match(player, /UserAvatar\([\s\S]*picUrl: widget\.senderAvatarUrl/);
+  assert.doesNotMatch(player, /UserAvatar\(/);
+  assert.match(source, /UserAvatar\(picUrl: avatarUrl, name: name, radius: 10\)/);
   assert.doesNotMatch(player, /Icons\.person/);
 });
 

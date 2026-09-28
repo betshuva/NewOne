@@ -105,6 +105,8 @@ Future<void> _withShell(
               return _json({'birthDateMissing': false});
             }
             if (path.endsWith('/profile')) return _json(_me);
+            if (path.endsWith('/users/search')) return _json([]);
+            if (path.endsWith('/conversations/search')) return _json({'messages': [], 'nextCursor': null});
             if (path.endsWith('/users')) {
               return _json(empty ? [] : [_friend, _other]);
             }
@@ -273,10 +275,11 @@ void main() {
       await tester.pumpAndSettle();
       final search = _inConversations(find.byType(TextField));
       await tester.enterText(search, 'המדיה שלי');
+      await tester.pump(const Duration(milliseconds: 350));
       await tester.pumpAndSettle();
       expect(_entry, findsOneWidget);
       expect(_inConversations(find.text(_friend['name']!)), findsNothing);
-      expect(find.text('אין שיחות להצגה'), findsOneWidget);
+      expect(find.text('לא נמצאו חברים או קבוצות'), findsOneWidget);
       await tester.enterText(search, 'ראשון');
       await tester.pumpAndSettle();
       expect(_entry, findsOneWidget);

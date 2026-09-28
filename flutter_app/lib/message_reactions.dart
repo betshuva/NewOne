@@ -1,10 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart' show parseHttpDate;
 
 const messageReactionEmoji = ['👍', '❤️', '😂', '🙏', '😮', '😢'];
+const _reactionAssets = {
+  '👍': '1f44d',
+  '❤️': '2764',
+  '😂': '1f602',
+  '🙏': '1f64f',
+  '😮': '1f62e',
+  '😢': '1f622'
+};
 
 typedef _ReactionKey = (String, String, String);
 typedef _ReactionScope = (String, String);
@@ -20,7 +29,7 @@ class _ReactionEntry {
 
 /// Reuses recent results when messages scroll out of view and back in. All
 /// entries, pending reads and server cooldowns are scoped to the signed-in token.
-class MessageReactionsCache {
+class MessageReactionsCache extends ChangeNotifier {
   MessageReactionsCache({DateTime Function()? now})
       : _now = now ?? DateTime.now;
 
@@ -131,6 +140,45 @@ class MessageReactionsCache {
     if (entry.revision != revision) return;
     entry.items = items;
     entry.refreshAfter = _now().add(refreshInterval);
+    notifyListeners();
+  }
+}
+
+/// Owned by the caller, so closing an emoji picker cannot cancel its write.
+Future<void> updateMessageReaction({
+  required String api,
+  required String token,
+  required String messageId,
+  required String emoji,
+  http.Client? client,
+  MessageReactionsCache? cache,
+}) async {
+  final connection = client ?? http.Client();
+  final reactionCache = cache ?? MessageReactionsCache.shared;
+  final key = (api, token, messageId);
+  final url = Uri.parse('$api/messages/$messageId/reactions');
+  final headers = {
+    'Authorization': 'Bearer $token',
+    'Content-Type': 'application/json'
+  };
+  try {
+    final items = await reactionCache._load(key, connection, url, headers);
+    if (reactionCache._isCoolingDown(key))
+      throw StateError('reaction cooldown');
+    final mine =
+        items?.any((item) => item['emoji'] == emoji && item['mine'] == true) ??
+            false;
+    final entry = reactionCache._beginWrite(key);
+    final revision = entry.revision;
+    final response = await connection
+        .put(url,
+            headers: headers, body: jsonEncode({'emoji': mine ? null : emoji}))
+        .timeout(const Duration(seconds: 10));
+    reactionCache._observeRateLimit(key, response);
+    if (response.statusCode != 200) throw StateError('reaction rejected');
+    reactionCache._save(entry, revision, reactionCache._decode(response));
+  } finally {
+    if (client == null) connection.close();
   }
 }
 
@@ -139,6 +187,9 @@ class MessageReactions extends StatefulWidget {
   final http.Client? client;
   final MessageReactionsCache? cache;
   final bool showAddButton;
+  final bool quickChoices;
+  final bool showExistingReactions;
+  final ValueChanged<String>? onQuickSelected;
   const MessageReactions(
       {super.key,
       required this.api,
@@ -146,7 +197,10 @@ class MessageReactions extends StatefulWidget {
       required this.messageId,
       this.client,
       this.cache,
-      this.showAddButton = true});
+      this.showAddButton = true,
+      this.quickChoices = false,
+      this.showExistingReactions = true,
+      this.onQuickSelected});
   @override
   State<MessageReactions> createState() => _MessageReactionsState();
 }
@@ -170,6 +224,7 @@ class _MessageReactionsState extends State<MessageReactions> {
   @override
   void initState() {
     super.initState();
+    _cache.addListener(_syncCache);
     _load();
     // Check freshness more often than the cache lifetime so a slow response
     // does not accidentally delay the next real refresh by another minute.
@@ -183,6 +238,11 @@ class _MessageReactionsState extends State<MessageReactions> {
   @override
   void didUpdateWidget(covariant MessageReactions oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.cache != widget.cache) {
+      (oldWidget.cache ?? MessageReactionsCache.shared)
+          .removeListener(_syncCache);
+      _cache.addListener(_syncCache);
+    }
     if (oldWidget.api == widget.api &&
         oldWidget.token == widget.token &&
         oldWidget.messageId == widget.messageId &&
@@ -199,6 +259,13 @@ class _MessageReactionsState extends State<MessageReactions> {
     _busy = false;
     _items = [];
     _load();
+  }
+
+  void _syncCache() {
+    final items = _cache._entries[_key]?.items;
+    if (mounted && items != null && !identical(items, _items)) {
+      setState(() => _items = items);
+    }
   }
 
   Future<void> _load() async {
@@ -261,6 +328,7 @@ class _MessageReactionsState extends State<MessageReactions> {
   @override
   void dispose() {
     _timer?.cancel();
+    _cache.removeListener(_syncCache);
     if (widget.client == null) _client.close();
     super.dispose();
   }
@@ -270,14 +338,44 @@ class _MessageReactionsState extends State<MessageReactions> {
         spacing: 4,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          for (final item in _items)
-            ActionChip(
-                label: Text('${item['emoji']} ${item['count']}'),
-                visualDensity: VisualDensity.compact,
-                backgroundColor:
-                    item['mine'] == true ? const Color(0xFFD4E9F7) : null,
-                onPressed:
-                    _busy ? null : () => _react(item['emoji'] as String)),
+          if (widget.quickChoices)
+            for (final emoji in messageReactionEmoji)
+              IconButton(
+                tooltip: 'תגובה $emoji',
+                onPressed: _busy
+                    ? null
+                    : () {
+                        if (widget.onQuickSelected != null) {
+                          widget.onQuickSelected!(emoji);
+                        } else {
+                          _react(emoji);
+                        }
+                      },
+                isSelected: widget.showExistingReactions &&
+                    _items.any((item) =>
+                        item['emoji'] == emoji && item['mine'] == true),
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints.tightFor(width: 30, height: 30),
+                style: IconButton.styleFrom(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                icon: SvgPicture.asset(
+                    'assets/twemoji/svg/${_reactionAssets[emoji]}.svg',
+                    width: 16,
+                    height: 16,
+                    excludeFromSemantics: true),
+              ),
+          if (widget.showExistingReactions)
+            for (final item in _items)
+              ActionChip(
+                  label: Text((int.tryParse('${item['count']}') ?? 0) >= 2
+                      ? '${item['emoji']} ${item['count']}'
+                      : '${item['emoji']}'),
+                  visualDensity: VisualDensity.compact,
+                  backgroundColor:
+                      item['mine'] == true ? const Color(0xFFD4E9F7) : null,
+                  onPressed:
+                      _busy ? null : () => _react(item['emoji'] as String)),
           if (widget.showAddButton)
             PopupMenuButton<String>(
               tooltip: 'תגובה להודעה',

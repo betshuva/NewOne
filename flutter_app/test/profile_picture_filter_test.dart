@@ -86,6 +86,12 @@ Future<void> _withShell(
   debugDefaultTargetPlatformOverride = TargetPlatform.linux;
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
       .setMockMethodCallHandler(
+          const MethodChannel('flutter.baseflow.com/permissions/methods'),
+          (call) async => 0);
+  addTearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(const MethodChannel('flutter.baseflow.com/permissions/methods'), null));
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(
           const MethodChannel('github.com/QuisApp/flutter_contacts'),
           (call) async => false);
   tester.view.physicalSize = const Size(1400, 1100);

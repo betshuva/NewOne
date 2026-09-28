@@ -12,6 +12,154 @@ const filters=(columnFilters,mode='operations',extra={})=>readFilters({
   ...extra,columnFilters:JSON.stringify(columnFilters),
 },{mode});
 
+test('stopped-file column filters by the recorded file across every step without mixing duplicate filenames',dbOptions,async t=>{
+  const f=await fixture(t),files=[randomUUID(),randomUUID()],roots=[];
+  for(const id of files)await f.db.query("INSERT INTO stored_files(id,original_name) VALUES($1,'video.webm')",[id]);
+  for(const [i,status]of ['failed','failed','completed'].entries()){
+    const root=await f.operation({status,status_source:'scan_workflow_finished'});roots.push(root);
+    await f.event(root.id,{kind:'upload_context',status:'completed'});
+    await f.event(root.id,{kind:'scan_workflow_finished',status:'failed',target_type:'file',target_id:files[i%2]});
+  }
+  for(const mode of ['operations','events']){
+    const selected=await f.select(filters({stopped_file:{values:[files[0]]}},mode,{sort:'stopped_file',direction:'asc'}));
+    assert.equal(selected.length,mode==='operations'?1:2);
+    assert.ok(selected.every(row=>(row.operation_id||row.id)===roots[0].id));
+    const options=await f.options(filters({},mode),'stopped_file','video.webm');
+    assert.equal(options.length,2);assert.ok(options.every(row=>row.label==='video.webm'));
+    assert.deepEqual(options.map(row=>row.value).sort(),files.slice().sort());
+    const blank=await f.select(filters({stopped_file:{values:[null]}},mode));
+    assert.ok(blank.every(row=>(row.operation_id||row.id)===roots[2].id));
+  }
+});
+
+test('problem-file column filters final blocked images and policy refusals, but not provider-only refusals',dbOptions,async t=>{
+  const f=await fixture(t),file=randomUUID(),expected=[];
+  await f.db.query("INSERT INTO stored_files(id,original_name) VALUES($1,'blocked.png')",[file]);
+  for(const kind of ['media_moderation_changed','decision_blocked','provider_call_finished']){
+    const root=await f.operation({status:'blocked',status_source:'http_response'});
+    await f.event(root.id,{kind,status:'blocked',target_type:kind==='media_moderation_changed'?'file':null,
+      target_id:kind==='media_moderation_changed'?file:null,details:{storedFileId:file}});
+    if(kind!=='provider_call_finished')expected.push(root.id);
+  }
+  for(const mode of ['operations','events']){
+    const selected=await f.select(filters({stopped_file:{values:[file]}},mode));
+    assert.deepEqual(selected.map(row=>row.operation_id||row.id).sort(),expected.slice().sort());
+    const options=await f.options(filters({},mode),'stopped_file','blocked.png');
+    assert.equal(options.length,1);assert.equal(options[0].value,file);assert.equal(options[0].label,'blocked.png');
+  }
+});
+
+test('recipient-blocked objects have blank problem-file evidence and filter values in both histories',dbOptions,async t=>{
+  const {attachStoppedScanEvidence}=require('../server/audit-stopped-evidence');
+  const f=await fixture(t),file=randomUUID(),root=await f.operation({action:'upload_file',status:'blocked',status_source:'http_response',media_type:'image'});
+  await f.db.query("INSERT INTO stored_files(id,original_name,file_type,moderation_status,moderation_details) VALUES($1,'recipient.png','image','approved',$2)",
+    [file,{destinationFilterRejected:true,reasonCode:'content_filter'}]);
+  await f.event(root.id,{kind:'upload_context',target_type:'file',target_id:file});
+  await f.event(root.id,{kind:'decision_blocked',status:'blocked',details:{storedFileId:file}});
+  for(const mode of ['operations','events']){
+    const selected=await f.select(filters({stopped_file:{values:[file]}},mode));
+    assert.equal(selected.length,0);
+    const blank=await f.select(filters({stopped_file:{values:[null]}},mode));
+    assert.ok(blank.length>0);assert.ok(blank.every(row=>row.dispatch.object_status==='blocked_for_recipient'));
+    await attachStoppedScanEvidence(f.db,blank,mode);
+    assert.ok(blank.every(row=>row.stoppedEvidence===null));
+    const options=await f.options(filters({},mode),'stopped_file','recipient.png');
+    assert.equal(options.length,0);
+  }
+});
+
+test('overall object status distinguishes global rejection, recipient refusal, sent and unfinished work',dbOptions,async t=>{
+  const f=await fixture(t),sender=randomUUID(),recipient=randomUUID();
+  await f.db.query('INSERT INTO users VALUES($1,$2,10),($3,$4,11)',[sender,'Sender',recipient,'Recipient']);
+  const cases=[
+    ['blocked','blocked','rejected',{},null],
+    ['blocked_for_recipient','blocked','approved',{destinationFilterRejected:true,reasonCode:'content_filter'},null],
+    ['blocked','blocked','approved',{senderFilterRejected:true,reasonCode:'sender_content_filter'},null],
+    ['stopped','failed','stopped',{reasonCode:'scan_incomplete'},null],
+    ['pending','pending','pending',{},null],
+    ['unknown','completed','approved',{},null],
+    ['sent','failed','approved',{},'user'],
+    ['partial','completed','approved',{},'group'],
+    ['blocked_for_recipient','completed','approved',{},'group_blocked'],
+  ];
+  const expected=new Map();
+  for(const [status,operationStatus,moderationStatus,details,send]of cases){
+    const file=randomUUID(),group=send?.startsWith('group')?randomUUID():null,url='test-object-'+file;
+    if(group)await f.db.query('INSERT INTO groups VALUES($1,$2)',[group,'Group']);
+    const root=await f.operation({action:'upload_file',status:operationStatus,media_type:'video',initiator_id:sender,recipient_type:group?'group':'user',recipient_id:group||recipient});
+    await f.db.query('INSERT INTO stored_files(id,public_url,file_type,moderation_status,moderation_details) VALUES($1,$2,$3,$4,$5)',[file,url,'video',moderationStatus,details]);
+    await f.event(root.id,{kind:'upload_context',target_type:'file',target_id:file});
+    if(send){
+      const message=randomUUID(),summary=group?{deliveredTo:send==='group'?[{id:recipient}]:[],blockedFor:[{id:randomUUID(),reason:'Recipient filter'}]}:null;
+      await f.db.query('INSERT INTO messages(id,created_at,sender_id,recipient_id,group_id,type,file_url,delivery_summary) VALUES($1,now(),$2,$3,$4,$5,$6,$7)',[message,sender,group?null:recipient,group,'video',url,summary]);
+      await f.event(root.id,{kind:'message_persisted',target_type:'message',target_id:message});
+    }
+    const dispatch=(await f.db.query('SELECT system_audit_dispatch($1) AS value',[root.id])).rows[0].value;
+    assert.equal(dispatch.object_status,status);
+    expected.set(root.id,status);
+  }
+  for(const mode of ['operations','events']){
+    const selected=await f.select(filters({object_status:{values:['blocked_for_recipient']}},mode,{sort:'object_status',direction:'asc',costs:'1'}));
+    assert.ok(selected.length>=2);assert.ok(selected.every(row=>row.dispatch.object_status==='blocked_for_recipient'));
+    const options=await f.options(filters({},mode),'object_status');
+    assert.equal(options.find(row=>row.value==='blocked_for_recipient').label,'נחסם למשתמש');
+    assert.equal(options.find(row=>row.value==='sent').label,'נשלח');
+  }
+});
+
+test('image name filters group checks of one frame and distinguish uploads with identical filenames',dbOptions,async t=>{
+  const f=await fixture(t),root=await f.operation({status:'failed'}),files=[randomUUID(),randomUUID(),randomUUID()];
+  for(const [i,id]of files.entries())await f.db.query('INSERT INTO stored_files(id,file_type,original_name) VALUES($1,$2,$3)',
+    [id,i===2?'image':'video',i===2?'תמונה.png':'סרטון.webm']);
+  const event=async(file,index,time,extra={})=>f.event(root.id,{kind:'provider_call_finished',details:{checkType:'modesty',checkOutcome:'passed',
+    storedFileId:file,...(index==null?{}:{frameIndex:index,frameTimestampMs:time}),...extra}});
+  const first=await event(files[0],0,0),second=await event(files[0],1,5005);
+  const sameFrame=await event(files[0],1,5005,{provider:'gemini',checkOutcome:'blocked',cacheHit:true});
+  const sameName=await event(files[1],1,5005),image=await event(files[2],null,null);
+  await event('not-a-uuid',0,0);await f.event(root.id,{kind:'upload_context'});
+  const key=files[0]+':frame:1:5005',selection={scan_image:{values:[key]}};
+  assert.deepEqual((await f.select(filters(selection,'events'))).map(row=>row.id).sort(),[second.id,sameFrame.id].sort());
+  assert.deepEqual((await f.select(filters(selection,'operations',{match:'items',steps:'1'}))).map(row=>row.id),[root.id]);
+  for(const mode of ['operations','events']){
+    const options=await f.options(filters({},mode,{match:'items',steps:'1'}),'scan_image','סרטון');
+    assert.equal(options.length,3);
+    assert.equal(options.find(row=>row.value===key).label,'סרטון.webm · תמונה 2 · שנייה 5.005');
+    assert.ok(options.some(row=>row.value===files[1]+':frame:1:5005'));
+    await f.select(filters({},mode,{sort:'scan_image',direction:'asc'}));
+  }
+  const rows=[first,second,sameFrame,sameName,image];
+  await require('../server/audit-image-names').attachScanImageNames(f.db,rows);
+  assert.equal(rows[0].scanImage.name,'סרטון.webm · תמונה 1 · שנייה 0');
+  assert.equal(rows[1].scanImage.name,rows[2].scanImage.name);
+  assert.notEqual(rows[1].scanImage.key,rows[3].scanImage.key);
+  assert.equal(rows[4].scanImage.name,'תמונה.png');
+  await f.db.query('DELETE FROM stored_files WHERE id=$1',[files[0]]);
+  await require('../server/audit-image-names').attachScanImageNames(f.db,[second]);
+  assert.equal(second.scanImage.key,key);
+  assert.match(second.scanImage.name,/תמונה 2/);
+});
+
+test('scan status filters and sorting use each check outcome even when the operation failed',dbOptions,async t=>{
+  const f=await fixture(t),root=await f.operation({status:'failed'});
+  const passed=await f.event(root.id,{kind:'provider_call_finished',status:'observed',details:{checkType:'modesty',checkOutcome:'passed'}});
+  const blocked=await f.event(root.id,{kind:'provider_call_finished',status:'observed',details:{checkType:'modesty',checkOutcome:'blocked'}});
+  const unknown=await f.event(root.id,{kind:'provider_call_finished',status:'completed',details:{checkType:'modesty'}});
+  const nonCheck=await f.event(root.id,{kind:'upload_context'});
+  const running=await f.event(root.id,{kind:'storage_upload_started',status:'running'});
+  const failed=await f.event(root.id,{kind:'scan_workflow_finished',status:'failed'});
+  for(const [code,id]of [['passed',passed.id],['blocked',blocked.id],['not_recorded',unknown.id],['completed',nonCheck.id],['running',running.id],['failed',failed.id]]){
+    const selection={scan_status:{values:[code]}};
+    assert.deepEqual((await f.select(filters(selection,'events'))).map(row=>row.id),[id]);
+    assert.deepEqual((await f.select(filters(selection,'operations',{match:'items',steps:'1'}))).map(row=>row.id),[root.id]);
+  }
+  for(const mode of ['operations','events']){
+    const options=await f.options(filters({},mode,{match:'items',steps:'1'}),'scan_status');
+    assert.equal(options.find(row=>row.value==='passed').label,CHECK_OUTCOME_LABELS.passed);
+    assert.equal(options.find(row=>row.value==='blocked').label,CHECK_OUTCOME_LABELS.blocked);
+    await f.select(filters({},mode,{sort:'scan_status',direction:'asc'}));
+  }
+});
+
 test('sorting rejects SQL fragments and mismatched cursors',()=>{
   for(const query of [{sort:'status;DROP TABLE users',direction:'asc'},{sort:'status',direction:'bad'},{direction:'asc'}])
     assert.throws(()=>readFilters(query),{status:400});

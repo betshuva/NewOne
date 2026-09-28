@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _title = 'התמונה נחסמה בהגדרות הסינון האישיות';
+const _title = 'התמונה נחסמה בבדיקת הבטיחות';
 const _reason =
-    'תמונות גברים חסומות בהגדרות הנמען. הקובץ עבר את בדיקת הבטיחות וניתן להעביר אותו לשיחה אחרת.';
+    'התמונה לא עברה את בדיקת הבטיחות בשל תוכן אלים.';
 const _onlyYou = 'התמונה מוצגת רק לך ולא נשלחה';
 const _recipient = 'מור אליהו';
 const _fileName = 'camera-1789649113675-with-a-long-file-name.jpg';
@@ -191,15 +191,13 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('menu preserves additional image actions when provided',
+  testWidgets('three dots open provided image actions directly',
       (tester) async {
     var moreActions = 0;
     await _pumpNotice(tester, onMoreActions: () => moreActions++);
     await tester.tap(_menu);
     await tester.pumpAndSettle();
-    expect(find.text('פרטי החסימה'), findsOneWidget);
-    await tester.tap(find.text('אפשרויות נוספות'));
-    await tester.pumpAndSettle();
+    expect(find.text('אפשרויות נוספות'), findsNothing);
     expect(moreActions, 1);
     expect(_details, findsNothing);
     expect(tester.takeException(), isNull);

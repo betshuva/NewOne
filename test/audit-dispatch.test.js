@@ -82,3 +82,23 @@ test('contact requests keep an accurate waiting, blocked or accepted dispatch af
  await f.db.query('DELETE FROM message_requests WHERE id=$1',[requestId]);
  d=await f.projection(op);assert.equal(d.dispatch_state,'sent');assert.equal(d.dispatch_message_id,msg.id);
 });
+
+test('client size rejection appears in the upload audit without a stored file or message',opts,async t=>{
+ const f=await fixture(t),op=await f.start({action:'upload_file',targetType:null,targetId:null});
+ const reason='דווח מהדפדפן: הקובץ גדול מדי; נדחה לפני שליחת הקובץ';
+ await f.event(op,{kind:'dispatch_context',source:'client_upload_validation',executorType:'client',executorId:f.sender,
+  status:'blocked',operationStatus:'blocked',reasonCode:'client_file_too_large',details:{
+   ...dispatchDetails({fileName:'הקלטה גדולה.mp3',fileType:'audio'}),mediaType:'audio',fileSize:157286401,
+   maxBytes:157286400,clientReported:true,dispatchReason:reason}});
+ await f.event(op,{kind:'http_response',status:'blocked',operationStatus:'blocked',reasonCode:'client_file_too_large',details:{dispatchReason:reason}});
+ const operation=(await f.db.query('SELECT * FROM audit_operations WHERE id=$1',[op.id])).rows[0];
+ assert.equal(operation.action,'upload_file');assert.equal(operation.media_type,'audio');assert.equal(operation.status,'blocked');
+ const d=await f.projection(op);assert.equal(d.dispatch_file_name,'הקלטה גדולה.mp3');assert.equal(d.dispatch_state,'blocked');
+ assert.equal(d.dispatch_delivery,'not_sent');assert.equal(d.dispatch_sent_count,0);assert.equal(d.dispatch_reason,reason);
+ assert.equal(d.dispatch_code,'client_file_too_large');
+ const evidence=(await f.db.query("SELECT details FROM audit_events WHERE operation_id=$1 AND kind='dispatch_context'",[op.id])).rows[0].details;
+ assert.equal(evidence.fileSize,157286401);assert.equal(evidence.maxBytes,157286400);assert.equal(evidence.clientReported,true);
+ assert.ok(evidence.dispatchFileName.startsWith('enc:v1:'));
+ assert.equal((await f.db.query('SELECT count(*)::int AS count FROM stored_files')).rows[0].count,0);
+ assert.equal((await f.db.query('SELECT count(*)::int AS count FROM messages')).rows[0].count,0);
+});

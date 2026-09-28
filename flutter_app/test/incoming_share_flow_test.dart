@@ -22,6 +22,14 @@ void main() {
                 {'id': 'carol', 'name': 'Carol'}
               ]
             : [];
+      } else if (request.url.path.endsWith('/forward/filter-preview')) {
+        final body = jsonDecode(utf8.decode(bytes)) as Map;
+        reply = {
+          'targets': [
+            for (final target in body['targets'])
+              {...target, 'status': 'unknown', 'reason': 'טרם נסרק'}
+          ]
+        };
       } else if (request.url.path.endsWith('/upload')) {
         expectSync(request, isA<http.MultipartRequest>());
         expectSync(
@@ -129,12 +137,24 @@ void main() {
     addTearDown(tester.view.resetViewInsets);
     final writes = <http.Request>[];
     final client = MockClient((request) async {
+      if (request.url.path.endsWith('/forward/filter-preview')) {
+        final body = jsonDecode(request.body) as Map;
+        return http.Response(
+            jsonEncode({
+              'targets': [
+                for (final target in body['targets'])
+                  {...target, 'status': 'allowed'}
+              ]
+            }),
+            200);
+      }
       if (request.method != 'GET') {
         writes.add(request);
         return http.Response('{"id":"sent"}', 200);
       }
       return http.Response(
-          jsonEncode(switch (request.url.path.replaceFirst('/betshuva-app', '')) {
+          jsonEncode(
+              switch (request.url.path.replaceFirst('/betshuva-app', '')) {
             '/api/users' => [
                 {'id': 'shared-id', 'name': 'Bob'},
                 {'id': 'carol', 'name': 'Carol'},
@@ -199,7 +219,9 @@ void main() {
     await tester.pumpAndSettle();
     final outcome = await result;
     expect(outcome.completedMessageIndexes, {0});
-    expect(writes.map((request) => request.url.path.replaceFirst('/betshuva-app', '')),
+    expect(
+        writes.map(
+            (request) => request.url.path.replaceFirst('/betshuva-app', '')),
         ['/api/messages', '/api/groups/shared-id/messages']);
     expect(jsonDecode(writes.first.body)['toUserId'], 'shared-id');
     expect(

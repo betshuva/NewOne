@@ -139,7 +139,7 @@ void main() {
           'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH9sAAAAASUVORK5CYII=');
       final preview = find.byKey(const ValueKey('blocked-image-preview'));
       final menu = find.byKey(const ValueKey('blocked-image-menu'));
-      final details = find.byKey(const ValueKey('blocked-image-details'));
+      final details = find.byType(AlertDialog);
       final marker = find.byKey(const ValueKey('blocked-image-marker'));
 
       await http.runWithClient(() async {
@@ -170,10 +170,12 @@ void main() {
 
         expect(preview, findsOneWidget);
         expect(marker, findsOneWidget);
-        expect(find.byIcon(Icons.gpp_bad_outlined), findsOneWidget);
+        expect(find.byIcon(Icons.filter_alt_outlined), findsOneWidget);
         expect(find.byIcon(Icons.zoom_in), findsNothing);
-        expect(find.descendant(of: preview, matching: find.byType(Text)),
-            findsNothing);
+        expect(
+            find.descendant(
+                of: preview, matching: find.text('לא נשלחה — הגדרות סינון')),
+            findsOneWidget);
         expect(details, findsNothing);
         expect(find.textContaining(reason), findsNothing);
         expect(find.text(filename), findsNothing);
@@ -184,21 +186,18 @@ void main() {
         await tester.tap(menu);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
-        await tester.tap(find.text('פרטי החסימה'));
+        expect(find.byKey(const ValueKey('message-options-menu')), findsOneWidget);
+        expect(find.text('העבר'), findsOneWidget);
+        expect(find.text('העתק תמונה'), findsOneWidget);
+        expect(find.text('סריקה נוספת'), findsNothing);
+        expect(find.text('אפשרויות נוספות'), findsNothing);
+        await tester.tap(find.text('פרטי הסינון'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
         expect(details, findsOneWidget);
         expect(find.textContaining(reason), findsOneWidget);
-        expect(find.text(filename), findsOneWidget);
-        expect(
-            find.text(isGroup ? 'נמען: קבוצת קבוצת בדיקה' : 'נמען: מור אליהו'),
-            findsOneWidget);
-        expect(
-            find.text(isGroup
-                ? 'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה'
-                : 'התמונה מוצגת רק לך ולא נשלחה'),
-            findsOneWidget);
-        await tester.tap(find.text('סגירה'));
+        expect(find.textContaining('הקובץ נשמר.'), findsOneWidget);
+        await tester.tap(find.text('סגור'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
         expect(find.textContaining(reason), findsNothing);
@@ -206,10 +205,7 @@ void main() {
         await tester.tap(menu);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
-        await tester.tap(find.text('אפשרויות נוספות'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 400));
-        expect(find.byType(BottomSheet), findsOneWidget);
+        expect(find.byKey(const ValueKey('message-options-menu')), findsOneWidget);
         expect(find.text('העבר'), findsOneWidget);
         expect(find.text('בחר כמה פריטים'), findsOneWidget);
         expect(find.text('מחק אצלי'), findsOneWidget);

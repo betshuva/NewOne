@@ -278,7 +278,12 @@ void _expectFlatImages(WidgetTester tester, {int count = 150}) {
 }
 
 Future<void> _openPicker(WidgetTester tester) async {
-  await tester.tap(find.byTooltip('אימוג׳י'));
+  if (find.text('אימוג׳י ומדבקות').evaluate().isEmpty) {
+    await tester.tap(find.byIcon(Icons.attach_file));
+    await tester.pumpAndSettle();
+  }
+  await tester.ensureVisible(find.text('אימוג׳י ומדבקות'));
+  await tester.tap(find.text('אימוג׳י ומדבקות'));
   await tester
       .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
   await tester.pumpAndSettle();
@@ -632,9 +637,11 @@ void main() {
           allowImages: policy.allowImages);
       await http.runWithClient(() async {
         await app.mount(tester);
-        final button = tester.widget<IconButton>(find.byWidgetPredicate(
-            (widget) => widget is IconButton && widget.tooltip == 'אימוג׳י'));
-        expect(button.onPressed, policy.allowText ? isNotNull : isNull);
+        await tester.tap(find.byIcon(Icons.attach_file));
+        await tester.pumpAndSettle();
+        final item = tester.widget<ListTile>(find.ancestor(
+            of: find.text('אימוג׳י ומדבקות'), matching: find.byType(ListTile)));
+        expect(item.subtitle, policy.allowText ? isNull : isNotNull);
         if (policy.allowText) {
           await _openPicker(tester);
           await _selectEmoji(tester, 1);

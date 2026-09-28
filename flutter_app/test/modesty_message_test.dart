@@ -38,6 +38,32 @@ void main() {
             hiddenReason: 'moderation', status: 'rejected', reason: 'אלימות'),
         contains('אלימות'));
   });
+  testWidgets('destination filter uses a filter marker and retains the image',
+      (tester) async {
+    const filterReason =
+        'התמונה סווגה כגברים, וקטגוריה זו חסומה בהגדרות הקבוצה';
+    await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+            body: SizedBox(
+                width: 300,
+                child: BlockedImageNotice(
+                    image: SizedBox(height: 160),
+                    title: 'לא נשלחה — סינון הקבוצה',
+                    reason: filterReason,
+                    onlyYouText: 'התמונה מוצגת רק לך ולא נשלחה')))));
+    expect(find.byIcon(Icons.filter_alt_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.gpp_bad_outlined), findsNothing);
+    expect(find.text('לא נשלחה — הגדרות סינון'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('blocked-image-marker')));
+    await tester.pumpAndSettle();
+    expect(find.text('פרטי הסינון'), findsOneWidget);
+    expect(find.textContaining('הקובץ נשמר.'), findsOneWidget);
+    expect(find.text(message), findsNothing);
+    expect(
+        scanExplanation(
+            {'status': 'rejected_scan', 'scanReason': filterReason}),
+        contains('לא נשלח — הגדרות סינון'));
+  });
   testWidgets('blocked marker opens only the brief modesty message',
       (tester) async {
     await tester.pumpWidget(MaterialApp(

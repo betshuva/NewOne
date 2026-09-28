@@ -1,4 +1,7 @@
+const { attachOperationMedia } = require('./audit-media');
 const { attachOperationPreviews } = require('./audit-scan-previews');
+const { attachScanImageNames } = require('./audit-image-names');
+const { attachStoppedScanEvidence } = require('./audit-stopped-evidence');
 'use strict';
 const {COST_SQL,COST_FIELDS,enabled:costsEnabled,usageSql,presentUsage}=require('./audit-costs');
 const {refreshFx}=require('./audit-fx');
@@ -965,7 +968,7 @@ function rawBuildFilterOptionsQuery(filters,column,search='') {
 }
 function buildQuery(filters,operationId=null){return wrapDispatchQuery(rawBuildQuery(filters,operationId),filters);}
 function buildFirstStepQuery(filters,ids){return wrapDispatchQuery(rawBuildFirstStepQuery(filters,ids),filters);}
-function buildFilterOptionsQuery(filters,column,search=''){return wrapDispatchQuery(rawBuildFilterOptionsQuery(filters,column,search),{...filters,dispatch:filters.dispatch||Object.hasOwn(DISPATCH_FIELDS,column)});}
+function buildFilterOptionsQuery(filters,column,search=''){return wrapDispatchQuery(rawBuildFilterOptionsQuery(filters,column,search),{...filters,dispatch:filters.dispatch||Object.hasOwn(DISPATCH_FIELDS,column)||column==='stopped_file'});}
 async function metadata(db) {
   const result = await db.query("SELECT created_at FROM audit_metadata WHERE key='recording_started'");
   return { recordingStartedAt:result.rows[0]?.created_at || null,coverage:COVERAGE };
@@ -1019,7 +1022,12 @@ function registerSystemAuditRoutes(app, { getPool, adminMiddleware }) {
         }
       }
     }
-    if(filters.previews)await attachOperationPreviews(db,rows,mode);
+    if(filters.previews){
+      await attachOperationPreviews(db,rows,mode);
+      await attachOperationMedia(db,rows,mode);
+      await attachScanImageNames(db,mode==='events'?rows:rows.map(row=>row.first_sub_event).filter(Boolean));
+      await attachStoppedScanEvidence(db,rows,mode);
+    }
     return res.json({[mode]:rows,nextCursor:result.rows.length>filters.limit?encodeCursor(rows.at(-1),mode,filters):null,...await metadata(db)});
   };
   route('/api/admin/audit/operations',list('operations'));

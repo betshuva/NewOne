@@ -5,7 +5,6 @@ const fs = require('node:fs');
 const test = require('node:test');
 
 const server = fs.readFileSync(require.resolve('../server/index'), 'utf8');
-const audio = fs.readFileSync(require.resolve('../server/audio-moderation'), 'utf8');
 const compose = fs.readFileSync(
   require.resolve('../docker-compose.shadow-classification.yml'), 'utf8');
 
@@ -15,11 +14,10 @@ test('shadow classification is queued persistently for classified images', () =>
   assert.match(server, /ON CONFLICT\(stored_file_id\) DO NOTHING/);
 });
 
-test('shadow worker yields to urgent scanning and audio transcription', () => {
-  assert.match(server, /isAudioTranscriptionBusy\(\) \|\| retryPendingScans\.running/);
+test('shadow worker yields to urgent scanning', () => {
+  assert.match(server, /if \(retryPendingScans\.running\) return false/);
   assert.match(server, /SELECT EXISTS\([\s\S]*?FROM pending_scans[\s\S]*?10 minutes/);
   assert.match(server, /os\.loadavg\(\)\[0\]/);
-  assert.match(audio, /function isAudioTranscriptionBusy\(\)/);
 });
 
 test('shadow result is metadata only and explicitly marked shadow-only', () => {

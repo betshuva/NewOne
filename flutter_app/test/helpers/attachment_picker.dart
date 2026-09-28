@@ -3,8 +3,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart' show XFile;
 
 class MemoryPickedFile extends PlatformFile {
-  MemoryPickedFile(String name, Uint8List data)
-      : super(name: name, size: data.length, bytes: data);
+  MemoryPickedFile(String name, Uint8List data, {int? reportedSize})
+      : super(name: name, size: reportedSize ?? data.length, bytes: data);
 
   @override
   XFile get xFile => _MemoryFile(name, bytes!);

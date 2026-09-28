@@ -31,16 +31,4 @@ test('audio and real video still use their dedicated players', () => {
   assert.match(source, /_voiceFileName = captureFileNames\.create\(/);
 });
 
-test('voice player animates while loading and supports retry', () => {
-  assert.match(source, /with SingleTickerProviderStateMixin/);
-  assert.match(source, /AnimationController _loadingController/);
-  assert.match(source, /animation: _loadingController/);
-  assert.match(source, /onPressed: _loading[\s\S]*?_loadFailed[\s\S]*?_prepareSource/);
-  assert.match(source, /טוען הקלטה\.\.\./);
-  assert.match(source, /הטעינה נכשלה — לחצו לניסיון חוזר/);
-});
-
-test('web voice playback uses MP3 MIME and ignores URL query parameters', () => {
-  assert.match(source, /final lowerUrl = Uri\.parse\(widget\.url\)\.path\.toLowerCase\(\)/);
-  assert.match(source, /lowerUrl\.endsWith\('\.mp3'\)\s*\? 'audio\/mpeg'/);
-});
+// Loading/retry and MIME handling are exercised in voice_message_source_test.dart.

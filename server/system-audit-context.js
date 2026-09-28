@@ -34,7 +34,8 @@ async function emitDispatchRejection(getPool,socket,payload){
 function requestAction(req) {
   const route = req.route?.path || '';
   if (route === '/api/admin/system-message') return 'send_system_message';
-  if (route === '/api/upload') return 'upload_file';
+  if (route === '/api/upload' || route === '/api/upload-attempts/rejected') return 'upload_file';
+  if (route === '/api/audio-progress' || route === '/api/video-progress') return 'save_media_progress';
   if (route === '/api/messages' || route === '/api/guide-message-drafts/:id/send') return 'send_message';
   if (route === '/api/groups/:id/messages') return 'send_group_message';
   if (route.includes('filter')) return 'filter_change';

@@ -67,11 +67,16 @@ async function prepareFilterHistoryChange(db, userId, scope, nextFilter, action)
         OR ($2 IN ('group','group_personal') AND m.group_id=$3::uuid))`,
   [userId, scope.kind, scope.id || null]);
   const affected = rows.rows.filter(row => {
+    const outgoingPrivate = !row.group_id && row.sender_id === userId &&
+      row.recipient_id && row.recipient_id !== userId;
+    // Contact settings describe what this user receives from that contact.
+    // Changing them must not hide or delete the user's outgoing pictures.
+    if (scope.kind === 'contact' && outgoingPrivate) return false;
     if (!row.group_id && isUnfilteredAssistantConversation(row.sender_id, row.recipient_id))
       return false;
     const currentScope = row.group_id
       ? row.member_filter ?? (row.creator_id === userId ? row.group_filter : null)
-      : row.contact_filter;
+      : outgoingPrivate ? null : row.contact_filter;
     let before = resolveScopedContentFilter(row.general_filter, currentScope);
     let after;
     if (scope.kind === 'general') after = resolveScopedContentFilter(nextFilter, currentScope);
@@ -146,7 +151,8 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
           AND e.kind IN ('delivery_persisted','delivery_blocked_persisted')
         ORDER BY e.id DESC LIMIT 1) AS delivery_group_filter,
       betshuva_effective_filter(u.content_filter,
-        CASE WHEN m.group_id IS NULL THEN c.filter_override
+        CASE WHEN m.group_id IS NULL THEN
+          CASE WHEN m.sender_id=$1 AND m.recipient_id<>$1 THEN NULL ELSE c.filter_override END
           ELSE COALESCE(gm.filter_override,CASE WHEN g.creator_id=$1 THEN g.content_filter END) END) AS filter
     FROM messages m JOIN users u ON u.id=$1
     LEFT JOIN user_contacts c ON c.owner_id=$1 AND c.contact_id=CASE WHEN m.sender_id=$1 THEN m.recipient_id ELSE m.sender_id END
@@ -212,8 +218,26 @@ async function projectOwnScans(db, userId, rows, { contextType = null, contextId
     const safe = file?.moderation_status === 'approved' && !file.content_purged_at;
     const targetType = contextType || (row.group_id ? 'group' : file?.context_type || 'general');
     const targetId = contextId || row.group_id || row.recipient_id || file?.context_id || null;
-    const key = targetType + ':' + targetId;
-    if (!filters.has(key)) filters.set(key, getEffectiveSenderFilter(db,userId,targetType,targetId));
+    // This is the sender's retained upload attempt, not a delivered group or
+    // contact message. Destination filtering must not hide its approved preview
+    // after a reload. Ordinary history and library viewing preferences still apply.
+    const ownFilteredAttempt = safe && file.user_id === userId &&
+      row.sender_id === userId && row.id === `scan_${file.id}` &&
+      file.moderation_details?.destinationFilterRejected === true &&
+      file.moderation_details?.blocked !== true &&
+      ['chat', 'group'].includes(targetType) && targetId && targetId !== userId &&
+      file.context_type === targetType && file.context_id === targetId;
+    if (ownFilteredAttempt)
+      return { ...row, filter_hidden: false, hidden_reason: null,
+        moderation_status: file.moderation_status };
+    // A private outgoing upload uses the owner's general viewing preference,
+    // not the receiving-only preference for the destination contact.
+    const outgoingPrivate = file?.user_id === userId && row.sender_id === userId &&
+      ['chat', 'contact'].includes(targetType) && targetId && targetId !== userId;
+    const filterType = outgoingPrivate ? 'general' : targetType;
+    const filterId = outgoingPrivate ? null : targetId;
+    const key = filterType + ':' + filterId;
+    if (!filters.has(key)) filters.set(key, getEffectiveSenderFilter(db,userId,filterType,filterId));
     const filter = await filters.get(key);
     if (safe && contentAllowedByFilter(filter,type,file.moderation_details?.classification))
       return { ...row, filter_hidden: false };

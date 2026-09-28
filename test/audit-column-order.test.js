@@ -87,6 +87,17 @@ test('older operation layouts gain the sub-action column without losing custom p
   assert.deepEqual(response.body.order,expected);
 });
 
+test('existing layouts gain the scanned image name immediately before the custom preview position',async()=>{
+  const call=routes({async query(){return {rows:[]};}}),userId=randomUUID();
+  for(const mode of ['operations','events']){
+    const legacy=COLUMN_IDS[mode].filter(key=>key!=='scan_image').reverse();
+    const response=await call('put',{userId,mode,order:legacy});
+    assert.equal(response.statusCode,200);
+    const expected=legacy.slice();expected.splice(expected.indexOf('preview'),0,'scan_image');
+    assert.deepEqual(response.body.order,expected);
+  }
+});
+
 test('legacy layouts gain explanation fields in both modes and their widths can be saved',async()=>{
   const writes=[],call=routes({async query(sql,params){writes.push(params);return {rows:[]};}}),userId=randomUUID();
   const added=['change_context','before_value','after_value','event_explanation'];

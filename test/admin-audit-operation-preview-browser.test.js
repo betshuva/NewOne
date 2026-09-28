@@ -6,7 +6,7 @@ const path = require('node:path');
 const sharp = require('sharp');
 const { presentAuditCheck } = require('../server/audit-check-presentation');
 
-test('audit always shows the source photo or first video frame on non-check and later-frame rows', {
+test('audit keeps the operation preview on non-check rows and shows the actual checked frame on check rows', {
   skip: process.env.RUN_BROWSER_TESTS !== '1', timeout: 60000,
 }, async t => {
   const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
@@ -37,7 +37,7 @@ test('audit always shows the source photo or first video frame on non-check and 
       const url = new URL(route.request().url());
       if (url.hostname === 'audit.test') return route.fulfill({ contentType: 'text/html', body: url.pathname.endsWith('.html') ? html : '' });
       assert.equal(route.request().headers().authorization, 'Bearer mock-admin');
-      if (url.pathname.endsWith('/events/7/preview')) {
+      if (/\/events\/(7|2)\/preview$/.test(url.pathname)) {
         assert.deepEqual([...url.searchParams.keys()], ['size']);
         sizes.push(url.searchParams.get('size'));
         return route.fulfill({ contentType: 'image/jpeg', body: image });
@@ -67,13 +67,13 @@ test('audit always shows the source photo or first video frame on non-check and 
     await page.locator('#close-preview').click();
     await page.locator('[data-expand]').click();
     await page.waitForFunction(() => [...state.pages.values()].every(p => !p.loading));
-    const laterPreview = page.locator('[data-event-id="2"] [data-check-preview="7"]');
+    const laterPreview = page.locator('[data-event-id="2"] [data-check-preview="2"]');
     assert.equal(await laterPreview.count(), 1);
-    assert.equal(await page.locator('[data-check-preview="2"]').count(), 0);
+    assert.equal(await page.locator('[data-event-id="2"] [data-check-preview="7"]').count(), 0);
     await laterPreview.scrollIntoViewIfNeeded();
     await laterPreview.click();
     await page.waitForFunction(() => !document.getElementById('preview-image').hidden);
-    assert.equal(await page.locator('#preview-caption').textContent(), mediaType === 'video' ? 'הפריים הראשון בסרטון' : 'התמונה שהועלתה');
+    assert.match(await page.locator('#preview-caption').textContent(), /תמונה 5/);
     await page.locator('#close-preview').click();
     assert.deepEqual(errors, []);
     await context.close();

@@ -182,6 +182,9 @@ String hiddenImageMessage({
     status: status,
     contentPurged: contentPurged,
   );
+  if (kind == _HiddenImageKind.rejected && isFilterBlockReason(reason)) {
+    return 'לא נשלחה — הגדרות סינון';
+  }
   if ((kind == _HiddenImageKind.rejected || kind == _HiddenImageKind.purged) &&
       ['rejected', 'rejected_scan'].contains(status?.trim().toLowerCase()) &&
       isModestyBlockReason(reason)) {

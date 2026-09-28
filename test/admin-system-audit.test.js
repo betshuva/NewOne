@@ -609,7 +609,7 @@ test('expanded operations load every cursor page, deduplicate IDs, and reject in
 });
 
 
-test('preview column selects the operation image for every step without relabelling check evidence', () => {
+test('operation preview fallback leaves individual check evidence unchanged', () => {
   const { operationPreviewRow } = helpers();
   const step = { id: '9', details: { frameIndex: 4 }, checkPreviewUrl: '/api/admin/audit/events/9/preview?size=thumb' };
   const preview = { eventId: '3', mediaType: 'video', url: '/api/admin/audit/events/3/preview?size=thumb',
@@ -622,4 +622,19 @@ test('preview column selects the operation image for every step without relabell
   assert.equal(operationPreviewRow({ operationPreview: preview }, {}).id, '3');
   assert.equal(operationPreviewRow({}, { operationPreview: { ...preview, mediaType: 'image' } }).checkLabel, 'התמונה שהועלתה');
   assert.equal(operationPreviewRow(step, { operationPreview: null }).checkPreviewUrl, undefined);
+});
+
+test('audit media URLs cannot redirect admin credentials to another origin or unrelated operation/file', async () => {
+  const { auditMediaRequestUrl, fetchAuditMedia } = helpers();
+  const media = { id:'00000000-0000-4000-8000-000000000001', operationId:'00000000-0000-4000-8000-000000000002', mediaType:'audio' };
+  media.url=`/api/admin/audit/operations/${media.operationId}/media/${media.id}`;
+  assert.match(auditMediaRequestUrl(media), /^https:\/\/betshuva.com\/betshuva-app\/api\/admin\/audit\/operations\//);
+  for(const url of ['https://other.example'+media.url,media.url+'?token=secret',media.url+'#fragment',media.url.replace(media.id,'00000000-0000-4000-8000-000000000099')]) {
+    assert.equal(auditMediaRequestUrl({...media,url}),null);
+    await assert.rejects(fetchAuditMedia({...media,url},{token:'test'}));
+  }
+  for(const mime of ['text/html','image/svg+xml','application/pdf']) {
+    const helper=helpers(async()=>({ok:true,headers:{get:key=>key==='content-type'?mime:'10'},blob:async()=>({size:10})}));
+    await assert.rejects(helper.fetchAuditMedia(media,{token:'test'}));
+  }
 });

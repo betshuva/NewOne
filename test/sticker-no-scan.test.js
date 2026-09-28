@@ -30,7 +30,7 @@ test('upload identifies stickers independently of client flag and skips reports/
  const upload=source.slice(source.indexOf("app.post('/api/upload'"),source.indexOf('// ── Groups: list mine'));
  assert.match(upload,/trustedBuiltinExpression = allowed.dbType === 'image' &&\s*await isTrustedBuiltinExpression\(file\)/);
  assert.match(upload,/reportImageScan = !trustedBuiltinExpression/);
- assert.match(upload,/cachedScanQuery = trustedBuiltinExpression \? \{ rows: \[\] \}/);
+ assert.match(upload,/cachedScanQuery = \(trustedBuiltinExpression \|\| allowed\.dbType === 'audio'\) \? \{ rows: \[\] \}/);
 });
 test('actual published sticker bytes are recognized without invoking a scanner',async()=>{
  const path=require('node:path');

@@ -1,3 +1,5 @@
+const { chatHistoryWindow, chatHistoryQuery } = require('./chat-history-window');
+const { registerConversationSearch } = require('./conversation-search');
 const { imageBlockReason } = require('./moderation-user-reason');
 require('dotenv').config();
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.turn') });
@@ -54,17 +56,16 @@ const {
 const personalDrive = require('./personal-drive');
 const { mediaLibraryName } = require('./media-library-name');
 const { registerMediaRenameRoutes } = require('./media-rename');
+const { MEDIA_PROGRESS_SCHEMA, registerMediaProgressRoutes } = require('./media-playback-progress');
 const { MEDIA_DELETE_SCHEMA, createMediaLibraryDeletion } = require('./media-library-delete');
 const { decryptBuffer: decryptBackupBuffer, deriveKey: deriveBackupKey,
   encryptBuffer: encryptBackupBuffer } =
   require('./media-backup-crypto');
 const { createVaultKey, unwrapVaultKey, wrapVaultKey } = require('./backup-vault-key');
 const {
-  MAX_AUDIO_SECONDS,
+  MAX_AUDIO_BYTES,
   probeAudio,
-  transcribeAudio,
-  transcriptDigest,
-  isAudioTranscriptionBusy,
+  probeWebmMime,
 } = require('./audio-moderation');
 const { convertRecordedAudio } = require('./recorded-audio');
 const { SHORT_USER_ID_SCHEMA, shortenCapturedFileName } = require('./user-short-id');
@@ -676,12 +677,12 @@ const ALLOWED_TYPES = {
                  { ext: 'docx', maxMB: 25, dbType: 'document' },
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
                  { ext: 'xlsx', maxMB: 25, dbType: 'document' },
-  'audio/mpeg':  { ext: 'mp3',  maxMB: 25, dbType: 'audio' },
-  'audio/aac':   { ext: 'aac',  maxMB: 25, dbType: 'audio' },
-  'audio/mp4':   { ext: 'm4a',  maxMB: 25, dbType: 'audio' },
-  'audio/webm':  { ext: 'webm', maxMB: 25, dbType: 'audio' },
-  'audio/ogg':   { ext: 'ogg',  maxMB: 25, dbType: 'audio' },
-  'audio/wav':   { ext: 'wav',  maxMB: 25, dbType: 'audio' },
+  'audio/mpeg':  { ext: 'mp3',  maxMB: 150, dbType: 'audio' },
+  'audio/aac':   { ext: 'aac',  maxMB: 150, dbType: 'audio' },
+  'audio/mp4':   { ext: 'm4a',  maxMB: 150, dbType: 'audio' },
+  'audio/webm':  { ext: 'webm', maxMB: 150, dbType: 'audio' },
+  'audio/ogg':   { ext: 'ogg',  maxMB: 150, dbType: 'audio' },
+  'audio/wav':   { ext: 'wav',  maxMB: 150, dbType: 'audio' },
   'video/mp4':       { ext: 'mp4',  maxMB: 50, dbType: 'video' },
   'video/webm':      { ext: 'webm', maxMB: 50, dbType: 'video' },
   'video/quicktime': { ext: 'mov',  maxMB: 50, dbType: 'video' },
@@ -702,7 +703,13 @@ const ALLOWED_EXTENSIONS = Object.freeze({
   mov: { mime: 'video/quicktime', config: ALLOWED_TYPES['video/quicktime'] },
 });
 
-function resolveAllowedUpload(file) {
+async function resolveAllowedUpload(file) {
+  if (/\.(webm)$/i.test(file.originalname || '') ||
+      /^(audio|video)\/webm(?:;|$)/i.test(file.mimetype || '') ||
+      file.buffer?.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) {
+    const mime = await probeWebmMime(file.buffer, file.originalname);
+    return { ...ALLOWED_TYPES[mime], mime };
+  }
   const byMime = ALLOWED_TYPES[file.mimetype];
   if (byMime) return { ...byMime, mime: file.mimetype };
   const extension = path.extname(file.originalname || '')
@@ -714,7 +721,8 @@ function resolveAllowedUpload(file) {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  // Busboy emits a limit event at equality; route checks enforce the inclusive cap.
+  limits: { fileSize: MAX_AUDIO_BYTES + 1 },
 });
 
 const VIDEO_MODERATION_URL = process.env.VIDEO_MODERATION_URL ||
@@ -795,6 +803,7 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
         frameResults[index] = { timestampSeconds,
         blocked: frameResult.blocked === true,
         pending: frameResult.pending === true,
+        scanStopped: frameResult.scanStopped === true,
         reason: frameResult.reason || null,
         blockedBy: frameResult.blockedBy || null,
         classification: frameResult.classification || null,
@@ -1012,11 +1021,7 @@ const visionTestRateLimit = createRateLimiter({
   max: 30,
   message: 'בוצעו יותר מדי בדיקות תמונה. נסה שוב בעוד מספר דקות',
 });
-const visionRescanRateLimit = createRateLimiter({
-  windowMs: 60 * 60 * 1000,
-  max: 2,
-  message: 'ניתן להפעיל בדיקת היסטוריה פעמיים בשעה בלבד',
-});
+
 
 // ── Backblaze B2 Native API ───────────────────────────────────────
 // Env vars: B2_KEY_ID, B2_APP_KEY, B2_BUCKET, CDN_BASE_URL
@@ -1121,64 +1126,22 @@ function redactHarmfulLanguageForDisplay(value) {
   return String(value || '').replace(/טמבל(?:ים|ית)?/giu, 'מילה פוגענית');
 }
 
-async function scanAudio(buffer, fileName, options = {}) {
-  let auditResult;
-  try {
-    const result = await transcribeAudio(buffer, fileName);
-    const durationSeconds = Number(result.durationSeconds);
-    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0)
-      throw new Error('invalid audio duration');
-    if (durationSeconds > MAX_AUDIO_SECONDS) {
-      return auditResult = {
-        blocked: true,
-        pending: false,
-        blockedBy: 'audio_duration',
-        reason: 'אורך ההקלטה המרבי הוא 2 דקות',
-        audio: { durationSeconds },
-      };
-    }
-    const transcript = String(result.transcript || '').trim();
-    const moderation = moderateChatText(transcript);
-    return auditResult = {
-      blocked: moderation.blocked === true,
-      pending: false,
-      blockedBy: moderation.blocked ? 'audio_transcript' : null,
-      reason: moderation.blocked
-        ? 'ההקלטה נחסמה משום שהתמלול כולל תוכן פוגעני או אסור'
-        : null,
-      audio: {
-        source: 'local-whisper-small',
-        durationSeconds,
-        language: result.language || null,
-        languageProbability: Number(result.languageProbability) || null,
-        speechDetected: transcript.length > 0,
-        transcriptLength: transcript.length,
-        transcriptHash: transcriptDigest(transcript),
-        transcriptEncrypted: transcript ? encryptMessageText(transcript) : null,
-      },
-    };
-  } catch (error) {
-    console.error('[audio-moderation] transcription failed:', error.message);
-    return auditResult = {
-      blocked: false,
-      pending: true,
-      reason: 'סריקת ההקלטה ממתינה לעיבוד מקומי',
-      audio: { source: 'local-whisper-small', error: 'transcription_unavailable' },
-    };
-  } finally {
-    await recordProviderCheck({ provider: 'local', operation: 'audio_transcription',
-      tracking: options.tracking,
-      result: { ...auditResult, available: !auditResult?.audio?.error,
-        findings: [auditResult?.audio?.speechDetected === true ? 'speech_detected'
-          : auditResult?.audio?.speechDetected === false ? 'no_speech_detected' : null,
-        auditResult?.blockedBy === 'audio_transcript' ? 'harmful_text' : null].filter(Boolean) } });
-  }
+function approvedAudioResult(durationSeconds) {
+  return { blocked: false, pending: false, blockedBy: null, reason: null,
+    audio: { source: 'duration-probe', transcription: 'disabled', durationSeconds } };
 }
 
-function decryptAudioTranscript(details) {
-  const encrypted = details?.audio?.transcriptEncrypted;
-  if (!encrypted) return null;
-  try { return decryptMessageText(encrypted); } catch (_) { return null; }
+// Legacy queued recordings still validate duration, but never transcribe speech.
+async function scanAudio(buffer, fileName) {
+  try {
+    const { durationSeconds } = await probeAudio(buffer, fileName);
+    return approvedAudioResult(durationSeconds);
+  } catch (error) {
+    console.error('[audio] duration probe failed:', error.message);
+    return { blocked: false, pending: true,
+      reason: 'לא ניתן לקרוא את קובץ ההקלטה כרגע',
+      audio: { source: 'duration-probe', error: 'audio_probe_unavailable' } };
+  }
 }
 
 function accountModerationError(user) {
@@ -3720,7 +3683,6 @@ async function resolveSystemInput(pool, userId, assistantId, input) {
         FROM stored_files WHERE public_url=$1 AND moderation_status='approved'`, [url]);
       return rows.rows[0] || null;
     },
-    decryptTranscript: decryptAudioTranscript,
   });
 }
 
@@ -3732,7 +3694,7 @@ async function createSystemExchange(pool, userId, question, file = null,
      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,created_at`,
     [userId, assistantId, file?.type || 'text', safeQuestion,
      file?.url || null, file?.name || null, ...auditIds()]);
-  if (assistantId === SYSTEM_USER_ID && file?.silent === true)
+  if (file?.type === 'audio' || (assistantId === SYSTEM_USER_ID && file?.silent === true))
     return { sent: sent.rows[0], reply: null, answer: null };
   const generated = assistantId === SAFE_INFORMATION_USER_ID
       ? await generateSafeInformationSystemAnswer(pool, userId, question)
@@ -3786,6 +3748,8 @@ const corsOptions = {
 
 const app = express();
 const httpServer = createServer(app);
+// Permit large uploads over slow connections; this is not a media duration limit.
+httpServer.requestTimeout = 30 * 60 * 1000;
 const io = new Server(httpServer, { cors: corsOptions });
 app.set('io', io);
 
@@ -5315,6 +5279,10 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
 });
 
 // ── Users ─────────────────────────────────────────────────────────
+require('./forward-filter-preview').registerForwardFilterPreview(app, {
+  auth: authWithDbCheck, getPool,
+});
+
 app.get('/api/users', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
@@ -5431,6 +5399,10 @@ app.get('/api/users/directory', authWithDbCheck, async (req, res) => {
     res.json(await projectContactProfiles(pool, req.user.id, result.rows));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+registerConversationSearch(app, { auth: authWithDbCheck, rateLimit: searchRateLimit,
+  getPool, projectFilteredHistory, teenContactAllowed, projectGuideFilterNotice,
+  systemUserId: SYSTEM_USER_ID });
 
 app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -5886,6 +5858,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
   const otherId = req.params.userId;
   const myId    = req.user.id;
   const before  = req.query.before; // ISO date for pagination
+  const historyWindow = chatHistoryWindow(req.query);
   try {
     const pool = await getPool();
     if (!await teenContactAllowed(pool, myId, otherId)) {
@@ -5897,7 +5870,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
     const params = [myId, otherId];
     if (before) params.push(new Date(before));
 
-    const result = await pool.query(`
+    const historySql = `
       SELECT
         m.id, m.sender_id, m.recipient_id, m.type,
         receipt.client_message_id,
@@ -5939,9 +5912,9 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
           (m.sender_id = $2 AND m.recipient_id = $1)
         )
         ${before ? 'AND m.created_at < $3' : ''}
-      ORDER BY m.created_at DESC
-      LIMIT 50
-    `, params);
+    `;
+    const historyQuery = chatHistoryQuery(historySql, params, '$1', historyWindow);
+    const result = await pool.query(historyQuery.text, historyQuery.values);
     // Pending/rejected uploads are visible only to their sender. They are not
     // messages yet, but must survive refresh so a scanned image never appears
     // to vanish from the sender's conversation.
@@ -6053,11 +6026,10 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         ? { ...row, private_filter: { ...DEFAULT_CONTENT_FILTER } } : row),
     ]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-      .slice(-50)
+      .slice(historyWindow.extended ? 0 : -50)
       .map(row => {
-        const transcript = decryptAudioTranscript(row._moderation_details);
         const { _moderation_details, ...safe } = row;
-        return projectGuideFilterNotice({ ...safe, audio_transcript: transcript }, myId, SYSTEM_USER_ID);
+        return projectGuideFilterNotice(safe, myId, SYSTEM_USER_ID);
       });
     res.json(combined);
   } catch (e) {
@@ -6947,116 +6919,6 @@ async function loadOwnedMediaForReview(pool, userId, storedFileId) {
   return found.rows.length ? loadMediaBytesForReview(found.rows[0]) : null;
 }
 
-async function loadAccessibleMediaForReview(pool, userId, fileUrl) {
-  const found = await pool.query(
-    `SELECT sf.id,sf.user_id,sf.original_name,sf.storage_path,sf.public_url,
-            sf.mime_type,sf.file_type,sf.file_size,sf.moderation_status,
-            sf.moderation_details,sf.context_type,sf.context_id
-     FROM stored_files sf WHERE sf.public_url=$2 AND (
-       sf.user_id=$1 OR EXISTS (
-         SELECT 1 FROM messages m WHERE m.file_url=sf.public_url
-           AND m.deleted_for_everyone=FALSE AND (
-             m.sender_id=$1 OR m.recipient_id=$1 OR EXISTS (
-               SELECT 1 FROM group_members gm WHERE gm.group_id=m.group_id
-                 AND gm.user_id=$1 AND gm.status='member')))
-       OR EXISTS (SELECT 1 FROM listings l WHERE l.user_id=$1 AND
-         (l.image_url=sf.public_url OR EXISTS (SELECT 1 FROM listing_images li
-           WHERE li.listing_id=l.id AND li.url=sf.public_url)))
-       OR EXISTS (SELECT 1 FROM education_forms ef WHERE ef.file_url=sf.public_url
-         AND (ef.created_by=$1 OR EXISTS (SELECT 1 FROM group_members gm
-           WHERE gm.group_id=ef.group_id AND gm.user_id=$1 AND gm.status='member')))
-     ) LIMIT 1`, [userId, fileUrl]);
-  return found.rows.length ? loadMediaBytesForReview(found.rows[0]) : null;
-}
-
-async function persistFullImageRescan(pool, loaded, scanResult, requestedBy) {
-  const file = loaded.file;
-  scanResult.moderationVersion = MODERATION_CACHE_VERSION;
-  if (scanResult.pending)
-    return { status: 'pending', reason: scanResult.reason || 'הסריקה ממתינה לשירות בדיקה' };
-
-  if (!scanResult.blocked) {
-    await pool.query(
-      `UPDATE stored_files SET moderation_status='approved',moderation_details=$1,
-         blocked_content_expires_at=NULL
-       WHERE id=$2`, [JSON.stringify(scanResult), file.id]);
-    logActivity(requestedBy, 'media_full_rescan_approved', {
-      storedFileId: file.id, ownerId: file.user_id,
-      fileName: file.original_name, classification: scanResult.classification,
-    });
-    return { status: 'approved', classification: scanResult.classification };
-  }
-
-  const client = await pool.connect();
-  let messages = [];
-  let expiresAt;
-  try {
-    await client.query('BEGIN');
-    const updated = await client.query(
-      `UPDATE stored_files SET moderation_status='rejected',moderation_details=$1,
-         blocked_content_expires_at=now()+interval '2 minutes'
-       WHERE id=$2 AND content_purged_at IS NULL
-       RETURNING blocked_content_expires_at`,
-    [JSON.stringify(scanResult), file.id]);
-    if (!updated.rows.length) throw new Error('Rescanned image is no longer available');
-    expiresAt = updated.rows[0].blocked_content_expires_at;
-    const removed = await client.query(
-      `UPDATE messages SET deleted_for_everyone=TRUE,body=NULL,file_url=NULL,file_name=NULL
-       WHERE file_url=$1 AND deleted_for_everyone=FALSE
-       RETURNING id,sender_id,recipient_id,group_id`, [file.public_url]);
-    messages = removed.rows;
-    await client.query('UPDATE users SET profile_pic_url=NULL WHERE profile_pic_url=$1',
-      [file.public_url]);
-    await client.query('UPDATE groups SET profile_pic_url=NULL WHERE profile_pic_url=$1',
-      [file.public_url]);
-    await client.query('DELETE FROM listing_images WHERE url=$1', [file.public_url]);
-    await client.query('UPDATE listings SET image_url=NULL WHERE image_url=$1',
-      [file.public_url]);
-    await client.query(
-      'UPDATE education_forms SET file_url=NULL,file_name=NULL WHERE file_url=$1',
-      [file.public_url]);
-    await client.query(
-      `UPDATE shared_gifs SET status='hidden' WHERE stored_file_id=$1 AND status='active'`,
-      [file.id]);
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
-
-  for (const message of messages) {
-    const recipientSid = onlineUsers.get(message.recipient_id);
-    if (recipientSid) io.to(recipientSid).emit('message:deleted', { id: message.id });
-    if (message.group_id) {
-      const members = await pool.query(
-        `SELECT user_id FROM group_members
-         WHERE group_id=$1 AND status='member' AND user_id<>$2`,
-      [message.group_id, file.user_id]);
-      for (const member of members.rows) {
-        const memberSid = onlineUsers.get(member.user_id);
-        if (memberSid) io.to(memberSid).emit('message:deleted', {
-          id: message.id, groupId: message.group_id,
-        });
-      }
-    }
-  }
-  logActivity(requestedBy, 'media_full_rescan_rejected', {
-    storedFileId: file.id, ownerId: file.user_id, fileName: file.original_name,
-    reason: scanResult.reason, blockedBy: scanResult.blockedBy,
-    removedMessages: messages.length,
-  });
-  return {
-    status: 'rejected', reason: imageBlockReason(scanResult.reason, loaded.file.file_type, scanResult.blockedBy),
-    classification: scanResult.classification,
-    removedMessages: messages.length,
-    blockedPreviewUrl: requestedBy === file.user_id
-      ? `/betshuva-app/api/blocked-media/${file.id}` : null,
-    previewExpiresAt: requestedBy === file.user_id ? expiresAt : null,
-  };
-}
-
 // Safety-rejected images are never served by the public media route. The
 // uploader may inspect an authenticated, non-cacheable preview for two minutes
 // so the rejection is understandable; recipients and group members cannot use
@@ -7138,50 +7000,13 @@ app.post('/api/document-preview', auth, messageRateLimit, async (req, res) => {
   }
 });
 
-app.post('/api/media/reclassify', auth, messageRateLimit, async (req, res) => {
-  const fileUrl = String(req.body?.fileUrl || '');
-  if (!fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`))
-    return res.status(400).json({ error: 'כתובת התמונה אינה תקינה' });
-  try {
-    const pool = await getPool();
-    const loaded = await loadAccessibleMediaForReview(pool, req.user.id, fileUrl);
-    if (!loaded) return res.status(404).json({ error: 'התמונה אינה זמינה לסריקה' });
-    if (loaded.error) return res.status(400).json({ error: loaded.error });
-    const scanResult = await scanImage(loaded.bytes, { tracking: {
-      storedFileId: loaded.file.id, userId: req.user.id,
-      workflow: 'user_rescan', attempt: 1,
-    } });
-    if (!scanResult || (!scanResult.classification && !scanResult.blocked))
-      return res.status(503).json({ error: 'הסריקה הנוספת אינה זמינה כרגע' });
-    const outcome = await persistFullImageRescan(pool, loaded, scanResult, req.user.id);
-    if (outcome.status === 'pending') return res.status(503).json({ error: outcome.reason });
-    res.json({ ok: true, ...outcome });
-  } catch (error) {
-    console.error('accessible media reclassify:', error.message);
-    res.status(503).json({ error: 'לא ניתן היה לבצע סריקה נוספת כרגע' });
-  }
-});
-
-app.post('/api/media-library/:id/reclassify', auth, messageRateLimit, async (req, res) => {
-  try {
-    const pool = await getPool();
-    const loaded = await loadOwnedMediaForReview(pool, req.user.id, req.params.id);
-    if (!loaded) return res.status(404).json({ error: 'התמונה לא נמצאה' });
-    if (loaded.error) return res.status(400).json({ error: loaded.error });
-    const scanResult = await scanImage(loaded.bytes, { tracking: {
-      storedFileId: loaded.file.id, userId: req.user.id,
-      workflow: 'library_rescan', attempt: 1,
-    } });
-    if (!scanResult || (!scanResult.classification && !scanResult.blocked))
-      return res.status(503).json({ error: 'הסריקה הנוספת אינה זמינה כרגע. אפשר לנסות שוב מאוחר יותר.' });
-    const outcome = await persistFullImageRescan(pool, loaded, scanResult, req.user.id);
-    if (outcome.status === 'pending') return res.status(503).json({ error: outcome.reason });
-    res.json({ ok: true, ...outcome });
-  } catch (error) {
-    console.error('media reclassify:', error.message);
-    res.status(503).json({ error: 'לא ניתן היה לבצע סריקה נוספת כרגע' });
-  }
-});
+// Retired manual scan routes return an explicit result for older clients.
+function manualRescanRemoved(_req, res) {
+  return res.status(410).json({ code: 'MANUAL_RESCAN_REMOVED',
+    error: 'אפשרות הסריקה הנוספת הוסרה' });
+}
+app.post('/api/media/reclassify', auth, messageRateLimit, manualRescanRemoved);
+app.post('/api/media-library/:id/reclassify', auth, messageRateLimit, manualRescanRemoved);
 
 app.post('/api/media-library/:id/classification-appeal', auth, messageRateLimit, async (req, res) => {
   try {
@@ -7416,6 +7241,7 @@ for (const action of ['preview', 'confirm']) {
   });
 }
 registerMediaRenameRoutes(app, { auth: authWithDbCheck, getPool });
+registerMediaProgressRoutes(app, { auth: authWithDbCheck, getPool });
 
 registerConversationHistory(app, { auth: authWithDbCheck, rateLimit: messageRateLimit,
   getPool, deleteOwnMedia, notifyUser: (userId, event, payload) => relay(userId, event, payload) });
@@ -7425,6 +7251,8 @@ registerFilterAuditRoutes(app, { auth: authWithDbCheck, adminAuth, getPool });
 registerSystemAuditRoutes(app, { getPool, adminMiddleware: adminAuth });
 require('./audit-column-order').registerAuditColumnOrderRoutes(app, { getPool, adminMiddleware: adminAuth });
 registerAuditScanPreviewRoutes(app, { getPool, adminMiddleware: adminAuth });
+require('./audit-media').registerAuditMediaRoutes(app, { getPool, adminMiddleware: adminAuth,
+  readMedia: (db, file) => readSourceMedia(db, UPLOAD_ROOT, file) });
 
 // Phase 1: provider-neutral backup settings and read-only storage accounting.
 app.get('/api/backup', auth, async (req, res) => {
@@ -8915,6 +8743,9 @@ app.post('/api/gifs/:id/use', auth, async (req, res) => {
 });
 
 const { acquireUploadLock, findReusableUpload } = require('./upload-reuse');
+require('./upload-rejection-audit').registerUploadRejectionAudit(app, {
+  auth, uploadRateLimit, getPool,
+});
 // The API and recovery timer share a process. Reserve the ID before inserting
 // so recovery can distinguish a slow live upload from an interrupted request.
 const activeUploadFileIds = new Set();
@@ -8930,7 +8761,16 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
   if (BLOCKED_TYPES.some(t => file.mimetype.startsWith(t)))
     return res.status(400).json({ error: 'שליחת סרטוני וידאו אינה מותרת' });
 
-  const allowed = resolveAllowedUpload(file);
+  let allowed;
+  try {
+    allowed = await resolveAllowedUpload(file);
+  } catch (error) {
+    console.warn('[upload] WebM probe failed:', error.message);
+    return res.status(400).json({
+      error: 'לא ניתן לקרוא את קובץ ה-WebM. יש לבחור קובץ תקין',
+      code: 'INVALID_WEBM_CONTAINER',
+    });
+  }
   if (!allowed) return res.status(400).json({ error: 'סוג קובץ לא נתמך' });
   const recordedAudio = req.body.recordedAudio === 'true';
   if (recordedAudio && allowed.dbType !== 'audio')
@@ -8941,7 +8781,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
   // Only whitelisted extensions reach this point, so use the canonical MIME.
   file.mimetype = allowed.mime;
   if (allowed.dbType === 'video') {
-    const isWebM = file.originalname.toLowerCase().endsWith('.webm');
+    const isWebM = file.mimetype === 'video/webm';
     const hasWebMSignature = file.buffer.length >= 4 &&
       file.buffer[0] === 0x1a && file.buffer[1] === 0x45 &&
       file.buffer[2] === 0xdf && file.buffer[3] === 0xa3;
@@ -8963,25 +8803,22 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
   const maxBytes = allowed.maxMB * 1024 * 1024;
   if (file.size > maxBytes)
     return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
+  let audioDurationSeconds;
   if (allowed.dbType === 'audio') {
     try {
       const audio = recordedAudio
         ? await convertRecordedAudio(file.buffer, file.originalname, file.mimetype)
         : await probeAudio(file.buffer, file.originalname);
-      if (audio.durationSeconds > MAX_AUDIO_SECONDS)
-        return res.status(400).json({
-          error: 'אורך ההקלטה המרבי הוא 2 דקות',
-          code: 'AUDIO_DURATION_EXCEEDED',
-        });
+      audioDurationSeconds = audio.durationSeconds;
       if (recordedAudio) {
         Object.assign(file, { buffer: audio.buffer, originalname: audio.originalname,
           mimetype: audio.mimetype, size: audio.size });
       }
     } catch (error) {
       console.warn('[audio-moderation] audio probe failed:', error.message);
-      if (error.code === 'AUDIO_DURATION_EXCEEDED')
+      if (error.code === 'AUDIO_SIZE_EXCEEDED')
         return res.status(400).json({
-          error: 'אורך ההקלטה המרבי הוא 2 דקות', code: error.code,
+          error: 'גודל קובץ האודיו המרבי הוא 150MB', code: error.code,
         });
       if (['AUDIO_CONVERSION_BUSY', 'AUDIO_CONVERSION_UNAVAILABLE'].includes(error.code))
         return res.status(503).json({
@@ -9044,7 +8881,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
     // A library exemption is tied to the current exact-byte trust check. It is
     // not a completed content scan, including when old copies have a hash or
     // visual fingerprint that matches this ordinary upload.
-    const cachedScanQuery = trustedBuiltinExpression ? { rows: [] } : await pool.query(
+    const cachedScanQuery = (trustedBuiltinExpression || allowed.dbType === 'audio') ? { rows: [] } : await pool.query(
       `SELECT moderation_details FROM stored_files
        WHERE content_sha256=$1 AND file_type=$2
          AND moderation_status IN ('approved','rejected')
@@ -9144,12 +8981,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
     else if (allowed.dbType === 'document')
       scanResult = await scanDocument(file.buffer, file.mimetype, { tracking: scanTracking });
     else if (allowed.dbType === 'audio')
-      scanResult = {
-        blocked: false,
-        pending: true,
-        reason: 'ההקלטה ממתינה לתמלול ולסריקה מקומית',
-        audio: { source: 'local-whisper-small' },
-      };
+      scanResult = approvedAudioResult(audioDurationSeconds);
 
     if (scanResult) {
       scanResult.moderationVersion = MODERATION_CACHE_VERSION;
@@ -9157,7 +8989,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
       console.log(`[Vision] ${file.originalname} | ${scanResult.cacheHit ? '♻️ CACHE' : scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
     }
 
-    if (!scanResult?.pending) {
+    if (!scanResult?.pending && !scanResult?.blocked) {
       try {
         await assertSenderMediaAllowed(pool, { userId: req.user.id,
           contextType: req.body.groupId ? 'group' : req.body.toUserId && !scanBotUpload ? 'chat' : 'general',
@@ -9238,7 +9070,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
         ? `התמונה סווגה כ${blockedLabel}, וקטגוריה זו חסומה בהגדרות הקבוצה`
         : 'סוג התוכן חסום בהגדרות הסינון של הקבוצה';
       if (!reused) await auditedMediaQuery(pool,
-        `UPDATE stored_files SET moderation_status='approved', moderation_details=$1
+        `UPDATE stored_files SET moderation_status='approved', moderation_details=$1, blocked_content_expires_at=NULL
          WHERE public_url=$2`,
         [JSON.stringify({ ...scanResult, reason, blockedCategories,
           destinationFilterRejected: true }), url]);
@@ -9247,7 +9079,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason,
         blockedCategories, classification: scanResult?.classification || null,
-        forwardAllowed: true });
+        forwardAllowed: true, code: 'DESTINATION_CONTENT_FILTERED', blockedBy: 'destination_filter' });
     }
 
     // Listings deliberately allow product/object photos only. A listing image
@@ -9335,7 +9167,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
         googleSafeSearch: scanResult?.googleSafeSearch || null,
       }, req.ip);
       if (!reused) await auditedMediaQuery(pool,
-        `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+        `UPDATE stored_files SET moderation_status='approved', moderation_details=$1, blocked_content_expires_at=NULL WHERE public_url=$2`,
         [JSON.stringify({ ...scanResult, reason, classification: scanResult?.classification || null,
           safeSearch: scanResult?.safeSearch || null,
           strictModesty: scanResult?.strictModesty || null,
@@ -9352,7 +9184,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
         fileType: allowed.dbType, status: 'rejected', reason,
         classification: scanResult?.classification || null,
-        handledByScanBot: scanBotUpload, scanReport, forwardAllowed: true });
+        handledByScanBot: scanBotUpload, scanReport, forwardAllowed: true, code: 'DESTINATION_CONTENT_FILTERED', blockedBy: 'destination_filter' });
     }
 
     if (scanResult?.pending) {
@@ -9826,6 +9658,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
   if (req.user.isTeen)
     return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const before = req.query.before;
+  const historyWindow = chatHistoryWindow(req.query);
   try {
     const pool = await getPool();
     const check = await pool.query(
@@ -9838,7 +9671,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
     if (!check.rows.length)
       return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
 
-    const result = await pool.query(`
+    const historySql = `
       SELECT
         m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name, m.reply_to_id, m.created_at,
         CASE WHEN m.sender_id=$2 THEN m.delivery_summary END AS delivery_summary,
@@ -9872,10 +9705,11 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
           WHERE gm.group_id=$1 AND gm.user_id=$2
         )
       ${before ? 'AND m.created_at < $3' : ''}
-      ORDER BY m.created_at DESC
-      LIMIT 50
-    `, before ? [req.params.id, req.user.id, new Date(before)] :
-       [req.params.id, req.user.id]);
+    `;
+    const historyQuery = chatHistoryQuery(
+      historySql, before ? [req.params.id, req.user.id, new Date(before)] :
+       [req.params.id, req.user.id], '$2', historyWindow);
+    const result = await pool.query(historyQuery.text, historyQuery.values);
     const scanParams = [req.params.id, req.user.id];
     if (before) scanParams.push(new Date(before));
     const scans = await pool.query(`
@@ -9936,11 +9770,10 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
     const personalMessages = await personalizeReceivedMessages(pool, req.user.id, visibleMessages);
     const combined = [...personalMessages, ...await projectOwnScans(pool, req.user.id, scans.rows, { contextType: 'group', contextId: req.params.id })]
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-      .slice(-50)
+      .slice(historyWindow.extended ? 0 : -50)
       .map(row => {
-        const transcript = decryptAudioTranscript(row._moderation_details);
         const { _moderation_details, ...safe } = row;
-        return { ...safe, audio_transcript: transcript };
+        return safe;
       });
     res.json(combined);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -11823,36 +11656,7 @@ app.get('/api/admin/classification-stats', adminAuth, async (req, res) => {
   }
 });
 
-app.post('/api/admin/classification-stats/:id/rescan', adminAuth,
-  visionRescanRateLimit, async (req, res) => {
-  if (req.adminPerm !== 'edit')
-    return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
-  try {
-    const pool = await getPool();
-    const found = await pool.query(
-      `SELECT id,user_id,original_name,storage_path,public_url,mime_type,file_type,
-              file_size,context_type,context_id,moderation_status,moderation_details
-       FROM stored_files WHERE id=$1`, [req.params.id]);
-    if (!found.rows.length)
-      return res.status(404).json({ error: 'התמונה לא נמצאה' });
-    const loaded = await loadMediaBytesForReview(found.rows[0]);
-    if (loaded.error) return res.status(400).json({ error: loaded.error });
-    const scanResult = await scanImage(loaded.bytes, { tracking: {
-      storedFileId: loaded.file.id, userId: req.user.id,
-      workflow: 'admin_rescan', attempt: 1,
-    } });
-    if (!scanResult || (!scanResult.classification && !scanResult.blocked))
-      return res.status(503).json({ error: 'הסריקה הנוספת אינה זמינה כרגע' });
-    const outcome = await persistFullImageRescan(
-      pool, loaded, scanResult, req.user.id);
-    if (outcome.status === 'pending')
-      return res.status(503).json({ error: outcome.reason });
-    res.json({ ok: true, ...outcome });
-  } catch (error) {
-    console.error('admin classification rescan:', error.message);
-    res.status(503).json({ error: 'לא ניתן היה לבצע סריקה נוספת כרגע' });
-  }
-});
+app.post('/api/admin/classification-stats/:id/rescan', adminAuth, manualRescanRemoved);
 
 app.put('/api/admin/classification-stats/:id/ground-truth', adminAuth,
   async (req, res) => {
@@ -12655,6 +12459,8 @@ async function purgeExpiredBlockedAudio() {
     await pool.query(`
       UPDATE stored_files SET blocked_content_expires_at=now()+interval '2 minutes'
       WHERE file_type='audio' AND moderation_status='rejected'
+        AND moderation_details->>'blocked' IS DISTINCT FROM 'false'
+        AND moderation_details->>'destinationFilterRejected' IS DISTINCT FROM 'true'
         AND blocked_content_expires_at IS NULL AND content_purged_at IS NULL`);
     await pool.query(`
       INSERT INTO moderation_incidents
@@ -12665,9 +12471,13 @@ async function purgeExpiredBlockedAudio() {
         COALESCE((moderation_details->'audio'->>'transcriptLength')::int,0),
         (moderation_details->'audio'->>'durationSeconds')::double precision
       FROM stored_files WHERE file_type='audio' AND moderation_status='rejected'
+        AND moderation_details->>'blocked' IS DISTINCT FROM 'false'
+        AND moderation_details->>'destinationFilterRejected' IS DISTINCT FROM 'true'
       ON CONFLICT (stored_file_id) WHERE stored_file_id IS NOT NULL DO NOTHING`);
     const expired = await pool.query(`SELECT id,storage_path,user_id FROM stored_files
-      WHERE file_type='audio' AND moderation_status='rejected' AND content_purged_at IS NULL
+      WHERE file_type='audio' AND moderation_status='rejected'
+        AND moderation_details->>'blocked' IS DISTINCT FROM 'false'
+        AND moderation_details->>'destinationFilterRejected' IS DISTINCT FROM 'true' AND content_purged_at IS NULL
         AND blocked_content_expires_at<=now() LIMIT 50`);
     for (const row of expired.rows) {
       const absolutePath = path.resolve(UPLOAD_ROOT, row.storage_path);
@@ -12699,6 +12509,7 @@ async function purgeExpiredBlockedImages() {
         AND content_purged_at IS NULL AND blocked_content_expires_at IS NOT NULL
         AND blocked_content_expires_at<=now()
         AND COALESCE((moderation_details->>'destinationFilterRejected')::boolean,FALSE)=FALSE
+        AND moderation_details->>'blocked' IS DISTINCT FROM 'false'
       LIMIT 50`);
     for (const row of expired.rows) {
       const absolutePath = path.resolve(UPLOAD_ROOT, row.storage_path);
@@ -12831,6 +12642,7 @@ app.delete('/api/account', auth, async (req, res) => {
       [`personal-media-owner:${uid}`]);
     await client.query(`UPDATE received_message_media SET status='skipped'
       WHERE user_id=$1 AND status='queued'`, [uid]);
+    await client.query('DELETE FROM media_playback_progress WHERE user_id=$1', [uid]);
     const files = await client.query(
       'SELECT public_url FROM stored_files WHERE user_id=$1', [uid]);
     fileUrls = files.rows.map(row => row.public_url).filter(Boolean);
@@ -12935,6 +12747,7 @@ app.delete('/api/account/data', auth, async (req, res) => {
       [`personal-media-owner:${uid}`]);
     await client.query(`UPDATE received_message_media SET status='skipped'
       WHERE user_id=$1 AND status='queued'`, [uid]);
+    await client.query('DELETE FROM media_playback_progress WHERE user_id=$1', [uid]);
     const files = await client.query(
       'SELECT public_url FROM stored_files WHERE user_id=$1', [uid]);
     fileUrls = files.rows.map(row => row.public_url).filter(Boolean);
@@ -13443,88 +13256,7 @@ app.get('/api/admin/vision', adminAuth, async (req, res) => {
 });
 
 // ── Admin: re-scan all files and save Vision results ─────────────
-let visionRescanRunning = false;
-app.post('/api/admin/vision/rescan', adminAuth, visionRescanRateLimit, async (req, res) => {
-  if (req.adminPerm !== 'edit') return res.status(403).json({ error: 'נדרשת הרשאת עריכה' });
-  if (visionRescanRunning)
-    return res.status(409).json({ error: 'בדיקת היסטוריה אחרת כבר פועלת' });
-  visionRescanRunning = true;
-  try {
-    const pool = await getPool();
-    // Get all image uploads without Vision results saved
-    const result = await pool.query(`
-      SELECT id, action, details FROM activity_log
-      WHERE action IN ('upload_file','send_file_delayed','send_group_file_delayed',
-                       'blocked_upload','blocked_upload_delayed')
-        AND details @> '{"fileType":"image"}'::jsonb
-      ORDER BY created_at DESC
-    `);
-    let scanned = 0, updated = 0, failed = 0;
-    for (const row of result.rows) {
-      const d = row.details || {};
-      if (!d.fileUrl) { failed++; continue; }
-      const existingGoogleComplete = !googleSafeSearchConfigured() ||
-        (d.googleSafeSearch?.available &&
-         d.googleSafeSearch.threshold ===
-           normalizeBlockThreshold(process.env.GOOGLE_SAFESEARCH_BLOCK_THRESHOLD)) ||
-        d.googleSafeSearch?.status === 'skipped_local_block';
-      const existingLocalTerminal = d.rescanResult?.blocked &&
-        ['localExplicitContent', 'animatedImage',
-          'googleSafeSearchUncertain', 'googleSafeSearchUnsupported']
-          .includes(d.rescanResult.blockedBy);
-      if (existingLocalTerminal ||
-          (d.localSafety?.available && existingGoogleComplete)) {
-        scanned++;
-        continue;
-      }
-      try {
-        let buf;
-        if (d.fileUrl.startsWith(`${UPLOAD_PUBLIC_BASE}/`)) {
-          const encodedPath = d.fileUrl.slice(UPLOAD_PUBLIC_BASE.length + 1);
-          const relativePath = encodedPath.split('/').map(decodeURIComponent).join(path.sep);
-          const absolutePath = path.resolve(UPLOAD_ROOT, relativePath);
-          if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) {
-            failed++;
-            continue;
-          }
-          buf = await fs.readFile(absolutePath);
-        } else {
-          const imgRes = await fetch(d.fileUrl, { signal: AbortSignal.timeout(10000) });
-          if (!imgRes.ok) { failed++; continue; }
-          buf = Buffer.from(await imgRes.arrayBuffer());
-        }
-        const sr  = await scanImage(buf, { tracking: {
-          userId: req.user.id, workflow: 'admin_history_rescan', attempt: 1,
-        } });
-        const googleComplete = !googleSafeSearchConfigured() ||
-          sr.googleSafeSearch?.available;
-        const reportComplete = !!sr.blocked ||
-          (!sr.pending && sr.localSafety?.available && googleComplete);
-        if (!reportComplete) {
-          failed++;
-          continue;
-        }
-        d.safeSearch = sr.safeSearch;
-        d.labels     = sr.labels;
-        d.strictModesty = sr.strictModesty || null;
-        d.localSafety = sr.localSafety;
-        d.googleSafeSearch = sr.googleSafeSearch || null;
-        d.rescanResult = {
-          reportOnly: true,
-          blocked: !!sr.blocked,
-          pending: !!sr.pending,
-          blockedBy: sr.blockedBy || null,
-          reason: sr.reason || null,
-          scannedAt: new Date().toISOString(),
-        };
-        await pool.query('UPDATE activity_log SET details=$1 WHERE id=$2', [JSON.stringify(d), row.id]);
-        updated++;
-      } catch { failed++; }
-    }
-    res.json({ total: result.rows.length, scanned, updated, failed });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-  finally { visionRescanRunning = false; }
-});
+app.post('/api/admin/vision/rescan', adminAuth, manualRescanRemoved);
 
 // ── Moderation Lists ─────────────────────────────────────────────
 app.get('/api/admin/moderation', adminAuth, (req, res) => {
@@ -13783,7 +13515,7 @@ const SHADOW_CLASSIFICATION_URL = process.env.SHADOW_CLASSIFICATION_URL ||
   'http://127.0.0.1:5005/analyze';
 
 async function serverIdleForShadowWork(pool) {
-  if (isAudioTranscriptionBusy() || retryPendingScans.running) return false;
+  if (retryPendingScans.running) return false;
   const pending = await pool.query(`SELECT EXISTS(
     SELECT 1 FROM pending_scans
     WHERE created_at > now() - interval '10 minutes'
@@ -14147,7 +13879,7 @@ async function retryPendingScans() {
         scanCompleted = true;
 
         try {
-          await assertSenderMediaAllowed(pool, { userId: row.user_id,
+          if (!scanResult.blocked) await assertSenderMediaAllowed(pool, { userId: row.user_id,
             contextType: row.group_id ? 'group' : row.to_user_id && row.to_user_id !== SCAN_BOT_ID ? 'chat' : 'general',
             contextId: row.group_id || (row.to_user_id !== SCAN_BOT_ID ? row.to_user_id : null) || null,
             type: row.file_type, classification: scanResult.classification,
@@ -14207,7 +13939,7 @@ async function retryPendingScans() {
             blockedPreviewUrl: row.file_type === 'image' && rejectedFile?.id
               ? `/betshuva-app/api/blocked-media/${rejectedFile.id}` : null,
             previewExpiresAt: rejectedFile?.blocked_content_expires_at || null,
-            audioTranscript: decryptAudioTranscript(scanResult),
+
           });
           return;
         }
@@ -14224,7 +13956,7 @@ async function retryPendingScans() {
               : 'חשבונות נוער יכולים להתכתב רק עם אנשי קשר שאושרו משני הצדדים';
             const reasonCode = blocked.rows.length ? 'recipient_blocked_sender' : 'teen_mutual_contact_required';
             await completePending(row.id, client => client.query(
-              `UPDATE stored_files SET moderation_status='approved',moderation_details=$1 WHERE public_url=$2`,
+              `UPDATE stored_files SET moderation_status='approved',moderation_details=$1,blocked_content_expires_at=NULL WHERE public_url=$2`,
               [JSON.stringify({ ...scanResult, destinationFilterRejected: true, reason, reasonCode }), row.file_url]));
             outcomePersisted = true;
             relay(row.user_id, 'scan:rejected', { toUserId: row.to_user_id, fileUrl: row.file_url, reason, reasonCode });
@@ -14274,7 +14006,7 @@ async function retryPendingScans() {
               fileUrl: row.file_url, source: 'delayed_scan',
               reasonCode });
             return client.query(
-              `UPDATE stored_files SET moderation_status='approved', moderation_details=$1 WHERE public_url=$2`,
+              `UPDATE stored_files SET moderation_status='approved', moderation_details=$1, blocked_content_expires_at=NULL WHERE public_url=$2`,
               [JSON.stringify({ ...scanResult, reason, reasonCode, destinationFilterRejected: true }), row.file_url]);
           });
           outcomePersisted = true;
@@ -14282,7 +14014,8 @@ async function retryPendingScans() {
             userId: row.user_id, groupId: row.group_id, toUserId: row.to_user_id,
             fileUrl: row.file_url, filter: deliveryFilter, reason });
           relay(row.user_id, 'scan:rejected', { fileName: row.file_name, fileUrl: row.file_url,
-            groupId: row.group_id || null, toUserId: row.to_user_id || null, reason, reasonCode });
+            groupId: row.group_id || null, toUserId: row.to_user_id || null, reason, reasonCode, forwardAllowed: true,
+            ...(deliveryPermitted ? { code: 'DESTINATION_CONTENT_FILTERED', blockedBy: 'destination_filter' } : {}) });
           return;
         }
 
@@ -14303,8 +14036,8 @@ async function retryPendingScans() {
                 fileUrl: row.file_url, source: 'delayed_image_scan',
                 reasonCode: policy?.isContact ? 'content_filter' : 'contact_not_approved' });
               await client.query(
-                `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
-                [JSON.stringify({ ...scanResult, reason, classification: scanResult.classification || null,
+                `UPDATE stored_files SET moderation_status='approved', moderation_details=$1, blocked_content_expires_at=NULL WHERE public_url=$2`,
+                [JSON.stringify({ ...scanResult, reason, destinationFilterRejected: true, classification: scanResult.classification || null,
                   safeSearch: scanResult.safeSearch || null,
                   strictModesty: scanResult.strictModesty || null,
                   localSafety: scanResult.localSafety || null,
@@ -14314,7 +14047,8 @@ async function retryPendingScans() {
             const sid = onlineUsers.get(row.user_id);
             if (sid) io.to(sid).emit('scan:rejected', {
               fileName: row.file_name, fileUrl: row.file_url,
-              groupId: null, toUserId: row.to_user_id, reason,
+              groupId: null, toUserId: row.to_user_id, reason, forwardAllowed: true,
+              ...(policy?.isContact ? { code: 'DESTINATION_CONTENT_FILTERED', blockedBy: 'destination_filter' } : {}),
             });
             return;
           }
@@ -14335,14 +14069,15 @@ async function retryPendingScans() {
                 fileUrl: row.file_url, source: 'delayed_video_scan',
                 reasonCode: policy?.isContact ? 'content_filter' : 'contact_not_approved' });
               await client.query(
-                `UPDATE stored_files SET moderation_status='rejected', moderation_details=$1 WHERE public_url=$2`,
-                [JSON.stringify({ ...scanResult, reason }), row.file_url]);
+                `UPDATE stored_files SET moderation_status='approved', moderation_details=$1, blocked_content_expires_at=NULL WHERE public_url=$2`,
+                [JSON.stringify({ ...scanResult, reason, destinationFilterRejected: true }), row.file_url]);
             });
             outcomePersisted = true;
             const sid = onlineUsers.get(row.user_id);
             if (sid) io.to(sid).emit('scan:rejected', {
               fileName: row.file_name, fileUrl: row.file_url,
-              groupId: null, toUserId: row.to_user_id, reason,
+              groupId: null, toUserId: row.to_user_id, reason, forwardAllowed: true,
+              ...(policy?.isContact ? { code: 'DESTINATION_CONTENT_FILTERED', blockedBy: 'destination_filter' } : {}),
             });
             return;
           }
@@ -14396,37 +14131,6 @@ async function retryPendingScans() {
           return;
         }
 
-        if (row.file_type === 'audio' &&
-            [SYSTEM_USER_ID, SAFE_INFORMATION_USER_ID].includes(row.to_user_id)) {
-          const transcript = decryptAudioTranscript(scanResult);
-          const exchange = await completePending(row.id, async client => {
-            await client.query(`UPDATE stored_files SET moderation_status='approved', moderation_details=$1
-              WHERE public_url=$2`, [JSON.stringify(scanResult), row.file_url]);
-            if (!transcript?.trim()) {
-              const reply = await client.query(`INSERT INTO messages(sender_id,recipient_id,type,body)
-                VALUES($1,$2,'text',$3) RETURNING id,created_at`,
-              [row.to_user_id, row.user_id, 'לא זוהה דיבור ברור בהקלטה. נסה להקליט שוב.']);
-              return { reply: reply.rows[0], answer: 'לא זוהה דיבור ברור בהקלטה. נסה להקליט שוב.' };
-            }
-            return createSystemExchange(client, row.user_id, transcript.slice(0, 2000),
-              { type: 'audio', url: row.file_url, name: row.file_name }, row.to_user_id);
-          });
-          outcomePersisted = true;
-          if (exchange.sent) relay(row.user_id, 'chat:message', {
-            id: exchange.sent.id, fromUserId: row.user_id,
-            text: transcript.slice(0, 2000), fileUrl: row.file_url,
-            fileName: row.file_name, fileType: 'audio',
-            createdAt: exchange.sent.created_at, audioTranscript: transcript,
-            audioModerationStatus: 'approved',
-          });
-          relay(row.user_id, 'chat:message', { id: exchange.reply.id,
-            fromUserId: row.to_user_id, text: exchange.answer, fileType: 'text',
-            createdAt: exchange.reply.created_at });
-          sendPush(row.user_id, 'בתשובה', exchange.answer,
-            { type: 'chat', fromUserId: row.to_user_id });
-          return;
-        }
-
         // Scan passed — save message and deliver
         if (row.to_user_id) {
           const msg = await completePending(row.id, async client => {
@@ -14446,7 +14150,7 @@ async function retryPendingScans() {
           const payload = {
             id: msg.id, fromUserId: row.user_id, toUserId: row.to_user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,
-            audioTranscript: decryptAudioTranscript(scanResult),
+
             audioModerationStatus: row.file_type === 'audio' ? 'approved' : null,
           };
           const senderSid    = onlineUsers.get(row.user_id);
@@ -14504,7 +14208,7 @@ async function retryPendingScans() {
             clientMessageId: null,
             createdAt: msg.created_at,
             classification: scanResult.classification || null,
-            audioTranscript: decryptAudioTranscript(scanResult),
+
             audioModerationStatus: row.file_type === 'audio' ? 'approved' : null,
             deliverySummary: deliveryPlan.summary,
           };
@@ -15041,6 +14745,7 @@ async function startServer() {
   const pool = await getPool();
   await ensureVideoScanBudgetSchema(pool);
   await ensureSystemAuditSchema(pool);
+  await pool.query(MEDIA_PROGRESS_SCHEMA);
   await require('./audit-fx').refreshFx();
   await ensureAuditScanPreviewSchema(pool);
   const purgeScanPreviews = () => purgeExpiredAuditScanPreviews(pool)

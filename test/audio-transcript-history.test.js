@@ -9,8 +9,8 @@ const root = path.join(__dirname, '..');
 const server = fs.readFileSync(path.join(root, 'server', 'index.js'), 'utf8');
 const app = fs.readFileSync(path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
 
-test('voice transcripts are encrypted, access-scoped and purged after two minutes', () => {
-  assert.match(server, /transcriptEncrypted:\s*transcript \? encryptMessageText\(transcript\)/);
+test('new transcripts are never created or exposed; old blocked data keeps its retention policy', () => {
+  assert.doesNotMatch(server, /transcriptEncrypted:\s*transcript|decryptAudioTranscript|audio_transcript:|audioTranscript:/);
   assert.match(server, /blocked_content_expires_at=now\(\)\+interval '2 minutes'/);
   assert.match(server, /moderation_details #- '\{audio,transcriptEncrypted\}'/);
   assert.match(server, /await fs\.unlink\(absolutePath\)/);
@@ -28,9 +28,7 @@ test('moderation keeps metadata history and supports deliberate admin actions', 
   assert.match(app, /חסימה לצמיתות/);
 });
 
-test('approved and rejected voice messages explain their scan result and transcript', () => {
-  assert.match(app, /נסרק ואושר/);
-  assert.match(app, /תמלול ההקלטה/);
-  assert.match(app, /הקובץ והתמלול נמחקו/);
-  assert.match(app, /audioTranscript/);
+test('voice messages do not expose transcript controls or transcription notices', () => {
+  assert.doesNotMatch(app, /תמלול|מתמלל|תומלל|audioTranscript|audio_transcript/);
+  assert.match(app, /הקלטה קולית/);
 });

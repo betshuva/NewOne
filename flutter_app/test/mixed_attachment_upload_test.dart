@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:betshuva/chat_attachment_files.dart';
 import 'package:file_picker/file_picker.dart';
@@ -38,7 +39,14 @@ void main() {
         final previous = FilePicker.platform;
         final picker = AttachmentPicker([
           MemoryPickedFile('photo.png', fixtures.png),
-          MemoryPickedFile('sound.mp3', Uint8List.fromList([73, 68, 51])),
+          MemoryPickedFile('sound.mp3', Uint8List.fromList([73, 68, 51]),
+              reportedSize: 150 * 1024 * 1024),
+          MemoryPickedFile('too-large.mp3', Uint8List.fromList([73, 68, 51]),
+              reportedSize: 150 * 1024 * 1024 + 1),
+          MemoryPickedFile('recording.webm',
+              File('../test/fixtures/webm-audio.webm').readAsBytesSync()),
+          MemoryPickedFile('table-large.xlsx', Uint8List.fromList([80, 75]),
+              reportedSize: 51 * 1024 * 1024),
           MemoryPickedFile('table.xlsx', Uint8List.fromList([80, 75])),
           MemoryPickedFile('paper.pdf', Uint8List.fromList([37, 80, 68, 70])),
         ]);
@@ -46,6 +54,7 @@ void main() {
         addTearDown(() => FilePicker.platform = previous);
         final sentTypes = <String>[];
         final uploadBodies = <String>[];
+        final rejectedAttempts = <Map>[];
         await http.runWithClient(() async {
           await tester.pumpWidget(fixtures.chat(group));
           await tester.pumpAndSettle();
@@ -62,9 +71,17 @@ void main() {
           expect(
               sentTypes,
               blockImages
-                  ? ['audio', 'document', 'document']
-                  : ['image', 'audio', 'document', 'document']);
+                  ? ['audio', 'audio', 'document', 'document']
+                  : ['image', 'audio', 'audio', 'document', 'document']);
           expect(uploadBodies.length, sentTypes.length);
+          expect(rejectedAttempts.length, 2);
+          expect(rejectedAttempts.first['fileName'], 'too-large.mp3');
+          expect(rejectedAttempts.first['fileSize'], 150 * 1024 * 1024 + 1);
+          expect(rejectedAttempts.first['maxBytes'], 150 * 1024 * 1024);
+          expect(rejectedAttempts.last['fileName'], 'table-large.xlsx');
+          expect(rejectedAttempts.last['maxBytes'], 50 * 1024 * 1024);
+          expect(uploadBodies.join(), isNot(contains('table-large.xlsx')));
+          expect(uploadBodies.join(), isNot(contains('too-large.mp3')));
           expect(uploadBodies.join(), contains('audio/mpeg'));
           expect(uploadBodies.join(), contains('spreadsheetml.sheet'));
           expect(uploadBodies.join(), contains('application/pdf'));
@@ -88,7 +105,7 @@ void main() {
                     return fixtures.json({
                       'filter': {
                         'text': true,
-                        'video': true,
+                        'video': false,
                         'men': false,
                         'women': false,
                         'children': false,
@@ -96,10 +113,16 @@ void main() {
                       }
                     });
                   }
+                  if (request.url.path.endsWith('/upload-attempts/rejected')) {
+                    rejectedAttempts.add(jsonDecode(request.body) as Map);
+                    return fixtures.json({'recorded': true, 'status': 'rejected'});
+                  }
                   if (request.url.path.endsWith('/upload')) {
                     uploadBodies.add(latin1.decode(request.bodyBytes));
                     return fixtures.json({
                       'url': '/uploads/test-${uploadBodies.length}',
+                      if (uploadBodies.last.contains('recording.webm'))
+                        'fileType': 'audio',
                       'status': 'approved'
                     });
                   }

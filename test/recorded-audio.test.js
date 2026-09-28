@@ -42,7 +42,7 @@ test('recording conversion accepts only bounded audio buffers', async () => {
   const convert = createRecordedAudioConverter(async () => { conversions++; });
   for (const [bytes, name, type] of [
     [Buffer.alloc(0), 'voice.wav', 'audio/wav'],
-    [Buffer.alloc(25 * 1024 * 1024 + 1), 'voice.wav', 'audio/wav'],
+    [Buffer.alloc(150 * 1024 * 1024 + 1), 'voice.wav', 'audio/wav'],
     [Buffer.from('data'), 'voice.mp4', 'video/mp4'],
     [Buffer.from('data'), '', 'audio/wav'],
     ['not a buffer', 'voice.wav', 'audio/wav'],
@@ -218,14 +218,12 @@ source.close()
     }
   });
 
-test('real conversion enforces decoded duration and accepts exactly two minutes without MP3 padding',
+test('real conversion and duration probing preserve recordings longer than two minutes',
   { skip: !hasEncoder }, async () => {
-    await assert.rejects(convertRecordedAudio(wav(121), 'voice.wav', 'audio/wav'),
-      { code: 'AUDIO_DURATION_EXCEEDED' });
-    const result = await convertRecordedAudio(wav(120), 'voice.wav', 'audio/wav');
-    assert.equal(result.durationSeconds, 120);
-    assert.equal((await probeAudio(result.buffer, result.originalname)).durationSeconds, 120);
-    assert.ok(result.size < 2 * 1024 * 1024);
+    const result = await convertRecordedAudio(wav(185), 'voice.wav', 'audio/wav');
+    assert.equal(result.durationSeconds, 185);
+    assert.ok(Math.abs((await probeAudio(result.buffer, result.originalname)).durationSeconds - 185) < 0.001);
+    assert.ok(result.size > 2 * 1024 * 1024);
   });
 
 test('real conversion rejects malformed bytes and does not treat them as a playlist',

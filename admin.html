@@ -356,7 +356,6 @@ tr:hover td{background:rgba(33,38,45,.8)}
   <div id="vision-panel">
     <div class="main-head">
       <h1>🔬 תוצאות Google Vision</h1>
-      <button class="btn-outline" id="rescan-btn" onclick="rescanAll()">🔬 בדוק היסטוריה (דוח בלבד)</button>
       <button class="btn-sm" onclick="loadVision(0)">🔄 רענן</button>
     </div>
     <div id="google-vision-status" style="margin:0 20px 12px;padding:10px 14px;border-radius:8px;background:var(--bg3);border:1px solid var(--border);font-size:12px">בודק את מצב Google SafeSearch...</div>
@@ -1378,21 +1377,6 @@ async function loadGoogleVisionStatus() {
     el.style.color = 'var(--red)';
     el.textContent = `שגיאה בבדיקת מצב Google SafeSearch: ${error.message}`;
   }
-}
-
-async function rescanAll() {
-  if (!confirm('הבדיקה תעדכן את דוח הסריקה בלבד. היא לא תמחק הודעות ולא תשנה משלוחים קודמים. להמשיך?')) return;
-  const btn = document.getElementById('rescan-btn');
-  btn.disabled = true; btn.textContent = '⏳ בודק היסטוריה...';
-  try {
-    const res  = await fetch(`${API}/api/admin/vision/rescan`,
-      { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-    const data = await res.json();
-    if (!res.ok) { alert(data.error || 'שגיאה'); return; }
-    alert(`✅ בדיקת ההיסטוריה הושלמה (דוח בלבד)\nסה"כ: ${data.total} | עודכנו: ${data.updated} | נכשלו: ${data.failed}`);
-    loadVision(visionOffset);
-  } catch(e) { alert(e.message); }
-  finally { btn.disabled=false; btn.textContent='🔬 בדוק היסטוריה (דוח בלבד)'; }
 }
 
 function showVisionPanel() {

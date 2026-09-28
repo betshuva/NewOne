@@ -7,34 +7,15 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 
-test('audio moderation is local, serialized and limited to two minutes', () => {
-  const moduleSource = fs.readFileSync(
-    path.join(root, 'server', 'audio-moderation.js'), 'utf8');
-  const workerSource = fs.readFileSync(
-    path.join(root, 'scripts', 'audio_transcription.py'), 'utf8');
-  assert.match(moduleSource, /MAX_AUDIO_SECONDS = 120/);
-  assert.match(moduleSource, /transcriptionQueue\.then\(task, task\)/);
-  assert.match(moduleSource, /WHISPER_MODEL.*'small'/);
-  assert.match(moduleSource, /compute_type is configured by the local worker|audio_transcription\.py/);
-  assert.match(workerSource, /compute_type="int8"/);
-  assert.match(workerSource, /device="cpu"/);
-  assert.match(workerSource, /vad_filter=True/);
-  assert.match(workerSource, /language="he"/);
-});
-
-test('audio stays pending until its transcript passes harmful-text moderation', () => {
-  const source = fs.readFileSync(path.join(root, 'server', 'index.js'), 'utf8');
-  assert.match(source, /allowed\.dbType === 'audio'[\s\S]*pending: true/);
-  assert.match(source,
-    /INSERT INTO pending_scans[\s\S]*?requestPendingScanRetry\(\)/);
-  assert.match(source,
-    /function requestPendingScanRetry\(\)[\s\S]*?setImmediate\([\s\S]*?retryPendingScans\(\)/);
-  assert.match(source,
-    /finally \{[\s\S]*?retryPendingScans\.running = false;[\s\S]*?pendingScanRetryRequested/);
-  assert.match(source, /row\.file_type === 'audio'[\s\S]*scanAudio\(buffer, row\.file_name, \{ tracking:/);
-  assert.match(source, /moderateChatText\(transcript\)/);
-  assert.match(source, /transcriptHash: transcriptDigest\(transcript\)/);
-  assert.doesNotMatch(source, /audio:\s*\{[^}]*transcript[,}]/s);
+test('audio processing is duration-only and cannot invoke speech recognition', () => {
+  const audio = require('../server/audio-moderation');
+  assert.equal(audio.MAX_AUDIO_BYTES, 150 * 1024 * 1024);
+  assert.equal(audio.transcribeAudio, undefined);
+  const worker = fs.readFileSync(path.join(root, 'scripts/audio_transcription.py'), 'utf8');
+  assert.doesNotMatch(worker, /WhisperModel|model.transcribe/);
+  const source = fs.readFileSync(path.join(root, 'server/index.js'), 'utf8');
+  assert.doesNotMatch(source, /transcribeAudio|decryptAudioTranscript/);
+  assert.match(source, /scanResult = approvedAudioResult\(audioDurationSeconds\)/);
 });
 
 test('delayed audio delivery handles private and group recipients separately', () => {
@@ -51,18 +32,40 @@ test('delayed audio delivery handles private and group recipients separately', (
   assert.match(groupDelivery, /delivery_summary=\$1/);
 });
 
-test('voice recording stops automatically at the server duration limit', () => {
+test('voice recording has no timed stop and displays elapsed time', () => {
   const source = fs.readFileSync(
     path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
-  assert.equal((source.match(/_recordSeconds >= 120/g) || []).length, 2);
-  assert.match(source, /ההקלטה נעצרה לאחר מגבלת שתי דקות/);
+  assert.doesNotMatch(source, /_recordSeconds >= 120/);
+  assert.equal((source.match(/זמן הקלטה:/g) || []).length, 2);
 });
 
-test('small chat images expose the three-dot message menu', () => {
-  const source = fs.readFileSync(
-    path.join(root, 'flutter_app', 'lib', 'main.dart'), 'utf8');
-  assert.match(source, /class _SmallImageOptionsButton/);
-  assert.match(source, /Icons\.more_vert/);
-  assert.match(source, /_SmallImageOptionsButton\([\s\S]*onMessageOptions!/);
-  assert.match(source, /_SmallImageOptionsButton\([\s\S]*_showMessageOptions/);
+test('private and group objects expose the shared menu and quick reactions', () => {
+  const source = fs.readFileSync(path.join(root, 'flutter_app/lib/main.dart'), 'utf8');
+  assert.equal((source.match(/actions: MessageActionBar\(/g) || []).length, 2);
+});
+
+function audioScanner(probeAudio) {
+  const source = fs.readFileSync(path.join(root, 'server/index.js'), 'utf8');
+  const functionSource = source.slice(source.indexOf('function approvedAudioResult('),
+    source.indexOf('function accountModerationError('));
+  return require('node:vm').runInNewContext(`${functionSource};scanAudio`, {
+    probeAudio, console: { error() {} },
+    transcribeAudio() { throw new Error('must not transcribe'); },
+  });
+}
+
+test('queued audio passes duration checks without creating a transcript or provider call', async () => {
+  const scan = audioScanner(async () => ({durationSeconds: 5, transcript: 'must be ignored'}));
+  const result = await scan(Buffer.from('audio'), 'voice.mp3');
+  assert.equal(result.blocked, false);assert.equal(result.pending, false);
+  assert.equal(result.audio.transcription, 'disabled');
+  assert.equal(result.audio.durationSeconds, 5);
+  assert.equal(result.audio.transcriptEncrypted, undefined);
+});
+
+test('long audio is accepted while unreadable audio still waits for validation', async () => {
+  const long = audioScanner(async () => ({ durationSeconds: 121 }));
+  assert.equal((await long(Buffer.from('audio'), 'voice.mp3')).blocked, false);
+  const unavailable = audioScanner(async () => { throw new Error('offline'); });
+  assert.equal((await unavailable(Buffer.from('audio'), 'voice.mp3')).pending, true);
 });
