@@ -104,6 +104,18 @@ test('verified users sharing an IP receive independent budgets, without authenti
   assert.equal(req.user, undefined, 'budget verification must not stand in for route authentication');
 });
 
+test('authenticated upload chunks have a separate budget from conversations', () => {
+  const api = createApiRateLimit(limiterHarness());
+  const token = sign('uploading');
+  const path = '/upload-sessions/12345678-1234-1234-1234-123456789abc';
+  for (let i = 0; i < 650; i++)
+    assert.equal(invoke(api, { token, method: 'PUT', path }).passed, true);
+  assert.equal(invoke(api, { token }).headers['RateLimit-Remaining'], '599');
+  assert.equal(invoke(api, { token, path }).headers['RateLimit-Remaining'], '11349');
+  assert.equal(exhaust(api, {}).statusCode, 429);
+  assert.equal(invoke(api, { method: 'PUT', path }).statusCode, 429);
+});
+
 test('different sessions and IPs belonging to one account share a budget', () => {
   const api = createApiRateLimit(limiterHarness());
   const first = sign('same-account', { jwtid: 'first-session' });

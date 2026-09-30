@@ -28,7 +28,7 @@ test('private and group recording submissions reject duplicate stop taps', () =>
 });
 
 test('voice uploads and pending scans have explicit progress labels', () => {
-  assert.match(source, /fileType == 'audio'\) &&[\s\S]*?!isClipboardPaste/);
+  assert.match(source, /fileType == 'audio'\) &&\s*!isLibrarySticker/);
   assert.match(source, /widget\.fileType == 'audio'[\s\S]*?'ההקלטה'/);
   assert.match(
     source,

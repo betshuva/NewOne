@@ -285,6 +285,7 @@ test('cropped compliant frames complete video scanning with unavailable optional
   let frameCalls=0;
   const scan=vm.runInNewContext(`${scanSource};scanVideo`,{
     Buffer,Blob,FormData,AbortSignal,console,process:{env:{}},
+    sourceBlob: require('../server/upload-file-source').sourceBlob,
     VIDEO_MODERATION_URL:'https://mock-video.test',MAX_VIDEO_SECONDS:30,stoppedVideoResult,
     videoDetectedCategories:require('../server/video-classification').videoDetectedCategories,
     fetch:async()=>({ok:true,json:async()=>({duration_seconds:3,sampled_frames:6,decision:'allowed',

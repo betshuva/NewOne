@@ -81,8 +81,8 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
   final Stopwatch _recordingClock = Stopwatch();
 
   String _recordingTime() {
-    final remaining = (30 - _recordingClock.elapsed.inSeconds).clamp(0, 30);
-    return '00:${remaining.toString().padLeft(2, '0')}';
+    final remaining = (120 - _recordingClock.elapsed.inSeconds).clamp(0, 120);
+    return '${(remaining ~/ 60).toString().padLeft(2, '0')}:${(remaining % 60).toString().padLeft(2, '0')}';
   }
 
   @override
@@ -298,11 +298,11 @@ class _WebCameraDialogState extends State<_WebCameraDialog> {
       });
       _timer = Timer.periodic(const Duration(milliseconds: 200), (_) {
         if (!mounted) return;
-        final elapsedSeconds = _recordingClock.elapsed.inSeconds.clamp(0, 30);
+        final elapsedSeconds = _recordingClock.elapsed.inSeconds.clamp(0, 120);
         if (elapsedSeconds != _seconds) {
           setState(() => _seconds = elapsedSeconds);
         }
-        if (_recordingClock.elapsed >= const Duration(seconds: 30)) {
+        if (_recordingClock.elapsed >= const Duration(minutes: 2)) {
           _stopRecording();
         }
       });

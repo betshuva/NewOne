@@ -6,11 +6,13 @@ import 'package:http/http.dart' as http;
 class DirectSupportButtons extends StatelessWidget {
   final String api, token, appVersion;
   final http.Client? client;
+  final VoidCallback? onMyIssues;
   const DirectSupportButtons(
       {super.key,
       required this.api,
       required this.token,
       required this.appVersion,
+      this.onMyIssues,
       this.client});
 
   Future<void> _open(BuildContext context, String type) async {
@@ -32,16 +34,25 @@ class DirectSupportButtons extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Wrap(spacing: 8, runSpacing: 4, children: [
-          OutlinedButton.icon(
-              onPressed: () => _open(context, 'feature'),
-              icon: const Icon(Icons.lightbulb_outline, size: 18),
-              label: const Text('בקשה לשיפור')),
-          OutlinedButton.icon(
-              onPressed: () => _open(context, 'bug'),
-              icon: const Icon(Icons.bug_report_outlined, size: 18),
-              label: const Text('דיווח על תקלה')),
-        ]),
+        child: Wrap(
+            textDirection: TextDirection.rtl,
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              OutlinedButton.icon(
+                  onPressed: () => _open(context, 'feature'),
+                  icon: const Icon(Icons.lightbulb_outline, size: 18),
+                  label: const Text('בקשה לשיפור')),
+              OutlinedButton.icon(
+                  onPressed: () => _open(context, 'bug'),
+                  icon: const Icon(Icons.bug_report_outlined, size: 18),
+                  label: const Text('דיווח על תקלה')),
+              if (onMyIssues != null)
+                OutlinedButton.icon(
+                    onPressed: onMyIssues,
+                    icon: const Icon(Icons.pending_actions_outlined, size: 18),
+                    label: const Text('הפניות שלי')),
+            ]),
       );
 }
 

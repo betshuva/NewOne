@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { sourceHash } = require('./upload-file-source');
 const ledger = require('./video-scan-budget');
 const { credentialHash } = require('./moderation-provider-guard');
 const { moderationProviderPolicy } = require('./moderation-provider-policy');
@@ -88,7 +89,7 @@ async function runBoundedVideoScan(buffer, fileName, mimeType, options) {
   try {
     state = await api.acquireVideoScan(pool, {
       userId: tracking.userId, storedFileId: tracking.storedFileId,
-      contentSha256: createHash('sha256').update(buffer).digest('hex'),
+      contentSha256: await sourceHash(buffer),
       scanVersion, legacyUnsafe, providerPolicy,
     });
     if (state.status === 'completed') return { ...reconcileVideoState(state), cacheHit: true };

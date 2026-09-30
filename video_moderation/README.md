@@ -24,8 +24,7 @@ docker compose up --build
 
 ```bash
 curl -X POST http://localhost:8080/analyze \
-  -F "video=@sample.mp4" \
-  -F "sample_interval_seconds=5"
+  -F "video=@sample.mp4"
 ```
 
 ## GPU
@@ -45,3 +44,11 @@ gpus: all
 
 כל סרטון נדגם בהתחלה, באמצע ובפריים האחרון, ובנוסף כל 5 שניות.
 פריים שנבחר פעמיים נבדק פעם אחת. סרטון עם פחות משלושה פריימים ניתנים לפענוח אינו מאושר.
+
+
+Uploads are accepted without a configured byte-size ceiling. Video duration is
+limited to 90 minutes. Packet timestamps and keyframe seeks choose at most 20
+unique frames spaced uniformly over the actual video timeline, always including
+the first and last decodable frames. Both endpoints are analyzed before interior
+frames. Short clips with fewer frames are sampled without duplicates. The
+service rejects unreadable timelines instead of approving an incomplete scan.

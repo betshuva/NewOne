@@ -76,6 +76,8 @@ Future<bool> _confirmPreview(
                         : 'למחוק $count קבצים מהמדיה שלך?'),
                     if (copies > count)
                       Text('יימחקו כל $copies העותקים הזהים של הקבצים שנבחרו.'),
+                    if ((preview['totalBytes'] as num? ?? 0) > 0)
+                      Text('נפח הקבצים שיימחקו: ${((preview['totalBytes'] as num) / 1000000).toStringAsFixed(1)} MB'),
                     if (selectedCount > copies)
                       Text('נבחרו $selectedCount עותקים בסך הכול. '
                           'יתרת הקבצים תוצג לאישור בהמשך.'),

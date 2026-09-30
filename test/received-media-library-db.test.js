@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const { Client } = require('pg');
 const { personalMessageVisible, messageAfterConversationClear } = require('../server/conversation-history');
 
-test('received media appears once with its conversations and is retained until personal references are cleared', {
+test('received media preserves conversation ownership and deletion rules after local release', {
   skip: process.env.RUN_DB_TESTS !== '1',
 }, async t => {
   const db = new Client({ connectionString: process.env.DATABASE_URL,
@@ -64,6 +64,7 @@ test('received media appears once with its conversations and is retained until p
     vm.runInNewContext(source.slice(start,end), {
       app:{get(_route,_auth,callback){handler=callback;}},auth(){},
       projectFilterMediaLibrary:async(_db,_user,rows)=>rows,
+      imageBlockReason: () => null,
       getPool:async()=>db,personalMessageVisible,messageAfterConversationClear,console,
     });
     const library=async(userId=owner,query={})=>{
@@ -72,15 +73,6 @@ test('received media appears once with its conversations and is retained until p
       assert.equal(status,200);
       return response;
     };
-    const removed=[];
-    const releaseStart=source.indexOf('async function runSafeReleaseQueue(');
-    const releaseEnd=source.indexOf('\nasync function migrateMessageBodiesAtRest',releaseStart);
-    const release=vm.runInNewContext(`${source.slice(releaseStart,releaseEnd)};runSafeReleaseQueue`,{
-      projectFilterMediaLibrary:async(_db,_user,rows)=>rows,
-      getPool:async()=>db,personalMessageVisible,path,UPLOAD_ROOT:'/isolated-received-media',
-      fs:{async unlink(file){removed.push(file);}},logActivity(){},console,
-    });
-
     await t.test('one owned item shows both private and group destinations with no foreign ownership leak',async()=>{
       const result=await library();
       assert.equal(result.total,1);assert.equal(result.items.length,1);
@@ -92,30 +84,25 @@ test('received media appears once with its conversations and is retained until p
       assert.equal((await library(owner,{scope:'unassigned'})).items.length,0);
       assert.equal((await library(outsider)).items.length,0);
     });
-    await t.test('clearing one conversation keeps the other destination and blocks automatic local release',async()=>{
+    await t.test('clearing one conversation keeps the other destination and blocks permanent deletion',async()=>{
       await db.query("INSERT INTO conversation_user_state VALUES($1,'chat',$2,clock_timestamp())",[owner,friend]);
       const result=await library();
       assert.equal(result.items[0].referenceCount,1);
       assert.deepEqual(Array.from(result.items[0].destinations,d=>d.kind),['group_chat']);
-      await release();assert.equal(removed.length,0);
-      assert.equal((await db.query('SELECT released_at FROM stored_files')).rows[0].released_at,null);
+      assert.equal(result.items[0].canDelete,false);
     });
-    await t.test('pending delivery retains verified backup bytes even after all personal references are hidden',async()=>{
+    await t.test('a cloud-only file retains its active conversation and is not permanently deletable',async()=>{
+      await db.query('UPDATE stored_files SET released_at=now()');
+      const result=await library();
+      assert.equal(result.items[0].canDelete,false);
+      assert.equal(result.items[0].referenceCount,1);
+      assert.ok(result.items[0].releasedAt);
+    });
+    await t.test('permanent deletion becomes available only after all personal references are hidden',async()=>{
       await db.query('INSERT INTO message_user_deletions VALUES($1,$2)',[inGroup,owner]);
-      await db.query("INSERT INTO pending_scans VALUES('/my-copy')");
-      await release();assert.equal(removed.length,0);
-      await db.query('DELETE FROM pending_scans');
-      await db.query("UPDATE stored_files SET moderation_details='{\"pending\":true}'");
-      await release();assert.equal(removed.length,0);
-      await db.query("UPDATE stored_files SET moderation_details=NULL,moderation_status='pending'");
-      await release();assert.equal(removed.length,0);
-      await db.query("UPDATE stored_files SET moderation_status='approved'");
-    });
-    await t.test('a verified backup can release local bytes after all personal references are hidden',async()=>{
       const result=await library(owner,{scope:'unassigned'});
       assert.equal(result.items.length,1);assert.equal(result.items[0].canDelete,true);
       assert.equal(result.items[0].destinations.length,0);
-      await release();assert.deepEqual(removed,['/isolated-received-media/received.png']);
       assert.ok((await db.query('SELECT released_at FROM stored_files')).rows[0].released_at);
       assert.equal((await db.query('SELECT * FROM messages')).rows.length,2);
       assert.equal((await db.query('SELECT * FROM media_backup_items')).rows.length,1);

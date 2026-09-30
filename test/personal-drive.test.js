@@ -102,22 +102,22 @@ test('release readiness reports automatic deletion with backup', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
   const route = source.slice(source.indexOf("app.get('/api/backup'"),
     source.indexOf("app.patch('/api/backup/settings'"));
-  assert.match(route, /restore_verified_at IS NOT NULL/);
-  assert.match(route, /active_reference/);
+  assert.match(route, /RELEASE_FROM_SQL/);
+  assert.match(route, /RELEASE_WHERE_SQL/);
   assert.match(route, /automatic_deletion_enabled: settings\.rows\[0\]\?\.enabled === true/);
   assert.doesNotMatch(route, /fs\.(unlink|rm)\(/);
 });
 
-test('safe release is immediate after verification and protects active references', () => {
+test('safe release drains verified backups without treating message references as local storage requirements', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
   const queue = source.slice(source.indexOf('async function runSafeReleaseQueue'),
     source.indexOf('const PORT'));
-  assert.match(queue, /s\.enabled=TRUE/);
-  assert.match(queue, /restore_verified_at IS NOT NULL/);
-  assert.doesNotMatch(queue, /INTERVAL '48 hours'/);
-  assert.match(queue, /deleted_for_everyone=FALSE/);
-  assert.match(queue, /profile_pic_url=sf\.public_url/);
-  assert.match(queue, /listing_images li WHERE li\.url=sf\.public_url/);
+  assert.match(queue, /releaseLocalMediaBatch/);
+  assert.match(queue, /setTimeout\(runSafeReleaseQueue, 200\)/);
+  const { RELEASE_WHERE_SQL } = require('../server/local-media-release');
+  assert.match(RELEASE_WHERE_SQL, /s\.enabled=TRUE/);
+  assert.match(RELEASE_WHERE_SQL, /restore_verified_at IS NOT NULL/);
+  assert.doesNotMatch(RELEASE_WHERE_SQL, /messages|profile_pic_url|received_message_media/);
 });
 
 test('released media uses an encrypted adaptive LRU Drive cache', () => {

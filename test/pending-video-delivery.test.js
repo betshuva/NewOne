@@ -73,6 +73,8 @@ async function retry({ cached = false, result = approved, stopped = false,
     getPool: async () => pool, pendingScanPriorityClass: () => 'deferred_video',
     pendingScanRetryRequested: false, requestPendingScanRetry() {},
     UPLOAD_ROOT: '/missing-local-media', UPLOAD_PUBLIC_BASE: '/uploads',
+    fs: { stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } },
+    path: require('node:path'), VIDEO_SCAN_VERSION: 'test-current',
     MODERATION_CACHE_VERSION: 'test-current', SCAN_BOT_ID: 'bot', SYSTEM_USER_ID: 'guide', SAFE_INFORMATION_USER_ID: 'info',
     async readSourceMedia(db, root, file) {
       assert.equal(db, pool); assert.equal(root, '/missing-local-media');

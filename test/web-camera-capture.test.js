@@ -49,7 +49,7 @@ test('invalid recorded WebM is rejected before it can be uploaded', () => {
     path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
   assert.match(serverSource, /INVALID_VIDEO_CONTAINER/);
   assert.match(serverSource, /hasWebMSignature/);
-  assert.match(mainSource, /isVideo \? 210 : 60/);
+  assert.match(mainSource, /isVideo \? request.send\(\)/);
   assert.match(mainSource, /ההעלאה עדיין מתבצעת; הקובץ טרם נשלח/);
 });
 
@@ -60,9 +60,9 @@ test('camera failures offer an in-dialog retry', () => {
 
 test('recording clock uses wall time and an unambiguous LTR display', () => {
   assert.match(source, /final Stopwatch _recordingClock = Stopwatch\(\)/);
-  assert.match(source, /30 - _recordingClock\.elapsed\.inSeconds/);
+  assert.match(source, /120 - _recordingClock\.elapsed\.inSeconds/);
   assert.match(source, /Duration\(milliseconds: 200\)/);
-  assert.match(source, /_recordingClock\.elapsed >= const Duration\(seconds: 30\)/);
+  assert.match(source, /_recordingClock\.elapsed >= const Duration\(minutes: 2\)/);
   assert.match(source, /textDirection: TextDirection\.ltr/);
   assert.match(source, /זמן שנותר  \$\{_recordingTime\(\)\}/);
 });

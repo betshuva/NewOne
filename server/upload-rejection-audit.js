@@ -10,7 +10,7 @@ function registerUploadRejectionAudit(app, { auth, uploadRateLimit, getPool }) {
         typeof body.fileName !== 'string' || !body.fileName.trim() || body.fileName.length > 512 ||
         !['audio', 'video', 'image', 'document', 'file'].includes(body.fileType) ||
         !Number.isSafeInteger(body.fileSize) ||
-        ![50 * 1024 * 1024, 150 * 1024 * 1024].includes(body.maxBytes) ||
+        ![50 * 1024 * 1024, 150 * 1024 * 1024, 256 * 1024 * 1024].includes(body.maxBytes) ||
         body.fileSize <= body.maxBytes) {
       return res.status(400).json({ error: 'פרטי ניסיון ההעלאה אינם תקינים',
         code: 'INVALID_UPLOAD_REJECTION' });

@@ -1,3 +1,6 @@
+const { attachmentUpload, cleanAttachment, resumableAttachments } = require('./attachment-upload');
+const storageQuota = require('./storage-quota');
+const { sourceHash, sourceBlob, uploadHeader } = require('./upload-file-source');
 const { chatHistoryWindow, chatHistoryQuery } = require('./chat-history-window');
 const { registerConversationSearch } = require('./conversation-search');
 const { imageBlockReason } = require('./moderation-user-reason');
@@ -15,6 +18,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { createApiRateLimit } = require('./api-rate-limit');
+const { SCHEMA: UPLOAD_BATCH_NOTICE_SCHEMA, registerUploadBatchNotices } = require('./upload-batch-notices');
 const nodemailer = require('nodemailer');
 const crypto     = require('crypto');
 const dns        = require('dns').promises;
@@ -59,6 +63,8 @@ const {
   getDriveFile,
 } = require('./google-drive');
 const personalDrive = require('./personal-drive');
+const centralDrive = require('./central-drive');
+const { SCHEMA: GMAIL_SCHEMA, registerGmailRoutes } = require('./gmail');
 const { mediaLibraryName } = require('./media-library-name');
 const { registerMediaRenameRoutes } = require('./media-rename');
 const { MEDIA_PROGRESS_SCHEMA, registerMediaProgressRoutes } = require('./media-playback-progress');
@@ -69,6 +75,7 @@ const { decryptBuffer: decryptBackupBuffer, deriveKey: deriveBackupKey,
 const { createVaultKey, unwrapVaultKey, wrapVaultKey } = require('./backup-vault-key');
 const {
   MAX_AUDIO_BYTES,
+  MAX_RECORDING_INPUT_BYTES,
   probeAudio,
   probeWebmMime,
 } = require('./audio-moderation');
@@ -95,6 +102,7 @@ const { FILTER_MEDIA_SCHEMA, lockFilterOwner, prepareFilterHistoryChange,
   finishFilterHistoryChange, projectFilteredHistory, projectFilterMediaLibrary, projectOwnScans, registerFilterHistoryRoutes } = require('./filter-media-history');
 const { registerMessageReactions } = require('./message-reactions');
 const { CONVERSATION_SCHEMA, messageAfterConversationClear, personalMessageVisible, registerConversationHistory } = require('./conversation-history');
+const { RELEASE_FROM_SQL, RELEASE_WHERE_SQL, releaseLocalMediaBatch } = require('./local-media-release');
 const { createReceivedMediaService, personalizeReceivedMessages,
   retainVisibleReceivedMessages, migrateReceivedMedia, readSourceMedia } = require('./received-media');
 const { resolveAssistantInput } = require('./assistant-input');
@@ -689,9 +697,9 @@ const ALLOWED_TYPES = {
   'audio/webm':  { ext: 'webm', maxMB: 150, dbType: 'audio' },
   'audio/ogg':   { ext: 'ogg',  maxMB: 150, dbType: 'audio' },
   'audio/wav':   { ext: 'wav',  maxMB: 150, dbType: 'audio' },
-  'video/mp4':       { ext: 'mp4',  maxMB: 50, dbType: 'video' },
-  'video/webm':      { ext: 'webm', maxMB: 50, dbType: 'video' },
-  'video/quicktime': { ext: 'mov',  maxMB: 50, dbType: 'video' },
+  'video/mp4':       { ext: 'mp4',  maxMB: Infinity, dbType: 'video' },
+  'video/webm':      { ext: 'webm', maxMB: Infinity, dbType: 'video' },
+  'video/quicktime': { ext: 'mov',  maxMB: Infinity, dbType: 'video' },
 };
 const BLOCKED_TYPES = ['application/x-mpegURL'];
 const ALLOWED_EXTENSIONS = Object.freeze({
@@ -710,10 +718,11 @@ const ALLOWED_EXTENSIONS = Object.freeze({
 });
 
 async function resolveAllowedUpload(file) {
+  const header = await uploadHeader(file);
   if (/\.(webm)$/i.test(file.originalname || '') ||
       /^(audio|video)\/webm(?:;|$)/i.test(file.mimetype || '') ||
-      file.buffer?.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) {
-    const mime = await probeWebmMime(file.buffer, file.originalname);
+      header.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) {
+    const mime = await probeWebmMime(file.buffer || file, file.originalname);
     return { ...ALLOWED_TYPES[mime], mime };
   }
   const byMime = ALLOWED_TYPES[file.mimetype];
@@ -731,16 +740,15 @@ const upload = multer({
   limits: { fileSize: MAX_AUDIO_BYTES },
 });
 
+
 const VIDEO_MODERATION_URL = process.env.VIDEO_MODERATION_URL ||
   'http://127.0.0.1:8080';
-const MAX_VIDEO_SECONDS = 30;
+const MAX_VIDEO_SECONDS = 90 * 60;
 
 async function scanVideo(buffer, fileName, mimeType, options = {}) {
   try {
     const form = new FormData();
-    form.append('video', new Blob([buffer], { type: mimeType }), fileName);
-    form.append('sample_interval_seconds',
-      '5');
+    form.append('video', await sourceBlob(buffer, mimeType), fileName);
     const response = await fetch(`${VIDEO_MODERATION_URL}/analyze`, {
       method: 'POST', body: form, signal: options.signal
         ? AbortSignal.any([options.signal, AbortSignal.timeout(180000)])
@@ -758,7 +766,7 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
         Number(result.labels?.duration_exceeded || 0) > 0) {
       return {
         blocked: true, pending: false, blockedBy: 'video_duration',
-        reason: 'אורך הסרטון המרבי הוא 30 שניות',
+        reason: 'אורך הסרטון המרבי הוא 90 דקות',
         classification: { category: 'video', detectedCategories: ['video'],
           uncertain: false, durationSeconds },
       };
@@ -771,16 +779,21 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
     const findings = Array.isArray(result.findings) ? result.findings : [];
     const frameSamples = Array.isArray(result.frame_samples)
       ? result.frame_samples : [];
+    if (frameSamples.length > 20 || frameSamples.length !== Number(result.sampled_frames))
+      throw new Error('invalid video sample count');
     if (options.freezeFrames) {
       const stopped = await options.freezeFrames(frameSamples, result.sampled_frames);
       if (stopped) return stopped;
-    } else if (frameSamples.length > 90) throw new Error('too many video frames');
+    } else if (frameSamples.length > 20) throw new Error('too many video frames');
     const frameResults = new Array(frameSamples.length);
+    const frameOrder = frameSamples.length > 1
+      ? [0, frameSamples.length - 1, ...Array.from({ length: frameSamples.length - 2 }, (_, i) => i + 1)]
+      : [0];
     let nextFrameIndex = 0;
     let stopReason = null;
     const scanFrame = async () => {
       while (!stopReason && !options.signal?.aborted && nextFrameIndex < frameSamples.length) {
-        const index = nextFrameIndex++;
+        const index = frameOrder[nextFrameIndex++];
         const sample = frameSamples[index];
       let imageBuffer;
       try {
@@ -1075,7 +1088,8 @@ async function uploadToBlob(buffer, key, contentType) {
   if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
     throw new Error('Invalid upload path');
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-  await fs.writeFile(absolutePath, buffer, { flag: 'wx' });
+  if (Buffer.isBuffer(buffer)) await fs.writeFile(absolutePath, buffer, { flag: 'wx' });
+  else await fs.copyFile(buffer.path, absolutePath, require('node:fs').constants.COPYFILE_EXCL);
   return `${UPLOAD_PUBLIC_BASE}/${safeParts.map(encodeURIComponent).join('/')}`;
 }
 
@@ -2257,6 +2271,7 @@ async function scanStaticImage(buffer, options = {}) {
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
 const MODERATION_CACHE_VERSION = `2026-09-27-visible-clothing-17:${moderationProviderPolicy()}`;
+const VIDEO_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:video20-90min-v1`;
 
 async function scanImage(buffer, options = {}) {
   // Recognize exact library bytes before invoking any content-analysis provider.
@@ -2584,7 +2599,7 @@ async function migrateDatabase() {
         body                 TEXT,
         file_url             TEXT,
         file_name            TEXT,
-        file_size            INTEGER,
+        file_size            BIGINT,
         reply_to_id          UUID REFERENCES messages(id),
         deleted_for_sender   BOOLEAN NOT NULL DEFAULT FALSE,
         deleted_for_everyone BOOLEAN NOT NULL DEFAULT FALSE,
@@ -2980,7 +2995,7 @@ async function migrateDatabase() {
         user_id    UUID REFERENCES users(id),
         file_name  TEXT,
         file_type  TEXT,
-        file_size  INTEGER,
+        file_size  BIGINT,
         reason     TEXT,
         appealed   BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ DEFAULT now()
@@ -3260,6 +3275,9 @@ async function migrateDatabase() {
         value      TEXT NOT NULL,
         updated_at TIMESTAMPTZ DEFAULT now()
       )`);
+    await pool.query(GMAIL_SCHEMA);
+    await pool.query(centralDrive.SCHEMA);
+    await pool.query(storageQuota.SCHEMA);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS israel_localities (
         code INTEGER PRIMARY KEY,
@@ -3717,7 +3735,7 @@ async function createSystemExchange(pool, userId, question, file = null,
       return { sent: sent.rows[0], ...exported };
     } catch (error) {
       console.error('guide spreadsheet:', error.code || error.name);
-      const answer = error.name === 'SpreadsheetValidationError' ? error.message
+      const answer = error.name === 'SpreadsheetValidationError' || /^P200[123]$/.test(error.code || '') ? error.message
         : 'לא ניתן ליצור ולשמור את קובץ ה־Excel כרגע. נסה שוב בעוד רגע.';
       const reply = await pool.query(`INSERT INTO messages(sender_id,recipient_id,type,body,audit_operation_id,audit_parent_event_id)
         VALUES($1,$2,'text',$3,$4,$5) RETURNING id,created_at`, [assistantId, userId, answer, ...auditIds()]);
@@ -3758,7 +3776,7 @@ const corsOptions = {
 const app = express();
 const httpServer = createServer(app);
 // Permit large uploads over slow connections; this is not a media duration limit.
-httpServer.requestTimeout = 30 * 60 * 1000;
+httpServer.requestTimeout = 0;
 const io = new Server(httpServer, { cors: corsOptions });
 app.set('io', io);
 
@@ -3772,7 +3790,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use((req, res, next) => {
   const requestPath = req.path.toLowerCase();
   const blockedDirectories = [
-    '/server', '/flutter_app', '/test', '/docs', '/local_moderation', '/.git',
+    '/server', '/flutter_app', '/test', '/docs', '/local_moderation', '/.git', '/.transfer-state',
   ];
   const blockedFiles = [
     '/package.json', '/package-lock.json', '/readme.md',
@@ -3827,7 +3845,8 @@ const serveReleasedDriveMedia = async (req, res, next) => {
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const result = await pool.query(
+    const centralRecord = await centralDrive.deliveryRecord(pool, relativePath);
+    const result = centralRecord ? { rows: [centralRecord] } : await pool.query(
       `SELECT sf.id,sf.user_id,sf.mime_type,sf.file_size,sf.content_sha256,
               mbi.remote_file_id,mbi.encrypted_sha256,mbi.encryption_metadata,
               s.encrypted_data_key,c.encrypted_refresh_token
@@ -3835,7 +3854,7 @@ const serveReleasedDriveMedia = async (req, res, next) => {
        JOIN media_backup_items mbi ON mbi.stored_file_id=sf.id
          AND mbi.provider='google_drive' AND mbi.status='verified'
          AND mbi.restore_verified_at IS NOT NULL
-       JOIN user_backup_settings s ON s.user_id=sf.user_id AND s.enabled=TRUE
+       JOIN user_backup_settings s ON s.user_id=sf.user_id
        JOIN cloud_backup_accounts c ON c.user_id=sf.user_id
          AND c.provider='google_drive' AND c.status='connected'
        WHERE sf.storage_path=$1 LIMIT 1`, [relativePath]);
@@ -3863,7 +3882,7 @@ const serveReleasedDriveMedia = async (req, res, next) => {
       }
       if (!encrypted) {
         const refreshToken = personalDrive.decryptRefreshToken(
-          row.encrypted_refresh_token, row.user_id);
+          row.encrypted_refresh_token, row.central_storage ? centralDrive.TOKEN_OWNER : row.user_id);
         encrypted = await personalDrive.downloadAppDataFile(
           refreshToken, row.remote_file_id, Number(row.file_size) + 1024);
         downloadedFromDrive = true;
@@ -3881,6 +3900,7 @@ const serveReleasedDriveMedia = async (req, res, next) => {
       const encryptedHash = crypto.createHash('sha256').update(encrypted).digest('hex');
       if (encryptedHash !== row.encrypted_sha256)
         throw new Error('Cached Drive media checksum mismatch');
+      if (row.central_storage) return centralDrive.decode(row, encrypted);
       const metadata = typeof row.encryption_metadata === 'string'
         ? JSON.parse(row.encryption_metadata) : row.encryption_metadata;
       const key = unwrapVaultKey(row.encrypted_data_key, row.user_id);
@@ -3901,9 +3921,13 @@ const serveReleasedDriveMedia = async (req, res, next) => {
     res.set({ 'Content-Type': row.mime_type || 'application/octet-stream',
       'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=86400' });
     if (range) {
-      const start = range[1] ? Number(range[1]) : 0;
-      const end = range[2] ? Math.min(Number(range[2]), plain.length - 1) : plain.length - 1;
-      if (start > end || start >= plain.length)
+      const suffix = !range[1] && range[2] ? Number(range[2]) : null;
+      const start = suffix !== null ? Math.max(plain.length - suffix, 0) : Number(range[1]);
+      const end = suffix !== null || !range[2]
+        ? plain.length - 1 : Math.min(Number(range[2]), plain.length - 1);
+      if ((!range[1] && !range[2]) || suffix === 0 ||
+          !Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+          start > end || start >= plain.length)
         return res.status(416).set('Content-Range', `bytes */${plain.length}`).end();
       res.status(206).set({ 'Content-Range': `bytes ${start}-${end}/${plain.length}`,
         'Content-Length': String(end - start + 1) });
@@ -7242,6 +7266,14 @@ registerConversationHistory(app, { auth: authWithDbCheck, rateLimit: messageRate
   getPool, deleteOwnMedia, notifyUser: (userId, event, payload) => relay(userId, event, payload) });
 registerFilterHistoryRoutes(app, { auth: authWithDbCheck, getPool,
   notifyUser: (userId, event, payload) => relay(userId, event, payload) });
+registerGmailRoutes(app, { secret: JWT_SECRET, getPool, accountModerationError,
+  rateLimit: createRateLimiter({ name: 'private-gmail', windowMs: 60000, max: 10,
+    keyGenerator: req => req.user.id, message: 'בוצעו יותר מדי פעולות מייל. נסה שוב בעוד דקה' }) });
+app.get('/api/admin/central-storage', adminAuth, async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await centralDrive.status(await getPool())); }
+  catch { res.status(503).json({ error: 'לא ניתן לבדוק את האחסון המרכזי כרגע' }); }
+});
 registerFilterAuditRoutes(app, { auth: authWithDbCheck, adminAuth, getPool });
 registerSystemAuditRoutes(app, { getPool, adminMiddleware: adminAuth });
 require('./audit-column-order').registerAuditColumnOrderRoutes(app, { getPool, adminMiddleware: adminAuth });
@@ -7250,6 +7282,17 @@ require('./audit-media').registerAuditMediaRoutes(app, { getPool, adminMiddlewar
   readMedia: (db, file) => readSourceMedia(db, UPLOAD_ROOT, file) });
 
 // Phase 1: provider-neutral backup settings and read-only storage accounting.
+app.get('/api/storage-quota', auth, async (req, res) => {
+  try { res.set('Cache-Control', 'no-store').json(await storageQuota.status(await getPool(), req.user.id)); }
+  catch { res.status(503).json({ error: 'לא ניתן לבדוק את מכסת האחסון כרגע' }); }
+});
+app.post('/api/storage-quota/check-drive', auth, uploadRateLimit, async (req, res) => {
+  try {
+    await storageQuota.verifyDrive(await getPool(), req.user.id);
+    await storageQuota.queueUserMigration(await getPool(), req.user.id);
+    res.json({ ok: true });
+  } catch (error) { res.status(error.status || 503).json({ error: error.message, code: error.quotaCode || error.code }); }
+});
 app.get('/api/backup', auth, async (req, res) => {
   try {
     const pool = await getPool();
@@ -7278,34 +7321,11 @@ app.get('/api/backup', auth, async (req, res) => {
          FROM media_backup_items mbi JOIN stored_files sf ON sf.id=mbi.stored_file_id
          WHERE mbi.user_id=$1`, [req.user.id]),
       pool.query(
-        `SELECT
-           COUNT(*) FILTER (WHERE candidate AND NOT active_reference)::int AS ready_files,
-           COALESCE(SUM(file_size) FILTER (WHERE candidate AND NOT active_reference),0)::bigint
-             AS ready_bytes,
-           COUNT(*) FILTER (WHERE grace_waiting)::int AS grace_waiting_files,
-           COUNT(*) FILTER (WHERE candidate AND active_reference)::int AS protected_files
-         FROM (
-           SELECT sf.file_size,
-             (mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL) AS candidate,
-             FALSE AS grace_waiting,
-             (EXISTS (SELECT 1 FROM messages m
-                       WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
-               OR EXISTS (SELECT 1 FROM received_message_media received
-                 JOIN messages m ON m.id=received.message_id
-                 WHERE received.stored_file_id=sf.id AND received.user_id=sf.user_id
-                   AND received.status='ready' AND ${personalMessageVisible('m', 'sf.user_id')})
-               OR EXISTS (SELECT 1 FROM received_message_media received
-                 WHERE received.source_file_id=sf.id AND received.status='queued')
-               OR EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)
-               OR EXISTS (SELECT 1 FROM groups g WHERE g.profile_pic_url=sf.public_url)
-               OR EXISTS (SELECT 1 FROM listings l WHERE l.image_url=sf.public_url)
-               OR EXISTS (SELECT 1 FROM education_forms ef WHERE ef.file_url=sf.public_url)
-               OR EXISTS (SELECT 1 FROM shared_gifs sg
-                           WHERE sg.stored_file_id=sf.id AND sg.status='active')) AS active_reference
-           FROM media_backup_items mbi
-           JOIN stored_files sf ON sf.id=mbi.stored_file_id
-           WHERE mbi.user_id=$1
-         ) release_candidates`, [req.user.id]),
+        `SELECT COUNT(*)::int AS ready_files,
+           COALESCE(SUM(sf.file_size),0)::bigint AS ready_bytes,
+           0::int AS grace_waiting_files,0::int AS protected_files
+         ${RELEASE_FROM_SQL}
+         WHERE sf.user_id=$1 AND ${RELEASE_WHERE_SQL}`, [req.user.id]),
     ]);
     const defaults = { enabled: false, provider: null, storage_mode: 'backup_only',
       wifi_only: true, release_threshold_bytes: '1073741824', server_key_ready: false };
@@ -7439,6 +7459,9 @@ app.get('/api/backup/google/callback', async (req, res) => {
     const tokens = await personalDrive.exchangeCode(String(req.query.code));
     const encrypted = personalDrive.encryptRefreshToken(tokens.refresh_token, state.userId);
     const pool = await getPool();
+    const binding = (await pool.query('SELECT storage_google_account_id FROM cloud_backup_accounts WHERE user_id=$1', [state.userId])).rows[0];
+    if (binding?.storage_google_account_id && binding.storage_google_account_id !==
+        await personalDrive.getAccountIdentity(tokens.refresh_token)) return finish('different_account');
     await pool.query(
       `INSERT INTO cloud_backup_accounts
          (user_id,provider,encrypted_refresh_token,scope,status,last_verified_at,last_error)
@@ -7464,6 +7487,9 @@ app.get('/api/backup/google/callback', async (req, res) => {
         { serverKeyReady: true }, req.ip);
     }
     logActivity(state.userId, 'connect_personal_drive', { provider: 'google_drive' }, req.ip);
+    storageQuota.verifyDrive(pool, state.userId)
+      .then(() => storageQuota.queueUserMigration(pool, state.userId))
+      .catch(() => console.warn('[storage-quota] connected Drive awaits storage verification'));
     return finish('connected');
   } catch (e) {
     console.error('personal Drive callback:', e.message);
@@ -7483,6 +7509,26 @@ app.get('/api/backup/google/status', auth, async (req, res) => {
       automaticDeletionEnabled: connected,
       account: result.rows[0] || null, callbackUrl: personalDrive.callbackUrl() });
   } catch (e) { res.status(500).json({ error: 'לא ניתן היה לבדוק את חיבור הענן' }); }
+});
+
+app.get('/api/backup/google/storage', auth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const pool = await getPool();
+    const result = await pool.query(
+      `SELECT status,encrypted_refresh_token FROM cloud_backup_accounts
+       WHERE user_id=$1 AND provider='google_drive'`, [req.user.id]);
+    const account = result.rows[0];
+    if (!account || account.status === 'revoked')
+      return res.json({ status: 'disconnected' });
+    if (account.status !== 'connected')
+      return res.json({ status: 'reconnect_required' });
+    const token = personalDrive.decryptRefreshToken(account.encrypted_refresh_token, req.user.id);
+    const quota = await personalDrive.getStorageQuota(token);
+    res.json({ status: 'available', ...quota });
+  } catch (_) {
+    res.status(502).json({ status: 'unavailable', error: 'נתוני האחסון ב־Google Drive אינם זמינים כרגע' });
+  }
 });
 
 app.post('/api/backup/google/verify', auth, async (req, res) => {
@@ -7541,11 +7587,11 @@ app.post('/api/backup/next', auth, async (req, res) => {
            ORDER BY sf.created_at DESC LIMIT 1`, [req.user.id]);
     if (!fileResult.rows.length)
       return res.status(404).json({ error: 'לא נמצא קובץ מאושר שממתין לגיבוי' });
-    const file = fileResult.rows[0];
+    const file = { ...fileResult.rows[0], user_id: req.user.id };
     const absolutePath = path.resolve(UPLOAD_ROOT, file.storage_path);
     if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
       throw new Error('Invalid stored file path');
-    const plain = await fs.readFile(absolutePath);
+    const plain = await readSourceMedia(pool, UPLOAD_ROOT, file);
     const actualPlainHash = crypto.createHash('sha256').update(plain).digest('hex');
     if (actualPlainHash !== file.content_sha256)
       throw new Error('Stored file checksum mismatch');
@@ -7710,6 +7756,14 @@ app.post('/api/backup/verify-restore', auth, uploadRateLimit, async (req, res) =
 app.delete('/api/backup/google', auth, async (req, res) => {
   try {
     const pool = await getPool();
+    const dependentFiles = await pool.query(`SELECT 1 FROM stored_files WHERE user_id=$1
+      AND storage_tier='personal' AND content_purged_at IS NULL LIMIT 1`, [req.user.id]);
+    if (dependentFiles.rows.length) return res.status(409).json({ code: 'DRIVE_STORAGE_IN_USE',
+      error: 'קבצים שלך נשמרים ב־Drive האישי. יש למחוק אותם דרך מסך הקבצים לפני ניתוק החשבון.' });
+    const centralAccount = await pool.query(`SELECT 1 FROM central_drive_account a
+      JOIN users u ON lower(u.email)=a.email WHERE u.id=$1`, [req.user.id]);
+    if (centralAccount.rows.length) return res.status(409).json({ code: 'CENTRAL_STORAGE_ACCOUNT',
+      error: 'חשבון זה משמש לאחסון קובצי המשתמשים. יש להעביר את האחסון המרכזי לפני ביטול הרשאת Google.' });
     const result = await pool.query(
       `SELECT encrypted_refresh_token FROM cloud_backup_accounts WHERE user_id=$1`, [req.user.id]);
     if (result.rows.length) try {
@@ -8745,7 +8799,31 @@ require('./upload-rejection-audit').registerUploadRejectionAudit(app, {
 // so recovery can distinguish a slow live upload from an interrupted request.
 const activeUploadFileIds = new Set();
 
-app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreRequestAuditContext, async (req, res) => {
+registerUploadBatchNotices(app, { auth, getPool });
+resumableAttachments.setQuotaHooks({
+  reserve: async (userId, id, bytes) => storageQuota.reserve(await getPool(), userId, id, bytes),
+  release: async (userId, id) => storageQuota.release(await getPool(), userId, id),
+});
+app.post('/api/upload-sessions', auth, uploadRateLimit, resumableAttachments.create);
+app.get('/api/upload-sessions/:id', auth, resumableAttachments.status);
+app.put('/api/upload-sessions/:id', auth, resumableAttachments.chunk);
+
+const reserveMultipartStorage = async (req, res, next) => {
+  if (req.body?.uploadSessionId) return next();
+  const bytes = Number(req.headers['content-length']);
+  if (!Number.isSafeInteger(bytes) || bytes <= 0)
+    return res.status(411).json({ error: 'נדרש גודל העלאה ידוע; אפשר להשתמש בהעלאה בחלקים.' });
+  const id = crypto.randomUUID();
+  try {
+    const pool = await getPool();
+    await storageQuota.reserve(pool, req.user.id, id, bytes);
+    req.storageQuotaReservation = id;
+    const release = () => storageQuota.release(pool, req.user.id, id).catch(() => {});
+    res.once('finish', release); res.once('close', release);
+    next();
+  } catch (error) { res.status(error.status || 503).json({ error: error.message, code: error.quotaCode || error.code }); }
+};
+app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAttachment, attachmentUpload.single('file'), restoreRequestAuditContext, async (req, res) => {
   if (req.user.isTeen && req.body.groupId)
     return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   const file = req.file;
@@ -8776,12 +8854,13 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
   // Only whitelisted extensions reach this point, so use the canonical MIME.
   file.mimetype = allowed.mime;
   if (allowed.dbType === 'video') {
+    const header = await uploadHeader(file);
     const isWebM = file.mimetype === 'video/webm';
-    const hasWebMSignature = file.buffer.length >= 4 &&
-      file.buffer[0] === 0x1a && file.buffer[1] === 0x45 &&
-      file.buffer[2] === 0xdf && file.buffer[3] === 0xa3;
-    const hasIsoMediaSignature = file.buffer.length >= 12 &&
-      file.buffer.subarray(4, 8).toString('ascii') === 'ftyp';
+    const hasWebMSignature = header.length >= 4 &&
+      header[0] === 0x1a && header[1] === 0x45 &&
+      header[2] === 0xdf && header[3] === 0xa3;
+    const hasIsoMediaSignature = header.length >= 12 &&
+      header.subarray(4, 8).toString('ascii') === 'ftyp';
     if ((isWebM && !hasWebMSignature) || (!isWebM && !hasIsoMediaSignature))
       return res.status(400).json({
         error: 'קובץ הווידאו אינו תקין. יש לצלם שוב או לבחור סרטון אחר',
@@ -8795,9 +8874,11 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
     });
 
   // Size check
-  const maxBytes = allowed.maxMB * 1024 * 1024;
+  const maxBytes = recordedAudio ? MAX_RECORDING_INPUT_BYTES : allowed.maxMB * 1024 * 1024;
   if (file.size > maxBytes)
-    return res.status(400).json({ error: `גודל קובץ מקסימלי: ${allowed.maxMB}MB` });
+    return res.status(400).json({ error: `גודל קובץ מקסימלי: ${maxBytes / 1048576}MB` });
+  if (allowed.dbType !== 'video' && !file.buffer) file.buffer = await fs.readFile(file.path);
+  const moderationVersion = allowed.dbType === 'video' ? VIDEO_SCAN_VERSION : MODERATION_CACHE_VERSION;
   let audioDurationSeconds;
   if (allowed.dbType === 'audio') {
     try {
@@ -8828,11 +8909,12 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
 
   let releaseUploadLock;
   let activeUploadFileId;
+  let quotaReservation;
+  let unregisteredBlob;
   try {
     const pool = await getPool();
     file.originalname = await shortenCapturedFileName(pool, req.user.id, file.originalname);
-    const contentSha256 = crypto.createHash('sha256')
-      .update(file.buffer).digest('hex');
+    const contentSha256 = await sourceHash(file.buffer || file);
     releaseUploadLock = await acquireUploadLock(req.user.id, contentSha256, allowed.dbType);
     const trustedBuiltinExpression = allowed.dbType === 'image' &&
       await isTrustedBuiltinExpression(file);
@@ -8885,7 +8967,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
          AND moderation_details->>'source' IS DISTINCT FROM 'builtin-expression'
          AND moderation_details->>'scanSkipped' IS DISTINCT FROM 'true'
        ORDER BY created_at DESC LIMIT 1`,
-      [contentSha256, allowed.dbType, MODERATION_CACHE_VERSION]);
+      [contentSha256, allowed.dbType, moderationVersion]);
     let cachedScan = cachedScanQuery.rows[0]?.moderation_details || null;
     let cacheMatch = cachedScan ? 'exact' : null;
     if (!cachedScan && visualFingerprint) {
@@ -8898,7 +8980,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
            AND moderation_details->>'scanSkipped' IS DISTINCT FROM 'true'
            AND ABS((visual_fingerprint->>'aspect')::double precision-$2)<=0.01
          ORDER BY created_at DESC LIMIT 100`,
-        [MODERATION_CACHE_VERSION, visualFingerprint.aspect]);
+        [moderationVersion, visualFingerprint.aspect]);
       const match = visualCandidates.rows.find(row =>
         visuallyEquivalent(visualFingerprint, row.visual_fingerprint));
       if (match) { cachedScan = match.moderation_details; cacheMatch = 'visual'; }
@@ -8913,15 +8995,18 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
         userId: req.user.id, contentSha256, fileType: allowed.dbType,
         mimeType: file.mimetype, fileSize: file.size,
         listingImage: req.body.listingImage === 'true',
-        moderationVersion: MODERATION_CACHE_VERSION,
+        moderationVersion: moderationVersion,
         trustedBuiltinExpression,
       }) : null;
     const blobName = `${req.user.id}/${Date.now()}-${crypto.randomUUID()}-${file.originalname.replace(/[^\w.\-]/g, '_')}`;
     let url = reused?.public_url;
+    quotaReservation = req.storageQuotaReservation || crypto.randomUUID();
     if (!reused) {
+      await storageQuota.reserve(pool, req.user.id, quotaReservation, file.size, contentSha256);
       await observeAudit(pool, { kind: 'blob_upload_started', status: 'running',
         details: { fileType: allowed.dbType, fileSize: file.size } });
-      url = await uploadToBlob(file.buffer, blobName, file.mimetype);
+      url = await uploadToBlob(file.buffer || file, blobName, file.mimetype);
+      unregisteredBlob = path.join(UPLOAD_ROOT, blobName);
       await observeAudit(pool, { kind: 'blob_upload_finished', status: 'completed',
         details: { fileType: allowed.dbType, fileSize: file.size } });
     }
@@ -8933,8 +9018,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
       `INSERT INTO stored_files
        (user_id, original_name, storage_path, public_url, mime_type, file_type,
         file_size, context_type, context_id, moderation_status, content_sha256,
-        visual_fingerprint,id,audit_operation_id,audit_parent_event_id,client_upload_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15)
+        visual_fingerprint,id,audit_operation_id,audit_parent_event_id,client_upload_id,quota_reservation)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15,$16)
        RETURNING id`,
       [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
        file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' :
@@ -8942,7 +9027,8 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
        req.body.groupId || req.body.toUserId || null, contentSha256,
        visualFingerprint ? JSON.stringify(visualFingerprint) : null, activeUploadFileId, ...auditIds(),
        typeof req.body.clientUploadId === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(req.body.clientUploadId)
-         ? req.body.clientUploadId : null]);
+         ? req.body.clientUploadId : null, quotaReservation]);
+    unregisteredBlob = null;
     if (reused) await observeAudit(pool, { kind: 'media_reused', status: 'completed',
       targetType: 'file', targetId: reused.id, details: { cacheHit: true, storedFileId: reused.id } });
     const scanTracking = { storedFileId: storedInsert.rows[0].id,
@@ -8981,7 +9067,7 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
       scanResult = approvedAudioResult(audioDurationSeconds);
 
     if (scanResult) {
-      scanResult.moderationVersion = MODERATION_CACHE_VERSION;
+      scanResult.moderationVersion = moderationVersion;
       const ss = scanResult.safeSearch || {};
       console.log(`[Vision] ${file.originalname} | ${scanResult.cacheHit ? '♻️ CACHE' : scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
     }
@@ -9263,13 +9349,16 @@ app.post('/api/upload', auth, uploadRateLimit, upload.single('file'), restoreReq
       fileType: allowed.dbType, handledByScanBot: scanBotUpload, scanReport,
       sharedGifId, classification: scanResult?.classification || null });
   } catch (e) {
+    storageQuota.quotaError(e);
     console.error('upload:', e.message);
     if (e.code === 'SENDER_CONTENT_FILTERED')
       await notifyRejectedSend(await getPool(), { userId: req.user.id,
         groupId: req.body.groupId, toUserId: req.body.toUserId, error: e });
-    res.status(e.status || 500).json({ error: e.message, code: e.code,
+    res.status(e.status || 500).json({ error: e.message, code: e.quotaCode || e.code,
       ...(e.code === 'SENDER_CONTENT_FILTERED' ? { blockedBy: 'sender_filter' } : {}) });
   } finally {
+    if (unregisteredBlob) await fs.unlink(unregisteredBlob).catch(() => {});
+    if (quotaReservation) await storageQuota.release(await getPool(), req.user.id, quotaReservation).catch(() => {});
     if (activeUploadFileId) activeUploadFileIds.delete(activeUploadFileId);
     releaseUploadLock?.();
   }
@@ -13552,7 +13641,7 @@ async function runClassificationShadowJob() {
     job = claimed.rows[0];
     if (!job) return;
     const found = await pool.query(
-      `SELECT storage_path,mime_type,content_purged_at FROM stored_files WHERE id=$1`,
+      `SELECT id,user_id,storage_path,mime_type,file_size,content_sha256,content_purged_at FROM stored_files WHERE id=$1`,
       [job.stored_file_id]);
     const file = found.rows[0];
     if (!file || file.content_purged_at) {
@@ -13564,7 +13653,7 @@ async function runClassificationShadowJob() {
     const absolutePath = path.resolve(UPLOAD_ROOT, file.storage_path);
     if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
       throw new Error('Invalid stored image path');
-    const buffer = await fs.readFile(absolutePath);
+    const buffer = await readSourceMedia(pool, UPLOAD_ROOT, file);
     const form = new FormData();
     form.append('image', new Blob([buffer], { type: file.mime_type || 'image/jpeg' }),
       'shadow-image');
@@ -13802,7 +13891,7 @@ async function retryPendingScans() {
           scanResult = stoppedVideoResult(row.prior_moderation_details?.reasonCode,
             row.prior_moderation_details?.budget, row.prior_moderation_details);
         } else if (row.file_type === 'video' && row.stored_moderation_status === 'approved' &&
-            row.prior_moderation_details?.moderationVersion !== MODERATION_CACHE_VERSION) {
+            row.prior_moderation_details?.moderationVersion !== VIDEO_SCAN_VERSION) {
           scanResult = stoppedVideoResult('scan_version_changed', row.prior_moderation_details?.budget);
         } else if (row.stored_moderation_status === 'approved' &&
             row.prior_moderation_details &&
@@ -13815,7 +13904,12 @@ async function retryPendingScans() {
           // disk; only remote absolute URLs should be fetched over HTTP.
           readingVideoSource = row.file_type === 'video';
           let buffer;
-          if (row.stored_file_id && row.storage_path) {
+          if (row.file_type === 'video' && row.storage_path &&
+              await fs.stat(path.resolve(UPLOAD_ROOT, row.storage_path)).then(stat => stat.isFile()).catch(() => false)) {
+            const localPath = path.resolve(UPLOAD_ROOT, row.storage_path);
+            if (!localPath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) throw new Error('Invalid pending file path');
+            buffer = { path: localPath };
+          } else if (row.stored_file_id && row.storage_path) {
             // Verified backups may already hold bytes released by an older
             // server. Read them through the checksum-checked storage reader.
             buffer = await readSourceMedia(pool, UPLOAD_ROOT, {
@@ -13847,7 +13941,7 @@ async function retryPendingScans() {
         }
         else if (row.file_type === 'video')
           scanResult = await runBoundedVideoScan(buffer, row.file_name, row.mime_type, {
-            pool, scan: scanVideo, scanVersion: MODERATION_CACHE_VERSION,
+            pool, scan: scanVideo, scanVersion: VIDEO_SCAN_VERSION,
             legacyUnsafe: attempt > 1 || row.legacy_provider_calls === true,
             tracking: { storedFileId: row.stored_file_id, userId: row.user_id,
               workflow: 'retry', attempt },
@@ -13858,7 +13952,7 @@ async function retryPendingScans() {
         else
           scanResult = await scanDocument(buffer, row.mime_type, { tracking: {
             storedFileId: row.stored_file_id, userId: row.user_id, workflow: 'retry', attempt } });
-        if (scanResult) scanResult.moderationVersion = MODERATION_CACHE_VERSION;
+        if (scanResult) scanResult.moderationVersion = row.file_type === 'video' ? VIDEO_SCAN_VERSION : MODERATION_CACHE_VERSION;
         }
 
         if (row.file_type === 'video' && scanResult) {
@@ -14479,6 +14573,7 @@ function scheduleGovernmentLocalitiesSync() {
   }, delay);
 }
 
+const { prepareBackupTransfer, clearBackupTransfer, recoverBackupTransfers } = require('./backup-transfer-job');
 const AUTOMATIC_BACKUP_CONCURRENCY = 4;
 
 async function runAutomaticBackupWorker(workerIndex) {
@@ -14492,6 +14587,8 @@ async function runAutomaticBackupWorker(workerIndex) {
   let remoteDataId = null;
   let remoteManifestId = null;
   let refreshToken = null;
+  let transferJob = null;
+  let transferHeartbeat = null;
   try {
     pool = await getPool();
     lockClient = await pool.connect();
@@ -14511,17 +14608,19 @@ async function runAutomaticBackupWorker(workerIndex) {
        JOIN cloud_backup_accounts c ON c.user_id=sf.user_id
        LEFT JOIN media_backup_items mbi
          ON mbi.stored_file_id=sf.id AND mbi.provider='google_drive'
-       WHERE (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true')
+       WHERE (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true' OR sf.storage_tier='personal')
          AND s.encrypted_data_key IS NOT NULL
          AND c.provider='google_drive' AND c.status='connected'
          AND sf.moderation_status='approved'
-         AND sf.content_purged_at IS NULL AND sf.released_at IS NULL
+         AND sf.content_purged_at IS NULL AND (sf.released_at IS NULL OR EXISTS (
+           SELECT 1 FROM central_drive_objects central WHERE central.file_id=sf.id AND central.status='verified'))
          AND (mbi.id IS NULL OR
            mbi.status='queued' OR
            (mbi.status='failed' AND mbi.attempt_count<5
              AND mbi.updated_at < now()-INTERVAL '10 minutes') OR
            (mbi.status='uploading' AND mbi.updated_at < now()-INTERVAL '30 minutes'))
        ORDER BY
+         (sf.storage_tier='personal') DESC,
          (SELECT MAX(done.verified_at) FROM media_backup_items done
           WHERE done.user_id=sf.user_id AND done.provider='google_drive'
             AND done.status='verified') ASC NULLS FIRST,
@@ -14536,7 +14635,7 @@ async function runAutomaticBackupWorker(workerIndex) {
     const absolutePath = path.resolve(UPLOAD_ROOT, claimed.storage_path);
     if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep))
       throw new Error('Invalid stored file path');
-    const plain = await fs.readFile(absolutePath);
+    const plain = await readSourceMedia(pool, UPLOAD_ROOT, claimed);
     const plainHash = crypto.createHash('sha256').update(plain).digest('hex');
     if (claimed.content_sha256 && plainHash !== claimed.content_sha256)
       throw new Error('Stored file checksum mismatch');
@@ -14566,12 +14665,17 @@ async function runAutomaticBackupWorker(workerIndex) {
     }
     lockClient.release();
     lockClient = null;
-    const backupId = crypto.randomUUID();
+    // Large transfers must not be reclaimed by another worker after 30 minutes.
+    transferHeartbeat = setInterval(() => pool.query(
+      `UPDATE media_backup_items SET updated_at=now()
+       WHERE stored_file_id=$1 AND provider='google_drive' AND status='uploading'`,
+      [claimed.id]).catch(() => console.warn('Backup transfer heartbeat failed')), 60000);
+    transferHeartbeat.unref();
     const associatedData = `${claimed.user_id}/${claimed.id}/server-v1`;
     const key = unwrapVaultKey(claimed.encrypted_data_key, claimed.user_id);
-    const envelope = encryptBackupBuffer(plain, key, associatedData);
-    const encryptedHash = crypto.createHash('sha256')
-      .update(envelope.ciphertext).digest('hex');
+    transferJob = await prepareBackupTransfer({ plain, key, associatedData,
+      userId: claimed.user_id, fileId: claimed.id });
+    const { backupId, envelope, encryptedHash } = transferJob;
     refreshToken = personalDrive.decryptRefreshToken(
       claimed.encrypted_refresh_token, claimed.user_id);
     const uploaded = await personalDrive.uploadAppDataFile(refreshToken,
@@ -14584,7 +14688,7 @@ async function runAutomaticBackupWorker(workerIndex) {
       remoteFileId: remoteDataId, encryption: { algorithm: envelope.algorithm,
         nonce: envelope.nonce, tag: envelope.tag, associatedData,
         keySource: 'server_vault', keyVersion: claimed.data_key_version || 1 },
-      createdAt: new Date().toISOString() };
+      createdAt: transferJob.createdAt };
     const manifestUpload = await personalDrive.uploadAppDataFile(refreshToken,
       `${backupId}.manifest.json`, Buffer.from(JSON.stringify(manifest)), 'application/json',
       { kind: 'manifest', version: '1', backupId, keySource: 'server_vault' });
@@ -14598,6 +14702,7 @@ async function runAutomaticBackupWorker(workerIndex) {
        JSON.stringify({ ...manifest.encryption, manifestRemoteId: remoteManifestId, backupId,
          ...(claimed.guide_requested ? { guideRequested: true } : {}) }),
        claimed.id]);
+    await clearBackupTransfer(transferJob).catch(() => console.warn('Completed backup spool cleanup deferred'));
     logActivity(claimed.user_id, 'automatic_encrypted_backup',
       { storedFileId: claimed.id, bytes: plain.length }, null);
   } catch (e) {
@@ -14605,18 +14710,19 @@ async function runAutomaticBackupWorker(workerIndex) {
     if (transactionOpen && lockClient)
       await lockClient.query('ROLLBACK').catch(() => {});
     if (claimed && pool) await pool.query(
-      `UPDATE media_backup_items SET status='failed',last_error=$2,updated_at=now()
+      `UPDATE media_backup_items SET status='failed',last_error=$2,
+         attempt_count=CASE WHEN $3 THEN GREATEST(attempt_count-1,0) ELSE attempt_count END,
+         updated_at=CASE WHEN $3 THEN now()-INTERVAL '9 minutes' ELSE now() END
        WHERE stored_file_id=$1 AND provider='google_drive'`,
-      [claimed.id, String(e.message).slice(0, 500)]).catch(() => {});
-    if (refreshToken) {
-      for (const remoteId of [remoteDataId, remoteManifestId])
-        if (remoteId) await personalDrive.deleteAppDataFile(refreshToken, remoteId).catch(() => {});
-    }
+      [claimed.id, String(e.message).slice(0, 500), e.code === 'UPLOAD_RETRYABLE']).catch(() => {});
+    // Keep the encrypted spool and completed remote pieces for the next attempt.
+    // Re-encrypting or deleting an uploaded piece would prevent byte-offset resume.
   } finally {
     if (lockHeld && lockClient)
       await lockClient.query('SELECT pg_advisory_unlock($1)', [7310426 + workerIndex]).catch(() => {});
     if (lockClient) lockClient.release();
     runAutomaticBackupWorker.running = false;
+    if (transferHeartbeat) clearInterval(transferHeartbeat);
   }
 }
 runAutomaticBackupWorker.running = false;
@@ -14633,7 +14739,7 @@ async function runAutomaticRestoreQueue() {
        FROM media_backup_items mbi
        JOIN stored_files sf ON sf.id=mbi.stored_file_id
        JOIN user_backup_settings s ON s.user_id=mbi.user_id
-         AND (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true')
+         AND (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true' OR sf.storage_tier='personal')
        JOIN cloud_backup_accounts c ON c.user_id=mbi.user_id AND c.status='connected'
        WHERE mbi.status='verified' AND mbi.restore_verified_at IS NULL
          AND mbi.encryption_metadata->>'keySource'='server_vault'
@@ -14687,42 +14793,14 @@ async function runSafeReleaseQueue() {
   runSafeReleaseQueue.running = true;
   try {
     const pool = await getPool();
-    const due = await pool.query(
-      `SELECT sf.id,sf.storage_path,sf.user_id FROM stored_files sf
-       JOIN media_backup_items mbi ON mbi.stored_file_id=sf.id
-      JOIN user_backup_settings s ON s.user_id=sf.user_id
-       WHERE s.enabled=TRUE AND mbi.provider='google_drive'
-         AND mbi.status='verified' AND mbi.restore_verified_at IS NOT NULL
-         AND sf.moderation_status='approved'
-         AND sf.moderation_details->>'pending' IS DISTINCT FROM 'true'
-         AND sf.released_at IS NULL
-         AND sf.release_scheduled_at IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM pending_scans ps WHERE ps.file_url=sf.public_url)
-         AND NOT EXISTS (SELECT 1 FROM messages m
-                         WHERE m.file_url=sf.public_url AND m.deleted_for_everyone=FALSE)
-         AND NOT EXISTS (SELECT 1 FROM received_message_media received
-           JOIN messages m ON m.id=received.message_id
-           WHERE received.stored_file_id=sf.id AND received.user_id=sf.user_id
-             AND received.status='ready' AND ${personalMessageVisible('m', 'sf.user_id')})
-         AND NOT EXISTS (SELECT 1 FROM received_message_media received
-           WHERE received.source_file_id=sf.id AND received.status='queued')
-         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.profile_pic_url=sf.public_url)
-         AND NOT EXISTS (SELECT 1 FROM groups g WHERE g.profile_pic_url=sf.public_url)
-         AND NOT EXISTS (SELECT 1 FROM listings l WHERE l.image_url=sf.public_url)
-         AND NOT EXISTS (SELECT 1 FROM listing_images li WHERE li.url=sf.public_url)
-         AND NOT EXISTS (SELECT 1 FROM education_forms ef WHERE ef.file_url=sf.public_url)
-         AND NOT EXISTS (SELECT 1 FROM shared_gifs sg
-                         WHERE sg.stored_file_id=sf.id AND sg.status='active')
-       ORDER BY mbi.restore_verified_at LIMIT 10`);
-    for (const row of due.rows) {
-      const absolutePath = path.resolve(UPLOAD_ROOT, row.storage_path);
-      if (!absolutePath.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) continue;
-      await fs.unlink(absolutePath).catch(error => {
-        if (error.code !== 'ENOENT') throw error;
-      });
-      await pool.query(`UPDATE stored_files SET released_at=now() WHERE id=$1`, [row.id]);
-      logActivity(row.user_id, 'safe_local_media_release', { storedFileId: row.id }, null);
-    }
+    const result = await releaseLocalMediaBatch({ pool, uploadRoot: UPLOAD_ROOT,
+      onReleased: (row, bytes) => logActivity(row.user_id, 'safe_local_media_release',
+        { storedFileId: row.id, bytes }, null),
+      onError: (id, error) => console.error('safe release retained:', id, error.message),
+    });
+    // Drain existing backups without waiting ten seconds between full batches.
+    if (result.examined === 10 && result.released + result.failed > 0)
+      setTimeout(runSafeReleaseQueue, 200);
   } catch (e) {
     console.error('safe release queue:', e.message);
   } finally {
@@ -14747,9 +14825,26 @@ const PORT = process.env.PORT || 3000;
 
 async function startServer() {
   await fs.mkdir(UPLOAD_ROOT, { recursive: true });
+  const cleanUploadSessions = () => resumableAttachments.cleanup()
+    .catch(() => console.error('Temporary upload cleanup failed'));
+  setTimeout(cleanUploadSessions, 15000);
+  setInterval(cleanUploadSessions, 60 * 60 * 1000).unref();
   await migrateDatabase();
   await initPendingTable();
   const pool = await getPool();
+  await recoverBackupTransfers(pool);
+  await pool.query(UPLOAD_BATCH_NOTICE_SCHEMA);
+  // Widen existing metadata columns only once; stored_files already uses bigint.
+  await pool.query(`DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+      AND table_name='messages' AND column_name='file_size' AND data_type='integer') THEN
+      ALTER TABLE messages ALTER COLUMN file_size TYPE BIGINT;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+      AND table_name='audit_log' AND column_name='file_size' AND data_type='integer') THEN
+      ALTER TABLE audit_log ALTER COLUMN file_size TYPE BIGINT;
+    END IF;
+  END $$`);
   await ensureVideoScanBudgetSchema(pool);
   await ensureSystemAuditSchema(pool);
   await pool.query(MEDIA_PROGRESS_SCHEMA);
@@ -14813,6 +14908,20 @@ async function startServer() {
   for (let workerIndex = 0; workerIndex < AUTOMATIC_BACKUP_CONCURRENCY; workerIndex++)
     spawnBackupWorker(workerIndex);
   httpServer.listen(PORT, '127.0.0.1', () => console.log(`Server running on port ${PORT}`));
+  const centralStorage = centralDrive.createCentralStorage({ getPool, uploadRoot: UPLOAD_ROOT,
+    readSource: readSourceMedia });
+  const centralTick = () => centralStorage.runBatch({ limit: 5 })
+    .then(result => { if (result.transferred || result.deleted || result.failed)
+      console.log('[central-storage]', JSON.stringify(result));
+      if (result.transferred === 5) setTimeout(centralTick, 200); })
+    .catch(() => console.error('[central-storage] cycle failed; local files retained'));
+  setTimeout(centralTick, 8000);
+  setInterval(centralTick, 10000);
+  const maintainPersonalStorage = storageQuota.createMaintenance({ getPool });
+  const personalStorageTick = () => maintainPersonalStorage()
+    .catch(() => console.error('[storage-quota] maintenance deferred; existing copies retained'));
+  setTimeout(personalStorageTick, 5000);
+  setInterval(personalStorageTick, 15000);
 }
 
 async function startBackupWorker() {

@@ -1,3 +1,9 @@
+import 'dart:typed_data' show BytesBuilder;
+import 'web_chat_attachments.dart';
+import 'chat_upload_batch.dart';
+import 'chat_upload_notices.dart';
+import 'drive_storage_summary.dart';
+import 'storage_quota.dart';
 import 'chat_upload_history.dart';
 import 'package:permission_handler/permission_handler.dart' as permissions;
 import 'device_contact_cache.dart';
@@ -8,6 +14,7 @@ import 'scan_explanation.dart';
 import 'contact_request_status.dart';
 import 'chat_attachment_menu.dart';
 import 'chat_attachment_files.dart';
+import 'attachment_read_error.dart';
 import 'upload_rejection_report.dart';
 import 'media_playback_progress.dart';
 import 'playback_time_dialog.dart';
@@ -63,6 +70,7 @@ import 'hebrew_date.dart';
 import 'media_cache.dart';
 import 'media_delete_dialog.dart';
 import 'media_rename.dart';
+import 'chat_file_name.dart';
 import 'native_video_player.dart';
 import 'compatible_video_player.dart';
 import 'video_thumbnail.dart';
@@ -90,7 +98,18 @@ import 'image_paste_menu.dart';
 
 const _appInviteUrl = 'https://betshuva.com/betshuva-app/invite-v2.html';
 const _sharedContactPrefix = 'betshuva://contact/';
-const _maxVideoDuration = Duration(seconds: 30);
+const _maxVideoDuration = Duration(minutes: 2);
+const _maxVoiceRecordingDuration = Duration(hours: 2);
+
+String _voiceRecordingTime(int seconds) {
+  final minutes = ((seconds ~/ 60) % 60).toString().padLeft(2, '0');
+  final remainder = (seconds % 60).toString().padLeft(2, '0');
+  return seconds >= 3600
+      ? '${(seconds ~/ 3600).toString().padLeft(2, '0')}:$minutes:$remainder'
+      : '$minutes:$remainder';
+}
+
+const _maxUploadedVideoDuration = Duration(minutes: 90);
 
 String? _captureCreatorId(BuildContext context, Map<String, dynamic>? me) {
   final id = captureCreatorIdForUser(me);
@@ -105,6 +124,13 @@ bool _isPersonalPhoneContact(String? id, String? myId) =>
     id != null && id.isNotEmpty && id != myId &&
     !{kScanBotId, kSystemGuideId, kSafeInformationAiId}.contains(id);
 
+// Captured before starting a transfer: State.widget is unavailable after a
+// conversation closes, but its accepted uploads must still reach this target.
+class _ChatUploadDestination {
+  final String token, targetId;
+  const _ChatUploadDestination(this.token, this.targetId);
+}
+
 Future<bool> _videoWithinDurationLimit(
     BuildContext context, XFile video) async {
   VideoPlayerController? controller;
@@ -114,12 +140,12 @@ Future<bool> _videoWithinDurationLimit(
         : VideoPlayerController.file(File(video.path));
     await controller.initialize().timeout(const Duration(seconds: 12));
     if (controller.value.duration <=
-        _maxVideoDuration + const Duration(milliseconds: 250)) {
+        _maxUploadedVideoDuration + const Duration(milliseconds: 250)) {
       return true;
     }
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('ניתן לשלוח סרטון באורך של עד 30 שניות',
+        content: Text('ניתן לשלוח סרטון באורך של עד 90 דקות',
             textDirection: TextDirection.rtl),
       ));
     }
@@ -1904,7 +1930,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.38';
+const kVersion = '1.3.39';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -1920,7 +1946,8 @@ String _newUploadMessageId(String prefix) =>
 bool _isLocalOnlyChatMessage(Map<String, dynamic> message) {
   final id = message['id']?.toString() ?? '';
   final status = message['status']?.toString();
-  return id.startsWith('temp_') ||
+  return message['isUploadBatchNotice'] == true ||
+      id.startsWith('temp_') ||
       id.startsWith('failed_') ||
       id.startsWith('uploading_') ||
       status == 'failed' ||
@@ -2063,21 +2090,62 @@ Future<_FileUploadResult> _rejectOversizedUpload({
       error: recorded ? reason : '$reason\nלא ניתן היה לתעד את הניסיון ביומן');
 }
 
+Future<Uint8List> _attachmentHeader(PlatformFile picked) async {
+  if (picked.bytes != null) {
+    return Uint8List.sublistView(picked.bytes!, 0, math.min(picked.bytes!.length, 1024 * 1024));
+  }
+  final file = picked.xFile;
+  final bytes = BytesBuilder(copy: false);
+  await for (final chunk in file.openRead(0, math.min(await file.length(), 1024 * 1024))) {
+    bytes.add(chunk);
+  }
+  return bytes.takeBytes();
+}
+
+Future<http.StreamedResponse> _sendMediaUpload(http.MultipartRequest request,
+    {http.Client? client, Duration timeout = const Duration(seconds: 60)}) async {
+  if (kIsWeb && request.files.length == 1) {
+    final part = request.files.single;
+    final bytes = await part.finalize().toBytes();
+    final result = await uploadPickedWebAttachment(
+      file: XFile.fromData(bytes, name: part.filename ?? 'file',
+          mimeType: part.contentType.toString()),
+      url: request.url.toString(),
+      token: (request.headers['Authorization'] ?? request.headers['authorization'] ?? '').replaceFirst('Bearer ', ''),
+      fields: request.fields,
+    );
+    if (result != null) {
+      return http.StreamedResponse(Stream.value(utf8.encode(result.body)), result.statusCode);
+    }
+  }
+  return await (client == null ? request.send() : client.send(request)).timeout(timeout);
+}
+
 Future<_FileUploadResult> _uploadFileRequest({
   required dynamic file,
   required String fileName,
   required String token,
   required Map<String, String> fields,
 }) async {
+  var length = 0;
   try {
-    const maxBytes = 150 * 1024 * 1024;
-    final length = file is XFile ? await file.length() : (file as PlatformFile).size;
-    if (length > maxBytes) {
-      return _rejectOversizedUpload(fileName: fileName, fileSize: length,
+    final maxBytes = (fields['recordedAudio'] == 'true' ? 256 : 150) * 1024 * 1024;
+    length = file is XFile ? await file.length() : (file as PlatformFile).size;
+    final namedVideo = chatAttachmentType(fileName) == 'video';
+    if (!namedVideo && length > maxBytes) {
+      return await _rejectOversizedUpload(fileName: fileName, fileSize: length,
           fileType: fileName.toLowerCase().endsWith('.webm')
               ? 'file' : chatAttachmentType(fileName) ?? 'file',
           maxBytes: maxBytes, token: token);
     }
+    final webResponse = await uploadPickedWebAttachment(
+        file: file, url: '$kApi/upload', token: token, fields: fields);
+    late int responseStatus;
+    late String body;
+    if (webResponse != null) {
+      responseStatus = webResponse.statusCode;
+      body = webResponse.body;
+    } else {
     final bytes = file is XFile
         ? await file.readAsBytes()
         : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
@@ -2090,8 +2158,9 @@ Future<_FileUploadResult> _uploadFileRequest({
     final detectedType = chatAttachmentType(fileName, bytes: bytes);
     final isAudio = detectedType == 'audio' ||
         (detectedType == null && contentType.type == 'audio');
-    if (!isAudio && length > 50 * 1024 * 1024) {
-      return _rejectOversizedUpload(fileName: fileName, fileSize: length,
+    final isVideo = detectedType == 'video' || contentType.type == 'video';
+    if (!isVideo && !isAudio && length > 50 * 1024 * 1024) {
+      return await _rejectOversizedUpload(fileName: fileName, fileSize: length,
           fileType: detectedType ?? 'file', maxBytes: 50 * 1024 * 1024, token: token);
     }
     if (fileName.toLowerCase().endsWith('.webm')) {
@@ -2102,11 +2171,11 @@ Future<_FileUploadResult> _uploadFileRequest({
       ..fields.addAll(fields)
       ..files.add(http.MultipartFile.fromBytes('file', bytes,
           filename: fileName, contentType: contentType));
-    final isVideo =
-        RegExp(r'\.(mp4|webm|mov)$', caseSensitive: false).hasMatch(fileName);
     final streamed =
-        await request.send().timeout(Duration(seconds: isAudio ? 1800 : isVideo ? 210 : 60));
-    final body = await streamed.stream.bytesToString();
+        await (isVideo ? request.send() : request.send().timeout(Duration(seconds: isAudio ? 1800 : 60)));
+    responseStatus = streamed.statusCode;
+    body = await streamed.stream.bytesToString();
+    }
     Map<String, dynamic> data = const <String, dynamic>{};
     try {
       final decoded = jsonDecode(body);
@@ -2124,7 +2193,7 @@ Future<_FileUploadResult> _uploadFileRequest({
       return _FileUploadResult(_FileUploadOutcome.failed,
           data: data, error: _senderFilterRejectionMessage(data));
     }
-    if (streamed.statusCode != 200) {
+    if (responseStatus != 200) {
       return _FileUploadResult(
         _FileUploadOutcome.failed,
         data: data,
@@ -2145,9 +2214,11 @@ Future<_FileUploadResult> _uploadFileRequest({
           error: 'השרת לא החזיר כתובת לקובץ');
     }
     return _FileUploadResult(_FileUploadOutcome.approved, data: data);
+  } on AttachmentReadException catch (error) {
+    return _FileUploadResult(_FileUploadOutcome.failed, error: error.toString());
   } catch (error) {
     return _FileUploadResult(_FileUploadOutcome.failed,
-        error: 'שגיאת העלאה: $error');
+        error: 'שגיאת העלאה של "$fileName": $error');
   }
 }
 
@@ -2851,9 +2922,7 @@ Future<ForwardChatResult> forwardChatMessages(
                 ),
               );
             }
-            final upload = await transport
-                .send(request)
-                .timeout(const Duration(seconds: 60));
+            final upload = await _sendMediaUpload(request, client: transport);
             final uploadBody = await upload.stream.bytesToString();
             if (upload.statusCode != 200) {
               forwardingErrors.add(
@@ -6280,15 +6349,15 @@ class _GoogleDriveBackupOfferScreenState
                         const Icon(Icons.cloud_sync_outlined,
                             size: 72, color: kPrimary),
                         const SizedBox(height: 18),
-                        const Text('גיבוי מוצפן ב־Google Drive',
+                        const Text('אחסון מוצפן ב־Google Drive האישי',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                                 fontSize: 24, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 12),
                         Text(
                           _connected
-                              ? 'Google Drive כבר מחובר. אפשר להפעיל עכשיו גיבוי אוטומטי מוצפן.'
-                              : 'באישורך נחבר תיקייה פרטית ומוסתרת של בתשובה ב־Google Drive ונפעיל גיבוי אוטומטי מוצפן.',
+                              ? 'Google Drive כבר מחובר. כל הקבצים שלך מועברים אליו לאחר בדיקת שחזור.'
+                              : 'בחיבור Google Drive, כל הקבצים שלך יועברו לאחסון פרטי ומוצפן בחשבון שלך. העותק בבתשובה יפונה רק לאחר בדיקת שחזור.',
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 8),
@@ -8267,6 +8336,8 @@ class _MainShellContentState extends State<_MainShellContent> {
   final GlobalKey<_GroupsScreenState> _groupsKey =
       GlobalKey<_GroupsScreenState>();
   Map<String, dynamic>? _desktopRecipient;
+  String? _desktopSearchMessageId, _desktopSearchMessageAt;
+  int _desktopSearchRevision = 0;
   Map<String, dynamic>? _desktopGroup;
   Map<String, dynamic>? _desktopListing;
   Widget? _desktopDocument;
@@ -8627,6 +8698,7 @@ class _MainShellContentState extends State<_MainShellContent> {
     if (isDesktop) {
       setState(() {
         _idx = 0;
+        _desktopSearchMessageId = _desktopSearchMessageAt = null;
         _desktopRecipient = guide;
         _desktopGroup = null;
         _desktopListing = null;
@@ -8977,6 +9049,7 @@ class _MainShellContentState extends State<_MainShellContent> {
     setState(() {
       if (_idx >= 3) _idx = 0;
       _desktopRecipient = null;
+      _desktopSearchMessageId = _desktopSearchMessageAt = null;
       _desktopGroup = group;
       _desktopListing = null;
       _desktopDocument = null;
@@ -9018,6 +9091,7 @@ class _MainShellContentState extends State<_MainShellContent> {
     );
     setState(() {
       _idx = 0;
+      _desktopSearchMessageId = _desktopSearchMessageAt = null;
       _desktopRecipient = refreshed.isNotEmpty
           ? refreshed.first
           : Map<String, dynamic>.from(recipient);
@@ -9397,6 +9471,7 @@ class _MainShellContentState extends State<_MainShellContent> {
         }
         setState(() {
           _idx = 0;
+          _desktopSearchMessageId = _desktopSearchMessageAt = null;
           _desktopRecipient = user;
           _desktopGroup = null;
           _desktopListing = null;
@@ -9407,6 +9482,26 @@ class _MainShellContentState extends State<_MainShellContent> {
       },
       selectedGroupId: _idx >= 4 ? null : _desktopGroup?['id'] as String?,
       onGroupSelected: _openGroup,
+      onSearchMessageSelected: (item, group, message) {
+        _closeDesktopContentRoutes();
+        setState(() {
+          _idx = 0;
+          _desktopGroup = group ? item : null;
+          _desktopRecipient = group ? null : item;
+          _desktopListing = null;
+          _desktopDocument = null;
+          _desktopIssueId = null;
+          _openGroupMembersOnSelect = false;
+          _desktopSearchMessageId = message['id'].toString();
+          _desktopSearchMessageAt = message['created_at'].toString();
+          _desktopSearchRevision++;
+          if (group) {
+            _groupUnreadCounts.remove(item['id']);
+          } else {
+            _unreadCounts.remove(item['id']);
+          }
+        });
+      },
       onChatOpened: (userId) {
         if (_unreadCounts.containsKey(userId)) {
           setState(() => _unreadCounts.remove(userId));
@@ -9505,7 +9600,9 @@ class _MainShellContentState extends State<_MainShellContent> {
                                           ? (_desktopGroup != null
                                               ? GroupChatScreen(
                                                   key: ValueKey(
-                                                      'chat-tab:${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
+                                                      'chat-tab:${_desktopGroup!['id']}:$_openGroupMembersOnSelect:$_desktopSearchMessageId:$_desktopSearchRevision'),
+                                                  searchMessageId: _desktopSearchMessageId,
+                                                  searchMessageAt: _desktopSearchMessageAt,
                                                   group: _desktopGroup!,
                                                   me: _me,
                                                   token: widget.token,
@@ -9531,9 +9628,9 @@ class _MainShellContentState extends State<_MainShellContent> {
                                               : _desktopRecipient == null
                                                   ? const _DesktopChatWelcome()
                                                   : ChatScreen(
-                                                      key: ValueKey(
-                                                          _desktopRecipient![
-                                                              'id']),
+                                                      key: ValueKey('chat:${_desktopRecipient!['id']}:$_desktopSearchMessageId:$_desktopSearchRevision'),
+                                                      searchMessageId: _desktopSearchMessageId,
+                                                      searchMessageAt: _desktopSearchMessageAt,
                                                       token: widget.token,
                                                       me: _me,
                                                       recipient:
@@ -9579,7 +9676,9 @@ class _MainShellContentState extends State<_MainShellContent> {
                                               ? const _DesktopGroupWelcome()
                                               : GroupChatScreen(
                                                   key: ValueKey(
-                                                      '${_desktopGroup!['id']}:$_openGroupMembersOnSelect'),
+                                                      '${_desktopGroup!['id']}:$_openGroupMembersOnSelect:$_desktopSearchMessageId:$_desktopSearchRevision'),
+                                                  searchMessageId: _desktopSearchMessageId,
+                                                  searchMessageAt: _desktopSearchMessageAt,
                                                   group: _desktopGroup!,
                                                   me: _me,
                                                   token: widget.token,
@@ -9704,6 +9803,7 @@ class _MainShellContentState extends State<_MainShellContent> {
                   _desktopGroup = null;
                   _desktopListing = null;
                   _openGroupMembersOnSelect = false;
+                  _desktopSearchMessageId = _desktopSearchMessageAt = null;
                   _desktopRecipient = _users.firstWhere(
                     (user) => user['id']?.toString() == recipientId,
                     orElse: () => recipient,
@@ -9712,7 +9812,15 @@ class _MainShellContentState extends State<_MainShellContent> {
                 });
                 return true;
               },
-              child: body,
+              child: Column(children: [
+                StorageQuotaView(api: kApi, token: widget.token, alertsOnly: true,
+                  onCleanup: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                    builder: (_) => PersonalMediaScreen(token: widget.token, initialCleanup: true))),
+                  onDrive: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                    builder: (_) => GoogleDriveBackupOfferScreen(token: widget.token, returnToPrevious: true))),
+                ),
+                Expanded(child: body),
+              ]),
             ),
           ),
         ),
@@ -20430,6 +20538,8 @@ class ConversationsScreen extends StatefulWidget {
   final Set<String> typingUserIds;
   final void Function(String userId) onChatOpened;
   final void Function(Map<String, dynamic> user)? onUserSelected;
+  final void Function(Map<String, dynamic> item, bool group,
+      Map<String, dynamic> message)? onSearchMessageSelected;
   final String? selectedUserId;
   final String? selectedGroupId;
   final void Function(Map<String, dynamic> group, bool openMembers)?
@@ -20469,6 +20579,7 @@ class ConversationsScreen extends StatefulWidget {
     required this.onMainNavigationSelected,
     required this.onFilterChanged,
     this.onUserSelected,
+    this.onSearchMessageSelected,
     this.selectedUserId,
     this.selectedGroupId,
     this.onGroupSelected,
@@ -20750,12 +20861,27 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
     final items = group ? _groups : widget.users;
     final item = items.where((i) => i['id'] == message['conversation_id']).firstOrNull ??
       {'id': message['conversation_id'], 'name': message['conversation_name']};
-    // A separate route retains the search and its scroll position on Back.
-    Navigator.push(context, MaterialPageRoute(builder: (_) => group
-      ? GroupChatScreen(group: item, token: widget.token, me: widget.me, socket: widget.socket,
-          searchMessageId: message['id'].toString(), searchMessageAt: message['created_at'].toString())
-      : ChatScreen(recipient: item, token: widget.token, me: widget.me, socket: widget.socket,
-          searchMessageId: message['id'].toString(), searchMessageAt: message['created_at'].toString())));
+    if (MediaQuery.sizeOf(context).width >= 900 && widget.onSearchMessageSelected != null) {
+      widget.onSearchMessageSelected!(item, group, message);
+      return;
+    }
+    final size = MediaQuery.sizeOf(context);
+    showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        clipBehavior: Clip.antiAlias,
+        child: SizedBox(
+          width: math.min(1100, size.width * 0.9),
+          height: size.height * 0.85,
+          child: group
+              ? GroupChatScreen(group: item, token: widget.token, me: widget.me, socket: widget.socket,
+                  searchMessageId: message['id'].toString(), searchMessageAt: message['created_at'].toString())
+              : ChatScreen(recipient: item, token: widget.token, me: widget.me, socket: widget.socket,
+                  searchMessageId: message['id'].toString(), searchMessageAt: message['created_at'].toString()),
+        ),
+      ),
+    );
   }
 
   Future<void> _showFindFriendDialog() async {
@@ -22697,6 +22823,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final _attachmentAnchorKey = GlobalKey();
   bool _attachmentMenuOpen = false;
   bool _attachmentPickerOpen = false;
+  late final StreamSubscription<void> _uploadNoticesSubscription;
+  _ChatUploadDestination get _uploadDestination =>
+      _ChatUploadDestination(widget.token, widget.recipient['id'].toString());
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
   final _msgCtrl = InlineEmojiController();
@@ -22814,6 +22943,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _cameraCaptureOpen = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
+  Timer? _recordDeadlineTimer;
   String _voiceFileName = '';
   Map<String, bool>? _recipientReceivingFilter;
   Map<String, bool>? _outgoingFilter;
@@ -22918,6 +23048,10 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _scrollCtrl.openSearchMessage(widget.searchMessageId, widget.searchMessageAt);
+    _loadUploadBatchNotices();
+    _uploadNoticesSubscription = _uploadNotices.changes.listen((_) {
+      if (mounted) _loadUploadBatchNotices();
+    });
     _listenForConversationChanges();
     _receivingFilterSubscription = receivingFilterChanges.stream.listen((token) {
       if (token == widget.token) _refreshReceivingFilter();
@@ -22938,6 +23072,10 @@ class _ChatScreenState extends State<ChatScreen> {
         widget.recipient['id']?.toString() ?? kSystemGuideId);
     _clipboardImagePasteListener = ClipboardImagePasteListener(
       focusNode: _msgFocusNode,
+      onFiles: (files) => _pickAttachments(pastedFiles: files),
+      onTooManyFiles: (count) {
+        if (mounted) showChatUploadLimitExceeded(context, count);
+      },
       onImage: (bytes, fileName, mimeType) => _uploadAndSend(
         XFile.fromData(bytes, name: fileName, mimeType: mimeType),
         fileName,
@@ -23115,10 +23253,13 @@ class _ChatScreenState extends State<ChatScreen> {
             .where((message) => !_isVisualMediaMessage(message))
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
+        final localUploads = _messages.where((message) =>
+            message['isUploadBatchNotice'] == true ||
+            message['status'] == 'uploading').toList();
         setState(() {
           _messages
             ..clear()
-            ..addAll(list)
+            ..addAll(mergeChatUploadHistory(list, localUploads))
             ..addAll(outbox);
           _loading = false;
         });
@@ -23160,7 +23301,8 @@ class _ChatScreenState extends State<ChatScreen> {
         final initialHistory = _scrollCtrl.captureInitialHistory(normalized);
         setState(() {
           final pending = _messages
-              .where((m) => m['status'] == 'uploading' ||
+              .where((m) => m['isUploadBatchNotice'] == true ||
+                  m['status'] == 'uploading' ||
                   (m['id'] as String? ?? '').startsWith('temp_'))
               .toList();
           _messages
@@ -23553,6 +23695,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _uploadNoticesSubscription.cancel();
     _cleanupSubscription.cancel();
     _receivingFilterSubscription.cancel();
     widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
@@ -23567,6 +23710,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _clipboardImagePasteListener.dispose();
     _messageRefreshTimer?.cancel();
     _recordTimer?.cancel();
+    _recordDeadlineTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('chat:message', _chatMessageHandler);
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
@@ -23600,6 +23744,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _voiceSubmissionInProgress = true;
         try {
           _recordTimer?.cancel();
+          _recordDeadlineTimer?.cancel();
           final recordedSeconds = _recordSeconds;
           final path = await _audioRecorder.stop();
           if (mounted) setState(() => _isRecording = false);
@@ -23612,8 +23757,8 @@ class _ChatScreenState extends State<ChatScreen> {
             mimeType:
                 _voiceFileName.endsWith('.webm') ? 'audio/webm' : 'audio/wav',
           );
-          final bytes = await recording.readAsBytes();
-          if (bytes.length < 256) {
+          final byteLength = await recording.length();
+          if (byteLength < 256) {
             throw Exception('ההקלטה ריקה ולא נשלחה');
           }
           await _uploadAndSend(recording, _voiceFileName, 'audio',
@@ -23666,11 +23811,18 @@ class _ChatScreenState extends State<ChatScreen> {
         _isRecording = true;
         _recordSeconds = 0;
       });
-      _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _recordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (!mounted) return;
-        setState(() => _recordSeconds++);
+        setState(() => _recordSeconds = math.min(timer.tick, _maxVoiceRecordingDuration.inSeconds));
+      });
+      _recordDeadlineTimer = Timer(_maxVoiceRecordingDuration, () {
+        if (!mounted || !_isRecording) return;
+        _recordSeconds = _maxVoiceRecordingDuration.inSeconds;
+        _toggleVoiceRecording();
       });
     } catch (error) {
+      _recordTimer?.cancel();
+      _recordDeadlineTimer?.cancel();
       if (mounted) {
         setState(() => _isRecording = false);
         ScaffoldMessenger.of(context)
@@ -24981,39 +25133,42 @@ class _ChatScreenState extends State<ChatScreen> {
     await _uploadAndSend(pdf, pdf.name, 'document');
   }
 
-  Future<void> _uploadPrivateImageBatch(List<XFile> files) async {
-    if (!mounted || files.isEmpty) return;
+  Future<int> _uploadPrivateImageBatch(List<XFile> files,
+      _ChatUploadDestination destination) async {
+    if (files.isEmpty) return 0;
     final completed = ValueNotifier<int>(0);
     var refreshScanBot = false;
     final startedAt = DateTime.now();
     final uploadMessageIds = List.generate(
         files.length, (index) => _newUploadMessageId('uploading_batch_$index'));
-    setState(() {
-      for (var index = 0; index < files.length; index++) {
-        _messages.add({
-          'id': uploadMessageIds[index],
-          'clientUploadId': uploadMessageIds[index],
-          'text': files[index].name,
-          'from': widget.me?['id'],
-          'time': _nowTime(),
-          'createdAt': startedAt.toIso8601String(),
-          'status': 'uploading',
-          'isFile': true,
-          'fileType': 'image',
-          'fileName': files[index].name,
-          'uploadStartedAt': startedAt.toIso8601String(),
-        });
-      }
-    });
-    _scrollToBottom();
-    await _runImageUploadQueue(
+    if (mounted) {
+      setState(() {
+        for (var index = 0; index < files.length; index++) {
+          _messages.add({
+            'id': uploadMessageIds[index],
+            'clientUploadId': uploadMessageIds[index],
+            'text': files[index].name,
+            'from': widget.me?['id'],
+            'time': _nowTime(),
+            'createdAt': startedAt.toIso8601String(),
+            'status': 'uploading',
+            'isFile': true,
+            'fileType': 'image',
+            'fileName': files[index].name,
+            'uploadStartedAt': startedAt.toIso8601String(),
+          });
+        }
+      });
+      _scrollToBottom();
+    }
+    final results = await _runImageUploadQueue(
       files,
       (file) => _uploadFileRequest(
         file: file,
         fileName: file.name,
-        token: widget.token,
+        token: destination.token,
         fields: {
-          'toUserId': widget.recipient['id'].toString(),
+          'toUserId': destination.targetId,
           'clientUploadId': uploadMessageIds[files.indexOf(file)],
           'scanReport': 'true',
         },
@@ -25028,6 +25183,7 @@ class _ChatScreenState extends State<ChatScreen> {
           result,
           file.name,
           'image',
+          destination: destination,
           showNotice: false,
           refreshScanBot: false,
         );
@@ -25035,29 +25191,64 @@ class _ChatScreenState extends State<ChatScreen> {
       },
     );
     completed.dispose();
-    if (!mounted) return;
+    final failed = results.where((r) => r.outcome == _FileUploadOutcome.failed).length;
+    if (!mounted) return failed;
 
     if (refreshScanBot) await _loadMessages(silent: true);
-    if (!mounted) return;
+    if (!mounted) return failed;
+    return failed;
   }
 
-  Future<void> _pickAttachments() async {
+  ChatUploadNotices get _uploadNotices => ChatUploadNotices(
+    api: kApi, token: widget.token, account: widget.me?['id']?.toString() ?? '',
+    kind: 'personal', target: widget.recipient['id'].toString());
+
+  Future<void> _loadUploadBatchNotices() async {
+    try {
+      final notices = await _uploadNotices.load();
+      if (!mounted) return;
+      setState(() {
+        final merged = mergeChatUploadHistory(_messages,
+            notices.where((m) => conversationMessageAfter(m, _clearedAt)).toList());
+        _messages..clear()..addAll(merged);
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _showUploadBatchNotice(String text,
+      {ChatUploadNotices? store}) async {
+    final notices = store ?? _uploadNotices;
+    final notice = <String, dynamic>{
+      'id': _newUploadMessageId('batch_notice_'),
+      'isUploadBatchNotice': true,
+      'text': text,
+      'createdAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    if (mounted) {
+      setState(() => _messages.add(notice));
+      _scrollToBottom();
+    }
+    await notices.save(notice);
+  }
+
+  Future<void> _pickAttachments({List<PlatformFile>? pastedFiles}) async {
     if (_attachmentPickerOpen) return;
     _attachmentPickerOpen = true;
+    List<PlatformFile>? pickedFiles;
     try {
-      final result = await FilePicker.platform.pickFiles(
+      pickedFiles = pastedFiles ?? (kIsWeb ? await pickWebChatAttachments() : (await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: chatAttachmentExtensions,
         allowMultiple: true,
-        withData: kIsWeb,
-      );
-      if (!mounted || result == null || result.files.isEmpty) return;
-      if (result.files.length > maxChatAttachments) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('ניתן להעלות עד 20 קבצים בכל פעם'),
-        ));
+        withData: false,
+      ))?.files);
+      if (!mounted || pickedFiles == null || pickedFiles.isEmpty) return;
+      if (pickedFiles.length > maxChatAttachments) {
+        showChatUploadLimitExceeded(context, pickedFiles.length);
+        return;
       }
-      final files = result.files.take(maxChatAttachments).toList();
+      final files = pickedFiles;
+      if (!await confirmChatUploadBatch(context, files.length) || !mounted) return;
       if (files.every((file) => chatAttachmentType(file.name) == 'image')) {
         await _loadRecipientReceivingFilter();
         if (!mounted) return;
@@ -25068,15 +25259,26 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!await _ensureFirstMessageFilterChoice()) return;
         if (!mounted) return;
         final images = await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
-        await _uploadPrivateImageBatch(images);
+        if (!mounted) return;
+        final destination = _uploadDestination;
+        final notices = _uploadNotices;
+        var failed = 0;
+        await runChatUploadBatch(
+          count: images.length,
+          failedCount: () => failed,
+          onNotice: (text) => _showUploadBatchNotice(text, store: notices),
+          upload: () async { failed = await _uploadPrivateImageBatch(images, destination); },
+        );
         return;
       }
+      // Finish all context-dependent validation before the queue starts.
+      // The queue then owns the picked files until every transfer completes.
+      final prepared = <(PlatformFile, String)>[];
+      final permissions = <String, bool>{};
       for (final file in files) {
-        if (!mounted) return;
         final type = chatAttachmentType(file.name,
             bytes: file.name.toLowerCase().endsWith('.webm')
-                ? await file.xFile.readAsBytes()
-                : null);
+                ? await _attachmentHeader(file) : null);
         if (!mounted) return;
         if (type == null) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -25086,8 +25288,26 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         if (type == 'video' && !await _videoWithinDurationLimit(context, file.xFile)) continue;
         if (!mounted) return;
-        await _uploadAndSend(file, file.name, type);
+        final allowed = permissions[type] ??= await _preparePrivateUpload(type);
+        if (!allowed) continue;
+        prepared.add((file, type));
       }
+      if (!mounted || prepared.isEmpty) return;
+      final destination = _uploadDestination;
+      final notices = _uploadNotices;
+      var failed = files.length - prepared.length;
+      await runChatUploadBatch(
+        count: files.length,
+        failedCount: () => failed,
+        onNotice: (text) => _showUploadBatchNotice(text, store: notices),
+        upload: () async {
+          for (final (file, type) in prepared) {
+            await _uploadAndSend(file, file.name, type,
+                preparedDestination: destination,
+                onComplete: (hasFailed) { if (hasFailed) failed++; });
+          }
+        },
+      );
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -25095,6 +25315,9 @@ class _ChatScreenState extends State<ChatScreen> {
         ));
       }
     } finally {
+      // Clipboard files remain owned by the paste listener until this queue
+      // completes, including when the original conversation is disposed.
+      if (pastedFiles == null) releaseWebChatAttachments(pickedFiles);
       _attachmentPickerOpen = false;
     }
   }
@@ -25113,11 +25336,10 @@ class _ChatScreenState extends State<ChatScreen> {
         extraFields: const {'captureKind': 'camera_video'});
   }
 
-  Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
-      {Map<String, String> extraFields = const {}}) async {
-    if (!mounted) return;
+  Future<bool> _preparePrivateUpload(String fileType) async {
+    if (!mounted) return false;
     await _loadRecipientReceivingFilter();
-    if (!mounted) return;
+    if (!mounted) return false;
     final blockedByRecipient = switch (fileType) {
       'video' => !_recipientAllowsVideo,
       'image' => !_recipientAllowsImages,
@@ -25132,22 +25354,30 @@ class _ChatScreenState extends State<ChatScreen> {
         'document' => 'מסמכים',
         _ => 'סוג התוכן',
       });
-      return;
+      return false;
     }
-    if (!await _ensureFirstMessageFilterChoice()) return;
-    if (!mounted) return;
+    if (!await _ensureFirstMessageFilterChoice()) return false;
+    if (!mounted) return false;
+    return true;
+  }
+
+  Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
+      {Map<String, String> extraFields = const {},
+      _ChatUploadDestination? preparedDestination,
+      void Function(bool failed)? onComplete}) async {
+    if (preparedDestination == null && !await _preparePrivateUpload(fileType)) return;
+    final destination = preparedDestination ?? _uploadDestination;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
     final isLibrarySticker = extraFields['builtinExpression'] == 'true';
     final showInlineProgress = (fileType == 'image' ||
             fileType == 'document' ||
             fileType == 'video' ||
             fileType == 'audio') &&
-        !isClipboardPaste &&
         !isLibrarySticker;
-    final showProgress = !showInlineProgress && !isLibrarySticker;
+    final showProgress = mounted && !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_');
     final uploadStartedAt = DateTime.now();
-    if (showInlineProgress) {
+    if (showInlineProgress && mounted) {
       setState(() {
         _messages.add({
           'id': uploadMessageId,
@@ -25166,8 +25396,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom();
     }
     final navigator =
-        showProgress ? Navigator.of(context, rootNavigator: true) : null;
-    final dialogFuture = showProgress
+        showProgress && mounted ? Navigator.of(context, rootNavigator: true) : null;
+    final dialogFuture = showProgress && mounted
         ? showDialog<void>(
             context: context,
             barrierDismissible: false,
@@ -25191,9 +25421,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final result = await _uploadFileRequest(
       file: file,
       fileName: fileName,
-      token: widget.token,
+      token: destination.token,
       fields: {
-        'toUserId': widget.recipient['id'].toString(),
+        'toUserId': destination.targetId,
         if (!isLibrarySticker) 'scanReport': 'true',
         ...extraFields,
         'clientUploadId': uploadMessageId,
@@ -25203,23 +25433,27 @@ class _ChatScreenState extends State<ChatScreen> {
       navigator.pop();
     }
     if (dialogFuture != null) await dialogFuture;
-    if (!mounted) return;
-    if (showInlineProgress) {
+    if (showInlineProgress && mounted) {
       setState(() =>
           _messages.removeWhere((message) => message['id'] == uploadMessageId));
     }
     await _applyPrivateUploadResult(result, fileName, fileType,
+        destination: destination,
         showNotice:
             (fileType != 'image' && fileType != 'video') || isClipboardPaste);
+    onComplete?.call(result.outcome == _FileUploadOutcome.failed);
   }
 
   Future<bool> _applyPrivateUploadResult(
     _FileUploadResult result,
     String fileName,
     String fileType, {
+    _ChatUploadDestination? destination,
     bool showNotice = true,
     bool refreshScanBot = true,
   }) async {
+    final uploadDestination = destination ?? _uploadDestination;
+    if (!mounted && result.outcome != _FileUploadOutcome.approved) return false;
     final data = result.data;
     final storedType = data['fileType']?.toString();
     if (const {'image', 'video', 'audio', 'document'}.contains(storedType)) {
@@ -25331,11 +25565,11 @@ class _ChatScreenState extends State<ChatScreen> {
               .post(
                 Uri.parse('$kApi/messages'),
                 headers: {
-                  'Authorization': 'Bearer ${widget.token}',
+                  'Authorization': 'Bearer ${uploadDestination.token}',
                   'Content-Type': 'application/json',
                 },
                 body: jsonEncode({
-                  'toUserId': widget.recipient['id'],
+                  'toUserId': uploadDestination.targetId,
                   'fileUrl': fileUrl,
                   'fileName': fileName,
                   'fileType': fileType,
@@ -25650,7 +25884,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _contactFilterStatusButton() {
-    if (widget.recipient['id'] == kScanBotId) {
+    if (widget.recipient['id'] == kScanBotId ||
+        widget.recipient['is_self'] == true ||
+        (widget.me?['id'] != null && widget.recipient['id'] == widget.me?['id'])) {
       return const SizedBox.shrink();
     }
     final hasRestrictions =
@@ -25842,8 +26078,6 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Column(
         children: [
-          if (widget.recipient['id'] == kSystemGuideId)
-            DirectSupportButtons(api: kApi, token: widget.token, appVersion: kVersion),
           // Reply preview bar
           if (_replyTo != null)
             Container(
@@ -25945,6 +26179,10 @@ class _ChatScreenState extends State<ChatScreen> {
                         itemBuilder: (_, i) {
                           final messageIndex = i;
                           final msg = _messages[messageIndex];
+                          if (msg['isUploadBatchNotice'] == true) {
+                            return ChatUploadBatchNotice(
+                                key: ValueKey(msg['id']), text: msg['text'] as String);
+                          }
                           final isMe = msg['from'] == widget.me?['id'];
                           final rawSenderName = isMe
                               ? (widget.me?['name']?.toString().trim() ?? '')
@@ -26213,6 +26451,27 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
 
+          if (widget.recipient['id'] == kSystemGuideId)
+            Align(
+              alignment: Alignment.centerRight,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 900),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: DirectSupportButtons(
+                    api: kApi,
+                    token: widget.token,
+                    appVersion: kVersion,
+                    onMyIssues: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => OpenIssuesScreen(token: widget.token)),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
           // Input bar
           Container(
             color: Colors.white,
@@ -26228,7 +26487,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       Padding(
                         padding: const EdgeInsets.only(left: 6),
                         child: Text(
-                          'זמן הקלטה: ${(_recordSeconds ~/ 60).toString().padLeft(2, '0')}:${(_recordSeconds % 60).toString().padLeft(2, '0')}',
+                          'זמן הקלטה: ${_voiceRecordingTime(_recordSeconds)}\nעד שעתיים',
                           style:
                               const TextStyle(color: Colors.red, fontSize: 12),
                         ),
@@ -27127,6 +27386,7 @@ class _OpenIssuesNotification extends Notification {
 class VoiceMessagePlayer extends StatefulWidget {
   final String url;
   final String? fileName;
+  final bool showFileName;
   final bool isMe;
   final String? senderAvatarUrl;
   final String senderName;
@@ -27136,6 +27396,7 @@ class VoiceMessagePlayer extends StatefulWidget {
     super.key,
     required this.url,
     this.fileName,
+    this.showFileName = true,
     required this.isMe,
     this.senderAvatarUrl,
     required this.senderName,
@@ -27402,6 +27663,7 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (widget.showFileName)
         Padding(padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
           child: Tooltip(message: fileName, child: Text(fileName,
             maxLines: 2, overflow: TextOverflow.ellipsis,
@@ -28199,6 +28461,11 @@ class _UploadResultCard extends StatelessWidget {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (fileName != null && (!blocked || (imageUrl == null && blockedPreviewUrl == null))) ...[
+          Text(fileName!, textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 12, color: kSubtext)),
+          const SizedBox(height: 6),
+        ],
         if (blocked && showBlockedArtwork) ...[
           const Center(child: _SystemContentWarningArtwork()),
           const SizedBox(height: 10),
@@ -29253,6 +29520,7 @@ class _MessageBubble extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadResultCard(
+            fileName: fileName,
             blocked: false,
             title: 'העלאת $uploadTypeLabel נכשלה',
             reason: message['uploadError']?.toString() ??
@@ -29448,6 +29716,13 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (isFile && fileUrl != null)
+              ChatFileName(
+                key: ValueKey('chat-filename-$fileUrl'),
+                api: kApi, token: token, url: fileUrl, filename: fileName,
+                editable: isMe && uploadStatus != 'blocked_content',
+                onRenamed: (name) => message['fileName'] = name,
+              ),
             if (uploadStatus == 'awaiting_contact_approval')
               ContactRequestStatusBanner(status: uploadStatus!),
             if (!hideReply && message['replyTo'] != null)
@@ -29485,6 +29760,7 @@ class _MessageBubble extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     VoiceMessagePlayer(
+                      showFileName: false,
                       token: token,
                       url: fileUrl,
                       fileName: message['fileName']?.toString(),
@@ -29667,11 +29943,7 @@ class _MessageBubble extends StatelessWidget {
                                         message['text'] as String? ??
                                         (isVideoFile ? 'סרטון וידאו' : 'מסמך'),
                                     child: Text(
-                                      fileName ??
-                                          message['text'] as String? ??
-                                          (isVideoFile
-                                              ? 'סרטון וידאו'
-                                              : 'מסמך'),
+                                      'פתיחת הקובץ',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
@@ -31119,6 +31391,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   final _attachmentAnchorKey = GlobalKey();
   bool _attachmentMenuOpen = false;
   bool _attachmentPickerOpen = false;
+  late final StreamSubscription<void> _uploadNoticesSubscription;
+  _ChatUploadDestination get _uploadDestination =>
+      _ChatUploadDestination(widget.token, _groupId);
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
   final _msgCtrl = InlineEmojiController();
@@ -31186,6 +31461,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _processingInvite = false;
   int _recordSeconds = 0;
   Timer? _recordTimer;
+  Timer? _recordDeadlineTimer;
   Timer? _messageRefreshTimer;
   String? _serverMessagesFingerprint;
   int _historyGeneration = 0;
@@ -31348,6 +31624,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void initState() {
     super.initState();
     _scrollCtrl.openSearchMessage(widget.searchMessageId, widget.searchMessageAt);
+    _loadUploadBatchNotices();
+    _uploadNoticesSubscription = _uploadNotices.changes.listen((_) {
+      if (mounted) _loadUploadBatchNotices();
+    });
     _listenForConversationChanges();
     _receivingFilterSubscription = receivingFilterChanges.stream.listen((token) {
       if (token == widget.token) _refreshReceivingFilter();
@@ -31368,6 +31648,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         AppScreenshotDestination.group(widget.group['id'].toString());
     _clipboardImagePasteListener = ClipboardImagePasteListener(
       focusNode: _msgFocusNode,
+      onFiles: (files) => _pickAttachments(pastedFiles: files),
+      onTooManyFiles: (count) {
+        if (mounted) showChatUploadLimitExceeded(context, count);
+      },
       onImage: (bytes, fileName, mimeType) => _uploadGroupFile(
         XFile.fromData(bytes, name: fileName, mimeType: mimeType),
         fileName,
@@ -32402,10 +32686,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             .where((message) => !_isVisualMediaMessage(message))
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
+        final localUploads = _messages.where((message) =>
+            message['isUploadBatchNotice'] == true ||
+            message['status'] == 'uploading').toList();
         setState(() {
           _messages
             ..clear()
-            ..addAll(list);
+            ..addAll(mergeChatUploadHistory(list, localUploads));
           _loading = false;
         });
         _scrollToBottom();
@@ -32433,6 +32720,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         setState(() {
           final pending = _messages
               .where((message) =>
+                  message['isUploadBatchNotice'] == true ||
                   message['status'] == 'uploading' ||
                   message['id']?.toString().startsWith('temp_') == true)
               .toList();
@@ -32792,6 +33080,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
+    _uploadNoticesSubscription.cancel();
     _cleanupSubscription.cancel();
     _receivingFilterSubscription.cancel();
     widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
@@ -32806,6 +33095,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _clipboardImagePasteListener.dispose();
     _recordTimer?.cancel();
     _messageRefreshTimer?.cancel();
+    _recordDeadlineTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('group:message', _groupMessageSocketHandler);
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
@@ -32838,6 +33128,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _voiceSubmissionInProgress = true;
         try {
           _recordTimer?.cancel();
+          _recordDeadlineTimer?.cancel();
           final recordedSeconds = _recordSeconds;
           final path = await _audioRecorder.stop();
           if (mounted) setState(() => _isRecording = false);
@@ -32850,8 +33141,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             mimeType:
                 _voiceFileName.endsWith('.webm') ? 'audio/webm' : 'audio/wav',
           );
-          final bytes = await recording.readAsBytes();
-          if (bytes.length < 256) {
+          final byteLength = await recording.length();
+          if (byteLength < 256) {
             throw Exception('ההקלטה ריקה ולא נשלחה');
           }
           await _uploadGroupFile(recording, _voiceFileName, 'audio',
@@ -32904,11 +33195,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _isRecording = true;
         _recordSeconds = 0;
       });
-      _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _recordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (!mounted) return;
-        setState(() => _recordSeconds++);
+        setState(() => _recordSeconds = math.min(timer.tick, _maxVoiceRecordingDuration.inSeconds));
+      });
+      _recordDeadlineTimer = Timer(_maxVoiceRecordingDuration, () {
+        if (!mounted || !_isRecording) return;
+        _recordSeconds = _maxVoiceRecordingDuration.inSeconds;
+        _toggleVoiceRecording();
       });
     } catch (error) {
+      _recordTimer?.cancel();
+      _recordDeadlineTimer?.cancel();
       if (mounted) {
         setState(() => _isRecording = false);
         ScaffoldMessenger.of(context)
@@ -33371,39 +33669,41 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     await _uploadGroupFile(pdf, pdf.name, 'document');
   }
 
-  Future<void> _uploadGroupImageBatch(List<XFile> files) async {
-    if (!mounted || files.isEmpty) return;
-    if (!await _ensureCanSendToGroup()) return;
+  Future<int> _uploadGroupImageBatch(List<XFile> files,
+      _ChatUploadDestination destination) async {
+    if (files.isEmpty) return 0;
     final completed = ValueNotifier<int>(0);
     final startedAt = DateTime.now();
     final uploadMessageIds = List.generate(files.length,
         (index) => _newUploadMessageId('uploading_group_batch_$index'));
-    setState(() {
-      for (var index = 0; index < files.length; index++) {
-        _messages.add({
-          'id': uploadMessageIds[index],
-          'clientUploadId': uploadMessageIds[index],
-          'text': files[index].name,
-          'senderName': widget.me?['name'] as String? ?? '',
-          'time': _nowTime(),
-          'createdAt': startedAt.toIso8601String(),
-          'isMe': true,
-          'status': 'uploading',
-          'isFile': true,
-          'fileType': 'image',
-          'fileName': files[index].name,
-          'uploadStartedAt': startedAt.toIso8601String(),
-        });
-      }
-    });
-    _scrollToBottom();
-    await _runImageUploadQueue(
+    if (mounted) {
+      setState(() {
+        for (var index = 0; index < files.length; index++) {
+          _messages.add({
+            'id': uploadMessageIds[index],
+            'clientUploadId': uploadMessageIds[index],
+            'text': files[index].name,
+            'senderName': widget.me?['name'] as String? ?? '',
+            'time': _nowTime(),
+            'createdAt': startedAt.toIso8601String(),
+            'isMe': true,
+            'status': 'uploading',
+            'isFile': true,
+            'fileType': 'image',
+            'fileName': files[index].name,
+            'uploadStartedAt': startedAt.toIso8601String(),
+          });
+        }
+      });
+      _scrollToBottom();
+    }
+    final results = await _runImageUploadQueue(
       files,
       (file) => _uploadFileRequest(
         file: file,
         fileName: file.name,
-        token: widget.token,
-        fields: {'groupId': _groupId,
+        token: destination.token,
+        fields: {'groupId': destination.targetId,
           'clientUploadId': uploadMessageIds[files.indexOf(file)]},
       ),
       completed,
@@ -33412,47 +33712,94 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           setState(() => _messages.removeWhere(
               (message) => message['id'] == uploadMessageIds[index]));
         }
-        await _applyGroupUploadResult(result, file.name, 'image', false);
+        await _applyGroupUploadResult(result, file.name, 'image', false,
+            destination: destination);
       },
     );
     completed.dispose();
-    if (!mounted) return;
+    final failed = results.where((r) => r.outcome == _FileUploadOutcome.failed).length;
+    if (!mounted) return failed;
     // Reconcile the whole batch with the server. Concurrent scan responses can
     // arrive in a different order, and the server is the source of truth for
     // every approved, pending, or rejected image in the selection.
     await _loadMessages();
+    return failed;
   }
 
-  Future<void> _pickAttachments() async {
+  ChatUploadNotices get _uploadNotices => ChatUploadNotices(
+    api: kApi, token: widget.token, account: widget.me?['id']?.toString() ?? '',
+    kind: 'group', target: _groupId);
+
+  Future<void> _loadUploadBatchNotices() async {
+    try {
+      final notices = await _uploadNotices.load();
+      if (!mounted) return;
+      setState(() {
+        final merged = mergeChatUploadHistory(_messages,
+            notices.where((m) => conversationMessageAfter(m, _clearedAt)).toList());
+        _messages..clear()..addAll(merged);
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _showUploadBatchNotice(String text,
+      {ChatUploadNotices? store}) async {
+    final notices = store ?? _uploadNotices;
+    final notice = <String, dynamic>{
+      'id': _newUploadMessageId('batch_notice_'),
+      'isUploadBatchNotice': true,
+      'text': text,
+      'createdAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    if (mounted) {
+      setState(() => _messages.add(notice));
+      _scrollToBottom();
+    }
+    await notices.save(notice);
+  }
+
+  Future<void> _pickAttachments({List<PlatformFile>? pastedFiles}) async {
     if (_attachmentPickerOpen) return;
     _attachmentPickerOpen = true;
+    List<PlatformFile>? pickedFiles;
     try {
-      final result = await FilePicker.platform.pickFiles(
+      pickedFiles = pastedFiles ?? (kIsWeb ? await pickWebChatAttachments() : (await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: chatAttachmentExtensions,
         allowMultiple: true,
-        withData: kIsWeb,
-      );
-      if (!mounted || result == null || result.files.isEmpty) return;
-      if (result.files.length > maxChatAttachments) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('ניתן להעלות עד 20 קבצים בכל פעם'),
-        ));
-      }
-      final files = result.files.take(maxChatAttachments).toList();
-      if (files.every((file) => chatAttachmentType(file.name) == 'image')) {
-        if (!await _groupAllowsFileType('image')) return;
-        if (!mounted) return;
-        final images = await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
-        await _uploadGroupImageBatch(images);
+        withData: false,
+      ))?.files);
+      if (!mounted || pickedFiles == null || pickedFiles.isEmpty) return;
+      if (pickedFiles.length > maxChatAttachments) {
+        showChatUploadLimitExceeded(context, pickedFiles.length);
         return;
       }
-      for (final file in files) {
+      final files = pickedFiles;
+      if (!await confirmChatUploadBatch(context, files.length) || !mounted) return;
+      if (files.every((file) => chatAttachmentType(file.name) == 'image')) {
+        if (!await _prepareGroupUpload('image')) return;
         if (!mounted) return;
+        final images = await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
+        if (!mounted) return;
+        final destination = _uploadDestination;
+        final notices = _uploadNotices;
+        var failed = 0;
+        await runChatUploadBatch(
+          count: images.length,
+          failedCount: () => failed,
+          onNotice: (text) => _showUploadBatchNotice(text, store: notices),
+          upload: () async { failed = await _uploadGroupImageBatch(images, destination); },
+        );
+        return;
+      }
+      // Finish all context-dependent validation before the queue starts.
+      // The queue then owns the picked files until every transfer completes.
+      final prepared = <(PlatformFile, String)>[];
+      final permissions = <String, bool>{};
+      for (final file in files) {
         final type = chatAttachmentType(file.name,
             bytes: file.name.toLowerCase().endsWith('.webm')
-                ? await file.xFile.readAsBytes()
-                : null);
+                ? await _attachmentHeader(file) : null);
         if (!mounted) return;
         if (type == null) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -33462,8 +33809,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
         if (type == 'video' && !await _videoWithinDurationLimit(context, file.xFile)) continue;
         if (!mounted) return;
-        await _uploadGroupFile(file, file.name, type);
+        final allowed = permissions[type] ??= await _prepareGroupUpload(type);
+        if (!allowed) continue;
+        prepared.add((file, type));
       }
+      if (!mounted || prepared.isEmpty) return;
+      final destination = _uploadDestination;
+      final notices = _uploadNotices;
+      var failed = files.length - prepared.length;
+      await runChatUploadBatch(
+        count: files.length,
+        failedCount: () => failed,
+        onNotice: (text) => _showUploadBatchNotice(text, store: notices),
+        upload: () async {
+          for (final (file, type) in prepared) {
+            await _uploadGroupFile(file, file.name, type,
+                preparedDestination: destination,
+                onComplete: (hasFailed) { if (hasFailed) failed++; });
+          }
+        },
+      );
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -33471,6 +33836,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         ));
       }
     } finally {
+      // Clipboard files remain owned by the paste listener until this queue
+      // completes, including when the original conversation is disposed.
+      if (pastedFiles == null) releaseWebChatAttachments(pickedFiles);
       _attachmentPickerOpen = false;
     }
   }
@@ -33489,24 +33857,31 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         extraFields: const {'captureKind': 'camera_video'});
   }
 
+  Future<bool> _prepareGroupUpload(String fileType) async {
+    if (!mounted) return false;
+    if (!await _ensureCanSendToGroup()) return false;
+    if (!await _groupAllowsFileType(fileType)) return false;
+    if (!mounted) return false;
+    return true;
+  }
+
   Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType,
-      {Map<String, String> extraFields = const {}}) async {
-    if (!mounted) return;
-    if (!await _ensureCanSendToGroup()) return;
-    if (!await _groupAllowsFileType(fileType)) return;
-    if (!mounted) return;
+      {Map<String, String> extraFields = const {},
+      _ChatUploadDestination? preparedDestination,
+      void Function(bool failed)? onComplete}) async {
+    if (preparedDestination == null && !await _prepareGroupUpload(fileType)) return;
+    final destination = preparedDestination ?? _uploadDestination;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
     final isLibrarySticker = extraFields['builtinExpression'] == 'true';
     final showInlineProgress = (fileType == 'image' ||
             fileType == 'document' ||
             fileType == 'video' ||
             fileType == 'audio') &&
-        !isClipboardPaste &&
         !isLibrarySticker;
-    final showProgress = !showInlineProgress && !isLibrarySticker;
+    final showProgress = mounted && !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_group_');
     final uploadStartedAt = DateTime.now();
-    if (showInlineProgress) {
+    if (showInlineProgress && mounted) {
       setState(() {
         _messages.add({
           'id': uploadMessageId,
@@ -33526,8 +33901,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _scrollToBottom();
     }
     final navigator =
-        showProgress ? Navigator.of(context, rootNavigator: true) : null;
-    final dialogFuture = showProgress
+        showProgress && mounted ? Navigator.of(context, rootNavigator: true) : null;
+    final dialogFuture = showProgress && mounted
         ? showDialog<void>(
             context: context,
             barrierDismissible: false,
@@ -33551,25 +33926,32 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final result = await _uploadFileRequest(
       file: file,
       fileName: fileName,
-      token: widget.token,
-      fields: {'groupId': _groupId, ...extraFields,
+      token: destination.token,
+      fields: {'groupId': destination.targetId, ...extraFields,
         'clientUploadId': uploadMessageId},
     );
     if (navigator != null && navigator.mounted && navigator.canPop()) {
       navigator.pop();
     }
     if (dialogFuture != null) await dialogFuture;
-    if (!mounted) return;
-    if (showInlineProgress) {
+    if (showInlineProgress && mounted) {
       setState(() =>
           _messages.removeWhere((message) => message['id'] == uploadMessageId));
     }
     await _applyGroupUploadResult(result, fileName, fileType,
-        (fileType != 'image' && fileType != 'video') || isClipboardPaste);
+        (fileType != 'image' && fileType != 'video') || isClipboardPaste,
+        destination: destination);
+    onComplete?.call(result.outcome == _FileUploadOutcome.failed);
   }
 
   Future<void> _applyGroupUploadResult(_FileUploadResult result,
-      String fileName, String fileType, bool showNotice) async {
+      String fileName, String fileType, bool showNotice,
+      {_ChatUploadDestination? destination}) async {
+    final uploadDestination = destination ?? _uploadDestination;
+    if (!mounted && result.outcome != _FileUploadOutcome.approved &&
+        result.outcome != _FileUploadOutcome.scanBot) {
+      return;
+    }
     final data = result.data;
     final storedType = data['fileType']?.toString();
     if (const {'image', 'video', 'audio', 'document'}.contains(storedType)) {
@@ -33679,9 +34061,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         try {
           final response = await http
               .post(
-                Uri.parse('$kApi/groups/$_groupId/messages'),
+                Uri.parse('$kApi/groups/${uploadDestination.targetId}/messages'),
                 headers: {
-                  'Authorization': 'Bearer ${widget.token}',
+                  'Authorization': 'Bearer ${uploadDestination.token}',
                   'Content-Type': 'application/json',
                 },
                 body: jsonEncode({
@@ -33986,7 +34368,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               filename: picked.name,
               contentType: _mimeFromFileName(picked.name)));
         final streamed =
-            await request.send().timeout(const Duration(seconds: 60));
+            await _sendMediaUpload(request);
         final body = await streamed.stream.bytesToString();
         if (!mounted) return;
         if (streamed.statusCode != 200) {
@@ -35162,6 +35544,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             }
                             final messageIndex = i - (hasFilterNotice ? 1 : 0);
                             final msg = _messages[messageIndex];
+                          if (msg['isUploadBatchNotice'] == true) {
+                            return ChatUploadBatchNotice(
+                                key: ValueKey(msg['id']), text: msg['text'] as String);
+                          }
                             final isMe = msg['isMe'] == true;
                             final sender = _voiceMessageSender(msg, isMe);
                             final senderDisplayName =
@@ -35576,6 +35962,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                           CrossAxisAlignment
                                                               .start,
                                                       children: [
+                                                        if (msg['isFile'] == true && msg['fileUrl'] != null)
+                                                          ChatFileName(
+                                                            key: ValueKey('group-filename-${msg['fileUrl']}'),
+                                                            api: kApi, token: widget.token,
+                                                            url: msg['fileUrl'] as String,
+                                                            filename: msg['fileName'] as String?,
+                                                            editable: isMe && uploadStatus != 'blocked_content',
+                                                            onRenamed: (name) => setState(() => msg['fileName'] = name),
+                                                          ),
                                                         if (uploadStatus ==
                                                                 'blocked_content' &&
                                                             uploadFileType !=
@@ -35620,6 +36015,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                       .end,
                                                               children: [
                                                                 VoiceMessagePlayer(
+                                                                  showFileName: false,
                                                                     token: widget.token,
                                                                     fileName: msg['fileName']?.toString(),
                                                                     url: msg[
@@ -35894,7 +36290,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                           const SizedBox(
                                                                               width: 4),
                                                                           Flexible(
-                                                                              child: Text(msg['fileName'] as String? ?? msg['text'] as String? ?? '', style: const TextStyle(fontSize: 13))),
+                                                                              child: const Text('פתיחת הקובץ', style: TextStyle(fontSize: 13))),
                                                                           const SizedBox(
                                                                               width: 10),
                                                                           const Icon(
@@ -36368,7 +36764,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       const SizedBox(width: 6),
                       if (_isRecording)
                         Text(
-                          'זמן הקלטה: ${(_recordSeconds ~/ 60).toString().padLeft(2, '0')}:${(_recordSeconds % 60).toString().padLeft(2, '0')}',
+                          'זמן הקלטה: ${_voiceRecordingTime(_recordSeconds)}\nעד שעתיים',
                           style:
                               const TextStyle(color: Colors.red, fontSize: 12),
                         ),
@@ -37206,14 +37602,31 @@ class PersonalMediaScreen extends StatefulWidget {
   final String token;
   final bool embedded;
   final VoidCallback? onClose;
+  final bool initialCleanup;
   const PersonalMediaScreen(
-      {super.key, required this.token, this.embedded = false, this.onClose});
+      {super.key, required this.token, this.embedded = false, this.onClose, this.initialCleanup = false});
 
   @override
   State<PersonalMediaScreen> createState() => _PersonalMediaScreenState();
 }
 
 class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
+  bool _cleanupMode = false;
+  void _showOldFiles() {
+    setState(() {
+      _cleanupMode = true;
+      _sort = 'date_asc';
+      _type = _scope = _moderation = _backup = _classification = 'all';
+      _dateFrom = _dateTo = null;
+      _destinationKind = _destinationId = _destinationLabel = null;
+      _searchCtrl.clear(); _minSizeCtrl.clear(); _maxSizeCtrl.clear();
+      _onlyDeletable = false;
+      _selecting = true;
+      _selectedItems.clear();
+    });
+    _refresh();
+  }
+  int _driveStorageRevision = 0;
   bool _openingVideo = false;
   final List<Map<String, dynamic>> _items = [];
   Map<String, dynamic> _summary = {};
@@ -37390,6 +37803,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialCleanup) { _cleanupMode = true; _sort = 'date_asc'; _selecting = true; }
     _receivingFilterSubscription = receivingFilterChanges.stream.listen((
       token,
     ) {
@@ -37432,6 +37846,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
 
   Future<void> _refresh() async {
     _filterDebounce?.cancel();
+    _driveStorageRevision++;
     await Future.wait([_loadCatalog(), _load(reset: true)]);
   }
 
@@ -39000,7 +39415,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                     )
                   else
                     Text(
-                      '${_summary['totalCount'] ?? 0} קבצים  ·  ${_size(_summary['totalBytes'])}',
+                      '${_summary['totalCount'] ?? 0} קבצים  ·  נפח המדיה שלך: ${_size(_summary['totalBytes'])}',
                       key: const ValueKey('media-summary-total'),
                       style: const TextStyle(
                         color: Color(0xFFD8EAF8),
@@ -39012,6 +39427,12 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                     _backupText,
                     style:
                         const TextStyle(color: Color(0xFFD8EAF8), fontSize: 12),
+                  ),
+                  const SizedBox(height: 10),
+                  DriveStorageSummary(
+                    api: kApi,
+                    token: widget.token,
+                    revision: _driveStorageRevision,
                   ),
                 ],
               ),
@@ -40192,6 +40613,16 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             _summaryPanel(compact),
+                            StorageQuotaView(api: kApi, token: widget.token,
+                              revision: _driveStorageRevision, onCleanup: _showOldFiles,
+                              onDrive: () async {
+                                await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) =>
+                                  GoogleDriveBackupOfferScreen(token: widget.token, returnToPrevious: true)));
+                                if (mounted) _refresh();
+                              }),
+                            if (_cleanupMode)
+                              const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text(
+                                'בחרו קבצים ישנים למחיקה. אפשר למיין גם לפי הגודל. לפני המחיקה יוצג פירוט לאישור; לא מוחקים דבר אוטומטית.')),
                             if (_catalogError != null)
                               Padding(
                                 padding: const EdgeInsets.only(top: 6),
@@ -41025,7 +41456,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             builder: (context) => AlertDialog(
               title: const Text('הפעלת גיבוי אוטומטי'),
               content: const Text(
-                  'השרת ייצור מפתח הצפנה אישי וישמור אותו מוצפן. כל קובץ יגובה, יעבור בדיקת שחזור מהענן, ואז העותק המקומי יפונה מיד אם אינו בשימוש פעיל. משמעות הדבר היא שהשרת יכול לפענח מדיה בעת שחזור מורשה.'),
+                  'השרת ייצור מפתח הצפנה אישי וישמור אותו מוצפן. כל קובץ יגובה, יעבור בדיקת שחזור מהענן, ואז העותק המקומי יפונה אוטומטית והקובץ יישאר זמין לפתיחה מהענן. משמעות הדבר היא שהשרת יכול לפענח מדיה בעת שחזור מורשה.'),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(context, false),
@@ -41487,7 +41918,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               color: kPrimary),
                           title: const Text('גיבוי אוטומטי ברקע'),
                           subtitle: Text(_automaticBackup
-                              ? 'פעיל • קובץ מפונה מיד לאחר גיבוי ואימות, אם אינו בשימוש • $_verifiedBackupFiles מתוך $_approvedFileCount גובו ואומתו'
+                              ? 'פעיל • קבצים מפונים מהשרת לאחר גיבוי ואימות ונפתחים מהענן • $_verifiedBackupFiles מתוך $_approvedFileCount גובו ואומתו'
                               : _serverKeyReady
                                   ? 'המפתח האישי שמור מוצפן בשרת'
                                   : 'דורש הסכמה ליצירת מפתח אישי בשרת'),
@@ -41934,7 +42365,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             filename: picked.name,
             contentType: _mimeFromFileName(picked.name)));
       final streamed =
-          await request.send().timeout(const Duration(seconds: 60));
+          await _sendMediaUpload(request);
       final body = await streamed.stream.bytesToString();
       if (!mounted) return;
       if (streamed.statusCode == 200) {
@@ -44836,7 +45267,7 @@ class _CreateEducationFormScreenState extends State<CreateEducationFormScreen> {
         ..files.add(http.MultipartFile.fromBytes('file', file.bytes!,
             filename: file.name, contentType: _mimeFromFileName(file.name)));
       final streamed =
-          await request.send().timeout(const Duration(seconds: 90));
+          await _sendMediaUpload(request, timeout: const Duration(seconds: 90));
       final body = await streamed.stream.bytesToString();
       final data = jsonDecode(body) as Map<String, dynamic>;
       if (streamed.statusCode != 200 || data['status'] == 'pending') {

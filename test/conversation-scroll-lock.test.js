@@ -65,12 +65,17 @@ test('admin-only groups disable every member send entry point', () => {
   for (const method of [
     '_showAttachMenu',
     '_showGroupExpressions',
-    '_uploadGroupImageBatch',
-    '_uploadGroupFile',
+    '_prepareGroupUpload',
   ]) {
     assert.match(groupSource,
       new RegExp(`Future<[^>]+> ${method}\\([^]*?_ensureCanSendToGroup\\(\\)`));
   }
+  assert.match(groupSource,
+    /Future<void> _uploadGroupFile\([^]*?preparedDestination == null && !await _prepareGroupUpload\(fileType\)/);
+  assert.match(groupSource,
+    /Future<void> _pickAttachments\([^]*?await _prepareGroupUpload\('image'\)[^]*?_uploadGroupImageBatch\(/);
+  assert.match(groupSource,
+    /final allowed = permissions\[type\] \?\?= await _prepareGroupUpload\(type\)/);
   assert.match(groupSource,
     /if \(_myStatus == 'member' && !_canSendToGroup\)[\s\S]*?רק מנהלי הקבוצה רשאים לשלוח הודעות[\s\S]*?else if \(_myStatus == 'member'\)/);
   assert.match(serverSource,
@@ -278,8 +283,11 @@ test('the first outgoing message to a saved contact requires a receiving-filter 
   );
   assert.match(
     source.slice(uploadStart, uploadEnd),
-    /if \(!await _ensureFirstMessageFilterChoice\(\)\) return;/,
+    /preparedDestination == null && !await _preparePrivateUpload\(fileType\)/,
   );
+  const prepareStart = source.indexOf('Future<bool> _preparePrivateUpload(');
+  assert.match(source.slice(prepareStart, uploadStart),
+    /if \(!await _ensureFirstMessageFilterChoice\(\)\) return false;/);
 });
 
 test('blocking closes embedded chat without popping the application route', () => {
@@ -350,7 +358,7 @@ test('voice recordings use web opus and reject empty data', () => {
   assert.match(privateVoiceSource, /_voiceFileName = captureFileNames\.create\(/);
   assert.match(privateVoiceSource, /'recordedAudio': 'true'/);
   assert.match(privateVoiceSource, /recordedSeconds < 1/);
-  assert.match(privateVoiceSource, /bytes\.length < 256/);
+  assert.match(privateVoiceSource, /byteLength < 256/);
   assert.match(privateVoiceSource, /await _audioRecorder\.isRecording\(\)/);
 
   const groupVoiceStart = source.indexOf(
@@ -363,7 +371,7 @@ test('voice recordings use web opus and reject empty data', () => {
   );
   const groupVoiceSource = source.slice(groupVoiceStart, groupVoiceEnd);
   assert.match(groupVoiceSource, /AudioEncoder\.opus/);
-  assert.match(groupVoiceSource, /bytes\.length < 256/);
+  assert.match(groupVoiceSource, /byteLength < 256/);
 
   // Player loading, duration and source changes are exercised by the Flutter widget tests.
   assert.match(source, /audio_duration_seconds/);

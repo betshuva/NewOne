@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>אחסון קבצים — בתשובה</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font:16px Arial,sans-serif}main{max-width:1050px;margin:35px auto;padding:20px}a{color:#70b9f0}header{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:15px;margin:24px 0}.card{padding:24px;border:1px solid #30363d;border-radius:12px;background:#161b22}.value{font-size:27px;margin-top:16px;direction:ltr;text-align:right}.hint{color:#aeb8c4;line-height:1.7}#message{white-space:pre-wrap;color:#e0b566}button{font:inherit;padding:9px 20px;border-radius:8px;border:1px solid #454d58;background:#1966a3;color:white;cursor:pointer}
+</style></head><body><main>
+<header><h1>אחסון קובצי המשתמשים</h1><a href="admin.html">חזרה לניהול</a></header>
+<p id="account"></p><p id="message" role="status">בודק את מצב האחסון…</p>
+<section class="cards" id="cards" hidden>
+<div class="card">קבצים ב־Drive של החברה<div class="value" id="verified"></div></div>
+<div class="card">נפח באחסון החברה<div class="value" id="bytes"></div></div>
+<div class="card">ממתינים להעברה לחברה<div class="value" id="pending"></div></div>
+<div class="card">ממתינים לניסיון חוזר<div class="value" id="failed"></div></div>
+<div class="card">מקום פנוי ב־Drive<div class="value" id="free"></div></div>
+<div class="card">מחיקות בהמתנה<div class="value" id="deletions"></div></div>
+<div class="card">הושלמה העברה ל־Drive אישי<div class="value" id="personal_verified"></div></div>
+<div class="card">ממתינים להשלמה ב־Drive אישי<div class="value" id="personal_pending"></div></div>
+</section>
+<button id="refresh">רענון</button><p class="hint">קבצים נשמרים מוצפנים בענן לאחר בדיקת התוכן. העותק המקומי מפונה לאחר שההעלאה והשחזור אומתו. פתיחת הקבצים נמשכת דרך האפליקציה.</p>
+</main><script>
+const $=id=>document.getElementById(id);
+const bytes=value=>{const n=Number(value||0);if(n>=1e12)return(n/1e12).toFixed(2)+' TB';if(n>=1e9)return(n/1e9).toFixed(2)+' GB';return(n/1e6).toFixed(1)+' MB'};
+async function refresh(){
+ $('refresh').disabled=true;
+ try{
+  const token=localStorage.getItem('bt_admin_token')||localStorage.getItem('bt_token');
+  if(!token)throw new Error('יש להתחבר ללוח הניהול באמצעות הקישור למעלה.');
+  const response=await fetch(new URL('api/admin/central-storage',location.href),{cache:'no-store',headers:{Authorization:`Bearer ${token}`}});
+  const data=await response.json();if(!response.ok)throw new Error(data.error||'אין גישה');
+  $('account').textContent=data.email?'Google Drive · '+data.email:'טרם חובר אחסון מרכזי';
+  $('message').textContent=data.enabled?'העברה אוטומטית פעילה':'העברות חדשות מושהות';
+  $('cards').hidden=false;
+  for(const field of ['verified','pending','failed','personal_verified','personal_pending'])$(field).textContent=Number(data[field]||0).toLocaleString('he-IL');
+  $('bytes').textContent=bytes(data.bytes);$('deletions').textContent=Number(data.pending_deletions||0).toLocaleString('he-IL');
+  $('free').textContent=data.quota?.limit?bytes(BigInt(data.quota.limit)-BigInt(data.quota.usage||0)):'לא נמסרה מכסה';
+ }catch(error){$('message').textContent=error.message;$('cards').hidden=true}
+ finally{$('refresh').disabled=false}
+}
+$('refresh').onclick=refresh;refresh();setInterval(()=>{if(!document.hidden)refresh()},30000);
+</script></body></html>

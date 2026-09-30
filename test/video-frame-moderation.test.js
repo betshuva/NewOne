@@ -17,11 +17,12 @@ async function scanFrames(frames, overrides = {}, options = {}) {
     server.indexOf('function normalizeUploadFileName('));
   const context = {
     Buffer, Blob, FormData, AbortSignal, process: { env: {} }, console,
-    VIDEO_MODERATION_URL: 'http://video.test', MAX_VIDEO_SECONDS: 30,
+    VIDEO_MODERATION_URL: 'http://video.test', MAX_VIDEO_SECONDS: 5400,
+    sourceBlob: require('../server/upload-file-source').sourceBlob,
     videoDetectedCategories,
     stoppedVideoResult: require('../server/video-scan-controller').stoppedVideoResult,
     fetch: async (_url, request) => {
-      assert.equal(request.body.get('sample_interval_seconds'), '5');
+      assert.equal(request.body.has('sample_interval_seconds'), false);
       return { ok: true, json: async () => ({
       duration_seconds: 1.69, sampled_frames: frames.length, decision: 'allowed',
       labels: { people: 0.99, man: 0.99, woman: 0.99, child: 0.99, landscape: 0.99 },
@@ -130,20 +131,49 @@ test('a changed manifest refuses all frame work', async () => {
   assert.equal(result.scanStopped, true);
 });
 
-test('videos are limited to thirty seconds in the UI and authoritative server scan', () => {
-  assert.match(server, /const MAX_VIDEO_SECONDS = 30/);
+test('uploaded videos allow ninety minutes while recording remains two minutes', () => {
+  assert.match(server, /const MAX_VIDEO_SECONDS = 90 \* 60/);
   assert.match(server, /blockedBy: 'video_duration'/);
-  assert.match(flutter, /const _maxVideoDuration = Duration\(seconds: 30\)/);
-  assert.match(flutter, /ניתן לשלוח סרטון באורך של עד 30 שניות/);
-  assert.match(analyzer, /MAX_VIDEO_SECONDS.*30/);
+  assert.match(flutter, /const _maxVideoDuration = Duration\(minutes: 2\)/);
+  assert.match(flutter, /ניתן לשלוח סרטון באורך של עד 90 דקות/);
+  assert.match(flutter, /_maxUploadedVideoDuration = Duration\(minutes: 90\)/);
 });
 
 test('scheduled video samples use the full still-image moderation path', () => {
   assert.match(server, /await scanStaticImage\(imageBuffer/);
   assert.match(server, /video_frame:\$\{frameResult\.blockedBy/);
   assert.match(server, /fullyScannedFrames/);
-  assert.match(analyzer, /sample_frame_indices/);
+  assert.match(analyzer, /sample_video/);
   assert.match(server, /videoFrameResult/);
   assert.match(server, /videoFrameSummary/);
   assert.match(flutter, /תמונות שנבדקו מתוך סרטונים/);
+});
+
+
+test('ninety-minute video is accepted while longer video is refused', async () => {
+  const accepted = await scanFrames([nonHuman()], { duration_seconds: 5400 });
+  assert.equal(accepted.blocked, false);
+  assert.equal(accepted.pending, false);
+  const refused = await scanFrames([nonHuman()], { duration_seconds: 5401 });
+  assert.equal(refused.blocked, true);
+  assert.equal(refused.blockedBy, 'video_duration');
+});
+
+
+test('more than twenty selected frames never reach a provider', async () => {
+  let calls = 0;
+  const result = await scanFrames(Array.from({length: 21}, nonHuman), {}, {
+    onFrame() { calls++; },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.pending, true);
+});
+
+test('first and last selected frames are checked before the interior', async () => {
+  const order = [];
+  await scanFrames(Array.from({length: 20}, nonHuman), {}, {
+    onFrame(index) { order.push(index); },
+  });
+  assert.deepEqual(order.slice(0, 2), [0, 19]);
+  assert.equal(new Set(order).size, 20);
 });

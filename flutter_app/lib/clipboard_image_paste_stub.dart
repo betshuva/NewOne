@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 
 typedef ClipboardImageCallback = Future<void> Function(
@@ -6,11 +7,15 @@ typedef ClipboardImageCallback = Future<void> Function(
 
 class ClipboardImagePasteListener {
   final ClipboardImageCallback onImage;
+  final Future<void> Function(List<PlatformFile> files)? onFiles;
+  final ValueChanged<int>? onTooManyFiles;
   bool _disposed = false;
   bool _handling = false;
   ClipboardImagePasteListener({
     required FocusNode focusNode,
     required this.onImage,
+    this.onFiles,
+    this.onTooManyFiles,
   });
 
   Future<bool> pasteImage() async {

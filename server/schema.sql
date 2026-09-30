@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS messages (
   body                 TEXT,
   file_url             TEXT,
   file_name            TEXT,
-  file_size            INTEGER,
+  file_size            BIGINT,
   reply_to_id          UUID REFERENCES messages(id),
   deleted_for_sender   BOOLEAN NOT NULL DEFAULT FALSE,
   deleted_for_everyone BOOLEAN NOT NULL DEFAULT FALSE,
@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   user_id    UUID REFERENCES users(id),
   file_name  TEXT,
   file_type  TEXT,
-  file_size  INTEGER,
+  file_size  BIGINT,
   reason     TEXT,          -- סיבת החסימה מה-AI
   appealed   BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT now()

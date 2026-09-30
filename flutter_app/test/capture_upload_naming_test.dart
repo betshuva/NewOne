@@ -412,8 +412,16 @@ void main() {
               recorder.recordingPath!.split('/').last,
               matches(RegExp(
                   r'^betshuva-audio-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{2}-ID-742(?:_\d+)?\.wav$')));
-          await tester.pump(const Duration(seconds: 1));
-          await tester.tap(find.byIcon(Icons.stop_circle));
+          if (pending) {
+            await tester.pump(const Duration(seconds: 1));
+            await tester.tap(find.byIcon(Icons.stop_circle));
+          } else {
+            await tester.pump(const Duration(hours: 1, minutes: 59, seconds: 59));
+            expect(recorder.recording, isTrue);
+            expect(uploaded, isNull);
+            expect(find.text('זמן הקלטה: 01:59:59\nעד שעתיים'), findsOneWidget);
+            await tester.pump(const Duration(seconds: 1));
+          }
           await tester.pump();
           // XFile uses actual native I/O; alternate real event-loop turns with
           // fake-clock pumps to complete both reads and multipart delivery.

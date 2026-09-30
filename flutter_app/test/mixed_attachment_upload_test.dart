@@ -61,6 +61,8 @@ void main() {
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
           await tester.tap(find.text('העלאת קבצים'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('כן, העלה'));
           for (var i = 0; i < 20; i++) {
             await tester.pump(const Duration(milliseconds: 100));
           }

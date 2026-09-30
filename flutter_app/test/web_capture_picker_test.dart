@@ -213,7 +213,7 @@ void main() {
 
     await tester.tap(find.text('התחל צילום'));
     await tester.pump();
-    expect(find.textContaining('00:30'), findsOneWidget);
+    expect(find.textContaining('02:00'), findsOneWidget);
     expect(find.text('עצור ושמור'), findsOneWidget);
     final recordingTime = preview.currentTime;
     final recordingFrames = preview.getVideoPlaybackQuality().totalVideoFrames!;
@@ -228,11 +228,11 @@ void main() {
     expect(preview.currentTime, greaterThan(recordingTime));
     expect(preview.getVideoPlaybackQuality().totalVideoFrames!,
         greaterThan(recordingFrames));
-    expect(find.textContaining('00:30'), findsNothing);
+    expect(find.textContaining('02:00'), findsNothing);
     final countdown =
         tester.widget<Text>(find.textContaining('זמן שנותר')).data!;
-    final seconds = RegExp(r'00:(\d{2})').firstMatch(countdown)!.group(1)!;
-    expect(int.parse(seconds), inInclusiveRange(1, 28));
+    final seconds = RegExp(r'01:(\d{2})').firstMatch(countdown)!.group(1)!;
+    expect(int.parse(seconds), inInclusiveRange(50, 59));
     expect(find.text('עצור ושמור'), findsOneWidget);
 
     await tester.tap(find.text('עצור ושמור'));

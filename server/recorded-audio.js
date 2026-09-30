@@ -8,8 +8,8 @@ const { performance } = require('node:perf_hooks');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
-const { MAX_AUDIO_BYTES: MAX_INPUT_BYTES } = require('./audio-moderation');
-const MAX_OUTPUT_BYTES = MAX_INPUT_BYTES;
+const { MAX_AUDIO_BYTES: MAX_OUTPUT_BYTES,
+  MAX_RECORDING_INPUT_BYTES: MAX_INPUT_BYTES } = require('./audio-moderation');
 const MAX_PENDING_CONVERSIONS = 4;
 const INPUT_FORMATS = Object.freeze({
   'audio/wav': 'wav',

@@ -54,18 +54,35 @@ function clientForRefreshToken(refreshToken) {
   return client;
 }
 
-async function uploadAppDataFile(refreshToken, name, bytes, mimeType, appProperties = {}) {
+async function getStorageQuota(refreshToken) {
   const client = clientForRefreshToken(refreshToken);
-  const headers = await client.getRequestHeaders();
-  const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify({ name, parents: ['appDataFolder'],
-    appProperties })], { type: 'application/json; charset=UTF-8' }));
-  form.append('media', new Blob([bytes], { type: mimeType || 'application/octet-stream' }));
-  const response = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,size,md5Checksum',
-    { method: 'POST', headers, body: form });
-  if (!response.ok) throw new Error(`Google appDataFolder upload failed (${response.status})`);
-  return response.json();
+  const { data } = await client.request({
+    url: `${DRIVE_API}/about?fields=storageQuota(limit,usage)`,
+    timeout: 10000, retry: false, responseType: 'json',
+  });
+  const quota = data?.storageQuota;
+  const bytes = value => {
+    if (typeof value !== 'string' || !/^\d+$/.test(value))
+      throw new Error('Invalid Google storage quota');
+    return BigInt(value);
+  };
+  const used = bytes(quota?.usage);
+  // Google omits limit for accounts with unlimited storage.
+  const limit = quota.limit == null ? null : bytes(quota.limit);
+  return {
+    usedBytes: used.toString(),
+    limitBytes: limit?.toString() ?? null,
+    freeBytes: limit === null ? null : (limit > used ? limit - used : 0n).toString(),
+    unlimited: limit === null,
+  };
+}
+
+async function uploadAppDataFile(refreshToken, name, bytes, mimeType, appProperties = {}) {
+  return require('./drive-resumable').uploadResumable({
+    client: clientForRefreshToken(refreshToken), ownerKey: refreshToken,
+    metadata: { name, parents: ['appDataFolder'], appProperties },
+    bytes, mimeType: mimeType || 'application/octet-stream',
+  });
 }
 
 async function deleteAppDataFile(refreshToken, fileId) {
@@ -81,7 +98,8 @@ async function downloadAppDataFile(refreshToken, fileId, maxBytes = 110 * 1024 *
   const client = clientForRefreshToken(refreshToken);
   const headers = await client.getRequestHeaders();
   const response = await fetch(
-    `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`, { headers });
+    `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media`,
+    { headers, signal: AbortSignal.timeout(60000) });
   if (!response.ok)
     throw new Error(`Google appDataFolder download failed (${response.status})`);
   const declared = Number(response.headers.get('content-length') || 0);
@@ -121,6 +139,15 @@ async function revoke(refreshToken) {
   await oauthClient().revokeToken(refreshToken);
 }
 
+async function getAccountIdentity(refreshToken) {
+  const { data } = await clientForRefreshToken(refreshToken).request({
+    url: `${DRIVE_API}/about`, params: { fields: 'user(permissionId,emailAddress)' },
+    timeout: 10000, retry: false, responseType: 'json',
+  });
+  if (!data?.user?.permissionId) throw new Error('Google account identity unavailable');
+  return data.user.permissionId;
+}
+
 module.exports = { DRIVE_APPDATA_SCOPE, authorizationUrl, callbackUrl, configured,
   decryptRefreshToken, deleteAppDataFile, downloadAppDataFile, encryptRefreshToken,
-  exchangeCode, revoke, uploadAppDataFile, verifyAppDataAccess };
+  exchangeCode, getStorageQuota, getAccountIdentity, revoke, uploadAppDataFile, verifyAppDataAccess };

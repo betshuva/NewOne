@@ -18,6 +18,7 @@ List<Map<String, dynamic>> mergeChatUploadHistory(
       .where((message) => !activeKeys.contains(uploadKey(message)))
       .toList();
   for (final message in local) {
+    if (message['isUploadBatchNotice'] == true) continue;
     if (message['status'] == 'uploading') {
       merged.add(message);
       continue;
@@ -35,6 +36,20 @@ List<Map<String, dynamic>> mergeChatUploadHistory(
             message['fileUrl'] == null &&
             entry['text'] == message['text']));
     if (!saved) merged.add(message);
+  }
+  // Keep local queue boundaries around their files after a server refresh.
+  // Notices have no server counterpart and must not be deduplicated by text.
+  for (final notice in local.where((m) => m['isUploadBatchNotice'] == true)) {
+    if (merged.any((entry) => entry['id'] == notice['id'])) continue;
+    final time = DateTime.tryParse(notice['createdAt']?.toString() ?? '');
+    final index = time == null
+        ? -1
+        : merged.indexWhere((message) {
+            final other =
+                DateTime.tryParse(message['createdAt']?.toString() ?? '');
+            return other != null && other.isAfter(time);
+          });
+    merged.insert(index < 0 ? merged.length : index, notice);
   }
   return merged;
 }

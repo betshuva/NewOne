@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline' https://accounts.google.com/gsi/client; style-src 'unsafe-inline' https://accounts.google.com/gsi/style; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>המייל שלי — בתשובה</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font:16px Arial,sans-serif}header{padding:20px;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:20px;flex-wrap:wrap}h1{font-size:22px;margin:0}a{color:#70b9f0}main{max-width:1250px;margin:auto;padding:20px}button,input,textarea{font:inherit;border-radius:8px;padding:10px;border:1px solid #454d58;background:#21262d;color:inherit}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}button.primary{background:#1966a3}#notice{white-space:pre-wrap;line-height:1.6;padding:15px 0}#notice.error{color:#ff928c}#toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}#query{flex:1;min-width:180px}#columns{display:grid;grid-template-columns:340px minmax(0,1fr);gap:20px}#messages{display:flex;flex-direction:column;gap:8px}.mail{text-align:right;display:block;width:100%;overflow-wrap:anywhere}.mail.selected{border-color:#70b9f0}.mail span{display:block;margin-top:6px;font-size:13px;color:#b9c2cc}.mail strong{display:block}.unread strong:before{content:'● ';color:#70b9f0}article{border:1px solid #30363d;border-radius:12px;padding:20px;min-width:0}#body{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:55vh;overflow:auto;margin:20px 0}#meta{color:#b9c2cc;white-space:pre-wrap;overflow-wrap:anywhere}#reply-text{width:100%;min-height:150px;margin:12px 0}#recipient{overflow-wrap:anywhere}#next{margin-top:15px}#account{color:#b9c2cc}h2{overflow-wrap:anywhere}[hidden]{display:none!important}@media(max-width:750px){#columns{grid-template-columns:1fr}header,main{padding:14px}}
+</style>
+</head>
+<body>
+<header><h1>המייל שלי</h1><span id="account"></span><a href="index.html">חזרה לאפליקציה</a><button id="logout" hidden>יציאה מהמייל</button></header>
+<main>
+<div id="notice" role="status" aria-live="polite">בודק חיבור…</div>
+<p id="setup" hidden><a id="setup-link" target="_blank" rel="noopener noreferrer">פתיחת הגדרות Gmail ב־Google Cloud</a></p>
+<section id="login" hidden><p>כניסה פרטית לבעל תיבת המייל</p><div id="google-login"></div></section>
+<button id="connect" class="primary" hidden>חיבור Gmail דרך Google</button>
+<section id="mailbox" hidden>
+<form id="toolbar"><input id="query" aria-label="חיפוש במייל" placeholder="חיפוש במייל" value="in:inbox"><button type="submit">חיפוש / רענון</button><button type="button" id="sent">נשלחו</button><button type="button" id="inbox">דואר נכנס</button></form>
+<div id="columns"><section aria-label="רשימת הודעות"><div id="messages"></div><button id="next" hidden>הודעות נוספות</button></section>
+<article id="message" hidden><h2 id="subject"></h2><div id="meta"></div><div id="body" dir="auto"></div>
+<form id="reply"><div id="recipient"></div><label for="reply-text">תשובה</label><textarea id="reply-text" maxlength="50000" required></textarea><button id="send" class="primary" type="submit">שליחת תשובה</button></form></article></div>
+</section>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let token = localStorage.getItem('bt_gmail_token') || localStorage.getItem('bt_admin_token') || localStorage.getItem('bt_token');
+const apiBase = new URL('api/admin/gmail/', location.href);
+let current = null, nextPage = null, listVersion = 0, detailVersion = 0, pending = null, sending = false;
+function notice(text, error = false) { $('notice').textContent = text; $('notice').className = error ? 'error' : ''; }
+async function api(path, body) {
+  const response = await fetch(new URL(path, apiBase), { method: body ? 'POST' : 'GET', cache: 'no-store',
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}) });
+  const data = await response.json();
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) { clearMailbox(); showLogin(); }
+    throw new Error(data.error || 'הפעולה לא הושלמה');
+  }
+  return data;
+}
+function textOfHtml(html) {
+  // Template content stays inert: no scripts, remote images, tracking pixels or links run.
+  const template = document.createElement('template'); template.innerHTML = html;
+  template.content.querySelectorAll('script,style,iframe,object,template').forEach(el => el.remove());
+  template.content.querySelectorAll('br').forEach(el => el.replaceWith('\n'));
+  template.content.querySelectorAll('p,div,tr,li,h1,h2,h3').forEach(el => el.append('\n'));
+  return template.content.textContent;
+}
+async function list(append = false) {
+  const version = ++listVersion;
+  const query = new URLSearchParams({ q: $('query').value, ...(append && nextPage ? { pageToken: nextPage } : {}) });
+  $('next').disabled = true; notice('טוען הודעות…');
+  try {
+    const data = await api(`messages?${query}`);
+    if (version !== listVersion) return;
+    if (!append) $('messages').replaceChildren();
+    for (const message of data.messages) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'mail' + (message.unread ? ' unread' : '');
+      const title = document.createElement('strong'); title.textContent = message.subject || '(ללא נושא)';
+      const from = document.createElement('span'); from.textContent = message.from;
+      const date = document.createElement('span'); date.textContent = message.date;
+      button.append(title, from, date);
+      button.addEventListener('click', () => openMessage(message.id, button)); $('messages').append(button);
+    }
+    nextPage = data.nextPageToken; $('next').hidden = !nextPage;
+    notice(data.messages.length || append ? '' : 'לא נמצאו הודעות');
+  } catch (e) { if (version === listVersion) notice(e.message, true); }
+  finally { if (version === listVersion) $('next').disabled = false; }
+}
+async function openMessage(id, button) {
+  if (sending) return;
+  if ($('reply-text').value && current?.id !== id && !confirm('לעזוב את התשובה שלא נשלחה?')) return;
+  const version = ++detailVersion; notice('טוען הודעה…');
+  $('message').hidden = true; current = null;
+  try {
+    const message = await api(`messages/${encodeURIComponent(id)}`);
+    if (version !== detailVersion) return;
+    current = message; pending = null; $('reply-text').value = '';
+    $('subject').textContent = message.subject || '(ללא נושא)';
+    $('meta').textContent = `מאת: ${message.from}\nאל: ${message.to}\n${message.date}`;
+    $('body').textContent = message.text || textOfHtml(message.html) || message.snippet || '(ללא טקסט)';
+    $('recipient').textContent = message.replyTo ? `התשובה תישלח אל: ${message.replyTo}` : 'לא נמצאה כתובת תקינה למענה';
+    $('send').disabled = !message.replyTo; $('message').hidden = false;
+    document.querySelectorAll('.mail.selected').forEach(el => el.classList.remove('selected'));
+    button.classList.add('selected'); notice('');
+  } catch (e) { if (version === detailVersion) notice(e.message, true); }
+}
+$('connect').onclick = async () => {
+  $('connect').disabled = true;
+  try { const result = await api('connect', {}); location.assign(result.authorizationUrl); }
+  catch (e) { notice(e.message, true); $('connect').disabled = false; }
+};
+$('toolbar').onsubmit = event => { event.preventDefault(); list(); };
+$('next').onclick = () => list(true);
+$('sent').onclick = () => { $('query').value = 'in:sent'; list(); };
+$('inbox').onclick = () => { $('query').value = 'in:inbox'; list(); };
+$('reply').onsubmit = async event => {
+  event.preventDefault(); if (sending || !current) return;
+  const text = $('reply-text').value;
+  if (!text.trim()) return;
+  if (pending && (pending.text !== text || pending.id !== current.id)) {
+    notice('מצב השליחה הקודמת לא אומת. בדוק תחילה את תיקיית נשלחו, ואז פתח מחדש את ההודעה.', true); return;
+  }
+  pending ||= { requestId: crypto.randomUUID(), id: current.id, text };
+  sending = true; $('send').disabled = true; $('reply-text').disabled = true; notice('שולח תשובה…');
+  try {
+    await api(`messages/${pending.id}/reply`, { text, requestId: pending.requestId });
+    $('reply-text').value = ''; pending = null; notice('התשובה נשלחה');
+  } catch (e) { notice(`${e.message}\nאם החיבור נקטע, בדוק את תיקיית נשלחו לפני שליחה חדשה.`, true); }
+  finally { sending = false; $('send').disabled = false; $('reply-text').disabled = false; }
+};
+function clearMailbox() {
+  ++listVersion; ++detailVersion; current = null; pending = null;
+  $('messages').replaceChildren(); $('body').textContent = ''; $('subject').textContent = '';
+  $('meta').textContent = ''; $('recipient').textContent = ''; $('reply-text').value = '';
+  $('mailbox').hidden = true; $('message').hidden = true; $('connect').hidden = true;
+  $('logout').hidden = true; $('account').textContent = '';
+  $('setup').hidden = true;
+}
+function showLogin() {
+  $('login').hidden = false;
+  if (document.getElementById('google-sdk')) return;
+  const script = document.createElement('script'); script.id = 'google-sdk';
+  script.src = 'https://accounts.google.com/gsi/client'; script.async = true;
+  script.onerror = () => notice('לא ניתן לטעון את הכניסה דרך Google. רענן את הדף ונסה שוב.', true);
+  script.onload = () => {
+    google.accounts.id.initialize({ client_id: '862738339788-0o8jv308efqdhb0q21eo9ut74oqcff80.apps.googleusercontent.com',
+      ux_mode: 'popup', callback: async response => {
+        try {
+          const result = await fetch(new URL('api/auth/google', location.href), { method: 'POST',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken: response.credential }) });
+          const data = await result.json();
+          if (!result.ok) throw new Error(data.error || 'הכניסה נכשלה');
+          token = data.token; localStorage.setItem('bt_gmail_token', token);
+          await start();
+        } catch (e) { notice(e.message, true); }
+      } });
+    google.accounts.id.renderButton($('google-login'), { type: 'standard', size: 'large', locale: 'he' });
+  };
+  document.head.append(script);
+}
+$('logout').onclick = () => {
+  if (sending) return;
+  if ($('reply-text').value && !confirm('לצאת ללא שליחת התשובה?')) return;
+  token = null; localStorage.removeItem('bt_gmail_token'); clearMailbox(); showLogin(); notice('יצאת ממסך המייל');
+};
+window.addEventListener('beforeunload', event => {
+  if ($('reply-text').value || sending) { event.preventDefault(); event.returnValue = ''; }
+});
+async function start() {
+  if (!token) { showLogin(); notice('התחבר עם חשבון Google של בעל התיבה.'); return; }
+  const result = new URLSearchParams(location.search).get('gmail');
+  if (result) history.replaceState(null, '', location.pathname);
+  try {
+    const status = await api('status'); $('account').textContent = status.email;
+    $('login').hidden = true; $('logout').hidden = false;
+    $('connect').hidden = !status.configured;
+    $('connect').textContent = status.connected ? 'חידוש הרשאת Google' : 'חיבור Gmail דרך Google';
+    $('mailbox').hidden = !status.connected;
+    if (status.connected) await list();
+    else notice(status.configured ? 'לחץ על חיבור Gmail ואשר קריאת הודעות ושליחת תשובות בחשבון שלך.' : 'נדרשת השלמת הגדרות חיבור Gmail בשרת.');
+    const messages = { connected: 'חשבון Gmail חובר בהצלחה', cancelled: 'החיבור בוטל',
+      wrong_account: 'יש לבחור את חשבון המייל המוצג למעלה', missing_permissions: 'יש לאשר גם קריאת מיילים וגם שליחת תשובות',
+      api_disabled: 'שירות Gmail API אינו מופעל בפרויקט Google של האתר. פתח את ההגדרות בקישור למטה, לחץ Enable / הפעלה, המתן מספר דקות ואז לחץ שוב על חיבור Gmail.',
+      expired_authorization: 'אישור Google פג או כבר נוצל. לחץ שוב על חיבור Gmail כדי לקבל אישור חדש.',
+      oauth_configuration: 'הגדרות החיבור ל־Google בשרת אינן תקינות. נדרש תיקון הגדרות הלקוח.',
+      invalid_state: 'תוקף בקשת החיבור פג. התחל חיבור מחדש', error: 'החיבור לא הושלם. בדוק את הגדרות Google ונסה שוב' };
+    if (messages[result]) notice(messages[result], result !== 'connected');
+    $('setup').hidden = result !== 'api_disabled' || !status.setupUrl;
+    if (!$('setup').hidden) $('setup-link').href = status.setupUrl;
+  } catch (e) { notice(e.message, true); }
+}
+start();
+</script>
+</body>
+</html>

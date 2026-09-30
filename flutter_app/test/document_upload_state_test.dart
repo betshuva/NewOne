@@ -140,7 +140,7 @@ void main() {
         final previous = FilePicker.platform;
         FilePicker.platform = _Documents(PlatformFile(
             name: 'test.pdf',
-            size: oversize ? 51 * 1024 * 1024 : 5,
+            size: oversize ? 151 * 1024 * 1024 : 5,
             bytes: oversize ? null : Uint8List.fromList([37, 80, 68, 70, 45])));
         addTearDown(() => FilePicker.platform = previous);
         final upload = Completer<http.Response>();
@@ -156,7 +156,7 @@ void main() {
           }
           if (oversize) {
             expect(uploads, 0);
-            expect(find.text('הקובץ גדול מדי. ניתן לשלוח קובץ עד 50 MB'),
+            expect(find.textContaining('הקובץ גדול מדי. הגודל המרבי להעלאה זו הוא 150 MB'),
                 findsOneWidget);
           } else {
             expect(uploads, 1);

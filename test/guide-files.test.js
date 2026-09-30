@@ -73,6 +73,7 @@ function database({ connected = false, failAt, restore } = {}) {
     },
     async query(sql, args) {
       calls.push({ sql, args });
+      if (sql.includes('to_regclass')) return { rows: [{ objects: null, account: null }] };
       if (sql.includes('FROM stored_files sf')) {
         assert.match(sql, /sf\.id=\$2 AND sf\.user_id=\$1/);
         assert.match(sql, /sf\.moderation_status='approved'/);

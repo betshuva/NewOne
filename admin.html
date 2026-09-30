@@ -331,6 +331,8 @@ tr:hover td{background:rgba(33,38,45,.8)}
     <div id="sb-tables"></div>
     <div class="sb-section">ניהול</div>
     <a class="sb-item" href="admin-audit.html" style="text-decoration:none">אודיט מערכת</a>
+    <a class="sb-item" href="admin-storage.html" style="text-decoration:none">☁️ אחסון קבצים בענן</a>
+    <a class="sb-item" id="sb-gmail" href="admin-gmail.html" style="text-decoration:none;display:none">✉️ המייל שלי</a>
     <div class="sb-item" id="sb-newgroup-item" onclick="openNewGroupModal()">➕ קבוצה חדשה</div>
     <div class="sb-item" id="sb-activity-item" onclick="showActivityPanel()">📊 יומן פעילות</div>
     <div class="sb-item" id="sb-filter-timeline-item" onclick="showFilterTimelinePanel()">🕒 היסטוריית סינון</div>
@@ -756,6 +758,8 @@ async function startApp() {
       const uint8 = Uint8Array.from(atob(p.replace(/-/g,'+').replace(/_/g,'/')), c=>c.charCodeAt(0));
       const me   = JSON.parse(new TextDecoder().decode(uint8));
       document.getElementById('sb-user').textContent = me.name || me.email || '';
+      document.getElementById('sb-gmail').style.display =
+        adminPerm === 'edit' && String(me.email || '').toLowerCase() === 'yanive8@gmail.com' ? 'flex' : 'none';
     } catch {}
 
     const permEl = document.getElementById('sb-perm');

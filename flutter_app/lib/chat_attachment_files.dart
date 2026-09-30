@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-const maxChatAttachments = 20;
+const maxChatAttachments = 100;
 
 // Matches the upload endpoint's supported formats; the server still validates
 // the actual content and applies sender/recipient moderation to every file.
@@ -42,7 +42,9 @@ String? _webmTrackType(Uint8List bytes) {
         bytes[0] != 0x1a ||
         bytes[1] != 0x45 ||
         bytes[2] != 0xdf ||
-        bytes[3] != 0xa3) return null;
+        bytes[3] != 0xa3) {
+      return null;
+    }
     for (final root in _webmElements(bytes, 0, bytes.length)) {
       if (root.id != 0x18538067) continue; // Segment
       for (final element in _webmElements(bytes, root.start, root.end)) {
@@ -84,7 +86,8 @@ Iterable<({int id, int start, int end})> _webmElements(
     if (size.value == null && id.value != 0x18538067) {
       throw const FormatException('Unknown element size');
     }
-    final stop = size.value == null ? end : size.next + size.value!;
+    final declaredStop = size.value == null ? end : size.next + size.value!;
+    final stop = id.value == 0x18538067 && declaredStop > end ? end : declaredStop;
     if (stop > end) throw const FormatException('Truncated element');
     yield (id: id.value!, start: size.next, end: stop);
     position = stop;

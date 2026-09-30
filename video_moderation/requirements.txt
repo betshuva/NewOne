@@ -9,3 +9,5 @@ torchvision==0.23.0
 ultralytics==8.3.187
 pytest==8.4.1
 httpx==0.28.1
+
+av==18.1.0

@@ -104,7 +104,7 @@ test('acquired scans freeze actual frames and pass the lease and shared abort si
 
 test('frame validation rejects mismatched counts and invalid samples before ledger or paid work', async () => {
   const invalid = [[null, 0], [[], 0], [samples, 1], [samples, 2.5],
-    [Array.from({ length: 91 }, () => samples[0]), 91],
+    [Array.from({ length: 21 }, () => samples[0]), 21],
     [[{ ...samples[0], jpeg_base64: 'short' }], 1],
     [[{ ...samples[0], timestamp_seconds: -1 }], 1],
     [[{ ...samples[0], timestamp_seconds: 'invalid' }], 1]];

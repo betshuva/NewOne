@@ -11,7 +11,7 @@ stop when explicitly changing to a policy that no longer requires OpenAI.
 After local decoding, freeze the ordered JPEG hashes and timestamps for the
 actual selected frames: start, middle, end, and each five-second interval.
 Duplicate indices are scanned once; scene changes add no extra samples.
-Require the reported sample count to match the manifest. At most 90 frames are accepted; invalid or
+Require the reported sample count to match the manifest. At most 20 frames are accepted; invalid or
 oversized manifests stop before any paid provider request.
 
 For N selected frames, maximum attempted operations are:

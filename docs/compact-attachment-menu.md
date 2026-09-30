@@ -12,7 +12,7 @@ user's own details. Screenshot capture is removed from the attachment menu.
 The other existing screenshot entry points are outside this change.
 
 Upload files opens one multi-select picker for images, video, audio, PDF, DOCX,
-and XLSX, with a maximum of 20 files per selection. Existing per-file upload,
+and XLSX, with a maximum of 100 files per selection. Existing per-file upload,
 moderation, recipient policy, video duration, and size checks remain active.
 Image-only selections retain duplicate elimination and their upload queue.
 Mixed selections use the existing per-file send paths in selection order.

@@ -28,6 +28,7 @@ function createApiRateLimit({ createRateLimiter, clientIp, getSecret }) {
     message: 'בוצעו יותר מדי בקשות. נסה שוב בעוד מספר דקות',
   };
   const general = createRateLimiter({ ...options, name: 'api', max: 600 });
+  const uploadChunks = createRateLimiter({ ...options, name: 'upload-chunks', max: 12000 });
   const registrationStatus = createRateLimiter({
     ...options, name: 'registration-status', max: 60,
   });
@@ -40,6 +41,8 @@ function createApiRateLimit({ createRateLimiter, clientIp, getSecret }) {
     // Keep account setup reachable when conversation polling exhausts the
     // general budget. These routes retain their own limits and authentication.
     if (req[sessionId]) {
+      if (['GET', 'PUT'].includes(req.method) && /^\/upload-sessions\/[a-f0-9-]{36}$/i.test(req.path))
+        return uploadChunks(req, res, next);
       if (req.method === 'GET' && req.path === '/registration-status')
         return registrationStatus(req, res, next);
       if (req.method === 'PUT' && req.path === '/profile/birth-date')

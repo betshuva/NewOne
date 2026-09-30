@@ -42,7 +42,7 @@ test('recording conversion accepts only bounded audio buffers', async () => {
   const convert = createRecordedAudioConverter(async () => { conversions++; });
   for (const [bytes, name, type] of [
     [Buffer.alloc(0), 'voice.wav', 'audio/wav'],
-    [Buffer.alloc(150 * 1024 * 1024 + 1), 'voice.wav', 'audio/wav'],
+    [Buffer.alloc(256 * 1024 * 1024 + 1), 'voice.wav', 'audio/wav'],
     [Buffer.from('data'), 'voice.mp4', 'video/mp4'],
     [Buffer.from('data'), '', 'audio/wav'],
     ['not a buffer', 'voice.wav', 'audio/wav'],

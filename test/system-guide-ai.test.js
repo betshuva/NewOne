@@ -70,10 +70,10 @@ test('out-of-scope and prompt-injection requests receive a fixed refusal', async
 
 test('guide knowledge reflects current scoped-filter precedence and app limits', () => {
   assert.match(APP_KNOWLEDGE, /גובר על הסינון הכללי שלו, גם לחומרה וגם לקולה/);
-  assert.match(APP_KNOWLEDGE, /עד 10 תמונות/);
-  assert.match(APP_KNOWLEDGE, /עד 20 פריטים/);
+  assert.match(APP_KNOWLEDGE, /עד 100 קבצים/);
+  assert.match(APP_KNOWLEDGE, /עד 20 פריימים/);
   assert.match(APP_KNOWLEDGE, /אודיו עד 150MB ללא מגבלת משך/);
-  assert.match(APP_KNOWLEDGE, /סרטונים מוגבלים ל־30 שניות/);
+  assert.match(APP_KNOWLEDGE, /סרטונים עד 90 דקות ללא מגבלת גודל קבועה/);
   assert.doesNotMatch(APP_KNOWLEDGE, /המחמירה.*קובעת/);
 });
 

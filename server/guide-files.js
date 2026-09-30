@@ -66,6 +66,8 @@ async function readGuideFileBytes(pool, uploadRoot, file) {
       throw new Error('Guide file checksum mismatch');
     return bytes;
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const central = await require('./central-drive').readFile(pool, file);
+  if (central) return central;
   // A file explicitly saved to Drive remains restorable even if automatic
   // backups are later disabled. Ownership was checked before this read.
   const result = await pool.query(`SELECT mbi.remote_file_id,mbi.encrypted_sha256,

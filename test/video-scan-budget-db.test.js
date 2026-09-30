@@ -55,7 +55,7 @@ async function fixture(t) {
 
 test('ledger rejects malformed identities and database failure never grants a reservation', async () => {
   await assert.rejects(ledger.acquireVideoScan({}, { userId: 'user', contentSha256: 'bad', scanVersion: 'v1' }), /SHA-256/);
-  await assert.rejects(ledger.setVideoScanManifest({}, {}, frames(91)), /0 to 90/);
+  await assert.rejects(ledger.setVideoScanManifest({}, {}, frames(21)), /0 to 20/);
   await assert.rejects(ledger.setVideoScanManifest({}, {}, [{ sha256: hash('frame'), image: Buffer.from('image'), frameIndex: 1 }]), /contiguous/);
   await assert.rejects(ledger.getProviderSuspension({}, 'openai', 'plaintext-secret'), /SHA-256/);
   const pool = { connect: async () => { throw new Error('database down'); } };
@@ -480,12 +480,12 @@ test('a deadline crossed inside the reservation transaction cannot grant or char
 });
 
 test('whole-scan summaries support ninety frames while retaining a separate result bound', dbOptions, async t => {
-  const f = await fixture(t), context = await f.setup(90);
-  const result = { blocked: true, frameResults: frames(90).map(frame => ({ ...frame, diagnostics: 'x'.repeat(4096) })) };
+  const f = await fixture(t), context = await f.setup(20);
+  const result = { blocked: true, frameResults: frames(20).map(frame => ({ ...frame, diagnostics: 'x'.repeat(4096) })) };
   assert.ok(Buffer.byteLength(JSON.stringify(result)) > 256 * 1024);
   const completed = await ledger.finishVideoScan(f.pool, context, result);
   assert.equal(completed.status, 'completed');
-  assert.equal(completed.result.frameResults.length, 90);
+  assert.equal(completed.result.frameResults.length, 20);
   await assert.rejects(ledger.finishVideoScan(f.pool, context, { text: 'x'.repeat(2 * 1024 * 1024) }), /too large/);
 });
 

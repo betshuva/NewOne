@@ -3,7 +3,7 @@
 const { createHash, randomUUID } = require('node:crypto');
 const { moderationProviderPolicy } = require('./moderation-provider-policy');
 
-const VIDEO_SCAN_MAX_FRAMES = 90;
+const VIDEO_SCAN_MAX_FRAMES = 20;
 const VIDEO_SCAN_DEADLINE_MS = 5 * 60 * 1000;
 const VIDEO_SCAN_LEASE_MS = 30 * 1000;
 const MAX_OPERATION_RESULT_BYTES = 256 * 1024;
@@ -293,7 +293,7 @@ async function acquireVideoScan(pool, { userId, contentSha256, scanVersion, stor
 
 function normalizeManifest(frames) {
   if (!Array.isArray(frames) || frames.length > VIDEO_SCAN_MAX_FRAMES)
-    throw new RangeError('A manifest must contain 0 to 90 frames');
+    throw new RangeError('A manifest must contain 0 to 20 frames');
   return frames.map((frame, index) => {
     if (!frame || typeof frame !== 'object' || (frame.frameIndex ?? frame.index ?? index) !== index)
       throw new TypeError('Frame indexes must be contiguous and start at zero');

@@ -16,7 +16,7 @@ assert.ok(routeStart > 0 && routeEnd > routeStart);
 const VERSION = 'test-current';
 const realResolveAllowedUpload = vm.runInNewContext(source.slice(
   source.indexOf('const ALLOWED_TYPES ='), source.indexOf('const upload = multer(')) +
-  ';resolveAllowedUpload', { Buffer, path: require('node:path'),
+  ';resolveAllowedUpload', { Buffer, uploadHeader: require('../server/upload-file-source').uploadHeader, path: require('node:path'),
   probeWebmMime: require('../server/audio-moderation').probeWebmMime });
 const ALL = { text: true, video: true, nonHumanImages: true,
   men: true, women: true, children: true };
@@ -130,10 +130,16 @@ function harness({ classification = MEN, result, scanDelay = false,
     return clone(result || { blocked: false, classification, faces: [] });
   };
   vm.runInNewContext(source.slice(routeStart, routeEnd), {
+    reserveMultipartStorage() {},
+    storageQuota: { reserve: async () => {}, release: async () => {}, quotaError: error => error },
+    path: require('node:path'), UPLOAD_ROOT: '/test-uploads',
+    fs: { unlink: async () => {} },
     ...require('./helpers/system-audit-stubs'),
     app: { post(_route, ...handlers) { handler = handlers.at(-1); } },
-    auth() {}, uploadRateLimit() {}, upload: { single() {} },
-    BLOCKED_TYPES: [], MODERATION_CACHE_VERSION: VERSION, SCAN_BOT_ID: 'scan-bot',
+    auth() {}, uploadRateLimit() {}, cleanAttachment() {}, attachmentUpload: { single() {} },
+    ...require('../server/upload-file-source'),
+    MAX_RECORDING_INPUT_BYTES: require('../server/audio-moderation').MAX_RECORDING_INPUT_BYTES,
+    BLOCKED_TYPES: [], MODERATION_CACHE_VERSION: VERSION, VIDEO_SCAN_VERSION: VERSION, SCAN_BOT_ID: 'scan-bot',
     approvedAudioResult: vm.runInNewContext(source.slice(source.indexOf('function approvedAudioResult('),
       source.indexOf('// Legacy queued recordings')) + ';approvedAudioResult'),
     normalizeUploadFileName: value => value,
@@ -702,13 +708,13 @@ test('audio accepts exactly 150MB and long duration while other file caps remain
   for (const [name, mime, size, status] of [
     ['long.mp3', 'audio/mpeg', 150 * 1024 * 1024, 200],
     ['large.mp3', 'audio/mpeg', 150 * 1024 * 1024 + 1, 400],
-    ['large.mp4', 'video/mp4', 51 * 1024 * 1024, 400],
+    ['large.mp4', 'video/mp4', 3 * 1024 * 1024 * 1024, 200],
     ['large.pdf', 'application/pdf', 26 * 1024 * 1024, 400],
   ]) {
     const api = harness({ realUploadResolver: true, audioDuration: 24 * 3600 });
     const response = await api.upload({ name, mime, bytes: '0000ftypisom', reportedSize: size });
     assert.equal(response.statusCode, status, name);
     assert.equal(api.state.files.length, status === 200 ? 1 : 0);
-    if (status === 200) assert.equal(api.state.files[0].moderation_details.audio.durationSeconds, 86400);
+    if (status === 200 && mime.startsWith('audio/')) assert.equal(api.state.files[0].moderation_details.audio.durationSeconds, 86400);
   }
 });

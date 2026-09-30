@@ -197,6 +197,8 @@ async function readSourceMedia(db, uploadRoot, file) {
       throw new Error('Invalid received media symlink');
     return await fs.readFile(real);
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const central = await require('./central-drive').readFile(db, file, undefined, { forProcessing: true });
+  if (central) return central;
   const result = await db.query(`SELECT mbi.remote_file_id,mbi.encrypted_sha256,mbi.plaintext_sha256,
       mbi.encryption_metadata,s.encrypted_data_key,c.encrypted_refresh_token
     FROM media_backup_items mbi
