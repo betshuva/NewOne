@@ -135,7 +135,9 @@ test('uploaded videos allow ninety minutes while recording remains two minutes',
   assert.match(server, /const MAX_VIDEO_SECONDS = 90 \* 60/);
   assert.match(server, /blockedBy: 'video_duration'/);
   assert.match(flutter, /const _maxVideoDuration = Duration\(minutes: 2\)/);
-  assert.match(flutter, /ניתן לשלוח סרטון באורך של עד 90 דקות/);
+  assert.match(flutter, /Duration maxDuration = _maxUploadedVideoDuration/);
+  assert.match(flutter, /String limitDescription = '90 דקות'/);
+  assert.match(flutter, /Text\('ניתן לשלוח סרטון באורך של עד \$limitDescription'/);
   assert.match(flutter, /_maxUploadedVideoDuration = Duration\(minutes: 90\)/);
 });
 

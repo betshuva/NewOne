@@ -55,13 +55,16 @@ async function requestOpenAIPersonPresence(buffer, options) {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
+        store: false,
         reasoning: { effort: 'none' },
         max_output_tokens: 120,
         input: [{
           role: 'user',
           content: [
             { type: 'input_text', text: PERSON_PRESENCE_PROMPT },
-            { type: 'input_image', image_url: `data:image/jpeg;base64,${buffer.toString('base64')}`, detail: 'low' },
+            // Small background details must remain distinguishable from people.
+            // Use the same fidelity as the clothing review, without cropping.
+            { type: 'input_image', image_url: `data:image/jpeg;base64,${buffer.toString('base64')}`, detail: 'high' },
           ],
         }],
       }),

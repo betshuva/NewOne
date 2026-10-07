@@ -34,6 +34,7 @@ test('central Drive storage migrates, restores, releases and deletes independent
     public_url TEXT,file_size BIGINT,mime_type TEXT,content_sha256 TEXT,moderation_status TEXT DEFAULT 'approved',
     moderation_details JSONB DEFAULT '{}',content_purged_at TIMESTAMPTZ,released_at TIMESTAMPTZ,created_at TIMESTAMPTZ DEFAULT now());
     CREATE TABLE pending_scans(file_url TEXT);
+    CREATE TABLE cloud_backup_accounts(user_id UUID,status TEXT);
     CREATE TABLE deleted_media_sources(storage_path TEXT);
     CREATE TABLE media_backup_items(stored_file_id UUID,status TEXT);`);
   await pool.query(central.SCHEMA);
@@ -64,7 +65,7 @@ test('central Drive storage migrates, restores, releases and deletes independent
         if (legacy.has(file.id)) return legacy.get(file.id); throw error; }
     } });
   async function seed({ local = true } = {}) {
-    await pool.query('TRUNCATE stored_files CASCADE; TRUNCATE pending_scans,deleted_media_sources,media_backup_items');
+    await pool.query('TRUNCATE stored_files CASCADE; TRUNCATE pending_scans,deleted_media_sources,media_backup_items,cloud_backup_accounts');
     await pool.query('UPDATE central_drive_account SET enabled=true');
     remote.clear(); legacy.clear(); corrupt = false; failUpload = false; failDelete = false; uploadHook = null; quota = '10000000000';
     const file = { id: crypto.randomUUID(), user_id: crypto.randomUUID(), storage_path: `${crypto.randomUUID()}.bin` };
@@ -87,6 +88,16 @@ test('central Drive storage migrates, restores, releases and deletes independent
     await pool.query('UPDATE central_drive_account SET enabled=false');
     assert.deepEqual(await central.readFile(pool, file, () => fake), plain, 'pausing new transfers preserves old files');
     corrupt = true; await assert.rejects(central.readFile(pool, file, () => fake));
+  });
+  await t.test('connecting personal Drive prevents central uploads before tier migration, retaining existing delivery', async () => {
+    const { file, plain, filename } = await seed();
+    await pool.query("INSERT INTO cloud_backup_accounts VALUES($1,'connected')", [file.user_id]);
+    assert.equal((await service().runBatch()).transferred, 0);
+    assert.deepEqual(await fs.readFile(filename), plain);
+    await pool.query('TRUNCATE cloud_backup_accounts');
+    await service().runBatch();
+    await pool.query("INSERT INTO cloud_backup_accounts VALUES($1,'connected')", [file.user_id]);
+    assert.deepEqual(await central.readFile(pool, file, () => fake), plain);
   });
   await t.test('existing cloud-only personal media is migrated without recreating local bytes', async () => {
     const { file, plain, filename } = await seed({ local: false });

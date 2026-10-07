@@ -67,6 +67,10 @@ test('confirmed personal deletion preserves received copies and checks concurren
       CREATE TABLE education_forms(id uuid PRIMARY KEY,file_url text,file_name text,title text);
       CREATE TABLE shared_gifs(id uuid PRIMARY KEY,stored_file_id uuid REFERENCES stored_files(id) ON DELETE CASCADE,status text);
       CREATE TABLE app_settings(key_name text PRIMARY KEY,value text);
+      CREATE TABLE support_issues(id uuid PRIMARY KEY,user_id uuid REFERENCES users(id),updated_at timestamptz DEFAULT now());
+      CREATE TABLE support_issue_attachments(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        issue_id uuid REFERENCES support_issues(id) ON DELETE CASCADE,
+        stored_file_id uuid REFERENCES stored_files(id) ON DELETE RESTRICT);
     `);
     await pool.query(RECEIVED_MEDIA_SCHEMA);
     await pool.query(MEDIA_DELETE_SCHEMA);
@@ -102,6 +106,78 @@ test('confirmed personal deletion preserves received copies and checks concurren
     const preview = (ids = [source], owner = alice) => service.preview(pool, owner, { ids });
     const confirm = (view, owner = alice) => service.confirm(pool, owner, { ids: view.ids, confirmationToken: view.confirmationToken });
     const sourceExists = async () => (await pool.query('SELECT 1 FROM stored_files WHERE id=$1', [source])).rowCount === 1;
+
+    await t.test('support issues require explicit approval, disappear with selected files, and preserve other attachments as media', async () => {
+      await reset(); await addFile(second);
+      await pool.query('INSERT INTO support_issues(id,user_id) VALUES($1,$2)', [id(60), alice]);
+      await pool.query('INSERT INTO support_issue_attachments(issue_id,stored_file_id) VALUES($1,$2),($1,$3)', [id(60), source, second]);
+      const view = await preview();
+      assert.deepEqual(view.supportIssues, [{ id: id(60) }]);
+      assert.equal((await pool.query('SELECT 1 FROM support_issues')).rowCount, 1);
+      for (const confirmedSupportIssueIds of [undefined, [], [id(61)]]) {
+        await assert.rejects(service.confirm(pool, alice, { ids: view.ids, confirmationToken: view.confirmationToken,
+          confirmedSupportIssueIds }), error => error.code === 'SUPPORT_ISSUE_CONFIRMATION_REQUIRED');
+        assert.equal(await sourceExists(), true);
+      }
+      const result = await service.confirm(pool, alice, { ids: view.ids, confirmationToken: view.confirmationToken,
+        confirmedSupportIssueIds: [id(60)] });
+      assert.deepEqual(result.deletedIds, [source]);
+      assert.deepEqual(result.failed, []);
+      assert.equal((await pool.query('SELECT 1 FROM support_issues')).rowCount, 0);
+      assert.equal((await pool.query('SELECT 1 FROM support_issue_attachments')).rowCount, 0);
+      assert.equal((await pool.query('SELECT 1 FROM stored_files WHERE id=$1', [second])).rowCount, 1);
+      assert.equal(await fs.readFile(path.join(uploadRoot, `${second}.png`), 'utf8'), 'data');
+    });
+
+    await t.test('shared support issue is previewed once and both selected files can be deleted', async () => {
+      await reset(); await addFile(second);
+      await pool.query('INSERT INTO support_issues(id,user_id) VALUES($1,$2)', [id(60), alice]);
+      await pool.query('INSERT INTO support_issue_attachments(issue_id,stored_file_id) VALUES($1,$2),($1,$3)', [id(60), source, second]);
+      const view = await preview([source, second]);
+      assert.deepEqual(view.supportIssues, [{ id: id(60) }]);
+      const result = await service.confirm(pool, alice, { ids: view.ids, confirmationToken: view.confirmationToken,
+        confirmedSupportIssueIds: [id(60)] });
+      assert.deepEqual(result.deletedIds, [source, second]);
+      assert.deepEqual(result.failed, []);
+    });
+
+    await t.test('support links added after preview require another preview and approval', async () => {
+      await reset();
+      const view = await preview();
+      await pool.query('INSERT INTO support_issues(id,user_id) VALUES($1,$2)', [id(60), alice]);
+      await pool.query('INSERT INTO support_issue_attachments(issue_id,stored_file_id) VALUES($1,$2)', [id(60), source]);
+      await assert.rejects(confirm(view), error => error.code === 'DELETE_PREVIEW_CHANGED' &&
+        error.preview.supportIssues[0].id === id(60));
+      assert.equal(await sourceExists(), true);
+      assert.equal((await pool.query('SELECT 1 FROM support_issues')).rowCount, 1);
+    });
+
+    await t.test('another account support issue is never exposed or deleted', async () => {
+      await reset();
+      await pool.query('INSERT INTO support_issues(id,user_id) VALUES($1,$2)', [id(60), bob]);
+      await pool.query('INSERT INTO support_issue_attachments(issue_id,stored_file_id) VALUES($1,$2)', [id(60), source]);
+      await assert.rejects(preview(), error => error.code === 'SUPPORT_ISSUE_NOT_OWNED' && !error.preview);
+      assert.equal(await sourceExists(), true);
+      assert.equal((await pool.query('SELECT 1 FROM support_issues')).rowCount, 1);
+    });
+
+    await t.test('file deletion failure rolls back support issue deletion too', async () => {
+      await reset();
+      await pool.query('INSERT INTO support_issues(id,user_id) VALUES($1,$2)', [id(60), alice]);
+      await pool.query('INSERT INTO support_issue_attachments(issue_id,stored_file_id) VALUES($1,$2)', [id(60), source]);
+      await pool.query('CREATE TABLE deletion_blocker(file_id uuid REFERENCES stored_files(id) ON DELETE RESTRICT)');
+      try {
+        await pool.query('INSERT INTO deletion_blocker VALUES($1)', [source]);
+        const view = await preview();
+        const result = await service.confirm(pool, alice, { ids: view.ids, confirmationToken: view.confirmationToken,
+          confirmedSupportIssueIds: [id(60)] });
+        assert.deepEqual(result.deletedIds, []);
+        assert.equal(result.failed[0].code, '23503');
+        assert.equal(await sourceExists(), true);
+        assert.equal((await pool.query('SELECT 1 FROM support_issues')).rowCount, 1);
+        assert.equal((await pool.query('SELECT 1 FROM support_issue_attachments')).rowCount, 1);
+      } finally { await pool.query('DROP TABLE deletion_blocker'); }
+    });
 
     await t.test('owner checks precede reference details; signatures bind owner and exact IDs', async () => {
       await reset(); await send();
@@ -205,18 +281,21 @@ test('confirmed personal deletion preserves received copies and checks concurren
       await reset();
       await pool.query('UPDATE users SET profile_pic_url=$1 WHERE id=$2', [url(source), alice]);
       await pool.query('UPDATE groups SET profile_pic_url=$1 WHERE id=$2', [url(source), group]);
-      await pool.query("INSERT INTO listings VALUES($1,$2,'listing')", [id(50), url(source)]);
+      await pool.query("INSERT INTO listings(id,image_url,title,video_url) VALUES($1,$2,'listing',$2)", [id(50), url(source)]);
       await pool.query('INSERT INTO listing_images VALUES($1,$2,$3)', [id(51), id(50), url(source)]);
       await pool.query("INSERT INTO education_forms VALUES($1,$2,'original.png','form')", [id(52), url(source)]);
       await pool.query("INSERT INTO shared_gifs VALUES($1,$2,'active')", [id(53), source]);
-      const view = await preview(); assert.equal(view.linkedUses.length, 6);
+      const view = await preview(); assert.equal(view.linkedUses.length, 7);
       await confirm(view);
       assert.equal((await pool.query('SELECT title,image_url FROM listings')).rows[0].title, 'listing');
       assert.equal((await pool.query('SELECT image_url FROM listings')).rows[0].image_url, null);
+      assert.equal((await pool.query('SELECT video_url FROM listings')).rows[0].video_url, null);
       assert.equal((await pool.query('SELECT file_url,file_name FROM education_forms')).rows[0].file_url, null);
       assert.equal((await pool.query('SELECT name FROM groups')).rows[0].name, 'Friends');
       assert.equal((await pool.query('SELECT 1 FROM shared_gifs')).rowCount, 0);
       await assert.rejects(pool.query('UPDATE groups SET profile_pic_url=$1 WHERE id=$2', [url(source), group]), /MEDIA_DELETED/);
+      for (const column of ['image_url', 'video_url'])
+        await assert.rejects(pool.query(`UPDATE listings SET ${column}=$1 WHERE id=$2`, [url(source), id(50)]), /MEDIA_DELETED/);
     });
 
     await t.test('backup failures are reported per file without cancelling that file’s deliveries', async () => {

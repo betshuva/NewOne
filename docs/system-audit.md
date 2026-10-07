@@ -6,6 +6,20 @@ The system audit is available from the administration screen in
 Flutter (`SystemAuditScreen`) and from `admin.html` via `admin-audit.html`.
 The existing filter timeline and activity log remain available.
 
+The standalone journal defaults to the last 10 minutes. Its minutes control
+accepts 1–44,640 minutes and applies to both tabs, column-filter options and CSV
+exports. Refreshes advance the time window; opening an operation retains its
+full event chain. Dispatch enrichment is limited to operations in the requested
+window (or parents of events in that window), before the expensive per-operation
+calculation. Opening the page again restores the 10-minute default.
+
+The catalog supplies `defaultColumnFilters` selecting the displayed actions
+`media:video` and `media:image` (video and image uploads). The standalone journal
+loads these defaults before its first data request and initializes both tabs.
+Administrators can change or clear them; refreshes preserve those choices, while
+reopening the page loads the server defaults again. Other API clients keep their
+existing explicit filter behavior.
+
 Web and Android administrators with edit permission can select up to 200
 individual records, select the displayed records, or delete the whole journal.
 Every deletion requires confirmation. `GET /api/admin/audit/deletion-preview`
@@ -605,16 +619,21 @@ content, decrypted previews are passed as a parameterized request-local JSON map
 plaintext is never written back into tables. The same process handles encrypted
 attempted filenames. Values in cells and detail dialogs are rendered as text.
 
-### Blocked image previews
+### Blocked image and video previews
 
-Rejected still images retain their bounded scan preview for administrator review
-in the system audit. The original file and the
+Rejected images and videos, including stopped scans, retain their bounded scan previews for administrator
+review in the system audit, including after the original expires or is purged.
+The original image file and the
 uploader's temporary preview still expire after two minutes. Public media access
 remains blocked. The administrator preview requires an authenticated view/edit
 administrator, uses no-store headers, and is fetched with bearer authorization.
-Deleting the stored file or account deletes the scan preview through its foreign
-key. Historical images already purged before this change cannot be recovered;
-their rejection reason remains visible with an unavailable-image placeholder.
+Deleting a stored file removes its event previews. New video scans also retain
+bounded evidence alongside their cached decision in `cached_scan_previews`.
+Reusing a decision links its first unresolved frame to the new upload only when
+the owner, source hash, frame hash and manifest timestamp match. This does not
+decode the video, call a classifier or change the moderation decision. Scan-cache
+reset and account deletion remove this cache evidence through foreign keys.
+Existing missing images are not backfilled or regenerated.
 
 ### Representative image in the web audit
 

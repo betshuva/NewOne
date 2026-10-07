@@ -62,6 +62,7 @@ async function requestGeminiModesty(buffer, options) {
         'x-goog-api-key': apiKey,
       },
       body: JSON.stringify({
+        store: false,
         contents,
         generationConfig: {
           temperature: 0,

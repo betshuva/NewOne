@@ -2,6 +2,7 @@
 const crypto = require('node:crypto');
 const drive = require('./personal-drive');
 const { createVaultKey, wrapVaultKey } = require('./backup-vault-key');
+const { ARCHIVABLE_SQL } = require('./media-storage-policy');
 
 const LIMIT = 2000000000;
 const PENDING_LIMIT = 512 * 1024 * 1024;
@@ -184,8 +185,10 @@ async function status(pool, userId) {
 }
 async function queueUserMigration(pool, userId) {
   await pool.query(`UPDATE stored_files sf SET storage_tier='personal'
-    WHERE sf.user_id=$1 AND sf.storage_tier='service' AND sf.moderation_status='approved'
-      AND sf.content_purged_at IS NULL AND sf.moderation_details->>'pending' IS DISTINCT FROM 'true'
+    WHERE sf.user_id=$1 AND sf.storage_tier='service'
+      AND sf.moderation_status IN ('approved','rejected','stopped')
+      AND sf.content_purged_at IS NULL
+      AND (sf.moderation_status<>'approved' OR sf.moderation_details->>'pending' IS DISTINCT FROM 'true')
       AND NOT EXISTS(SELECT 1 FROM pending_scans ps WHERE ps.file_url=sf.public_url)
       AND NOT EXISTS(SELECT 1 FROM deleted_media_sources ds WHERE ds.storage_path=sf.storage_path)
       AND EXISTS(SELECT 1 FROM storage_drive_health h
@@ -211,7 +214,7 @@ function createMaintenance({ getPool, verifyBytes = require('./local-media-relea
       const candidates = (await pool.query(`SELECT sf.id FROM stored_files sf
         JOIN media_backup_items m ON m.stored_file_id=sf.id AND m.user_id=sf.user_id
         WHERE sf.storage_tier='personal' AND sf.personal_storage_verified_at IS NULL
-          AND sf.content_purged_at IS NULL AND sf.moderation_status='approved'
+          AND sf.content_purged_at IS NULL AND ${ARCHIVABLE_SQL}
           AND m.status='verified' AND m.encryption_metadata->>'keySource'='server_vault'
         ORDER BY sf.created_at LIMIT 20`)).rows;
       for (const candidate of candidates) {
@@ -228,7 +231,7 @@ function createMaintenance({ getPool, verifyBytes = require('./local-media-relea
             JOIN user_backup_settings s ON s.user_id=sf.user_id
             JOIN cloud_backup_accounts c ON c.user_id=sf.user_id AND c.status='connected'
             WHERE sf.id=$1 AND sf.storage_tier='personal' AND sf.personal_storage_verified_at IS NULL
-              AND sf.moderation_status='approved' AND sf.content_purged_at IS NULL AND m.status='verified'
+              AND ${ARCHIVABLE_SQL} AND sf.content_purged_at IS NULL AND m.status='verified'
               AND m.plaintext_sha256=sf.content_sha256 AND m.encryption_metadata->>'keySource'='server_vault'
             FOR UPDATE OF sf,m`, [candidate.id])).rows[0];
           if (row) {

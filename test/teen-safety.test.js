@@ -14,11 +14,11 @@ function routeSource(startMarker, endMarker) {
   return server.slice(start, end);
 }
 
-test('registration requires a valid birth date and rejects users under 13', () => {
-  assert.match(server, /function validateRegistrationAge/);
-  assert.match(server, /if \(age < 13\)/);
+test('registration requires a valid birth date and rejects users under 18', () => {
+  assert.match(read('server/adult-access-policy.js'), /function validateRegistrationAge/);
+  assert.equal(require('../server/adult-access-policy').MINIMUM_AGE, 18);
   assert.match(server, /birth_date DATE/);
-  assert.match(routeSource("app.post('/api/register'", "app.post('/api/login'"),
+  assert.match(routeSource("app.post('/api/auth/google'", "// ── Users"),
     /validateRegistrationAge\(req\.body\.birthDate\)/);
   assert.match(read('flutter_app/lib/main.dart'), /'birthDate': _formatBirthDate\(_birthDate!\)/);
 });
@@ -72,8 +72,8 @@ test('teen sockets cannot join, send to, or receive pushes from group rooms', ()
   assert.match(server, /u\.birth_date <= CURRENT_DATE - INTERVAL '18 years'/);
 });
 
-test('legal pages explain birth-date processing and teen protections', () => {
-  assert.match(read('terms.html'), /חשבון נוער/);
+test('legal pages explain birth-date processing and adult-only access', () => {
+  assert.match(read('terms.html'), /18 ומעלה בלבד/);
   assert.match(read('privacy.html'), /תאריך לידה/);
-  assert.match(read('privacy.html'), /13–17/);
+  assert.match(read('privacy.html'), /18 ומעלה בלבד/);
 });

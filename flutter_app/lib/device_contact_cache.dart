@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'contact_read_permission.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Only device-owned names and addresses are persisted, never server profile
@@ -15,6 +15,7 @@ class DeviceContactCache {
 
   static String normalizePhone(String value) {
     var digits = value.replaceAll(RegExp(r'\D'), '');
+    if (digits.startsWith('00')) digits = digits.substring(2);
     if (digits.startsWith('972') && digits.length > 10) {
       digits = '0${digits.substring(3)}';
     }
@@ -23,9 +24,9 @@ class DeviceContactCache {
 
   Future<List<Map<String, dynamic>>> load(
       {bool requestPermission = false}) async {
-    var granted = await Permission.contacts.isGranted;
+    var granted = await ContactReadPermission.isGranted;
     if (!granted && requestPermission) {
-      granted = await FlutterContacts.requestPermission(readonly: true);
+      granted = await ContactReadPermission.request();
     }
     if (!granted) {
       _memory = null;
@@ -52,7 +53,7 @@ class DeviceContactCache {
 
   Future<List<Map<String, dynamic>>> _read() async {
     final epoch = _epochs[accountId] ?? 0;
-    if (!await Permission.contacts.isGranted) {
+    if (!await ContactReadPermission.isGranted) {
       _memory = null;
       await clear(accountId);
       return [];
@@ -83,7 +84,7 @@ class DeviceContactCache {
       }
     }
     if (epoch != (_epochs[accountId] ?? 0)) return [];
-    if (!await Permission.contacts.isGranted) {
+    if (!await ContactReadPermission.isGranted) {
       await clear(accountId);
       _memory = null;
       return [];

@@ -43,6 +43,7 @@ class MessageReactionSummary extends StatelessWidget {
           api: api,
           token: token,
           messageId: message['id'].toString(),
+          compact: true,
           showAddButton: false)
       : const SizedBox.shrink();
 }

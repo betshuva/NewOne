@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:betshuva/native_video_capture.dart';
 import 'package:clock/clock.dart';
@@ -31,6 +32,13 @@ class _Camera extends CameraPlatform {
   final _Recording recording;
   int starts = 0, stops = 0, creates = 0, disposals = 0;
   int stopFailures = 0, initializationFailures = 0;
+  final audioModes = <bool?>[];
+  int pictures = 0;
+  final photo = XFile.fromData(
+      base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF1sAAAAASUVORK5CYII='),
+      path: '/tmp/photo.png',
+      mimeType: 'image/png');
   Completer<void>? pendingStart;
   Completer<XFile>? pendingStop;
   Completer<void>? pendingDisposal;
@@ -42,9 +50,18 @@ class _Camera extends CameraPlatform {
             sensorOrientation: 90),
       ];
   @override
-  Future<int> createCameraWithSettings(CameraDescription cameraDescription,
-          MediaSettings mediaSettings) async =>
-      ++creates;
+  Future<int> createCameraWithSettings(
+      CameraDescription cameraDescription, MediaSettings mediaSettings) async {
+    audioModes.add(mediaSettings.enableAudio);
+    return ++creates;
+  }
+
+  @override
+  Future<XFile> takePicture(int cameraId) async {
+    pictures++;
+    return photo;
+  }
+
   @override
   Future<void> initializeCamera(int cameraId,
       {ImageFormatGroup imageFormatGroup = ImageFormatGroup.unknown}) async {
@@ -114,6 +131,97 @@ void _installCamera(_Camera camera) {
 }
 
 void main() {
+  Future<void> openUnified(WidgetTester tester,
+      {bool images = true,
+      bool video = true,
+      Duration maxDuration = const Duration(seconds: 30),
+      void Function(XFile?)? onResult}) async {
+    await tester.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (context) => TextButton(
+                onPressed: () async {
+                  onResult?.call(await captureNativeCamera(context,
+                      maxDuration: maxDuration,
+                      creatorId: 'test-user',
+                      imagesAllowed: images,
+                      videoAllowed: video));
+                },
+                child: const Text('open')))));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets(
+      'unified camera opens full screen in photo mode without microphone',
+      (tester) async {
+    final camera = _Camera(_Recording('/tmp/capture.mp4'));
+    _installCamera(camera);
+    XFile? result;
+    await openUnified(tester, onResult: (file) => result = file);
+    expect(find.text('צילום'), findsOneWidget);
+    expect(tester.getSize(find.byType(Scaffold)),
+        tester.view.physicalSize / tester.view.devicePixelRatio);
+    expect(camera.audioModes, [false]);
+    expect(find.text('תמונה'), findsOneWidget);
+    expect(find.text('וידאו'), findsOneWidget);
+    await tester.tap(find.text('צלם'));
+    await tester.pumpAndSettle();
+    expect(result, isNull);
+    expect(camera.pictures, 1);
+    await tester.tap(find.text('השתמש בתמונה'));
+    await tester.pumpAndSettle();
+    expect(result, same(camera.photo));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'switching to video waits for disposal and locks modes while recording',
+      (tester) async {
+    final camera = _Camera(_Recording('/tmp/capture.temp'));
+    _installCamera(camera);
+    XFile? result;
+    await openUnified(tester,
+        maxDuration: const Duration(minutes: 2),
+        onResult: (file) => result = file);
+    final closing = Completer<void>();
+    camera.pendingDisposal = closing;
+    await tester.tap(find.text('וידאו'));
+    await tester.pump();
+    expect(camera.creates, 1);
+    expect(camera.disposals, 1);
+    closing.complete();
+    await tester.pumpAndSettle();
+    expect(camera.audioModes, [false, true]);
+    expect(find.text('זמן שנותר: 02:00'), findsOneWidget);
+    await tester.tap(find.text('התחל צילום'));
+    await tester.pump();
+    for (final chip in tester.widgetList<ChoiceChip>(find.byType(ChoiceChip))) {
+      expect(chip.onSelected, isNull);
+    }
+    await tester.pump(const Duration(minutes: 2));
+    await tester.pumpAndSettle();
+    expect(camera.stops, 1);
+    expect(result?.mimeType, 'video/mp4');
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final images in [false, true]) {
+    testWidgets(
+        'unified camera respects ${images ? 'photo' : 'video'}-only filter',
+        (tester) async {
+      final camera = _Camera(_Recording('/tmp/capture.mp4'));
+      _installCamera(camera);
+      await openUnified(tester,
+          images: images, video: !images, onResult: (_) {});
+      expect(find.text('תמונה'), images ? findsOneWidget : findsNothing);
+      expect(find.text('וידאו'), images ? findsNothing : findsOneWidget);
+      expect(camera.audioModes, [!images]);
+      await tester.tap(find.byIcon(Icons.close));
+      await tester.pumpAndSettle();
+      expect(camera.disposals, 1);
+    });
+  }
+
   testWidgets('video filename retains the recording start time through saving',
       (tester) async {
     final recording = _Recording('/tmp/capture.mp4');

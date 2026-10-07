@@ -37,3 +37,12 @@ Validation:
   120-second limit and a healthy status.
 
 Deployment scope: web, Node backend and local video moderation service.
+# Completion order correction (2026-10-01)
+
+Completion notices now persist the batch's upload request IDs and delivered
+message IDs. History refreshes place the notice after the last matching file,
+including pending, rejected and subsequently delivered media, regardless of
+device/server clock differences. The server exposes upload IDs only to their
+owner. Old completion notices can recover their position when every batch
+member is identifiable from request timestamps; incomplete matches retain the
+original chronological placement.

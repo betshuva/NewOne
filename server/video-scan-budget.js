@@ -240,6 +240,7 @@ async function acquireVideoScan(pool, { userId, contentSha256, scanVersion, stor
   if (!userId || !scanVersion) throw new TypeError('userId and scanVersion are required');
   if (!Object.hasOwn(VIDEO_SCAN_PROVIDER_POLICIES, providerPolicy)) throw new TypeError('Unknown video scan provider policy');
   return transaction(pool, async db => {
+    await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', ['scan-cache:' + digest]);
     const id = randomUUID(), leaseToken = randomUUID();
     // The unique constraint serializes concurrent creation of the same canonical video.
     const inserted = await db.query(`INSERT INTO video_scan_budgets

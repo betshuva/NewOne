@@ -21,8 +21,12 @@ test('actual backup worker saves explicitly requested Excel when automatic backu
   await db.connect();
   try {
     // Every write below targets session-local TEMP tables, never live records.
-    await db.query(`CREATE TEMP TABLE stored_files(id uuid PRIMARY KEY,user_id uuid,storage_path text,
+    await db.query(`SET search_path=pg_temp;
+      CREATE TEMP TABLE pending_scans(file_url text);
+      CREATE TEMP TABLE central_drive_objects(file_id uuid,status text);
+      CREATE TEMP TABLE stored_files(id uuid PRIMARY KEY,user_id uuid,storage_path text,
       file_size bigint,mime_type text,content_sha256 text,moderation_status text,
+      storage_tier text DEFAULT 'service',moderation_details jsonb DEFAULT '{}',public_url text,
       created_at timestamptz DEFAULT now(),released_at timestamptz,content_purged_at timestamptz);
       CREATE TEMP TABLE user_backup_settings(user_id uuid PRIMARY KEY,enabled boolean,
         encrypted_data_key text,data_key_version integer);
@@ -59,6 +63,15 @@ test('actual backup worker saves explicitly requested Excel when automatic backu
     }) };
     const worker = vm.runInNewContext(`${source.slice(start, end)};runAutomaticBackupWorker`, {
       getPool: async () => pool, path, fs, crypto, Buffer, UPLOAD_ROOT: directory,
+      ARCHIVABLE_SQL: require('../server/media-storage-policy').ARCHIVABLE_SQL,
+      setInterval, clearInterval,
+      readSourceMedia: async (_pool, root, file) => fs.readFile(path.join(root,file.storage_path)),
+      prepareBackupTransfer: async ({ plain, key, associatedData }) => {
+        const envelope = encryptBuffer(plain, key, associatedData);
+        return { backupId: crypto.randomUUID(), envelope,
+          encryptedHash: crypto.createHash('sha256').update(envelope.ciphertext).digest('hex'), createdAt: new Date().toISOString() };
+      },
+      clearBackupTransfer: async () => {},
       unwrapVaultKey, encryptBackupBuffer: encryptBuffer, logActivity() {},
       console: { error: (...args) => failures.push(args.join(' ')) },
       personalDrive: {
@@ -103,6 +116,23 @@ test('actual backup worker saves explicitly requested Excel when automatic backu
       await worker(901);
       assert.equal(uploaded.length, 2);
       assert.equal((await db.query('SELECT 1 FROM media_backup_items WHERE stored_file_id=$1', [otherFileId])).rows.length, 0);
+    });
+    for (const status of ['rejected','stopped']) await t.test(`${status} file is archived encrypted only in its personal vault`, async () => {
+      const before = uploaded.length;
+      await db.query('DELETE FROM media_backup_items WHERE stored_file_id=$1',[otherFileId]);
+      await db.query("UPDATE stored_files SET moderation_status=$2,storage_tier='service' WHERE id=$1",[otherFileId,status]);
+      await worker(901);
+      assert.equal(uploaded.length,before);
+      await db.query("UPDATE stored_files SET storage_tier='personal',public_url='/active' WHERE id=$1",[otherFileId]);
+      await db.query("INSERT INTO pending_scans VALUES('/active')");
+      await worker(901);
+      assert.equal(uploaded.length,before);
+      await db.query('TRUNCATE pending_scans');
+      await worker(901);
+      assert.equal(uploaded.length,before+2,failures.join('\n'));
+      const manifest = JSON.parse(uploaded.at(-1).bytes);
+      assert.deepEqual(decryptBuffer({ version:1,...manifest.encryption,ciphertext:uploaded.at(-2).bytes },key,manifest.encryption.associatedData),plain);
+      assert.equal((await db.query('SELECT moderation_status FROM stored_files WHERE id=$1',[otherFileId])).rows[0].moderation_status,status);
     });
   } finally {
     await db.end();

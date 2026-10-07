@@ -51,7 +51,7 @@ test('automatic local release verifies live cloud bytes and preserves active ref
     const encrypted = encryptBuffer(plain, key, 'owner-bound');
     remote.set('remote', encrypted.ciphertext);
     await fs.writeFile(file, plain);
-    await db.query(`INSERT INTO stored_files VALUES($1,$2,'media.bin','/uploads/media.bin',$3,$4,'approved',NULL,NULL,NULL,now())`,
+    await db.query(`INSERT INTO stored_files VALUES($1,$2,'media.bin','/uploads/media.bin',$3,$4,'approved',NULL,NULL,NULL,now(),'service')`,
       [id,user,plain.length,hash(plain)]);
     await db.query(`INSERT INTO media_backup_items VALUES($1,$2,'google_drive','verified','remote',now(),$3,$4,$5)`,
       [id,user,hash(encrypted.ciphertext),hash(plain),JSON.stringify({ ...encrypted,
@@ -65,7 +65,7 @@ test('automatic local release verifies live cloud bytes and preserves active ref
     await db.query(`SET search_path=pg_temp;
       CREATE TEMP TABLE stored_files(id uuid,user_id uuid,storage_path text,public_url text,
         file_size bigint,content_sha256 text,moderation_status text,moderation_details jsonb,
-        content_purged_at timestamptz,released_at timestamptz,release_scheduled_at timestamptz);
+        content_purged_at timestamptz,released_at timestamptz,release_scheduled_at timestamptz,storage_tier text);
       CREATE TEMP TABLE media_backup_items(stored_file_id uuid,user_id uuid,provider text,status text,
         remote_file_id text,restore_verified_at timestamptz,encrypted_sha256 text,plaintext_sha256 text,encryption_metadata jsonb);
       CREATE TEMP TABLE user_backup_settings(user_id uuid,enabled boolean,encrypted_data_key text);
@@ -98,6 +98,21 @@ test('automatic local release verifies live cloud bytes and preserves active ref
         await seed(); await db.query(condition);
         assert.equal((await run()).released, 0);
         assert.deepEqual(await fs.readFile(file), plain);
+      });
+    }
+    for (const status of ['rejected', 'stopped']) {
+      await t.test(`${status} personal archives release only after verified preservation without changing moderation`, async () => {
+        await seed();
+        await db.query('UPDATE stored_files SET moderation_status=$1', [status]);
+        assert.equal((await run()).released, 0);
+        await db.query("UPDATE stored_files SET storage_tier='personal'");
+        await db.query('UPDATE user_backup_settings SET enabled=FALSE');
+        await db.query("INSERT INTO pending_scans VALUES('/uploads/media.bin')");
+        assert.equal((await run()).released, 0);
+        await db.query('TRUNCATE pending_scans');
+        assert.equal((await run()).released, 1);
+        assert.equal((await db.query('SELECT moderation_status FROM stored_files')).rows[0].moderation_status, status);
+        await assert.rejects(fs.stat(file), { code: 'ENOENT' });
       });
     }
     for (const broken of ['missing', 'corrupt', 'wrong-key']) {

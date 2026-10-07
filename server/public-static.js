@@ -9,7 +9,7 @@ const publicFiles = new Set([
   '/', '/index.html', '/home.html', '/privacy.html', '/terms.html',
   '/delete-account.html', '/child-safety.html', '/accessibility.html',
   '/open-source-licenses.html', '/admin.html', '/admin-audit.html', '/admin-gmail.html', '/admin-storage.html',
-  '/admin-members.html', '/groups.html', '/invite-v2.html', '/public-users.html',
+  '/admin-members.html', '/admin-reports.html', '/admin-scans.html', '/groups.html', '/invite-v2.html', '/public-users.html',
   '/play-store-description.html', '/image-links.html', '/logo.html',
   '/demo-conversations.html', '/favicon.png', '/manifest.json', '/version.json',
   '/flutter.js', '/flutter_bootstrap.js', '/flutter_service_worker.js',

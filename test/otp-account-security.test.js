@@ -7,14 +7,14 @@ const { consumeOtp } = require('../server/otp-security');
 const { signSession } = require('../server/session-security');
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 
-function fixture({ existingPhone = false, existingEmail = false } = {}) {
+function fixture({ existingPhone = false, existingEmail = false, birthDate = '1990-01-01' } = {}) {
   let handler;
   const writes = [];
   const phone = '0501234567';
   const otpStore = new Map([[phone, { code: '123456', expires: Date.now() + 60000,
     email: 'claimed@example.test', name: 'Test user', acceptedTerms: true,
     ageConfirmed: true, gender: 'male', birthDate: '1990-01-01' }]]);
-  const user = { id: 'test-user', email: 'claimed@example.test', session_version: 0 };
+  const user = { birth_date: birthDate, id: 'test-user', email: 'claimed@example.test', session_version: 0 };
   const pool = { async query(sql, values) {
     if (/SELECT.*FROM users WHERE phone=/s.test(sql)) return { rows: existingPhone ? [user] : [] };
     if (/SELECT.*FROM users WHERE lower\(email\)/s.test(sql)) return { rows: existingEmail ? [user] : [] };
@@ -25,6 +25,8 @@ function fixture({ existingPhone = false, existingEmail = false } = {}) {
   vm.runInNewContext(source.slice(start, end), {
     app: { post(_path, _limit, _credentials, callback) { handler = callback; } },
     authRateLimit() {}, credentialRateLimit() {}, otpStore, consumeOtp,
+    ...require('../server/registration-policy'),
+    ...require('../server/adult-access-policy'),
     getPool: async () => pool, signSession, JWT_SECRET: 'isolated-test-key',
     validateRegistrationAge: () => ({ birthDate: '1990-01-01' }),
     NEW_ACCOUNT_CONTENT_FILTER: {}, provisionSystemConversation: async () => {}, logActivity() {},
@@ -54,10 +56,20 @@ test('SMS login verifies only the phone and concurrent replay cannot issue a sec
   assert.doesNotMatch(f.writes[0].sql, /email_verified/);
 });
 
-test('new SMS accounts have no predictable password and do not verify the claimed email', async () => {
+test('a valid SMS code cannot create a new account', async () => {
   const f = fixture();
-  assert.equal((await f.invoke()).code, 200);
-  const insert = f.writes.find(item => item.sql.includes('INSERT INTO users'));
-  assert.equal(insert.values[3], null);
-  assert.match(insert.sql, /TRUE, FALSE, now\(\)/);
+  const res = await f.invoke();
+  assert.equal(res.code, 409);
+  assert.equal(res.body.code, 'GOOGLE_REGISTRATION_REQUIRED');
+  assert.equal(res.body.token, undefined);
+  assert.deepEqual(f.writes, []);
+});
+
+test('existing SMS account under 18 cannot receive a session', async () => {
+  const f = fixture({ existingPhone: true, birthDate: '2015-01-01' });
+  const res = await f.invoke();
+  assert.equal(res.code, 403);
+  assert.equal(res.body.code, 'AGE_RESTRICTED');
+  assert.equal(res.body.token, undefined);
+  assert.deepEqual(f.writes, []);
 });

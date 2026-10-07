@@ -40,6 +40,7 @@ Map<String, dynamic> _message({bool stopped = false, bool redacted = true}) => {
       'type': 'video',
       'file_url': redacted ? null : _url,
       'file_name': redacted ? null : 'stopped-video.mp4',
+      'scan_file_name': 'stopped-video.mp4',
       'filter_hidden': redacted,
       'hidden_reason': redacted ? 'moderation' : null,
       'message_status': 'pending_scan',
@@ -163,13 +164,15 @@ Future<void> _unmount(WidgetTester tester) async {
 
 void _expectStopped() {
   expect(find.byKey(const ValueKey('scan-stopped-$_id')), findsOneWidget);
-  expect(find.text('הסריקה נעצרה'), findsOneWidget);
-  expect(find.text('הקובץ לא נשלח'), findsOneWidget);
+  expect(find.text('הסירטון נחסם'), findsWidgets);
+  expect(find.text('stopped-video.mp4'), findsOneWidget);
+  expect(find.text('הקובץ לא נשלח'), findsNothing);
   expect(find.text('התמונה מוצגת רק לך ולא נשלחה'), findsNothing);
-  expect(find.text('$_reason\nבוצעו 4 מתוך 6 בדיקות'), findsOneWidget);
+  expect(find.textContaining(_reason), findsNothing);
+  expect(find.textContaining('בוצעו'), findsNothing);
   expect(find.byKey(const ValueKey('hidden-$_id')), findsNothing);
   expect(find.byType(VideoThumbnail), findsNothing);
-  expect(find.text('התמונה ממתינה לסריקה ולאישור'), findsNothing);
+  expect(find.text('הקובץ ממתין לסריקה ולאישור'), findsNothing);
 }
 
 void main() {
@@ -186,15 +189,15 @@ void main() {
         await http.runWithClient(() async {
           await _mount(tester, group, _socket(), viewport: viewport);
           _expectStopped();
-          final title = tester.getRect(find.text('הסריקה נעצרה'));
-          final reason = tester.getRect(find.text('$_reason\nבוצעו 4 מתוך 6 בדיקות'));
-          for (final rect in [title, reason]) {
+          final title = tester.getRect(find.text('הסירטון נחסם'));
+          final filename = tester.getRect(find.text('stopped-video.mp4'));
+          for (final rect in [title, filename]) {
             expect(rect.left, greaterThanOrEqualTo(0));
             expect(rect.right, lessThanOrEqualTo(viewport.width));
             expect(rect.top, greaterThanOrEqualTo(0));
             expect(rect.bottom, lessThanOrEqualTo(viewport.height));
           }
-          expect(title.bottom, lessThanOrEqualTo(reason.top));
+          expect(filename.bottom, lessThanOrEqualTo(title.top));
           expect(tester.takeException(), isNull);
           await _unmount(tester);
         }, () => MockClient(server.respond));
@@ -223,14 +226,13 @@ void main() {
       await http.runWithClient(() async {
         await _mount(tester, group, socket);
         expect(server.historyReads, 1);
-        expect(find.byKey(const ValueKey('hidden-$_id')), findsOneWidget);
+        expect(find.text('סורק את הווידאו'), findsOneWidget);
         server.history = [_message(stopped: true)];
         _receiveStopped(socket, group);
         await _pump(tester);
         expect(server.historyReads, 2);
         _expectStopped();
-        expect(find.text('הסריקה נעצרה\n$_reason\nבוצעו 4 מתוך 6 בדיקות'),
-            findsOneWidget);
+        expect(find.textContaining(_reason), findsNothing);
         expect(server.postedMessages, isEmpty);
         await _unmount(tester);
       }, () => MockClient(server.respond));
@@ -245,7 +247,7 @@ void main() {
         _receiveStopped(socket, group, otherDestination: true);
         await _pump(tester);
         expect(server.historyReads, 1);
-        expect(find.byKey(const ValueKey('hidden-$_id')), findsOneWidget);
+        expect(find.text('סורק את הווידאו'), findsOneWidget);
         expect(find.textContaining('הסריקה נעצרה'), findsNothing);
         expect(server.postedMessages, isEmpty);
         await _unmount(tester);

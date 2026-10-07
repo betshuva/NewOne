@@ -31,7 +31,12 @@ test('upload notices persist idempotently and remain private to owner and conver
     assert.equal((await post({...notice,id:'summary-all',text:'סוף תור ההעלאה: 0 מתוך 3 הושלמו, 3 נכשלו'})).status,201);
     assert.equal((await post({...notice,id:'bad-summary',text:'סוף תור ההעלאה: 2 מתוך 3 הושלמו, 2 נכשלו'})).status,400);
     assert.equal((await post({...notice,id:'bad-large',text:'סוף תור ההעלאה: 1 מתוך 101 הושלמו, 100 נכשלו'})).status,400);
+    assert.equal((await post({...notice,id:'end',text:'סוף העלאת 3 קבצים',uploadIds:['uploading_a','uploading_b'],messageIds:['sent_a']})).status,201);
+    assert.equal((await post({...notice,id:'bad-anchors',uploadIds:Array(101).fill('a')})).status,400);
+    assert.equal((await post({...notice,id:'bad-anchor-type',messageIds:[{}]})).status,400);
     const read=(who,target='group')=>fetch(`${base}?kind=group&target=${target}`,{headers:{Authorization:who}}).then(r=>r.json());
-    const rows=await read(owner);assert.equal(rows.length,3);assert.equal(rows[0].isUploadBatchNotice,true);
+    const rows=await read(owner);assert.equal(rows.length,4);assert.equal(rows[0].isUploadBatchNotice,true);
+    assert.deepEqual(rows.find(r=>r.id==='end').uploadIds,['uploading_a','uploading_b']);
+    assert.deepEqual(rows.find(r=>r.id==='end').messageIds,['sent_a']);
     assert.deepEqual(await read(other),[]);assert.deepEqual(await read(owner,'elsewhere'),[]);
   });

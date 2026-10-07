@@ -72,6 +72,78 @@ void main() {
   });
 
   for (final group in [false, true]) {
+    testWidgets('batch completion remains below all three pending videos after refresh group=$group', (tester) async {
+      fixtures.size(tester);
+      final previousVideo = video.VideoPlayerPlatform.instance;
+      video.VideoPlayerPlatform.instance = _VideoProbe();
+      addTearDown(() => video.VideoPlayerPlatform.instance = previousVideo);
+      SharedPreferences.setMockInitialValues({});
+      final previous = FilePicker.platform;
+      FilePicker.platform = AttachmentPicker(List.generate(3,
+          (i) => MemoryPickedFile('video-$i.mp4', fixtures.png)));
+      addTearDown(() => FilePicker.platform = previous);
+      final scans = <Map<String, dynamic>>[];
+      Future<void> tick() async {
+        for (var i=0;i<20;i++) {
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds:10)));
+          await tester.pump(const Duration(milliseconds:100));
+        }
+      }
+      await http.runWithClient(() async {
+        await tester.pumpWidget(fixtures.chat(group));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.attach_file));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('העלאת קבצים'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('כן, העלה'));
+        await tick();
+        expect(scans.length,3);
+        receivingFilterChanges.add('token');
+        await tick();
+        final end=find.text('סוף העלאת 3 קבצים');
+        expect(end,findsNothing);
+        final cards=find.text('סורק את הווידאו');
+        expect(cards,findsNWidgets(3));
+        expect(find.textContaining('סיכום:'), findsNothing);
+        for (final scan in scans.take(2)) {
+          scan['moderation_status'] = 'stopped';
+          scan['scan_stopped'] = true;
+        }
+        receivingFilterChanges.add('token');
+        await tick();
+        expect(find.textContaining('סיכום:'), findsNothing);
+        scans.last['moderation_status']='stopped';
+        scans.last['scan_stopped']=true;
+        receivingFilterChanges.add('token');
+        await tick();
+        final summary=find.text('סיכום: נשלחו 0 · נחסמו 3');
+        expect(summary, findsOneWidget);
+        expect(end,findsNothing);
+        expect(tester.widget<Text>(summary).style?.color,const Color(0xFFFFB74D));
+        final blocked=find.text('הסירטון נחסם');
+        expect(blocked,findsNWidgets(3));
+        for(var i=0;i<3;i++) {
+          expect(tester.getTopLeft(summary).dy,greaterThan(tester.getBottomLeft(blocked.at(i)).dy));
+        }
+        expect(find.textContaining('עדיין בטיפול'), findsNothing);
+        expect(tester.takeException(),isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      },()=>MockClient((request) async {
+        if(fixtures.isHistory(request,group))return fixtures.json(scans);
+        if(request.url.path.endsWith('/upload')) {
+          final clientId=RegExp(r'name="clientUploadId"\r\n\r\n([^\r]+)').firstMatch(latin1.decode(request.bodyBytes))!.group(1)!;
+          final index=scans.length;
+          scans.add({'id':'scan_$index','sender_id':'viewer','sender_name':'אני',
+            'type':'video','client_upload_id':clientId,'message_status':'pending_scan',
+            'moderation_status':'pending','filter_hidden':true,'hidden_reason':'moderation',
+            'created_at':DateTime.now().add(const Duration(minutes:5)).toUtc().toIso8601String()});
+          return fixtures.json({'status':'pending','fileType':'video','url':'/uploads/$index.mp4','fileName':'video-$index.mp4'});
+        }
+        return fixtures.defaultResponse(request);
+      }));
+    });
     testWidgets(
         'video upload stays one progress card across history refresh group=$group',
         (tester) async {
@@ -125,7 +197,7 @@ void main() {
         await tick();
         expect(historyCalls, greaterThan(before));
         expect(find.byType(LinearProgressIndicator), findsOneWidget);
-        expect(find.text('התמונה ממתינה לסריקה ולאישור'), findsNothing);
+        expect(find.text('הקובץ ממתין לסריקה ולאישור'), findsNothing);
         upload.complete(fixtures.json({
           'status': 'pending',
           'fileType': 'video',

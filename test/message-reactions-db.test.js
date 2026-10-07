@@ -17,12 +17,15 @@ test('reactions enforce membership, visibility and per-user ownership in Postgre
   try {
     await db.query('BEGIN');
     await db.query(`
-      CREATE TEMP TABLE users(id uuid PRIMARY KEY,content_filter jsonb);
+      CREATE TEMP TABLE users(id uuid PRIMARY KEY,content_filter jsonb,name text,birth_date date DEFAULT '1990-01-01');
+      CREATE TEMP TABLE user_contacts(owner_id uuid,contact_id uuid,filter_override jsonb);
+      CREATE TEMP TABLE message_status(message_id uuid,user_id uuid,status text DEFAULT 'delivered',
+        reactions_read_at timestamptz DEFAULT now(),PRIMARY KEY(message_id,user_id));
       CREATE TEMP TABLE messages(id uuid PRIMARY KEY,sender_id uuid,recipient_id uuid,group_id uuid,type text,
         file_url text,created_at timestamptz DEFAULT now(),deleted_for_everyone boolean DEFAULT false,deleted_for_sender boolean DEFAULT false);
       CREATE TEMP TABLE conversation_user_state(user_id uuid,kind text,target_id uuid,cleared_at timestamptz);
-      CREATE TEMP TABLE groups(id uuid PRIMARY KEY,creator_id uuid,content_filter jsonb);
-      CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,status text,filter_override jsonb);
+      CREATE TEMP TABLE groups(id uuid PRIMARY KEY,creator_id uuid,content_filter jsonb,name text);
+      CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,status text,filter_override jsonb,joined_at timestamptz DEFAULT '-infinity');
       CREATE TEMP TABLE stored_files(public_url text,moderation_details jsonb);
       CREATE TEMP TABLE message_user_deletions(message_id uuid,user_id uuid);
       CREATE TEMP TABLE blocked_users(blocker_id uuid,blocked_id uuid);
@@ -34,7 +37,7 @@ test('reactions enforce membership, visibility and per-user ownership in Postgre
     db.query = (sql, values) => query(sql.replaceAll('betshuva_effective_filter(', 'pg_temp.betshuva_effective_filter('), values);
     const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
     const [a,b,outsider,privateId,groupId,groupMessage,selfId] = [1,2,3,4,5,6,7].map(id);
-    for (const user of [a,b,outsider]) await db.query('INSERT INTO users VALUES($1,$2)', [user, JSON.stringify({text:true,nonHumanImages:false,men:false,women:false,children:false})]);
+    for (const user of [a,b,outsider]) await db.query('INSERT INTO users(id,content_filter) VALUES($1,$2)', [user, JSON.stringify({text:true,nonHumanImages:false,men:false,women:false,children:false})]);
     await db.query('INSERT INTO messages(id,sender_id,recipient_id,type) VALUES($1,$2,$3,\'text\'),($4,$2,$2,\'text\')', [privateId,a,b,selfId]);
     await db.query('INSERT INTO groups(id,creator_id) VALUES($1,$2)', [groupId,a]);
     await db.query("INSERT INTO group_members(group_id,user_id,status) VALUES($1,$2,'member'),($1,$3,'member')", [groupId,a,b]);

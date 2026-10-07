@@ -122,6 +122,7 @@ class _MediaBackend {
     String confirmationToken = 'preview-token-1',
     List<Map<String, Object?>> pendingRecipients = const [],
     List<Map<String, Object?>> linkedUses = const [],
+    List<Map<String, Object?>> supportIssues = const [],
   }) =>
       {
         'ids': ids,
@@ -143,6 +144,7 @@ class _MediaBackend {
         'pendingCount': pendingRecipients.fold<int>(
             0, (total, recipient) => total + (recipient['count'] as int? ?? 1)),
         'linkedUses': linkedUses,
+        'supportIssues': supportIssues,
         'confirmationToken': confirmationToken,
       };
 
@@ -487,7 +489,7 @@ void main() {
       hiddenReason: 'moderation',
       reason: null,
       purged: false,
-      expected: 'התמונה ממתינה לסריקה ולאישור',
+      expected: 'הקובץ ממתין לסריקה ולאישור',
     ),
     (
       name: 'rejected',
@@ -614,6 +616,25 @@ void main() {
       expect(backend.listings.last.url.queryParameters['minSize'], '1572864');
       expect(backend.listings.last.url.queryParameters['maxSize'], '12582912');
       expect(backend.listings.last.url.queryParameters['offset'], '0');
+    });
+  });
+
+  testWidgets('filename search stays visible while scrolling and Enter queries the entire library', (tester) async {
+    await _withLibrary(tester, (backend, _) async {
+      final field=_key('media-search');
+      expect(field.hitTestable(),findsOneWidget);
+      final before=tester.getTopLeft(field);
+      await tester.drag(_key('media-scroll'),const Offset(0,-500));
+      await tester.pumpAndSettle();
+      expect(tester.getTopLeft(field),before);
+      await tester.enterText(field,'report.xlsx');
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await tester.pumpAndSettle();
+      expect(backend.listings.last.url.queryParameters['search'],'report.xlsx');
+      expect(backend.listings.last.url.queryParameters['offset'],'0');
+      await tester.tap(find.byTooltip('נקה חיפוש'));
+      await tester.pumpAndSettle();
+      expect(backend.listings.last.url.queryParameters.containsKey('search'),isFalse);
     });
   });
 
@@ -831,6 +852,31 @@ void main() {
       expect(backend.deletes, isEmpty);
       expect(find.text('first.pdf'), findsOneWidget);
     });
+  });
+
+  testWidgets('support issue warning names the issue and requires explicit confirmation',
+      (tester) async {
+    final backend = _MediaBackend();
+    backend.previewing = (request) async => _json(backend.deletePreview(
+          jsonDecode(request.body)['ids'] as List<dynamic>,
+          supportIssues: [{'id': 'support-issue-123'}],
+        ));
+    await _withLibrary(tester, (backend, _) async {
+      await _tapVisible(tester, _key('media-delete-first'));
+      expect(find.text('מחיקת הקובץ תמחק לצמיתות גם את פניית התמיכה שאליה הוא מצורף.'), findsOneWidget);
+      expect(find.text('מספר פנייה: support-issue-123'), findsOneWidget);
+      expect(find.text('מחק קבצים ופניות לצמיתות'), findsOneWidget);
+      expect(backend.deletes, isEmpty);
+      await tester.tap(find.widgetWithText(TextButton, 'ביטול'));
+      await tester.pumpAndSettle();
+      expect(backend.deletes, isEmpty);
+      expect(_key('media-file-first'), findsOneWidget);
+      await _tapVisible(tester, _key('media-delete-first'));
+      await _tapVisible(tester, _key('media-delete-confirm'));
+      expect(backend.deletes, hasLength(1));
+      expect(jsonDecode(backend.deletes.single.body)['confirmedSupportIssueIds'], ['support-issue-123']);
+      expect(_key('media-file-first'), findsNothing);
+    }, backend: backend);
   });
 
   testWidgets('changed delete preview requires a second explicit confirmation',

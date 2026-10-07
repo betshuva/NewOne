@@ -37,8 +37,7 @@ test('web recorder handles unsupported codecs and empty recordings', () => {
   assert.match(source, /_chunks\.isEmpty/);
   assert.match(source, /bytes\.isEmpty/);
   assert.match(source, /addEventListener\('error'/);
-  assert.match(source, /recorder\.start\(\);/);
-  assert.doesNotMatch(source, /recorder\.start\(1000\)/);
+  assert.match(source, /recorder\.start\(1000\)/);
   assert.match(source, /bytes\[0\] == 0x1A[\s\S]*?bytes\[3\] == 0xA3/);
 });
 

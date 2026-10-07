@@ -9,6 +9,7 @@ const { execFileSync } = require('node:child_process');
 const { imageClassificationOutcome } = require('../server/image-classification-outcome');
 const { stoppedVideoResult, videoProviderStop } = require('../server/video-scan-controller');
 const { moderationCheckSummary } = require('../server/moderation-check-summary');
+const { corroboratedCompliantGeminiFlag } = require('../server/modesty-verification');
 
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 const start = source.indexOf('async function scanStaticImage(');
@@ -23,6 +24,7 @@ const cleanGoogle = { configured: true, available: true, blocked: false, uncerta
 const person = { category: 'men', detectedCategories: ['men'], uncertain: false };
 
 async function scanFixture({ gemini = cleanGemini, google = cleanGoogle,
+  localSafety = { available: true, wouldBlock: false },
   classification = person, verification = { decision: 'person_confirmed_by_gemini',
     providers: { gemini: { available: true, decision: 'person' } } }, video = false,
   enabled = false, required = false, openai = cleanGemini } = {}) {
@@ -34,11 +36,11 @@ async function scanFixture({ gemini = cleanGemini, google = cleanGoogle,
     openAIModerationRequired: () => required,
     moderationProviderPolicy: () => 'google_gemini',
     disabledModerationProviderResult: disabled,
-    stoppedVideoResult, videoProviderStop, imageClassificationOutcome,
+    stoppedVideoResult, videoProviderStop, imageClassificationOutcome, corroboratedCompliantGeminiFlag,
     recordProviderCheck: async event => checks.push(event),
     classifyClip: async () => ({}),
     classifyImageContent: async () => classification,
-    classifyLocalSafety: async () => ({ available: true, wouldBlock: false }),
+    classifyLocalSafety: async () => localSafety,
     googleSafeSearchConfigured: () => true,
     normalizeBlockThreshold: () => 'LIKELY',
     scanGoogleSafeSearch: async () => { calls.push('google'); return google; },
@@ -217,6 +219,54 @@ test('Gemini-only blocking evidence is never reported as agreement with unavaila
     verification: { decision: 'person_confirmed', providers: {} } });
   assert.equal(result.blocked, true);
   assert.equal(result.blockedBy, 'geminiModesty');
+});
+
+const coveredOpenAI = { ...cleanGemini, visibleAreasDecision:'compliant',
+  uncertaintyReason:'none', violationClearlyVisible:false,
+  visibleEvidence:'הכתפיים והחזה מכוסים, הברכיים והירכיים מכוסות בבגד ארוך' };
+const conflictingGemini = { ...coveredOpenAI, decision:'uncertain', violationClearlyVisible:true,
+  reason:'כל האזורים הנראים לעין עומדים בדרישות הצניעות' };
+const conflictOptions = { enabled:true,required:false,openai:coveredOpenAI,
+  gemini:conflictingGemini,verification:{decision:'person_confirmed',providers:{}} };
+
+for(const video of [false,true])test(`corroborated compliant Gemini flag approves ${video?'video frame':'image'} without extra calls`,async()=>{
+  for(const uncertaintyReason of ['none','out_of_frame_only']){
+    const gemini={...conflictingGemini,uncertaintyReason};
+    const {result,calls}=await scanFixture({...conflictOptions,video,gemini});
+    assert.equal(result.blocked,false);assert.notEqual(result.pending,true);assert.notEqual(result.scanStopped,true);
+    assert.equal(result.modestyDisagreement.resolution,'corroborated_compliant_gemini_flag');
+    assert.equal(result.modestyVerification,coveredOpenAI);
+    assert.equal(result.geminiModestyVerification,gemini,'original conflicting evidence is preserved');
+    assert.deepEqual(calls,['google','person','openai','gemini']);
+  }
+});
+
+test('compliant flag exception cannot bypass genuine violations, uncertainty, missing checks or low confidence',async()=>{
+  for(const overrides of [
+    {gemini:{...conflictingGemini,decision:'non_modest',visibleAreasDecision:'violation',visibleEvidence:'חזה וכתפיים חשופים'}},
+    {gemini:{...conflictingGemini,decision:'non_modest'}},
+    {gemini:{...conflictingGemini,visibleAreasDecision:'violation'}},
+    {gemini:{...conflictingGemini,visibleAreasDecision:'uncertain'}},
+    {gemini:{...conflictingGemini,uncertaintyReason:'visible_area_ambiguous'}},
+    {gemini:{...conflictingGemini,visibleEvidence:''}},
+    {gemini:{...conflictingGemini,confidence:0.84}},
+    {gemini:{...conflictingGemini,available:false}},
+    {gemini:{...conflictingGemini,status:'safety_blocked'}},
+    {openai:{...coveredOpenAI,available:false}},
+    {openai:{...coveredOpenAI,confidence:0.84}},
+    {openai:{...coveredOpenAI,visibleAreasDecision:'uncertain'}},
+    {openai:{...coveredOpenAI,decision:'non_modest',violationClearlyVisible:true}},
+    {google:{...cleanGoogle,blocked:true}},
+    {google:{...cleanGoogle,uncertain:true}},
+    {google:{...cleanGoogle,available:false}},
+    {localSafety:{available:true,wouldBlock:true}},
+    {localSafety:{available:false}},
+    {classification:{...person,uncertain:true}},
+  ]){
+    const {result}=await scanFixture({...conflictOptions,...overrides});
+    assert.ok(result.blocked===true||result.pending===true||result.scanStopped===true,JSON.stringify(overrides));
+    assert.notEqual(result.modestyDisagreement?.resolution,'corroborated_compliant_gemini_flag');
+  }
 });
 
 for (const [name, flags] of [

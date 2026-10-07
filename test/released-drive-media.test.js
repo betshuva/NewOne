@@ -29,6 +29,7 @@ for (const centralStorage of [false, true]) test(`${centralStorage ? 'central' :
     const end = source.indexOf('// Baseline protection for all API routes.',start);
     const mounts = new Map();
     let downloads = 0;
+    let moderationStatus = 'approved';
     const errors = [];
     vm.runInNewContext(source.slice(start,end), {
       app: { use(mount, handler) { if (typeof mount === 'string') mounts.set(mount,handler); } },
@@ -37,7 +38,7 @@ for (const centralStorage of [false, true]) test(`${centralStorage ? 'central' :
       DRIVE_MEDIA_CACHE_ROOT: path.join(root,'cache'), driveMediaLoads: new Map(),
       getPool: async () => ({ query: async sql => {
         if (sql.includes('deleted_media_sources')) return { rows: [] };
-        if (sql.includes('SELECT moderation_status')) return { rows: [{ moderation_status: 'approved' }] };
+        if (sql.includes('SELECT moderation_status')) return { rows: [{ moderation_status: moderationStatus }] };
         assert.doesNotMatch(sql, /s\.enabled=TRUE/, 'opting out of future backups must not break existing media');
         return { rows: [row] };
       } }),
@@ -61,6 +62,13 @@ for (const centralStorage of [false, true]) test(`${centralStorage ? 'central' :
       return response;
     }
     for (const mount of ['/betshuva-app/uploads','/uploads']) {
+      for (const status of ['rejected','stopped','pending']) {
+        moderationStatus = status;
+        const before = downloads;
+        assert.equal((await request(mount)).code,423);
+        assert.equal(downloads,before,'archiving never grants public access to blocked media');
+      }
+      moderationStatus = 'approved';
       const full = await request(mount);
       assert.equal(full.code,200,errors.join('\n')); assert.deepEqual(full.body,plain);
       const head = await request(mount,'HEAD');

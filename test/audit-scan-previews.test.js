@@ -184,7 +184,7 @@ test('expired blocked media and missing source rows cannot create or serve previ
   const purged = await f.file({ purgedAt: new Date() });
   for (const storedFileId of [missing, expired, purged])
     assert.equal(await saveAuditScanPreview(f.pool, { storedFileId, buffer: bytes }), null);
-  const pendingExpiry = await f.file({ fileType: 'video', status: 'rejected', expiresAt: new Date(Date.now() + 60000) });
+  const pendingExpiry = await f.file({ fileType: 'audio', status: 'rejected', expiresAt: new Date(Date.now() + 60000) });
   const preview = await saveAuditScanPreview(f.pool, { storedFileId: pendingExpiry, buffer: bytes });
   const id = await f.event({ storedFileId: pendingExpiry, scanPreviewId: preview });
   assert.equal((await f.call({ id })).statusCode, 200);
@@ -194,7 +194,7 @@ test('expired blocked media and missing source rows cannot create or serve previ
 
 test('scheduled preview purge deletes expired bytes while preserving current previews and audit history', dbOptions, async t => {
   const f = await fixture(t);
-  const expiringFile = await f.file({ fileType: 'video', status: 'rejected', expiresAt: new Date(Date.now() + 60000) });
+  const expiringFile = await f.file({ fileType: 'audio', status: 'rejected', expiresAt: new Date(Date.now() + 60000) });
   const currentFile = await f.file();
   const futureFile = await f.file({ status: 'rejected', expiresAt: new Date(Date.now() + 60000) });
   const previews = [];
@@ -242,12 +242,12 @@ test('a source purge already holding the row lock prevents a racing save from le
 });
 
 
-test('blocked image history survives expiry and original purge, but source deletion removes every copy', dbOptions, async t => {
+for (const status of ['rejected','stopped']) for (const fileType of ['image', 'video']) test(`${status} ${fileType} history survives expiry and original purge, but source deletion removes its previews`, dbOptions, async t => {
   const f = await fixture(t);
-  const storedFileId = await f.file({ status: 'pending' });
+  const storedFileId = await f.file({ status: 'pending', fileType });
   const previewId = await saveAuditScanPreview(f.pool, { storedFileId, buffer: await jpeg() });
   const eventId = await f.event({ storedFileId, scanPreviewId: previewId });
-  await f.pool.query("UPDATE stored_files SET moderation_status='rejected',blocked_content_expires_at=now()-interval '1 second' WHERE id=$1", [storedFileId]);
+  await f.pool.query("UPDATE stored_files SET moderation_status=$2,blocked_content_expires_at=now()-interval '1 second' WHERE id=$1", [storedFileId,status]);
   assert.equal((await purgeExpiredAuditScanPreviews(f.pool)).rowCount, 0);
   await f.pool.query('UPDATE stored_files SET content_purged_at=now() WHERE id=$1', [storedFileId]);
   for (const size of ['thumb', 'full']) {

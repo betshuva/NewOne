@@ -88,11 +88,13 @@ test('stopped videos clear previews and stale pending states for senders and rec
     assert.equal(row.scan_reason, reason);
     assert.equal(row.filter_hidden, true);
     assert.equal(row.filter_kept, false);
+    assert.equal(row.scan_file_name, row.sender_id === userId ? 'video.mp4' : null);
     for (const key of ['file_url', 'fileUrl', 'public_url', 'thumbnail_url',
       'blocked_preview_url', 'preview_url', 'file_name', 'fileName', 'body', 'text'])
       assert.equal(row[key], null, key);
   }
   const file = { id: fileId, user_id: userId, public_url: '/test/video.mp4',
+    original_name: 'video.mp4',
     file_type: 'video', moderation_status: 'stopped',
     moderation_details: { stopped: true, scanStopped: true, pending: false,
       blocked: false, reason, reasonCode: 'video_scan_budget_exhausted' } };
@@ -110,6 +112,7 @@ test('stopped videos clear previews and stale pending states for senders and rec
     assert.equal(row.file_url, null);
     assert.equal(row.public_url, null);
     assert.equal(row.filter_hidden, true);
+    assert.equal(row.scan_file_name, 'video.mp4');
   }
 });
 
@@ -148,6 +151,7 @@ async function fixture(t) {
     CREATE TABLE user_contacts(owner_id uuid,contact_id uuid,filter_override jsonb,filter_choice_confirmed boolean);
     CREATE TABLE group_members(group_id uuid,user_id uuid,status text,role text,joined_at timestamptz DEFAULT '2000-01-01',filter_override jsonb);
     CREATE TABLE stored_files(id uuid PRIMARY KEY,user_id uuid,public_url text UNIQUE,file_type text,
+      original_name text,
       context_type text,context_id uuid,moderation_status text,moderation_details jsonb,content_purged_at timestamptz);
     CREATE TABLE messages(id uuid PRIMARY KEY,sender_id uuid,recipient_id uuid,group_id uuid,type text,
       body text,file_url text,delivery_summary jsonb,created_at timestamptz DEFAULT clock_timestamp(),
@@ -166,7 +170,7 @@ async function fixture(t) {
   await audit.initializeFilterAudit(pool);
   const image=async({from=sender,to=me,groupId=null,classification=male}={})=>{
     const id=randomUUID(),fileId=randomUUID(),url='/test/'+fileId;
-    await pool.query('INSERT INTO stored_files VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULL)',
+    await pool.query('INSERT INTO stored_files(id,user_id,public_url,file_type,context_type,context_id,moderation_status,moderation_details,content_purged_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULL)',
       [fileId,from,url,'image',groupId?'group':'chat',groupId||to,'approved',{classification}]);
     await pool.query("INSERT INTO messages(id,sender_id,recipient_id,group_id,type,body,file_url) VALUES($1,$2,$3,$4,'image','photo',$5)",[id,from,groupId?null:to,groupId,url]);
     return {id,fileId,url};
@@ -279,7 +283,7 @@ test('actual general PUT returns 409 without writing and preserves boolean respo
 
 test('received library copies obey image decisions while ordinary clearing preserves allowed files',opts,async t=>{
  const f=await fixture(t),image=await f.image(),copy=randomUUID();
- await f.pool.query('INSERT INTO stored_files VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
+ await f.pool.query('INSERT INTO stored_files(id,user_id,public_url,file_type,context_type,context_id,moderation_status,moderation_details,content_purged_at) VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
    [copy,f.me,'/copy/'+copy,'image','received','approved',{classification:male}]);
  await f.pool.query("INSERT INTO received_message_media VALUES($1,$2,$3,'ready')",[image.id,f.me,copy]);
  const items=[{id:copy,file_type:'image',public_url:'/copy/'+copy}];
@@ -351,7 +355,7 @@ test('in-flight group delivery denied by the persisted group policy stays hidden
 
 test('approved retained copy remains available after sender source removal, and keeps its classification',opts,async t=>{
  const f=await fixture(t),image=await f.image(),copy=randomUUID();
- await f.pool.query('INSERT INTO stored_files VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
+ await f.pool.query('INSERT INTO stored_files(id,user_id,public_url,file_type,context_type,context_id,moderation_status,moderation_details,content_purged_at) VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
    [copy,f.me,'/copy/'+copy,'image','received','approved',{classification:male}]);
  await f.pool.query("INSERT INTO received_message_media VALUES($1,$2,$3,'ready')",[image.id,f.me,copy]);
  await f.pool.query('DELETE FROM stored_files WHERE id=$1',[image.fileId]);
@@ -418,7 +422,7 @@ test('own hidden image restore uses contact counterpart and still rejects unsafe
 
 test('owned originals and unsent library images obey current policy, exact keeps, and moderation',opts,async t=>{
  const f=await fixture(t),image=await f.image({from:f.me,to:f.sender}),unsent=randomUUID();
- await f.pool.query('INSERT INTO stored_files VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
+ await f.pool.query('INSERT INTO stored_files(id,user_id,public_url,file_type,context_type,context_id,moderation_status,moderation_details,content_purged_at) VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
    [unsent,f.me,'/unsent/'+unsent,'image','general','approved',{classification:male}]);
  const items=[{id:image.fileId,file_type:'image',public_url:image.url},
    {id:unsent,file_type:'image',public_url:'/unsent/'+unsent}];
@@ -459,7 +463,7 @@ test('synthetic own scans preserve safety and ignore the destination receiving p
 
 test('retained received copy can be restored after original removal without allowing rejected originals',opts,async t=>{
  const f=await fixture(t),image=await f.image(),copy=randomUUID();
- await f.pool.query('INSERT INTO stored_files VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
+ await f.pool.query('INSERT INTO stored_files(id,user_id,public_url,file_type,context_type,context_id,moderation_status,moderation_details,content_purged_at) VALUES($1,$2,$3,$4,$5,NULL,$6,$7,NULL)',
    [copy,f.me,'/copy/'+copy,'image','received','approved',{classification:male}]);
  await f.pool.query("INSERT INTO received_message_media VALUES($1,$2,$3,'ready')",[image.id,f.me,copy]);
  await f.save({...ALL,men:false,enforceGeneralFilter:true},'hide');
@@ -476,6 +480,7 @@ test('retained received copy can be restored after original removal without allo
 
 test('hidden history, own scans and library retain the true moderation state without media URLs',opts,async t=>{
  const f=await fixture(t),image=await f.image({from:f.me,to:f.sender});
+ await f.pool.query('UPDATE stored_files SET original_name=$1 WHERE id=$2',['photo.png',image.fileId]);
  const scan={id:'scan_'+image.fileId,sender_id:f.me,recipient_id:f.sender,type:'image',
    file_url:image.url,file_name:'photo.png',message_status:'pending_scan'};
  const library={id:image.fileId,file_type:'image',public_url:image.url};
@@ -500,6 +505,7 @@ test('hidden history, own scans and library retain the true moderation state wit
      assert.equal(row.file_url,null);
    }
    assert.equal(own.file_name,null);
+   assert.equal(own.scan_file_name,'photo.png');
    assert.equal(item.public_url,null);
  }
  // A completed scan does not mean the user's selected content filter blocked it.

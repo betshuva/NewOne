@@ -966,8 +966,8 @@ function rawBuildFilterOptionsQuery(filters,column,search='') {
     FROM ${from}${where}) audit_options${searchWhere}
     GROUP BY value ORDER BY value NULLS FIRST LIMIT 101`,values};
 }
-function buildQuery(filters,operationId=null){return wrapDispatchQuery(rawBuildQuery(filters,operationId),filters);}
-function buildFirstStepQuery(filters,ids){return wrapDispatchQuery(rawBuildFirstStepQuery(filters,ids),filters);}
+function buildQuery(filters,operationId=null){return wrapDispatchQuery(rawBuildQuery(filters,operationId),filters,operationId?[operationId]:undefined);}
+function buildFirstStepQuery(filters,ids){return wrapDispatchQuery(rawBuildFirstStepQuery(filters,ids),filters,ids);}
 function buildFilterOptionsQuery(filters,column,search=''){return wrapDispatchQuery(rawBuildFilterOptionsQuery(filters,column,search),{...filters,dispatch:filters.dispatch||Object.hasOwn(DISPATCH_FIELDS,column)||column==='stopped_file'});}
 async function metadata(db) {
   const result = await db.query("SELECT created_at FROM audit_metadata WHERE key='recording_started'");
@@ -993,7 +993,9 @@ function registerSystemAuditRoutes(app, { getPool, adminMiddleware }) {
   route('/api/admin/audit/catalog',async(req,res,db) => {
     const categories = CATEGORIES || [...new Set(ACTION_CATALOG.map(row=>row.category))].map(code=>({code,label:code}));
     return res.json({actions:ACTION_CATALOG,categories,statuses:STATUSES || FALLBACK_STATUSES,
-      eventKinds:EVENT_KIND_LABELS,canDelete:req.adminPerm==='edit',...await metadata(db)});
+      eventKinds:EVENT_KIND_LABELS,canDelete:req.adminPerm==='edit',
+      defaultColumnFilters:{display_action:{values:['media:video','media:image'],exclude:false}},
+      ...await metadata(db)});
   });
   const list = mode => async(req,res,db) => {
     const operationId = req.params?.id ? uuid(req.params.id,'operation ID',false) : null;

@@ -22,6 +22,7 @@ main{display:flex;flex-direction:column;flex:1;min-height:0}#filters{border-bott
 summary{padding:12px 0;cursor:pointer;font-weight:600}form{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px;padding:0 0 16px;max-height:42dvh;overflow:auto;align-items:end}
 label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}input,select{padding:7px 9px;width:100%;min-width:0}input[dir=ltr]{text-align:left}
 .filter-actions{display:flex;gap:8px;align-items:center}.toolbar{display:flex;align-items:center;gap:12px;padding:10px 20px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+#recent-window{display:flex;align-items:center;gap:8px;margin:0;padding:0;overflow:visible;max-height:none}#recent-window label{display:block;white-space:nowrap;font-size:14px}#recent-minutes{width:90px;box-sizing:border-box}
 .tabs{display:flex;gap:0}.tabs button{border-radius:0}.tabs button:first-child{border-radius:0 5px 5px 0}.tabs button:last-child{border-radius:5px 0 0 5px}
 .tabs button[aria-selected=true]{color:var(--blue);background:#21262d;border-bottom:2px solid var(--blue)}.meta{color:var(--muted);font-size:12px}
 #table-wrap{overflow:auto;flex:1;min-height:120px;scrollbar-gutter:stable}table{border-collapse:collapse;table-layout:fixed;width:100%;min-width:1380px;font-size:12px}
@@ -62,12 +63,12 @@ pre{font:12px/1.7 monospace;direction:ltr;text-align:left;white-space:pre-wrap;o
 </style>
 </head>
 <body>
-<header><a href="admin.html">חזרה לניהול</a><h1>יומן פעולות מערכת</h1><div class="tools"><button id="export" class="icon" title="ייצוא CSV" aria-label="ייצוא CSV"><span class="material-icons" aria-hidden="true">&#xe201;</span></button><button id="refresh" class="icon" title="רענן יומן" aria-label="רענן יומן"><span class="material-icons" aria-hidden="true">&#xe514;</span></button></div></header>
+<header><nav><a href="admin.html">חזרה לניהול</a> · <a href="admin-scans.html">ניהול סריקות</a></nav><h1>יומן פעולות מערכת</h1><div class="tools"><button id="export" class="icon" title="ייצוא CSV" aria-label="ייצוא CSV"><span class="material-icons" aria-hidden="true">&#xe201;</span></button><button id="refresh" class="icon" title="רענן יומן" aria-label="רענן יומן"><span class="material-icons" aria-hidden="true">&#xe514;</span></button></div></header>
 <p style="margin:8px 16px;color:var(--muted);font-size:13px">עלויות API הן אומדן בש״ח לפני מס והנחות. סיכום הפעולה כולל את כל שלביה, גם כשמופעל מסנן. פרטי התעריף ושער הדולר מופיעים בלחיצה על סכום.</p>
 <section id="auth-warning" hidden role="alert">נדרשת כניסה לחשבון ניהול. <a href="admin.html">כניסה לניהול</a></section>
 <main id="app">
 <div id="column-order-help" class="notice"><button id="open-column-settings" type="button" disabled>הגדרות עמודות</button> לשינוי סדר העמודות, גררו כותרת למיקום הרצוי. לשינוי רוחב, גררו את הקצה השמאלי של הכותרת. הסדר והרוחב נשמרים בחשבון שלכם לכל מכשיר. <button id="reset-column-order" type="button" hidden>איפוס סדר העמודות</button> <button id="reset-column-widths" type="button" hidden>איפוס רוחב העמודות</button> <span id="column-width-status" class="meta" role="status" aria-live="polite"></span> <button id="retry-column-widths" type="button" hidden>נסה לשמור רוחב שוב</button> <span id="column-order-status" class="meta" role="status" aria-live="polite"></span> <button id="retry-column-order" type="button" hidden>נסה שוב</button></div>
-<div class="toolbar"><div class="tabs" role="tablist" aria-label="תצוגת היומן"><button id="operations-tab" role="tab" aria-selected="true">פעולות משתמש</button><button id="events-tab" role="tab" aria-selected="false">כל האירועים</button></div><button id="collapse-all" class="icon" title="כווץ את כל הפעולות" aria-label="כווץ את כל הפעולות" disabled><span class="material-icons" aria-hidden="true">&#xe245;</span></button><span id="count" class="meta">0 רשומות</span><button id="clear-columns" hidden><span class="material-icons" aria-hidden="true">&#xf05fe;</span> <span></span></button><span id="started" class="meta"></span><button id="coverage" class="icon" title="היקף התיעוד" aria-label="היקף התיעוד" hidden><span class="material-icons" aria-hidden="true">&#xe33d;</span></button></div>
+<div class="toolbar"><div class="tabs" role="tablist" aria-label="תצוגת היומן"><button id="operations-tab" role="tab" aria-selected="true">פעולות משתמש</button><button id="events-tab" role="tab" aria-selected="false">כל האירועים</button></div><form id="recent-window"><label for="recent-minutes">הצג</label><input id="recent-minutes" type="number" min="1" max="44640" step="1" value="10" required aria-label="מספר דקות אחרונות"><span>דקות אחרונות</span><button type="submit">הצג</button></form><button id="collapse-all" class="icon" title="כווץ את כל הפעולות" aria-label="כווץ את כל הפעולות" disabled><span class="material-icons" aria-hidden="true">&#xe245;</span></button><span id="count" class="meta">0 רשומות</span><button id="clear-columns" hidden><span class="material-icons" aria-hidden="true">&#xf05fe;</span> <span></span></button><span id="started" class="meta"></span><button id="coverage" class="icon" title="היקף התיעוד" aria-label="היקף התיעוד" hidden><span class="material-icons" aria-hidden="true">&#xe33d;</span></button></div>
 <div id="bulk-tools" class="toolbar" hidden><button id="select-visible">סמן את המוצגות</button><button id="clear-selection">נקה סימון</button><button id="delete-selected" class="danger" disabled>מחק מסומנות (0)</button><button id="delete-all" class="danger">מחק את כל היומן</button><span class="meta">הסימון חל על רשומות התיעוד בלבד</span></div>
 <div id="catalog-error" class="notice error" role="alert"></div><div id="live-error" class="notice error" role="status"></div><div id="notice" class="notice" role="status" aria-live="polite"></div><div id="busy" class="busy" hidden></div>
 <section id="table-wrap" aria-label="רשומות היומן" tabindex="0"><table id="audit-table"><thead></thead><tbody></tbody></table><div id="empty" class="empty" hidden>אין רשומות בטווח שנבחר</div><div id="load-error" class="notice error" role="alert"></div><div class="pager"><button id="more" hidden>רשומות נוספות</button></div></section>
@@ -369,6 +370,8 @@ Object.assign(FIELD_LABELS,{step_index:'מספר שלב',step_total:'סך שלב
 for(const columns of Object.values(COLUMN_SCHEMAS))for(const [key,title,,fields]of columns)for(const field of fields)if(!FIELD_LABELS[field])FIELD_LABELS[field]=title;
 const state = {mode:'operations',rows:[],cursor:null,boundary:null,hasLoaded:false,applied:{},columns:{operations:{},events:{}},actions:[],coverage:null,started:null,expanded:new Set(),pages:new Map(),generation:0,request:0,catalogRequest:0,loading:false,failedMore:false,exporting:false,token:null,controller:null,liveTimer:null,liveController:null,liveRequest:0,liveRunning:false,liveFailures:0,liveError:null,lastUpdated:null,pageHidden:false};
 const AUTO_REFRESH_MS=5000;
+let recentMinutes=10;
+function recentWindowQuery(now=Date.now()){return {from:new Date(now-recentMinutes*60000).toISOString(),to:new Date(now).toISOString()};}
 const sorting={operations:null,events:null};
 const columnOrders={operations:null,events:null};
 // A file drill-down carries the visible order without overwriting saved tab preferences.
@@ -510,7 +513,7 @@ function rangeFilter(field,start,end){
 function dateInputValue(raw){if(!raw)return '';const date=new Date(raw);if(!Number.isFinite(date.getTime()))return '';const two=n=>String(n).padStart(2,'0');return `${localDate(date)}T${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3,'0')}`;}
 function hierarchyQuery(query,mode){return mode==='operations'?{...query,scope:'user',match:'items',steps:'1'}:{...query};}
 function sortQuery(mode){const sort=sorting[mode];return sort?{sort:sort.field,direction:sort.direction}:{};}
-function activeColumnQuery(){return {...hierarchyQuery(withColumnFilters(state.applied,state.columns[state.mode]),state.mode),...sortQuery(state.mode)};}
+function activeColumnQuery(){return {...hierarchyQuery(withColumnFilters({...state.applied,...recentWindowQuery()},state.columns[state.mode]),state.mode),...sortQuery(state.mode)};}
 function childColumnQuery(columns=state.columns.operations){
   const mapped={};
   for(const [field,value]of Object.entries(columns)){
@@ -560,7 +563,7 @@ function renderColumnOptions(){
 async function fetchColumnOptions(){
   const popup=columnPopup;if(!popup||!popup.selection)return;const request=++popup.request;popup.controller?.abort();popup.controller=new AbortController();popup.loading=true;popup.error=null;renderColumnOptions();
   const columns={...popup.draft};delete columns[popup.field];
-  const query={...hierarchyQuery(withColumnFilters(state.applied,columns),popup.mode),mode:popup.mode,column:popup.field,search:byId('column-search').value.trim()};
+  const query={...hierarchyQuery(withColumnFilters({...state.applied,...recentWindowQuery()},columns),popup.mode),mode:popup.mode,column:popup.field,search:byId('column-search').value.trim()};
   try{const response=await apiRequest('filter-options',query,{token:state.token,signal:popup.controller.signal}),data=await response.json();if(columnPopup!==popup||request!==popup.request)return;if(!Array.isArray(data.options))throw new Error('טעינת ערכי הסינון נכשלה');popup.options=data.options.filter(item=>item&&('value'in item)).slice(0,100);popup.hasMore=data.hasMore===true;}
   catch(error){if(columnPopup!==popup||request!==popup.request)return;popup.options=[];popup.hasMore=false;popup.error=error.name==='AbortError'?'השרת לא השיב בזמן':error.message;}
   finally{if(columnPopup===popup&&request===popup.request){popup.loading=false;renderColumnOptions();}}
@@ -1084,7 +1087,7 @@ function singleFieldCell(key,row,root){
     const td=element('td'),stopped=operation.stoppedEvidence;td.classList.add('check-cell');
     if(operation.dispatch?.object_status==='blocked_for_recipient')return td;
     if(!stopped)return cell('-');
-    for(const item of stopped.items||[]){
+    for(const item of (stopped.items||[]).slice(0,1)){
       const block=element('div');block.append(imageFilterName(item.name,item.key));
       const preview=item.preview?checkPreviewButton(item.preview):null;
       if(preview)block.append(preview);else block.append(element('span','התמונה אינה זמינה',{class:'check-context'}));
@@ -1464,12 +1467,24 @@ function render(){
   byId('collapse-all').hidden=state.mode!=='operations';byId('collapse-all').disabled=!state.expanded.size;byId('count').textContent=`${state.rows.length} ${state.mode==='operations'?'פעולות משתמש':'אירועים'}`;byId('busy').hidden=!state.loading&&!state.exporting;byId('empty').hidden=state.loading||state.rows.length>0||!!state.error;byId('more').hidden=!state.cursor;byId('more').disabled=state.loading;errorWithRetry(byId('load-error'),state.error,()=>load(state.failedMore));wrap.scrollLeft=left;wrap.scrollTop=top;
   const active=Object.keys(state.columns[state.mode]).length;byId('clear-columns').hidden=!active;byId('clear-columns').lastElementChild.textContent=`נקה מסנני עמודות (${active})`;releaseCheckPreviews();
 }
-async function catalog(){
+let catalogPromise=null,auditDefaultsLoaded=false;
+function catalog(){
+  if(!catalogPromise)catalogPromise=readCatalog().finally(()=>{catalogPromise=null;});
+  return catalogPromise;
+}
+async function readCatalog(){
   const request=++state.catalogRequest;canDelete=false;render();byId('catalog-error').replaceChildren();
-  try{const response=await apiRequest('catalog',{},state),data=await response.json();if(request!==state.catalogRequest)return;canDelete=data.canDelete===true;state.actions=Array.isArray(data.actions)?data.actions:[];metadata(data);render();}
-  catch(_){if(request===state.catalogRequest){canDelete=false;render();errorWithRetry(byId('catalog-error'),'טעינת קטלוג הפעולות נכשלה',catalog);}}
+  try{const response=await apiRequest('catalog',{},state),data=await response.json();if(request!==state.catalogRequest)return false;canDelete=data.canDelete===true;state.actions=Array.isArray(data.actions)?data.actions:[];
+    if(!auditDefaultsLoaded){
+      for(const mode of ['operations','events'])state.columns[mode]=JSON.parse(JSON.stringify(data.defaultColumnFilters||{}));
+      auditDefaultsLoaded=true;
+    }
+    metadata(data);render();return true;
+  }
+  catch(_){if(request===state.catalogRequest){canDelete=false;render();errorWithRetry(byId('catalog-error'),'טעינת קטלוג הפעולות נכשלה',()=>auditDefaultsLoaded?catalog():load());}return false;}
 }
 async function load(more=false){
+  if(!auditDefaultsLoaded&&!(await catalog()))return;
   if(more&&(state.loading||!state.cursor))return;
   cancelAutoRefresh();state.liveFailures=0;state.liveError=null;renderLiveState();
   closeColumnFilter();const request=++state.request;state.controller?.abort();state.controller=new AbortController();const mode=state.mode,query={...activeColumnQuery(),limit:'50',...(more?{before:state.cursor}:{})};state.loading=true;state.failedMore=more;state.error=null;
@@ -1496,7 +1511,7 @@ async function loadEvents(id){
   finally{if(current()){page.loading=false;page.controller=null;render();restoreTableAnchor(anchor);scheduleAutoRefresh();}}
 }
 async function exportCsv(){
-  if(state.exporting)return;const dates=state.columns[state.mode].created_at||{},exportRange={from:dates.from||state.started,to:dates.to||new Date().toISOString()},duration=new Date(exportRange.to)-new Date(exportRange.from);if(!Number.isFinite(duration)||duration<=0||duration>31*86400000){notice('לייצוא יש לבחור בכותרת הזמן טווח של עד 31 ימים');return;}
+  if(state.exporting)return;const exportRange=recentWindowQuery(),duration=new Date(exportRange.to)-new Date(exportRange.from);if(!Number.isFinite(duration)||duration<=0||duration>31*86400000){notice('לייצוא יש לבחור בכותרת הזמן טווח של עד 31 ימים');return;}
   cancelAutoRefresh();const generation=state.generation,mode=state.mode;state.exporting=true;byId('export').disabled=true;render();
   try{const response=await apiRequest('export.csv',{...activeColumnQuery(),...exportRange,mode},state);if(Number(response.headers.get('content-length'))>MAX_EXPORT_BYTES)throw new Error('קובץ הייצוא גדול מדי');const bytes=await response.arrayBuffer();if(bytes.byteLength>MAX_EXPORT_BYTES)throw new Error('קובץ הייצוא גדול מדי');if(generation!==state.generation)return;const blob=new Blob([bytes],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),anchor=element('a',null,{href:url,download:`betshuva-audit-${mode}-${localDate(new Date())}.csv`});anchor.hidden=true;document.body.append(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);notice(response.headers.get('x-audit-export-truncated')==='true'?'הייצוא הוגבל ל-5,000 רשומות':'קובץ הייצוא נוצר');}
   catch(error){if(generation===state.generation)notice(error.message);}
@@ -1506,6 +1521,7 @@ function initialize(){
   state.token=localStorage.getItem('bt_admin_token')||localStorage.getItem('bt_token');
   if(!state.token){byId('auth-warning').hidden=false;byId('app').hidden=true;byId('export').disabled=true;byId('refresh').disabled=true;return;}
   state.applied={};
+  byId('recent-window').onsubmit=event=>{event.preventDefault();const input=byId('recent-minutes');if(!input.reportValidity())return;recentMinutes=Number(input.value);load();};
   loadColumnOrders();
   byId('open-column-settings').onclick=openColumnSettings;byId('settings-close').onclick=closeColumnSettings;byId('settings-cancel').onclick=closeColumnSettings;byId('settings-save').onclick=saveColumnSettings;
   byId('settings-dialog').addEventListener('cancel',event=>{event.preventDefault();closeColumnSettings();});byId('settings-search').oninput=()=>{if(settingsDraft)renderSettings();};
@@ -1540,7 +1556,7 @@ function initialize(){
   for(const mode of ['operations','events'])byId(`${mode}-tab`).onclick=()=>{if(state.mode===mode)return;imageFilterColumnOrder=null;state.mode=mode;for(const value of ['operations','events'])byId(`${value}-tab`).setAttribute('aria-selected',String(value===mode));load();};
   byId('refresh').onclick=()=>{catalog();load();};byId('more').onclick=()=>load(true);byId('export').onclick=exportCsv;byId('coverage').onclick=()=>showDetails({recordingStartedAt:state.started,coverage:state.coverage});byId('close-dialog').onclick=()=>byId('detail-dialog').close();
   window.addEventListener('storage',event=>{if(['bt_admin_token','bt_token'].includes(event.key)){cancelAutoRefresh();window.location.reload();}});
-  catalog();load();
+  load();
 }
 if(typeof module!=='undefined'&&module.exports)module.exports={auditMediaRequestUrl,fetchAuditMedia,operationPreviewRow,buildQuery,mergeRows,safeDetails,statusLabel,actor,time,actionLabel,mediaActionLabel,recipientLabel,checkLabel,checkResultLabel,checkContext,optionLabel,previewRequestUrl,fetchCheckPreview,apiRequest,deletionTarget,deleteAuditRecord,withColumnFilters,selectedValue,toggleColumnValue,rangeFilter,dateInputValue,auditRowKey,compareAuditKeys,readAuditWindow,readAllEvents,hierarchyQuery,operationHue,chronologicalChildren,childCount,subEventPosition,normalizedColumnOrder,childColumnQuery,elapsedFromRoot,AUTO_REFRESH_MS,AUTO_REFRESH_MAX_REQUESTS,MAX_EXPORT_BYTES,operationOutcome,scanBudgetText,formatDuration,durationFilterValue};
 if(typeof document!=='undefined')initialize();

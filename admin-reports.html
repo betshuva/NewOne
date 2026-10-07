@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>בתשובה | דיווחי משתמשים</title>
+<style>
+:root{color-scheme:dark;--bg:#0d1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--muted:#a0abb8;--blue:#58a6df}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px Arial,sans-serif;line-height:1.6}header,main{padding:16px 22px}header{background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:20px;flex-wrap:wrap}h1{margin:0;font-size:23px;flex:1}h2{font-size:18px;margin:0}a{color:var(--blue)}button,select{font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;min-height:42px;padding:6px 12px}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--blue);outline-offset:3px}.toolbar,.actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.muted{color:var(--muted)}#notice{min-height:30px;color:#ffc578}#reports{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:16px;margin:16px 0}.report{padding:20px;background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0;overflow-wrap:anywhere}.report p{white-space:pre-wrap;margin:8px 0}.code{font:12px monospace;direction:ltr;text-align:right}.summary{padding:12px;border:1px solid var(--line);white-space:pre-wrap;max-height:260px;overflow:auto}.actions{margin-top:16px}.primary{background:#1b6ca8}.error{color:#ff9c94}.result{min-height:26px}details{margin-top:14px}summary{cursor:pointer}footer{display:flex;gap:16px;align-items:center}
+</style>
+</head>
+<body>
+<header><h1>דיווחי משתמשים</h1><a href="admin.html">לוח הניהול / כניסה</a><a href="admin-audit.html">יומן פעולות</a></header>
+<main>
+<p>בדיקת דיווחים שנשלחו מהאפליקציה. סימון „טופל” מתעד את מצב הטיפול; הסרה של תוכן או חסימת חשבון מתבצעות בנפרד בלוח הניהול.</p>
+<div class="toolbar"><label for="status">מצב הטיפול</label><select id="status"><option value="pending">ממתין לבדיקה</option><option value="reviewed">בבדיקה</option><option value="resolved">טופל</option><option value="dismissed">נסגר ללא פעולה</option><option value="all">כל הדיווחים</option></select><button id="refresh">רענון</button><span id="permission" class="muted"></span></div>
+<p id="notice" role="status" aria-live="polite"></p>
+<section id="reports" aria-label="רשימת דיווחים"></section>
+<footer><button id="previous" disabled>הקודם</button><span id="page">עמוד 1</span><button id="next" disabled>הבא</button></footer>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const labels={pending:'ממתין לבדיקה',reviewed:'בבדיקה',resolved:'טופל',dismissed:'נסגר ללא פעולה'};
+const types={user:'משתמש',message:'הודעה',group:'קבוצה',listing:'מודעה'};
+const reasons={spam:'ספאם או פרסום מטעה',harassment:'הטרדה או בריונות',inappropriate:'תוכן פוגעני או לא הולם',fraud:'התחזות או הונאה',illegal:'פעילות או תוכן בלתי חוקיים',other:'סיבה אחרת'};
+let canEdit=false,offset=0,hasMore=false,loading=false,saving=false;
+function node(tag,text,cls){const el=document.createElement(tag);if(text!=null)el.textContent=String(text);if(cls)el.className=cls;return el;}
+function time(value){return value?new Date(value).toLocaleString('he-IL'):'—';}
+async function api(path,options={}){
+ const token=localStorage.getItem('bt_admin_token')||localStorage.getItem('bt_token');
+ if(!token)throw Error('יש להתחבר דרך לוח הניהול, ואז לחזור למסך זה.');
+ const response=await fetch(new URL('api/admin/'+path,location.href),{...options,cache:'no-store',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},signal:AbortSignal.timeout(30000)});
+ const body=await response.json();if(!response.ok)throw Error(body.error||'הפעולה נכשלה');
+ return {body,hasMore:response.headers.get('X-Has-More')==='true'};
+}
+function controls(){
+ $('previous').disabled=loading||saving||offset===0;$('next').disabled=loading||saving||!hasMore;
+ $('refresh').disabled=loading||saving;$('status').disabled=loading||saving;
+ $('page').textContent='עמוד '+(offset/100+1);
+ document.querySelectorAll('.actions button,.actions select').forEach(el=>el.disabled=!canEdit||loading||saving);
+}
+function render(items){
+ $('reports').replaceChildren();
+ for(const report of items){
+  const card=node('article',null,'report');card.dataset.id=report.id;
+  card.append(node('h2',(types[report.target_type]||'תוכן')+' · '+(labels[report.status]||report.status)));
+  card.append(node('p','התקבל: '+time(report.created_at),'muted'));
+  card.append(node('p','סיבה: '+(reasons[report.reason]||report.reason)));
+  card.append(node('p',report.details||'לא נמסרו פרטים נוספים'));
+  card.append(node('p','המדווח: '+(report.reporter_name||'ללא שם')+' · '+(report.reporter_email||'')));
+  const summary=node('details');summary.append(node('summary','הטקסט המדווח ופרטי הזיהוי'));
+  summary.append(node('p',!report.target_available?'התוכן אינו זמין עוד':report.target_summary||'אין טקסט להצגה; ניתן לבדוק את הפריט בלוח הניהול לפי המזהה.','summary'));
+  if(report.deleted_for_everyone)summary.append(node('p','ההודעה מסומנת כנמחקה לכולם.','muted'));
+  summary.append(node('p','מזהה תוכן: '+report.target_id,'code'),node('p','מזהה דיווח: '+report.id,'code'),node('p','מזהה מדווח: '+report.reporter_id,'code'));
+  if(report.message_sender_id)summary.append(node('p','מזהה שולח ההודעה: '+report.message_sender_id,'code'));
+  card.append(summary);
+  card.append(node('p',Number(report.notified_version)>=Number(report.notification_version)
+    ?'ההודעה למייל התקבלה בשרת הדואר: '+time(report.notification_sent_at)
+    :'טרם אושר משלוח הגרסה הנוכחית של הדיווח למייל.','muted'));
+  if(report.reviewed_at)card.append(node('p','עדכון טיפול אחרון: '+time(report.reviewed_at)+' · '+(report.reviewer_name||report.reviewed_by||'מנהל'),'muted'));
+  const actions=node('div',null,'actions'),select=node('select');select.setAttribute('aria-label','עדכון מצב הטיפול');
+  for(const [value,label] of Object.entries(labels)){const option=node('option',label);option.value=value;select.append(option);}select.value=report.status;
+  const save=node('button','שמירת מצב הטיפול','primary');actions.append(select,save);
+  const result=node('p',null,'result');result.setAttribute('role','status');
+  save.addEventListener('click',async()=>{
+   if(saving||loading||!canEdit)return;
+   if(select.value===report.status){result.textContent='מצב הטיפול לא השתנה';return;}
+   saving=true;controls();result.textContent='שומר…';result.classList.remove('error');
+   try{await api('reports/'+encodeURIComponent(report.id),{method:'PUT',body:JSON.stringify({status:select.value,revision:report.revision})});await load();}
+   catch(error){result.textContent=error.message;result.classList.add('error');}
+   finally{saving=false;controls();}
+  });
+  card.append(actions,result);$('reports').append(card);
+ }
+ controls();
+}
+async function load(){
+ if(loading)return;loading=true;controls();$('notice').textContent='טוען דיווחים…';
+ try{
+  const access=await api('db');canEdit=access.body.permission==='edit';$('permission').textContent=canEdit?'הרשאת עריכה':'צפייה בלבד';
+  const data=await api('reports?status='+encodeURIComponent($('status').value)+'&offset='+offset);
+  hasMore=data.hasMore;render(data.body);$('notice').textContent=data.body.length?data.body.length+' דיווחים בעמוד זה':'אין דיווחים להצגה במסנן זה.';
+ }catch(error){canEdit=false;hasMore=false;$('reports').replaceChildren();$('permission').textContent='';$('notice').textContent=error.message;}
+ finally{loading=false;controls();}
+}
+$('refresh').addEventListener('click',load);
+$('status').addEventListener('change',()=>{offset=0;load();});
+$('previous').addEventListener('click',()=>{offset=Math.max(0,offset-100);load();});
+$('next').addEventListener('click',()=>{offset+=100;load();});
+load();
+</script>
+</body>
+</html>

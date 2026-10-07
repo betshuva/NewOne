@@ -88,7 +88,7 @@ test('private Gmail routes enforce owner access, browser-bound OAuth, permission
   await db.query(`CREATE SCHEMA "${schema}"`);
   pool = new Pool({ ...options, options: `-c search_path=${schema}` });
   await pool.query(`CREATE TABLE users(id UUID PRIMARY KEY,email TEXT,email_verified BOOLEAN,
-    session_version INTEGER DEFAULT 0,moderation_state TEXT,moderation_reason TEXT,moderation_until TIMESTAMPTZ);
+    birth_date DATE DEFAULT '1990-01-01',session_version INTEGER DEFAULT 0,moderation_state TEXT,moderation_reason TEXT,moderation_until TIMESTAMPTZ);
     CREATE TABLE admin_permissions(user_id UUID PRIMARY KEY,permission TEXT);`);
   await pool.query(gmail.SCHEMA);
   const owner = crypto.randomUUID(), other = crypto.randomUUID();

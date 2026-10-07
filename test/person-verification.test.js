@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const sharp = require('sharp');
 const {
+  classifyOpenAIPersonPresence,
   parseOpenAIDecision,
   verifyPersonClassification,
 } = require('../server/person-verification');
@@ -112,6 +113,32 @@ test('drawing-aware non-human review can correct a local false person result', a
   assert.deepEqual(result.classification.originalDetectedCategories, ['men', 'children']);
   assert.equal(result.classification.uncertain, false);
   assert.equal(result.verification.decision, 'non_human_confirmed');
+});
+
+test('detailed person review corrects furniture mistaken for a woman without discarding image bytes', async () => {
+  const frame = Buffer.from('complete furniture frame');
+  const result = await verifyPersonClassification(frame, localFalsePositive, {
+    scanObjects: noObjects,
+    scanFaces: noFaces,
+    classifyOpenAI: (buffer, options) => classifyOpenAIPersonPresence(buffer, {
+      ...options,
+      apiKey: 'synthetic-key',
+      fetchImpl: async (_url, request) => {
+        const image = JSON.parse(request.body).input[0].content.find(item => item.type === 'input_image');
+        assert.equal(image.image_url, `data:image/jpeg;base64,${frame.toString('base64')}`);
+        return { ok: true, json: async () => ({ output_text: JSON.stringify(
+          image.detail === 'high'
+            ? { decision: 'non_human', confidence: 0.99, reason: 'Furniture; no visible human figure.' }
+            : { decision: 'person', person_categories: ['women'], confidence: 0.98,
+              reason: 'A woman is visibly seated at the dining table.' }
+        ) }) };
+      },
+    }),
+  });
+  assert.equal(result.classification.category, 'nonHumanImages');
+  assert.equal(result.classification.uncertain, false);
+  assert.equal(result.verification.decision, 'non_human_confirmed');
+  assert.equal(result.verification.providers.openai.available, true);
 });
 
 test('a detected object keeps local demographic categories', async () => {
@@ -503,3 +530,20 @@ test('confident Google non-human consensus needs neither Gemini nor OpenAI', () 
   });
   assert.equal(result.verification.decision, 'non_human_google_consensus');
 }));
+
+
+test('OpenAI person review disables response storage while preserving the scan result', async () => {
+  let request;
+  const result = await classifyOpenAIPersonPresence(Buffer.from('synthetic image'), {
+    apiKey: 'synthetic-key',
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ output_text:
+        JSON.stringify({ decision: 'non_human', confidence: 0.98, reason: 'synthetic fixture' }) }) };
+    },
+  });
+  assert.equal(request.store, false);
+  assert.equal(request.input[0].content[1].type, 'input_image');
+  assert.equal(result.available, true);
+  assert.equal(result.decision, 'non_human');
+});

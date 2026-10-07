@@ -111,12 +111,15 @@ class _CaptureReproState extends State<_CaptureRepro> {
         anchorKey: _attachmentKey, imagesAllowed: true, videoAllowed: true,
         textAllowed: true, blockedLabel: 'blocked');
     if (!mounted) return;
+    if (action == ChatAttachmentAction.capture) await _capture(null);
     if (action == ChatAttachmentAction.video) await _capture(true);
     if (action == ChatAttachmentAction.photo) await _capture(false);
   }
 
-  Future<void> _capture(bool video) async {
-    final file = video
+  Future<void> _capture(bool? video) async {
+    final file = video == null
+        ? await captureWebCamera(context, creatorId: 'repro')
+        : video
         ? await captureWebVideo(context, creatorId: 'repro')
         : await captureWebPhoto(context, creatorId: 'repro');
     final bytes = await file?.readAsBytes();

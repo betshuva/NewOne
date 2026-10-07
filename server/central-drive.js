@@ -28,6 +28,9 @@ const ELIGIBLE = `sf.user_id IS NOT NULL AND sf.moderation_status='approved'
   AND sf.moderation_details->>'pending' IS DISTINCT FROM 'true'
   AND NOT EXISTS(SELECT 1 FROM pending_scans ps WHERE ps.file_url=sf.public_url)
   AND NOT EXISTS(SELECT 1 FROM deleted_media_sources ds WHERE ds.storage_path=sf.storage_path)`;
+const CENTRAL_DESTINATION = `COALESCE(to_jsonb(sf)->>'storage_tier','service')<>'personal'
+  AND NOT EXISTS(SELECT 1 FROM cloud_backup_accounts personal_account
+    WHERE personal_account.user_id=sf.user_id AND personal_account.status='connected')`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS central_drive_account (
@@ -255,7 +258,7 @@ function createCentralStorage({ getPool, uploadRoot, readSource, makeTransport =
           await db.query('BEGIN');
           const candidates = await db.query(`SELECT sf.*,o.id AS object_id,o.status AS central_status
             FROM stored_files sf LEFT JOIN central_drive_objects o ON o.file_id=sf.id
-            WHERE ${ELIGIBLE} AND COALESCE(to_jsonb(sf)->>'storage_tier','service')<>'personal'
+            WHERE ${ELIGIBLE} AND ${CENTRAL_DESTINATION}
               AND ($1::uuid IS NULL OR sf.id=$1)
               AND (o.id IS NULL OR (o.status IN ('uploading','failed') AND o.next_attempt_at<=now())
                 OR (o.status='verified' AND sf.released_at IS NULL AND o.next_attempt_at<=now()))
@@ -329,7 +332,7 @@ async function status(pool) {
     count(*) FILTER(WHERE status='failed')::int AS failed,
     count(*) FILTER(WHERE status='delete_pending')::int AS pending_deletions FROM central_drive_objects`)).rows[0];
   const pending = (await pool.query(`SELECT count(*)::int AS count FROM stored_files sf
-    WHERE ${ELIGIBLE} AND COALESCE(to_jsonb(sf)->>'storage_tier','service')<>'personal'
+    WHERE ${ELIGIBLE} AND ${CENTRAL_DESTINATION}
       AND NOT EXISTS(SELECT 1 FROM central_drive_objects o WHERE o.file_id=sf.id AND o.status='verified')`)).rows[0].count;
   const personal = (await pool.query(`SELECT
     count(*) FILTER(WHERE to_jsonb(sf)->>'personal_storage_verified_at' IS NOT NULL)::int AS personal_verified,

@@ -102,3 +102,22 @@ test('client size rejection appears in the upload audit without a stored file or
  assert.equal((await f.db.query('SELECT count(*)::int AS count FROM stored_files')).rows[0].count,0);
  assert.equal((await f.db.query('SELECT count(*)::int AS count FROM messages')).rows[0].count,0);
 });
+
+test('time windows scope dispatch work while recent events retain older parents',opts,async t=>{
+ const f=await fixture(t),old=await f.start();
+ await f.db.query('SELECT pg_sleep(0.02)');
+ const from=new Date().toISOString(),recent=await f.start();
+ const event=await f.event(old,{kind:'operation_completed',status:'completed'});
+ const filters=readFilters({dispatch:'1',from});
+ const query=buildQuery(filters);
+ assert.deepEqual((await f.db.query(query)).rows.map(r=>r.id),[recent.id]);
+ assert.deepEqual((await f.db.query(query.dispatchSource)).rows.map(r=>r.id),[recent.id]);
+ const eventRows=(await f.db.query(buildQuery(readFilters({dispatch:'1',from},{mode:'events'})))).rows;
+ assert.ok(eventRows.some(r=>r.operation_id===old.id));
+ assert.ok(!eventRows.some(r=>String(r.id)===String(old.root_event_id)));
+ const children=buildQuery(readFilters({dispatch:'1'},{mode:'events'}),old.id);
+ assert.ok((await f.db.query(children)).rows.some(r=>String(r.id)===String(old.root_event_id)));
+ assert.deepEqual((await f.db.query(children.dispatchSource)).rows.map(r=>r.id),[old.id]);
+ const prepared=await prepareQuery(f.db,buildQuery(readFilters({dispatch:'1',from,sort:'dispatch_content',direction:'asc'})));
+ assert.deepEqual((await f.db.query(prepared)).rows.map(r=>r.id),[recent.id]);
+});

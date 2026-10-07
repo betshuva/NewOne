@@ -25,6 +25,7 @@ function checkPair(actorId, targetId) {
 function normalizePhone(value) {
   if (typeof value !== 'string') return null;
   let digits = value.replace(/[^0-9]/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
   if (digits.startsWith('972') && digits.length > 10) digits = `0${digits.slice(3)}`;
   return digits.length >= 8 && digits.length <= 15 ? digits : null;
 }
@@ -35,7 +36,9 @@ function phoneFingerprint(phone) {
 }
 
 function normalizedPhoneSql(expression) {
-  const digits = `regexp_replace(COALESCE(${expression},''),'[^0-9]','','g')`;
+  const rawDigits = `regexp_replace(COALESCE(${expression},''),'[^0-9]','','g')`;
+  const digits = `(CASE WHEN left(${rawDigits},2)='00'
+    THEN substring(${rawDigits} from 3) ELSE ${rawDigits} END)`;
   const normalized = `(CASE WHEN left(${digits},3)='972' AND length(${digits})>10
     THEN '0'||substring(${digits} from 4) ELSE ${digits} END)`;
   return `(CASE WHEN length(${normalized}) BETWEEN 8 AND 15 THEN ${normalized} ELSE NULL END)`;
@@ -311,4 +314,4 @@ async function applyPhoneSharingChoices(pool, actorId, targetId, choices = {}) {
 
 module.exports = { initializePhonePrivacy, phoneSelect, projectContactPhones,
   saveContactWithPhone, getPhoneSharingStatus, applyPhoneSharingChoices,
-  rememberKnownContactPhones, normalizePhone, phoneFingerprint, REQUEST_COOLDOWN_HOURS };
+  rememberKnownContactPhones, normalizePhone, normalizedPhoneSql, phoneFingerprint, REQUEST_COOLDOWN_HOURS };

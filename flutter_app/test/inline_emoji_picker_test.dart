@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:betshuva/inline_emoji_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -23,6 +25,9 @@ Future<void> _showPicker(
     onSelected: onSelected ?? (_) {},
     header: header,
   );
+  // Native exercises the bundled catalog and artwork. The Chrome widget-test
+  // host does not serve those assets, so use an immutable transport fixture.
+  bundle ??= kIsWeb ? _BrowserPickerAssetBundle() : null;
   if (bundle != null) {
     picker = DefaultAssetBundle(bundle: bundle, child: picker);
   }
@@ -146,7 +151,8 @@ void main() {
       final firstEmoji = find.byKey(const ValueKey('inline-emoji-1f600'));
       await tester.scrollUntilVisible(firstEmoji, 60, scrollable: scrollable);
       await tester.pumpAndSettle();
-      await Scrollable.ensureVisible(tester.element(firstEmoji), alignment: 0.5);
+      await Scrollable.ensureVisible(tester.element(firstEmoji),
+          alignment: 0.5);
       await tester.pumpAndSettle();
       await tester.tap(firstEmoji);
       await tester.pumpAndSettle();
@@ -214,21 +220,66 @@ void main() {
 
 class _RetryAssetBundle extends CachingAssetBundle {
   bool fail = true;
+  final AssetBundle _fallback =
+      kIsWeb ? _BrowserPickerAssetBundle() : rootBundle;
 
   @override
   Future<ByteData> load(String key) {
     if (fail && key.endsWith('emoji_allowlist.json')) {
       return Future.error(StateError('Catalog temporarily unavailable'));
     }
-    return rootBundle.load(key);
+    return _fallback.load(key);
   }
 }
 
 class _DelayedAssetBundle extends CachingAssetBundle {
   final catalog = Completer<ByteData>();
+  final AssetBundle _fallback =
+      kIsWeb ? _BrowserPickerAssetBundle() : rootBundle;
 
   @override
   Future<ByteData> load(String key) => key.endsWith('emoji_allowlist.json')
       ? catalog.future
-      : rootBundle.load(key);
+      : _fallback.load(key);
+}
+
+class _BrowserPickerAssetBundle extends CachingAssetBundle {
+  @override
+  Future<ByteData> load(String key) async {
+    final String source;
+    if (key.endsWith('emoji_allowlist.json')) {
+      source = jsonEncode([
+        {
+          'emoji': '😀',
+          'category': 'פנים ורגשות',
+          'label_he': 'חיוך',
+          'twemoji_code': '1f600'
+        },
+        {
+          'emoji': '😄',
+          'category': 'פנים ורגשות',
+          'label_he': 'חיוך גדול',
+          'twemoji_code': '1f604'
+        },
+        {
+          'emoji': '👍',
+          'category': 'מחוות',
+          'label_he': 'אישור',
+          'twemoji_code': '1f44d'
+        },
+        {
+          'emoji': '❤️',
+          'category': 'לבבות וסמלים',
+          'label_he': 'לב',
+          'twemoji_code': '2764'
+        },
+      ]);
+    } else if (key.startsWith('assets/twemoji/svg/')) {
+      source = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">'
+          '<circle cx="18" cy="18" r="16" fill="#ffcc4d"/></svg>';
+    } else {
+      throw StateError('Unexpected picker asset: $key');
+    }
+    return ByteData.sublistView(Uint8List.fromList(utf8.encode(source)));
+  }
 }

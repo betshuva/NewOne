@@ -56,27 +56,24 @@ void main() {
         ));
         await tester.pumpAndSettle();
         final chatState = tester.state(find.byType(ChatScreen));
-        for (final label in ['צילום תמונה', 'העלאת קבצים']) {
+        for (final label in ['צילום', 'העלאת קבצים']) {
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
           expect(find.text('העלאת קבצים'), findsOneWidget);
           expect(find.text('צילום מסך'), findsNothing);
+          expect(find.text('מדבקות ואימוג׳י'), findsNothing);
           final anchor = tester.getRect(find.byIcon(Icons.attach_file));
           final menu = tester
               .getRect(find.byKey(const ValueKey('chat-attachment-menu')));
           expect(menu.width, lessThanOrEqualTo(244));
           expect(menu.bottom, lessThan(anchor.top));
           expect((menu.right - anchor.right).abs(), lessThan(20));
-          if (label == 'צילום תמונה') {
-            await tester.tap(find.text('צילום והקלטה'));
-            await tester.pumpAndSettle();
-          }
           await tester.tap(find.text(label));
           await tester.pumpAndSettle();
           expect(
               find.byKey(const ValueKey('chat-attachment-menu')), findsNothing);
-          if (label == 'צילום תמונה') {
-            expect(find.text('צילום תמונה'), findsOneWidget);
+          if (label == 'צילום') {
+            expect(find.text('צילום'), findsOneWidget);
             await tester.tap(find.byIcon(Icons.close));
             await tester.pumpAndSettle();
           }
@@ -128,6 +125,7 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.byIcon(Icons.attach_file));
         await tester.pumpAndSettle();
+        expect(find.text('מדבקות ואימוג׳י'), findsNothing);
         expect(tester.takeException(), isNull);
         await tester.ensureVisible(find.text('שיתוף איש קשר'));
         await tester.tap(find.text('שיתוף איש קשר'));

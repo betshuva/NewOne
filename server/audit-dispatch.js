@@ -124,10 +124,24 @@ BEGIN
 END $$;
 `;
 function enabled(filters){return filters.dispatch||Object.keys(filters.columnFilters||{}).some(k=>k in DISPATCH_FIELDS||k==='stopped_file')||filters.sort in DISPATCH_FIELDS||filters.sort==='stopped_file';}
-function wrapQuery(query,filters){
+function dispatchSource(filters,values,operationIds){
+ const where=[];
+ const bind=value=>{values.push(value);return `$${values.length}`;};
+ if(operationIds)where.push(`b.id=ANY(${bind(operationIds)}::uuid[])`);
+ const alias=filters.mode==='events'?'window_event':'b',dates=[];
+ if(filters.from)dates.push(`${alias}.created_at>=${bind(filters.from)}::timestamptz`);
+ if(filters.to)dates.push(`${alias}.created_at<${bind(filters.to)}::timestamptz`);
+ if(dates.length)where.push(filters.mode==='events'
+   ?`EXISTS(SELECT 1 FROM audit_events window_event WHERE window_event.operation_id=b.id AND ${dates.join(' AND ')})`
+   :dates.join(' AND '));
+ return `FROM audit_operations b${where.length?' WHERE '+where.join(' AND '):''}`;
+}
+function wrapQuery(query,filters,operationIds){
  if(!enabled(filters))return query;
+ const values=[...query.values],source=dispatchSource(filters,values,operationIds);
+ const sourceValues=[],sourceText=dispatchSource(filters,sourceValues,operationIds);
  const text=query.text.replaceAll('audit_operations o','dispatch_operations o').replace('e.*,','e.*,o.dispatch,');
- return {...query,text:`WITH dispatch_evidence AS MATERIALIZED (SELECT b.*,system_audit_dispatch(b.id) AS dispatch FROM audit_operations b),
+ return {...query,values,dispatchSource:{text:`SELECT b.id,system_audit_dispatch(b.id) AS dispatch ${sourceText}`,values:sourceValues},text:`WITH dispatch_evidence AS MATERIALIZED (SELECT b.*,system_audit_dispatch(b.id) AS dispatch ${source}),
  dispatch_operations AS MATERIALIZED (SELECT p.*,d.dispatch FROM dispatch_evidence d CROSS JOIN LATERAL jsonb_populate_record(NULL::audit_operations,
  to_jsonb(d)||jsonb_strip_nulls(jsonb_build_object('recipient_id',d.dispatch->'recipient_id','recipient_type',d.dispatch->'recipient_type','recipient_name',d.dispatch->'recipient_name','recipient_short_id',d.dispatch->'recipient_short_id'))) p) ${text}`};
 }
@@ -141,7 +155,8 @@ function presentDispatch(row){
 async function prepareQuery(db,query){
  const fields=['dispatch_content','dispatch_file_name'].filter(field=>query.text.includes(`o.dispatch->>'${field}'`));if(!fields.length)return query;
  // Plaintext exists only in this authorized request. Never persist it or compare ciphertext as human text.
- const result=await db.query(`SELECT id,system_audit_dispatch(id) AS dispatch FROM audit_operations`),values=[...query.values];let text=query.text;
+ const source=query.dispatchSource||{text:'SELECT id,system_audit_dispatch(id) AS dispatch FROM audit_operations',values:[]};
+ const result=await db.query(source.text,source.values),values=[...query.values];let text=query.text;
  for(const field of fields){const content={};for(const row of result.rows){try{let raw=decryptMessageText(row.dispatch[field==='dispatch_content'?'message_body':field]);if(field==='dispatch_content'&&row.dispatch.dispatch_message_type!=='text'&&raw===decryptMessageText(row.dispatch.dispatch_file_name))raw=null;content[row.id]=field==='dispatch_content'?contentPreview(raw):raw;}catch{content[row.id]='לא ניתן לקרוא את התוכן';}}
  values.push(JSON.stringify(content));text=text.replaceAll(`o.dispatch->>'${field}'`,`($${values.length}::jsonb->>o.id::text)`);}
  return {values,text};

@@ -107,4 +107,25 @@ test('storage allowance, reservations and personal Drive migration', {
     await maintenance(async () => Buffer.alloc(100))();
     assert.equal((await pool.query('SELECT status FROM central_drive_objects WHERE file_id=$1',[source.id])).rows[0].status,'delete_pending');
   });
+  await t.test('completed blocked scans migrate to personal storage, active scans remain untouched', async () => {
+    const user = await owner();
+    const files = [];
+    for (const status of ['rejected','stopped','pending']) {
+      const file = await insert(user, 100);
+      await pool.query('UPDATE stored_files SET moderation_status=$2 WHERE id=$1', [file.id,status]);
+      files.push(file);
+    }
+    await connect(user);
+    await quota.queueUserMigration(pool, user);
+    for (let i = 0; i < files.length; i++) {
+      const row = (await pool.query('SELECT storage_tier,moderation_status FROM stored_files WHERE id=$1',[files[i].id])).rows[0];
+      assert.equal(row.storage_tier, i === 2 ? 'service' : 'personal');
+    }
+    const file = files[0];
+    await pool.query(`INSERT INTO media_backup_items(stored_file_id,user_id,status,plaintext_sha256,encryption_metadata)
+      VALUES($1,$2,'verified',$3,'{"keySource":"server_vault"}')`, [file.id,user,file.content_sha256]);
+    await quota.createMaintenance({ getPool: async () => pool, verifyAccount: async () => {},
+      verifyBytes: async () => Buffer.alloc(100), lockKey: crypto.randomBytes(4).readInt32BE() })();
+    assert.ok((await pool.query('SELECT personal_storage_verified_at FROM stored_files WHERE id=$1',[file.id])).rows[0].personal_storage_verified_at);
+  });
 });

@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { Client } = require('pg');
 const { mediaLibraryName } = require('../server/media-library-name');
+const { imageBlockReason } = require('../server/moderation-user-reason');
 const { personalMessageVisible, messageAfterConversationClear } = require('../server/conversation-history');
 
 const id = n => `22000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -27,7 +28,7 @@ function routes(db) {
     auth, getPool: async () => ({ query: db.query.bind(db),
       connect: async () => ({ query: db.query.bind(db), release() {} }) }),
     // This suite verifies inventory SQL. Filter projection is covered separately.
-    projectFilterMediaLibrary: async (_db, _user, rows) => rows, mediaLibraryName,
+    projectFilterMediaLibrary: async (_db, _user, rows) => rows, mediaLibraryName, imageBlockReason,
     personalMessageVisible, messageAfterConversationClear, console,
   });
   return async (route = '/api/media-library', userId = owner, query = {}, payload = {}) => {
@@ -78,7 +79,7 @@ test('media catalog and pages aggregate unique owned files without leaking inacc
       CREATE TEMP TABLE users(id uuid,name text,profile_pic_url text,created_at timestamptz);
       CREATE TEMP TABLE groups(id uuid,name text,profile_pic_url text,created_at timestamptz);
       CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,status text,joined_at timestamptz);
-      CREATE TEMP TABLE listings(id uuid,user_id uuid,title text,image_url text,created_at timestamptz);
+      CREATE TEMP TABLE listings(id uuid,user_id uuid,title text,image_url text,created_at timestamptz,video_url text);
       CREATE TEMP TABLE listing_images(listing_id uuid,url text);
       CREATE TEMP TABLE education_forms(id uuid,group_id uuid,created_by uuid,title text,file_url text,created_at timestamptz);
       CREATE TEMP TABLE shared_gifs(id uuid,creator_id uuid,stored_file_id uuid,status text,title text,created_at timestamptz);

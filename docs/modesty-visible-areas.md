@@ -14,10 +14,22 @@ Provider HTTP errors, invalid responses, safety blocks and budget stops retain
 their existing handling. No additional review calls are introduced.
 
 The audit finding out_of_frame_ignored explains the policy in Hebrew. The
-moderation cache version is 2026-09-27-visible-clothing-17 plus provider policy.
+moderation cache version is 2026-10-01-corroborated-clothing-20 plus provider policy.
 Previously stopped scans and their consumed budgets are not reset or resubmitted
 by this deployment. Historical audit results are not rewritten.
 
 Regression coverage includes cropped compliant frames through the image and
 video pipeline, visible violations, ambiguous visible areas, unavailable optional
 OpenAI, required-provider errors, invalid scope and audit presentation.
+
+An uncertain Gemini result with a contradictory `violationClearlyVisible=true`
+can be approved when both Gemini and OpenAI explicitly mark visible areas
+`compliant`, provide visible evidence, report no ambiguity inside the frame,
+and finish with confidence of at least 0.85. OpenAI must additionally return
+`modest` and `violationClearlyVisible=false`. Google and local safety must be
+available and clean, and person classification must be resolved. No additional
+provider call is made to resolve this case. Missing reviewers, explicit Gemini
+violations and genuinely ambiguous visible areas do not gain this exception.
+Original provider fields remain in the audit, with the final resolution marked
+`corroborated_compliant_gemini_flag`. This does not manually approve an entire
+video with other unresolved or unscanned frames, or resubmit historical scans.

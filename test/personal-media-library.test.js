@@ -37,7 +37,7 @@ test('personal media screen exposes filters, downloads and guarded deletion', ()
   assert.match(app, /Widget _mediaTable\(\)/);
   assert.match(app, /_excelHeader\('גודל', 'size', sortColumn: 'size'\)/);
   assert.match(app, /_excelHeader\('תאריך העלאה', 'date', sortColumn: 'date'\)/);
-  assert.match(app, /labelText: 'שם הקובץ'/);
+  assert.match(app, /column == 'name'\s*\? TextField\([\s\S]*?controller: first[\s\S]*?labelText: 'מכיל את הטקסט'/);
   assert.match(app, /label: 'מצב סריקה'/);
   assert.match(app, /label: 'מצב גיבוי'/);
   assert.match(app, /_excelHeader\('סיווג', 'classification'\)/);

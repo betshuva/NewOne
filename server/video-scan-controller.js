@@ -92,8 +92,12 @@ async function runBoundedVideoScan(buffer, fileName, mimeType, options) {
       contentSha256: await sourceHash(buffer),
       scanVersion, legacyUnsafe, providerPolicy,
     });
-    if (state.status === 'completed') return { ...reconcileVideoState(state), cacheHit: true };
-    if (state.status !== 'acquired') return reconcileVideoState(state);
+    if (state.status !== 'acquired') {
+      // Link retained evidence only; never decode media or call a classifier here.
+      if (state.status !== 'busy' && state.result && options.attachCachedPreview)
+        await options.attachCachedPreview(state).catch(() => {});
+      return { ...reconcileVideoState(state), ...(state.status === 'completed' ? { cacheHit:true } : {}) };
+    }
     context = { scanId: state.id, leaseToken: state.leaseToken };
     if (state.budget.providerPolicy && state.budget.providerPolicy !== providerPolicy) {
       state = await api.stopVideoScan(pool, context, 'scan_version_changed');

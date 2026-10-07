@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { listingVideoApproved, VIDEO_PROBE_VERSION } = require('../server/listing-video-policy');
 
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 const start = source.indexOf('async function retryPendingScans()');
@@ -11,16 +12,22 @@ const end = source.indexOf('async function recoverOrphanedPendingScans(', start)
 const approved = { moderationVersion: 'test-current', blocked: false, pending: false, classification: {
   category: 'video', detectedCategories: ['video', 'nonHumanImages'], uncertain: false,
 } };
+const ALL = { text: true, video: true, nonHumanImages: true, men: true, women: true, children: true };
 
 async function retry({ cached = false, result = approved, stopped = false,
-  isContact = true, contentAllowed = true, group = false, type = 'video', blockedRecipient = false, teenAllowed = true, realSenderGuard = false } = {}) {
+  isContact = true, contentAllowed = true, group = false, type = 'video', blockedRecipient = false, teenAllowed = true, realSenderGuard = false,
+  listing = false, listingProof = { durationSeconds: 9, source: VIDEO_PROBE_VERSION },
+  standalone = false, senderFilter = ALL } = {}) {
   const row = { id: 103, retry_count: 0, created_at: new Date(), file_type: type,
     file_name: 'clip.mp4', mime_type: 'video/mp4', file_url: '/uploads/clip.mp4',
     stored_file_id: 'file', storage_path: 'clip.mp4', file_size: 5, user_id: 'sender',
     to_user_id: 'recipient', stored_moderation_status: stopped ? 'stopped' : cached ? 'approved' : 'pending',
     prior_moderation_details: stopped ? structuredClone(result)
-      : cached ? structuredClone(approved) : { pending: true } };
+      : cached ? structuredClone(result) : { pending: true } };
   if (group) { row.to_user_id = null; row.group_id = 'group'; }
+  if (standalone) row.to_user_id = null;
+  if (listing) { row.context_type = 'listing'; row.to_user_id = null;
+    row.prior_moderation_details.listingVideoProof = listingProof; }
   const events = [];
   const rejections = [];
   const decisions = [];
@@ -34,17 +41,23 @@ async function retry({ cached = false, result = approved, stopped = false,
     if (q.startsWith('INSERT INTO scan_queue_wait_metrics')) return { rows: [] };
     if (q.startsWith('SELECT id FROM pending_scans')) return { rows: queued ? [{ id: row.id }] : [] };
     if (q.startsWith('SELECT 1 FROM blocked_users')) return { rows: blockedRecipient ? [{}] : [] };
+    if (q.startsWith('SELECT u.content_filter AS general_filter'))
+      return { rows: [{ general_filter: senderFilter, scoped_filter: null }] };
+    if (q.startsWith('INSERT INTO filter_audit_events')) {
+      decisions.push(JSON.parse(values[7])); return { rows: [{}] };
+    }
     if (q.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
     if (q.startsWith('SELECT 1 FROM user_contacts')) return { rows: isContact ? [{}] : [] };
     if (q.startsWith('SELECT id,created_at FROM message_requests')) return { rows: [] };
     if (q.startsWith('INSERT INTO message_requests')) { events.push('request'); return { rows: [{ id: 'request', created_at: new Date() }] }; }
     if (q.startsWith('SELECT id FROM users')) return { rows: [{ id: row.user_id }] };
     if (q.startsWith('UPDATE stored_files')) {
-      const details = JSON.parse(values[0]);
+      const details = JSON.parse(values[q.includes('moderation_status=$1') ? 1 : 0]);
       savedDetails = details;
       if (details.pending) assert.match(q, /moderation_status='pending'/,
         'a pending retry must not overwrite a newer terminal scan');
-      else events.push(q.includes("moderation_status='stopped'") ? 'stop' : 'approve');
+      else events.push(q.includes("moderation_status='stopped'") ? 'stop'
+        : q.includes("moderation_status='rejected'") ? 'reject' : 'approve');
       return { rows: [] };
     }
     if (q.startsWith('INSERT INTO messages')) {
@@ -92,6 +105,7 @@ async function retry({ cached = false, result = approved, stopped = false,
       return options.scan(bytes);
     },
     stoppedVideoResult: require('../server/video-scan-controller').stoppedVideoResult,
+    listingVideoApproved,
     recordProviderCheck: async () => {},
     relay(userId, event, payload) {
       if (event === 'message:request' || event === 'message:request-pending') { events.push(event); return; }
@@ -107,6 +121,7 @@ async function retry({ cached = false, result = approved, stopped = false,
     contentAllowedByFilter: () => contentAllowed,
     recordFilterDecision: async (db, decision) => decisions.push(decision),
     notifyDestinationFilterBlock: async () => events.push('filter-notice'),
+    notifyRejectedSend: async () => events.push('rejection-notice'),
     assertSenderFileAllowed: async (db,userId,fileUrl,contextType,contextId,source) => {
       events.push('sender-policy-at-commit');
       if (realSenderGuard) return require('../server/sender-content-filter').assertSenderMediaAllowed(db,{userId,contextType,contextId,type,classification:approved.classification,source}); },
@@ -151,6 +166,72 @@ test('a video whose local bytes were released is scanned from verified storage a
   assert.deepEqual(state.events, ['read-storage', 'scan', 'sender-policy', 'BEGIN',
     'approve', 'sender-policy-at-commit', 'message', 'dequeue', 'COMMIT', 'notify']);
   assert.equal(state.queued, false);
+});
+
+const listingScan = () => ({ ...approved, classification: { ...approved.classification,
+  durationSeconds: 9, sampledFrames: 2, fullyScannedFrames: 2 }, frameResults: Array.from({ length: 2 }, () => ({
+  classification: { category: 'nonHumanImages', detectedCategories: ['nonHumanImages'], uncertain: false },
+})) });
+
+test('a delayed listing video retains server duration proof and approves only a complete object-only scan', async () => {
+  for (const cached of [false, true]) {
+    const state = await retry({ listing: true, cached, result: listingScan() });
+    assert.equal(state.queued, false);
+    assert.ok(state.events.includes('approve')); assert.ok(!state.events.includes('message'));
+    assert.equal(state.savedDetails.listingVideoProof.source, VIDEO_PROBE_VERSION);
+    assert.equal(listingVideoApproved({ file_type: 'video', mime_type: 'video/mp4', context_type: 'listing',
+      moderation_status: 'approved', moderation_details: state.savedDetails }), true);
+  }
+});
+
+test('a delayed listing video cannot turn people, incomplete frames or missing duration proof into an approval', async () => {
+  const people = listingScan();
+  people.frameResults[1].classification = { category: 'men', detectedCategories: ['men'], uncertain: false };
+  const incomplete = listingScan(); incomplete.classification.fullyScannedFrames = 1;
+  for (const options of [{ result: people }, { result: incomplete }, { result: listingScan(), listingProof: null },
+    { result: listingScan(), listingProof: { durationSeconds: 10.01, source: VIDEO_PROBE_VERSION } }]) {
+    const state = await retry({ listing: true, ...options });
+    assert.equal(state.queued, false); assert.ok(state.events.includes('reject'));
+    assert.ok(!state.events.includes('approve')); assert.ok(!state.events.includes('message'));
+    assert.equal(state.savedDetails.blockedBy, 'listing_video');
+  }
+});
+
+test('standalone listing video scans approve with video viewing disabled while general media stays filtered', async () => {
+  const senderFilter = { ...ALL, video: false };
+  for (const cached of [false, true]) {
+    const state = await retry({ listing: true, cached, result: listingScan(), realSenderGuard: true, senderFilter });
+    assert.ok(state.events.includes('approve'));
+    assert.ok(!state.events.includes('sender-policy'));
+    assert.ok(!state.events.includes('message'));
+    assert.equal(state.savedDetails.senderFilterRejected, undefined);
+    assert.deepEqual(state.rejections, []);
+    assert.equal(state.queued, false);
+  }
+  const general = await retry({ standalone: true, cached: true, realSenderGuard: true, senderFilter });
+  assert.ok(general.events.includes('sender-policy'));
+  assert.equal(general.savedDetails.senderFilterRejected, true);
+  assert.equal(general.rejections[0].code, 'SENDER_CONTENT_FILTERED');
+  assert.ok(!general.events.includes('message'));
+  const chat = await retry({ cached: true, realSenderGuard: true, senderFilter, contentAllowed: false });
+  assert.equal(chat.savedDetails.destinationFilterRejected, true);
+  assert.equal(chat.savedDetails.reasonCode, 'content_filter');
+  assert.ok(!chat.events.includes('message'));
+});
+
+test('listing video exemption never overrides a failed safety scan or an incomplete frame check', async () => {
+  const unsafe = listingScan(); unsafe.blocked = true; unsafe.reason = 'unsafe-test-content';
+  const people = listingScan(); people.frameResults[1].classification = {
+    category: 'men', detectedCategories: ['men'], uncertain: false };
+  const incomplete = listingScan(); incomplete.classification.fullyScannedFrames = 1;
+  for (const result of [unsafe, people, incomplete]) {
+    const state = await retry({ listing: true, result, realSenderGuard: true, senderFilter: { ...ALL, video: false } });
+    assert.ok(state.events.includes('reject'));
+    assert.ok(!state.events.includes('approve'));
+    assert.equal(state.savedDetails.senderFilterRejected, undefined);
+    assert.ok(!state.events.includes('message'));
+    assert.equal(state.queued, false);
+  }
 });
 
 test('an approved queued video finishes delivery without another scan or storage read', async () => {

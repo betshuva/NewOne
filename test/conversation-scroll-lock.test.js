@@ -685,7 +685,7 @@ test('OpenAI and Gemini both decide modesty while local clothing scores are disa
   assert.match(serverSource,
     /action: 'approved_by_clean_safety_consensus'/);
   assert.match(serverSource,
-    /MODERATION_CACHE_VERSION = `2026-09-27-visible-clothing-17:\$\{moderationProviderPolicy\(\)\}`/);
+    /MODERATION_CACHE_VERSION = `2026-10-01-corroborated-clothing-20:\$\{moderationProviderPolicy\(\)\}`/);
 });
 
 test('safety-rejected media cannot be served locally or restored from Drive', () => {

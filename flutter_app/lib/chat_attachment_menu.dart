@@ -4,13 +4,13 @@ import 'media_pointer_barrier.dart';
 
 enum ChatAttachmentAction {
   upload,
+  capture,
   photo,
   video,
   audio,
   scan,
   contact,
   myContact,
-  expression,
   paste
 }
 
@@ -183,10 +183,7 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                       minTileHeight: 44,
                       leading: const Icon(Icons.arrow_forward,
                           size: 20, textDirection: TextDirection.ltr),
-                      title: Text(
-                          _section == 'capture'
-                              ? 'צילום והקלטה'
-                              : 'שיתוף איש קשר',
+                      title: Text('שיתוף איש קשר',
                           style: const TextStyle(
                               fontSize: 14, fontWeight: FontWeight.w600)),
                       onTap: () => setState(() => _section = null),
@@ -196,16 +193,12 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                   if (_section == null) ...[
                     _item('העלאת קבצים', Icons.upload_file, Colors.blue,
                         action: ChatAttachmentAction.upload),
-                    _item(
-                        'צילום והקלטה', Icons.camera_alt_outlined, Colors.pink,
-                        section: 'capture'),
+                    _item('צילום', Icons.camera_alt_outlined, Colors.pink,
+                        action: ChatAttachmentAction.capture,
+                        allowed: widget.imagesAllowed || widget.videoAllowed),
                     _item('סריקת מסמך', Icons.document_scanner_outlined,
                         Colors.orange,
                         action: ChatAttachmentAction.scan,
-                        allowed: widget.textAllowed),
-                    _item('אימוג׳י ומדבקות', Icons.emoji_emotions_outlined,
-                        Colors.amber.shade800,
-                        action: ChatAttachmentAction.expression,
                         allowed: widget.textAllowed),
                     _item('שיתוף איש קשר', Icons.contact_phone_outlined,
                         Colors.teal,
@@ -221,16 +214,6 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                       child: Text('הקבצים עוברים סינון לפני השליחה',
                           style: TextStyle(fontSize: 11, color: Colors.grey)),
                     ),
-                  ] else if (_section == 'capture') ...[
-                    _item('צילום תמונה', Icons.camera_alt_outlined, Colors.blue,
-                        action: ChatAttachmentAction.photo,
-                        allowed: widget.imagesAllowed),
-                    _item('צילום וידאו', Icons.videocam_outlined, Colors.purple,
-                        action: ChatAttachmentAction.video,
-                        allowed: widget.videoAllowed),
-                    _item('הקלטת קול', Icons.mic_none, Colors.deepOrange,
-                        action: ChatAttachmentAction.audio,
-                        allowed: widget.textAllowed),
                   ] else ...[
                     _item('שתף איש קשר', Icons.contact_phone_outlined,
                         Colors.teal,

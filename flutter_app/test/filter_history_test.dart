@@ -23,6 +23,23 @@ const _receivedImageId = 'd121cb79-7fa9-45b1-aa50-832306b2834a';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  for (final status in ['rejected', 'stopped']) {
+    testWidgets('video $status hides scan reasons and preserves its filename',
+        (tester) async {
+      const reason = 'מידע פנימי על בדיקת התוכן';
+      expect(hiddenImageMessage(fileType: 'video', status: status,
+          reason: reason), 'הסירטון נחסם');
+      await tester.pumpWidget(MaterialApp(home: Scaffold(
+        body: FilterHiddenImage(api: 'https://example.test', token: 'token',
+          messageId: 'video', fileType: 'video', fileName: 'video.mp4',
+          status: status, reason: reason, onRestored: () async {}),
+      )));
+      expect(find.text('הסירטון נחסם'), findsOneWidget);
+      expect(find.text('video.mp4'), findsOneWidget);
+      expect(find.textContaining(reason), findsNothing);
+      expect(find.textContaining('התמונה'), findsNothing);
+    });
+  }
   for (final action in ['hide', 'delete', 'keep']) {
     testWidgets(
         '$action retries only after explicit choice and preserves payload',
@@ -170,7 +187,7 @@ void main() {
       status: 'pending_scan',
       reason: null,
       purged: false,
-      expected: 'התמונה ממתינה לסריקה ולאישור',
+      expected: 'הקובץ ממתין לסריקה ולאישור',
     ),
     (
       name: 'pending status overrides content-filter metadata',
@@ -179,7 +196,7 @@ void main() {
       status: 'pending',
       reason: null,
       purged: false,
-      expected: 'התמונה ממתינה לסריקה ולאישור',
+      expected: 'הקובץ ממתין לסריקה ולאישור',
     ),
     (
       name: 'rejected synthetic scan displays the real scan reason',
@@ -247,6 +264,7 @@ void main() {
               api: 'https://example.test/api',
               token: 'token',
               messageId: fixture.id,
+              fileName: 'צילום-בדיקה-2026.png',
               hiddenReason: fixture.hiddenReason,
               status: fixture.status,
               reason: fixture.reason,
@@ -259,6 +277,7 @@ void main() {
         ));
         await tester.pumpAndSettle();
         expect(find.text(fixture.expected), findsOneWidget);
+        expect(find.text('צילום-בדיקה-2026.png'), findsOneWidget);
         expect(find.text('התמונה מוסתרת לפי בחירת הסינון שלך'), findsNothing);
         expect(find.text('להחזיר את התמונה הזו'), findsNothing);
         expect(find.byType(TextButton), findsNothing);
@@ -293,7 +312,7 @@ void main() {
     await http.runWithClient(() async {
       await tester.pumpWidget(placeholder('moderation', 'pending'));
       await tester.pumpAndSettle();
-      expect(find.text('התמונה ממתינה לסריקה ולאישור'), findsOneWidget);
+      expect(find.text('הקובץ ממתין לסריקה ולאישור'), findsOneWidget);
       expect(requests, isEmpty);
 
       await tester.pumpWidget(placeholder('content_filter', 'approved'));

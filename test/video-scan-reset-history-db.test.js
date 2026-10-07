@@ -1,0 +1,28 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto'),fs=require('node:fs'),{Client,Pool}=require('pg');
+test('pending video distinguishes archived usage from unknown calls after an explicit reset',{skip:process.env.RUN_DB_TESTS!=='1'},async t=>{
+ const schema='scan_history_'+crypto.randomBytes(8).toString('hex'),db=new Client({connectionString:process.env.DATABASE_URL});await db.connect();await db.query(`CREATE SCHEMA "${schema}"`);
+ const pool=new Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema});t.after(async()=>{await pool.end();await db.query(`DROP SCHEMA "${schema}" CASCADE`);await db.end();});
+ await pool.query(`CREATE TABLE stored_files(id uuid,user_id uuid,content_sha256 text,file_type text,created_at timestamptz);
+ CREATE TABLE moderation_provider_calls(stored_file_id uuid,created_at timestamptz,completed_at timestamptz);
+ CREATE TABLE moderation_scan_resets(content_sha256 text,file_type text,created_at timestamptz);`);
+ const user=crypto.randomUUID(),old=crypto.randomUUID(),current=crypto.randomUUID(),next=crypto.randomUUID(),hash='a'.repeat(64);
+ await pool.query(`INSERT INTO stored_files VALUES($1,$2,$3,'video','2026-01-01'),($4,$2,$3,'video','2026-01-03'),($5,$2,$3,'video','2026-01-06')`,[old,user,hash,current,next]);
+ await pool.query("INSERT INTO moderation_provider_calls VALUES($1,'2026-01-01','2026-01-01')",[old]);
+ const source=fs.readFileSync(require.resolve('../server/index.js'),'utf8'),expression=source.match(/(\(sf\.file_type='video' AND EXISTS\([\s\S]*?\)\)) AS legacy_provider_calls/)[1];
+ const legacy=async id=>(await pool.query(`SELECT ${expression} AS unsafe FROM stored_files sf WHERE sf.id=$1`,[id])).rows[0].unsafe;
+ assert.equal(await legacy(current),true,'Unreset usage must still stop a new untracked budget');
+ await pool.query("INSERT INTO moderation_scan_resets VALUES($1,'video','2026-01-02')",['b'.repeat(64)]);
+ assert.equal(await legacy(current),true,'A different file reset cannot authorize this hash');
+ await pool.query("INSERT INTO moderation_scan_resets VALUES($1,'video','2026-01-02')",[hash]);
+ assert.equal(await legacy(current),false,'Archived billing history must not block a fresh upload');
+ assert.equal(await legacy(old),true,'A reset does not retroactively authorize an old queued upload');
+ await pool.query("INSERT INTO moderation_provider_calls VALUES($1,'2026-01-04','2026-01-04')",[current]);
+ assert.equal(await legacy(current),true,'New calls must still be accounted for');
+ await pool.query("INSERT INTO moderation_scan_resets VALUES($1,'video','2026-01-05')",[hash]);
+ assert.equal(await legacy(current),true);
+ assert.equal(await legacy(next),false,'Each new explicitly reset generation can scan afresh');
+ await pool.query("INSERT INTO moderation_provider_calls VALUES($1,'2026-01-01','2026-01-07')",[old]);
+ assert.equal(await legacy(next),true,'A late provider completion after the reset remains unaccounted');
+ assert.equal((await pool.query('SELECT count(*) FROM moderation_provider_calls')).rows[0].count,'3','Billing records remain intact');
+});

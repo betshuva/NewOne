@@ -485,6 +485,7 @@ test('routes reject missing authentication and malformed filters without leaking
   assert.ok(catalog.body.recordingStartedAt);
   assert.ok(Array.isArray(catalog.body.coverage));
   assert.ok(catalog.body.actions.some(row=>row.action==='audit_export'));
+  assert.deepEqual(catalog.body.defaultColumnFilters,{display_action:{values:['media:video','media:image'],exclude:false}});
   assert.equal(catalog.headers['Cache-Control'],'no-store');
 });
 

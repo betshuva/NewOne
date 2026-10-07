@@ -3,6 +3,12 @@ library;
 
 // ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:async';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:betshuva/recording_upload.dart';
+import 'package:betshuva/listing_capture.dart';
 import 'dart:html' as html;
 import 'dart:js' as js;
 import 'dart:js_interop';
@@ -15,9 +21,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
 
 class _CanvasCamera {
-  _CanvasCamera(this.stream);
+  _CanvasCamera(this.stream) : streams = [stream];
 
   final html.MediaStream stream;
+  final List<html.MediaStream> streams;
+  final List<bool> audioRequests = [];
   html.VideoElement? preview;
 }
 
@@ -44,18 +52,29 @@ Future<_CanvasCamera> _installCanvasCamera(WidgetTester tester,
     // without replacing browser playback, decoding, or recording.
     videoPrototype['play'] = js.JsFunction.withThis((Object element) {
       final video = element as html.VideoElement;
-      if (identical(video.srcObject, stream)) camera.preview = video;
+      if (camera.streams.contains(video.srcObject)) camera.preview = video;
       return originalPlay.apply(const [], thisArg: element);
     });
     devices.setProperty(
         'getUserMedia'.toJS,
-        ((JSAny? _) => (permissionResponse ?? Future.value(stream))
-            .then((value) => value as JSObject)
-            .toJS).toJS);
+        ((JSAny? constraints) {
+          camera.audioRequests.add((constraints as JSObject)
+              .getProperty<JSBoolean>('audio'.toJS)
+              .toDart);
+          final next = camera.audioRequests.length == 1
+              ? stream
+              : canvas.captureStream(15);
+          if (!camera.streams.contains(next)) camera.streams.add(next);
+          return (permissionResponse ?? Future.value(next))
+              .then((value) => value as JSObject)
+              .toJS;
+        }).toJS);
     addTearDown(() {
       timer.cancel();
-      for (final track in stream.getTracks()) {
-        track.stop();
+      for (final opened in camera.streams) {
+        for (final track in opened.getTracks()) {
+          track.stop();
+        }
       }
       devices.setProperty('getUserMedia'.toJS, original);
       videoPrototype['play'] = originalPlay;
@@ -78,6 +97,9 @@ Future<_CanvasCamera> _openCamera(WidgetTester tester,
     {required bool video,
     required void Function(XFile?) onResult,
     Future<html.MediaStream>? permissionResponse,
+    bool unified = false,
+    bool imagesAllowed = true,
+    bool videoAllowed = true,
     bool waitUntilReady = true}) async {
   final camera = await _installCanvasCamera(tester,
       permissionResponse: permissionResponse);
@@ -85,11 +107,16 @@ Future<_CanvasCamera> _openCamera(WidgetTester tester,
       home: Builder(
           builder: (context) => Scaffold(
               body: TextButton(
-                  onPressed: () async => onResult(video
-                      ? await captureWebVideo(context,
-                          creatorId: 'browser-video')
-                      : await captureWebPhoto(context,
-                          creatorId: 'browser-photo')),
+                  onPressed: () async => onResult(unified
+                      ? await captureWebCamera(context,
+                          creatorId: 'browser-camera',
+                          imagesAllowed: imagesAllowed,
+                          videoAllowed: videoAllowed)
+                      : video
+                          ? await captureWebVideo(context,
+                              creatorId: 'browser-video')
+                          : await captureWebPhoto(context,
+                              creatorId: 'browser-photo')),
                   child: const Text('open'))))));
   await tester.tap(find.text('open'));
   await tester.pump();
@@ -113,6 +140,279 @@ void _expectPlayingPreview(html.VideoElement preview) {
 }
 
 void main() {
+  testWidgets(
+      'listing photo sequence keeps drafts when next capture is cancelled',
+      (tester) async {
+    final camera = await _installCanvasCamera(tester);
+    List<XFile>? result;
+    await tester.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (context) => Scaffold(
+                body: TextButton(
+                    onPressed: () async {
+                      result = await captureListingPhotos(context,
+                          maxPhotos: 2, creatorId: 'tester');
+                    },
+                    child: const Text('open'))))));
+    await tester.tap(find.text('open'));
+    await _waitUntil(
+        tester,
+        () =>
+            find.byType(FilledButton).evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(find.byType(FilledButton)).onPressed !=
+                null);
+    await tester.tap(find.text('צלם תמונה'));
+    await _waitUntil(
+        tester, () => find.text('צולמו 1 מתוך 2 תמונות').evaluate().isNotEmpty);
+    expect(
+        camera.stream.getTracks().every((track) => track.readyState == 'ended'),
+        isTrue);
+    await tester.tap(find.text('צילום נוסף'));
+    await _waitUntil(
+        tester,
+        () =>
+            camera.streams.length == 2 &&
+            find.text('ביטול').evaluate().isNotEmpty);
+    await tester.tap(find.text('ביטול'));
+    await _waitUntil(tester, () => result != null);
+    expect(result, hasLength(1));
+    expect(
+        camera.streams.every((stream) =>
+            stream.getTracks().every((track) => track.readyState == 'ended')),
+        isTrue);
+    await tester.runAsync(
+        () async => expect(await result!.single.readAsBytes(), isNotEmpty));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'listing video deadline leaves an encoder margin and releases camera',
+      (tester) async {
+    final previousErrorHandler = FlutterError.onError;
+    FlutterError.onError = (details) {
+      // Surface browser framework failures in the headless test runner.
+      // ignore: avoid_print
+      print('${details.exceptionAsString()}\n${details.stack}');
+      previousErrorHandler?.call(details);
+    };
+    addTearDown(() => FlutterError.onError = previousErrorHandler);
+    final camera = await _installCanvasCamera(tester);
+    XFile? result;
+    await tester.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (context) => Scaffold(
+                body: TextButton(
+                    onPressed: () async {
+                      result = await captureListingVideo(context,
+                          creatorId: 'tester');
+                    },
+                    child: const Text('open'))))));
+    await tester.tap(find.text('open'));
+    await _waitUntil(
+        tester,
+        () =>
+            find.byType(FilledButton).evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(find.byType(FilledButton)).onPressed !=
+                null);
+    await tester.tap(find.text('התחל צילום'));
+    await tester.pump();
+    expect(find.textContaining('00:10'), findsOneWidget);
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 400)));
+    await tester.pump(const Duration(seconds: 9));
+    expect(result, isNull);
+    expect(find.text('עצור ושמור'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 500));
+    await _waitUntil(tester, () => result != null);
+    // The returned file precedes the dialog exit animation and track cleanup.
+    await tester.pumpAndSettle();
+    expect(result?.mimeType, 'video/webm');
+    expect(result?.name, contains('-ID-tester'));
+    expect(
+        camera.stream.getTracks().every((track) => track.readyState == 'ended'),
+        isTrue);
+    await tester
+        .runAsync(() async => expect(await result!.readAsBytes(), isNotEmpty));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'real timed camera blobs upload during recording and decode after sealing',
+      (tester) async {
+    final remote = <int>[];
+    var sends = 0;
+    final client = MockClient((request) async {
+      if (request.method == 'PUT') {
+        expect(int.parse(request.headers['Upload-Offset']!), remote.length);
+        remote.addAll(request.bodyBytes);
+        return http.Response(jsonEncode({'offset': remote.length}), 200);
+      }
+      if (request.url.path.endsWith('/seal')) {
+        expect(jsonDecode(request.body)['sha256'],
+            sha256.convert(remote).toString());
+      }
+      if (request.url.path == '/api/upload') sends++;
+      return http.Response('{}', 200);
+    });
+    await _installCanvasCamera(tester);
+    XFile? result;
+    await tester.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (context) => Scaffold(
+                body: TextButton(
+                    onPressed: () async {
+                      result = await http.runWithClient(
+                          () => captureWebVideo(context,
+                              creatorId: 'synthetic-camera',
+                              api: 'https://example.test/api',
+                              token: 'fixture'),
+                          () => client);
+                    },
+                    child: const Text('open'))))));
+    await tester.tap(find.text('open'));
+    await _waitUntil(
+        tester,
+        () =>
+            find.text('התחל צילום').evaluate().isNotEmpty &&
+            tester.widget<FilledButton>(find.byType(FilledButton)).onPressed !=
+                null);
+    await http.runWithClient(() async {
+      await tester.tap(find.text('התחל צילום'));
+      await tester.pump();
+    }, () => client);
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(seconds: 6)));
+    await tester.pump(const Duration(seconds: 2));
+    await _waitUntil(tester, () => remote.isNotEmpty);
+    expect(sends, 0);
+    await tester.tap(find.text('עצור ושמור'));
+    await tester.pump();
+    await _waitUntil(tester, () => result != null);
+    expect(sends, 0);
+    await tester.runAsync(() async {
+      final response = await RecordingUpload.upload(
+          file: result!,
+          token: 'fixture',
+          name: result!.name,
+          fields: {'toUserId': 'self'});
+      expect(response?.statusCode, 200);
+      expect(remote, await result!.readAsBytes());
+      final player = html.VideoElement()..muted = true;
+      final loaded =
+          player.onLoadedData.first.timeout(const Duration(seconds: 10));
+      player.src = result!.path;
+      await loaded;
+      await player.play();
+      expect(player.videoWidth, greaterThan(0));
+      player.pause();
+      player.removeAttribute('src');
+      player.load();
+    });
+    expect(sends, 1);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets(
+      'fullscreen camera switches photo and video and records the chosen type',
+      (tester) async {
+    XFile? result;
+    final camera = await _openCamera(tester,
+        video: false, unified: true, onResult: (file) => result = file);
+    final size =
+        tester.getSize(find.byKey(const ValueKey('camera-fullscreen')));
+    expect(size, tester.view.physicalSize / tester.view.devicePixelRatio);
+    expect(find.text('צילום'), findsOneWidget);
+    expect(find.text('הקלטת קול'), findsNothing);
+    expect(camera.audioRequests, [false]);
+    expect(tester.getSize(find.byType(HtmlElementView)).height,
+        greaterThan(size.height * .65));
+    await tester.tap(find.byKey(const ValueKey('camera-mode-video')));
+    await _waitUntil(
+        tester,
+        () =>
+            tester.widget<FilledButton>(find.byType(FilledButton)).onPressed !=
+            null);
+    expect(camera.audioRequests, [false, true]);
+    expect(
+        camera.stream.getTracks().every((track) => track.readyState == 'ended'),
+        isTrue);
+    await tester.tap(find.text('התחל צילום'));
+    await tester.pump();
+    expect(
+        tester
+            .widget<ChoiceChip>(find.byKey(const ValueKey('camera-mode-photo')))
+            .onSelected,
+        isNull);
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 350)));
+    await tester.tap(find.text('עצור ושמור'));
+    await tester.pump();
+    await _waitUntil(tester, () => result != null);
+    expect(result!.mimeType, 'video/webm');
+    expect(result!.name, startsWith('betshuva-video-'));
+    await tester.pumpAndSettle();
+    expect(
+        camera.streams.every((stream) =>
+            stream.getTracks().every((track) => track.readyState == 'ended')),
+        isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'fullscreen camera can switch back to a genuine photo without audio',
+      (tester) async {
+    XFile? result;
+    final camera = await _openCamera(tester,
+        video: false, unified: true, onResult: (file) => result = file);
+    for (final mode in ['video', 'photo']) {
+      await tester.tap(find.byKey(ValueKey('camera-mode-$mode')));
+      await _waitUntil(
+          tester,
+          () =>
+              tester
+                  .widget<FilledButton>(find.byType(FilledButton))
+                  .onPressed !=
+              null);
+    }
+    expect(camera.audioRequests, [false, true, false]);
+    await tester.tap(find.text('צלם תמונה'));
+    await tester.pump();
+    await _waitUntil(tester, () => result != null);
+    expect(result!.mimeType, 'image/jpeg');
+    final bytes = await tester.runAsync(() => result!.readAsBytes());
+    expect(bytes!.take(2), [0xff, 0xd8]);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final imagesAllowed in [true, false]) {
+    testWidgets(
+        'fullscreen camera honors allowed mode (images: $imagesAllowed)',
+        (tester) async {
+      final camera = await _openCamera(tester,
+          video: false,
+          unified: true,
+          imagesAllowed: imagesAllowed,
+          videoAllowed: !imagesAllowed,
+          onResult: (_) {});
+      final disabled = imagesAllowed ? 'video' : 'photo';
+      expect(
+          tester
+              .widget<ChoiceChip>(find.byKey(ValueKey('camera-mode-$disabled')))
+              .onSelected,
+          isNull);
+      expect(camera.audioRequests, [!imagesAllowed]);
+      await tester.tap(find.text('ביטול'));
+      await tester.pumpAndSettle();
+      expect(
+          camera.stream
+              .getTracks()
+              .every((track) => track.readyState == 'ended'),
+          isTrue);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('web photo uses snapshot time and creator ID in a genuine JPEG',
       (tester) async {
     XFile? result;

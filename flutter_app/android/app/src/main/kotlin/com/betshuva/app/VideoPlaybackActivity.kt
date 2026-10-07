@@ -1,35 +1,36 @@
 package com.betshuva.app
 
 import android.app.Activity
-import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
-import android.view.Gravity
 import android.view.MenuItem
-import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.MediaController
-import android.widget.ProgressBar
-import android.widget.VideoView
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import java.net.URI
 import java.util.Locale
 
+@UnstableApi
 class VideoPlaybackActivity : Activity() {
-    private lateinit var video: PlaybackView
-    private lateinit var controls: MediaController
+    private var player: ExoPlayer? = null
+    private lateinit var playerView: PlayerView
+    private var source: Uri? = null
     private var foreground = false
-    private var prepared = false
     private var playbackRequested = true
-    private var savedPosition = 0
+    private var savedPosition = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(android.R.style.Theme_Material)
         super.onCreate(savedInstanceState)
         setResult(RESULT_PLAYBACK_ERROR)
-        val source = validSource(intent.data)
+        source = validSource(intent.data)
         if (source == null) {
             finish()
             return
@@ -41,56 +42,19 @@ class VideoPlaybackActivity : Activity() {
             setBackgroundDrawable(ColorDrawable(Color.BLACK))
         }
         window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
-        savedPosition = savedInstanceState?.getInt(POSITION, 0) ?: 0
+        savedPosition = savedInstanceState?.getLong(POSITION, 0L) ?: 0L
         playbackRequested = savedInstanceState?.getBoolean(PLAYING, true) ?: true
-
-        val root = FrameLayout(this).apply {
+        // PlayerView uses a SurfaceView in this separate Activity. It never
+        // renders through Flutter's ImageReader texture on older devices.
+        playerView = PlayerView(this).apply {
             setBackgroundColor(Color.BLACK)
             fitsSystemWindows = true
+            controllerShowTimeoutMs = 0
+            setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+            setShowNextButton(false)
+            setShowPreviousButton(false)
         }
-        video = PlaybackView(this)
-        root.addView(video, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            Gravity.CENTER
-        ))
-        val loading = ProgressBar(this)
-        root.addView(loading, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER
-        ))
-        setContentView(root)
-        controls = object : MediaController(this) {
-            override fun show(timeout: Int) {
-                super.show(0)
-            }
-        }
-        controls.setAnchorView(root)
-        video.setMediaController(controls)
-        video.setOnPreparedListener {
-            if (isFinishing || isDestroyed) return@setOnPreparedListener
-            prepared = true
-            loading.visibility = View.GONE
-            video.seekTo(savedPosition)
-            if (foreground && playbackRequested) video.start()
-            showControls()
-        }
-        video.setOnCompletionListener {
-            playbackRequested = false
-            savedPosition = 0
-            keepScreenOn(false)
-            showControls()
-        }
-        video.setOnErrorListener { _, _, _ ->
-            playbackFailed()
-            true
-        }
-        try {
-            video.setVideoURI(source)
-        } catch (_: Exception) {
-            playbackFailed()
-        }
+        setContentView(playerView)
     }
 
     private fun validSource(source: Uri?): Uri? {
@@ -105,12 +69,39 @@ class VideoPlaybackActivity : Activity() {
         }
     }
 
-    private fun showControls() {
-        if (!::controls.isInitialized) return
-        video.post {
-            if (foreground && prepared && !isFinishing && !isDestroyed) {
-                controls.show(0)
-            }
+    private fun openPlayer() {
+        val uri = source ?: return
+        if (player != null || isFinishing || isDestroyed) return
+        try {
+            val next = ExoPlayer.Builder(this).build()
+            player = next
+            playerView.player = next
+            next.setAudioAttributes(AudioAttributes.DEFAULT, true)
+            next.setHandleAudioBecomingNoisy(true)
+            next.addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (player === next) keepScreenOn(isPlaying)
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (player === next && playbackState == Player.STATE_ENDED) {
+                        playbackRequested = false
+                        savedPosition = 0L
+                        keepScreenOn(false)
+                        playerView.showController()
+                    }
+                }
+
+                override fun onPlayerError(error: PlaybackException) {
+                    if (player === next) playbackFailed()
+                }
+            })
+            next.setMediaItem(MediaItem.fromUri(uri))
+            next.seekTo(savedPosition)
+            next.playWhenReady = playbackRequested
+            next.prepare()
+        } catch (_: Exception) {
+            playbackFailed()
         }
     }
 
@@ -126,36 +117,43 @@ class VideoPlaybackActivity : Activity() {
         finish()
     }
 
-    private fun rememberPosition() {
-        if (::video.isInitialized && prepared && video.duration > 0) {
-            savedPosition = video.currentPosition
+    private fun rememberPlayback() {
+        player?.let {
+            val ended = it.playbackState == Player.STATE_ENDED
+            savedPosition = if (ended) 0L else it.currentPosition.coerceAtLeast(0L)
+            playbackRequested = !ended && it.playWhenReady
         }
+    }
+
+    private fun releasePlayer() {
+        val previous = player
+        player = null
+        if (::playerView.isInitialized) playerView.player = null
+        previous?.release()
+        keepScreenOn(false)
     }
 
     override fun onResume() {
         super.onResume()
         foreground = true
-        if (::video.isInitialized && prepared) {
-            video.seekTo(savedPosition)
-            if (playbackRequested) video.start()
-            showControls()
-        }
+        openPlayer()
+        player?.playWhenReady = playbackRequested
     }
 
     override fun onPause() {
+        rememberPlayback()
         foreground = false
-        if (::video.isInitialized) {
-            rememberPosition()
-            video.pauseForBackground()
-        }
-        if (::controls.isInitialized) controls.hide()
+        // Keep this Activity's player paused until it is closed. Recreating it
+        // here loses the position of streams without a seek index (such as
+        // fragmented MP4), even when seekTo receives the saved position.
+        player?.pause()
         keepScreenOn(false)
         super.onPause()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        rememberPosition()
-        outState.putInt(POSITION, savedPosition)
+        if (foreground) rememberPlayback()
+        outState.putLong(POSITION, savedPosition)
         outState.putBoolean(PLAYING, playbackRequested)
         super.onSaveInstanceState(outState)
     }
@@ -169,31 +167,8 @@ class VideoPlaybackActivity : Activity() {
     }
 
     override fun onDestroy() {
-        if (::controls.isInitialized) controls.hide()
-        if (::video.isInitialized) video.stopPlayback()
-        keepScreenOn(false)
+        releasePlayer()
         super.onDestroy()
-    }
-
-    private inner class PlaybackView(context: Context) : VideoView(context) {
-        override fun start() {
-            playbackRequested = true
-            if (this@VideoPlaybackActivity.foreground) {
-                super.start()
-                this@VideoPlaybackActivity.keepScreenOn(true)
-            }
-        }
-
-        override fun pause() {
-            playbackRequested = false
-            super.pause()
-            this@VideoPlaybackActivity.keepScreenOn(false)
-        }
-
-        // Lifecycle pauses must not overwrite the user's play/pause choice.
-        fun pauseForBackground() {
-            super.pause()
-        }
     }
 
     companion object {

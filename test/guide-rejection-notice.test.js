@@ -139,6 +139,7 @@ for (const delayed of [false, true]) {
       const scope = {
         ...require('./helpers/system-audit-stubs'),
         pool, scanResult, scanBotUpload: false, reportImageScan: false, reused: null,
+        listingVideo: false, listingVideoProof: null,
         req: { user: { id: 'sender' }, body: { toUserId: 'friend' } },
         res: { status() { return this; }, json(value) { responses.push(value); } },
         allowed: { dbType: 'image' }, file: { originalname: 'image.png', size: 5 },
@@ -155,11 +156,11 @@ for (const delayed of [false, true]) {
       };
       let code;
       if (delayed) {
-        code = section('        try {\n          if (!scanResult.blocked) await assertSenderMediaAllowed(pool, { userId: row.user_id,',
+        code = section('        try {\n          // The listing-specific check above already verified duration and every',
           '        // Re-evaluate the current policy after a delayed scan,');
         code = `for(let attempt=0;attempt<1;attempt++){${code}}`;
       } else {
-        code = section('    if (!scanResult?.pending && !scanResult?.blocked) {\n      try {\n        await assertSenderMediaAllowed(',
+        code = section('    if (!scanResult?.pending && !scanResult?.blocked && !(listingVideo && listingVideoProof)) {\n      try {\n        await assertSenderMediaAllowed(',
           '    if (!scanResult?.pending && groupFilter &&');
       }
       await vm.runInNewContext(`(async()=>{${code}})()`, scope);

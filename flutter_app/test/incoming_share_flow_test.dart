@@ -1,10 +1,13 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:betshuva/main.dart';
+
+import 'helpers/listing_upload_browser.dart';
 
 void main() {
   testWidgets(
@@ -12,6 +15,20 @@ void main() {
       (tester) async {
     var uploads = 0;
     var sends = 0;
+    final browser = ListingUploadBrowser();
+    if (kIsWeb) {
+      // The real web transport uses Blob/FileReader and resumable XHR, so a
+      // MockClient alone cannot intercept its uploads. Keep the same three
+      // moderation outcomes at the browser's network boundary.
+      browser.install();
+      addTearDown(browser.dispose);
+      browser.markPending('image-0.png');
+      browser.failOnce('image-1.png', 200,
+          {'status': 'rejected', 'reason': 'blocked fixture'});
+      for (var index = 0; index < 3; index++) {
+        browser.complete('image-$index.png');
+      }
+    }
     final client = MockClient.streaming((request, stream) async {
       final bytes = await stream.toBytes();
       Object reply;
@@ -49,7 +66,8 @@ void main() {
         sends++;
         final body = jsonDecode(utf8.decode(bytes)) as Map;
         expectSync(body['toUserId'], 'bob');
-        expectSync(body['fileUrl'], '/test/third.png');
+        expectSync(body['fileUrl'],
+            kIsWeb ? 'https://example.test/image-2.png' : '/test/third.png');
         reply = {'id': 'message-id'};
       }
       return http.StreamedResponse(
@@ -75,17 +93,40 @@ void main() {
                 }),
         initialRecipientId: 'bob',
         client: client);
+    var completed = false;
+    result.then((_) => completed = true);
     await tester.pumpAndSettle();
     expect(find.text('שליחה אל Bob'), findsOneWidget);
     expect(find.text('Carol'), findsNothing);
     expect(uploads, 0); // Selecting the Android target alone never sends.
+    if (kIsWeb) expect(browser.requests, isEmpty);
     await tester.tap(find.widgetWithText(FilledButton, 'העבר ל־1 יעדים'));
     await tester.pumpAndSettle();
+    if (kIsWeb) {
+      for (var attempt = 0; attempt < 250 && !completed; attempt++) {
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      expect(completed, isTrue,
+          reason: 'Browser upload and moderation fixture did not complete');
+      expect(
+          browser.records.every((record) =>
+              record['meta']['fields']['toUserId'] == 'bob' &&
+              record['meta']['fields']['groupId'] == null),
+          isTrue);
+      expect(browser.requests.length, 3);
+      expect(browser.chunks.map((chunk) => chunk['bytes']), [
+        [1, 2, 0],
+        [1, 2, 1],
+        [1, 2, 2],
+      ]);
+    }
     final outcome = await result;
     expect(outcome.completedMessageIndexes, {0, 2});
     expect(outcome.sentCount, 1);
     expect(outcome.pendingCount, 1);
-    expect(uploads, 3);
+    expect(kIsWeb ? browser.requests.length : uploads, 3);
     expect(sends, 1);
     expect(find.textContaining('1 קבצים ממתינים לסריקה'), findsOneWidget);
     client.close();
@@ -272,6 +313,12 @@ void main() {
         client: client);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('forward-target-user:bob')));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('forward-target-group:study')), 100,
+        scrollable: find.byWidgetPredicate((widget) =>
+            widget is Scrollable &&
+            widget.axisDirection == AxisDirection.down));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('forward-target-group:study')));
     await tester.pumpAndSettle();

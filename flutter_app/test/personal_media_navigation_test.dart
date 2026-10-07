@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:betshuva/main.dart';
 import 'package:betshuva/calendar.dart';
+import 'package:betshuva/main_navigation_tab.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -266,8 +267,12 @@ void main() {
       expect(_entry, findsOneWidget);
       final calendar = find.byKey(const ValueKey('calendar-shortcut'));
       final chats = _inConversations(find.text('שיחות'));
+      expect(tester.widgetList<MainNavigationTab>(find.byType(MainNavigationTab))
+          .map((tab)=>tab.label).toList(), ['שיחות','יומן','מדיה','מודעות']);
+      expect(find.descendant(of:find.byType(MainNavigationTab),matching:find.byType(Icon)),findsNothing);
+      expect(tester.getCenter(chats).dx, greaterThan(tester.getCenter(calendar).dx));
       expect(tester.getCenter(calendar).dx, greaterThan(tester.getCenter(_entry).dx));
-      expect(tester.getCenter(_entry).dx, greaterThan(tester.getCenter(chats).dx));
+      expect(tester.getCenter(_entry).dx, greaterThan(tester.getCenter(_inConversations(find.text('מודעות'))).dx));
       expect(tester.getCenter(_entry).dy, closeTo(tester.getCenter(chats).dy, 1));
       expect(_inConversations(find.text('לוח שנה')), findsNothing);
       expect(_inConversations(find.text('המדיה שלי')), findsNothing);

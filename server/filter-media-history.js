@@ -172,6 +172,7 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
       ...message, file_url: null, fileUrl: null, public_url: null,
       blocked_preview_url: null, thumbnail_url: null, preview_url: null,
       body: null, text: null, file_name: null, fileName: null,
+      scan_file_name: row.sender_id === userId ? message.file_name || message.fileName || null : null,
       message_status: 'stopped_scan', moderation_status: 'stopped',
       scan_reason: row.scan_reason || null,
       content_purged_at: row.content_purged_at || null,
@@ -190,6 +191,7 @@ async function projectFilteredHistory(db, userId, messages, { groupId = null, pr
     const hidden = !safe || (!unfilteredAssistant && preferenceHidden);
     if (hidden) return [{ ...message, file_url: null, fileUrl: null, body: null,
       text: null, file_name: null, fileName: null, filter_hidden: true,
+      scan_file_name: row.sender_id === userId ? message.file_name || message.fileName || null : null,
       moderation_status: row.moderation_status || null,
       scan_reason: row.scan_reason || null, content_purged_at: row.content_purged_at || null,
       hidden_reason: safe ? 'content_filter' : 'moderation', filter_kept: false }];
@@ -244,6 +246,7 @@ async function projectOwnScans(db, userId, rows, { contextType = null, contextId
     return { ...row, file_url: null, fileUrl: null, public_url: null,
       blocked_preview_url: null, thumbnail_url: null, preview_url: null,
       body: null, text: null, file_name: null, fileName: null,
+      scan_file_name: file?.user_id === userId ? file.original_name || null : null,
       ...(file?.moderation_status === 'stopped' ? { message_status: 'stopped_scan' } : {}),
       moderation_status: file?.moderation_status || null,
       scan_reason: row.scan_reason || file?.moderation_details?.reason || null,

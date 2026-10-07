@@ -73,10 +73,10 @@ void main() {
     expect(container.style.pointerEvents, 'auto');
     await tester.tap(find.byIcon(Icons.attach_file)); await tester.pumpAndSettle();
     expect(container.style.pointerEvents, 'none');
-    await tester.tap(find.text('צילום והקלטה')); await tester.pumpAndSettle();
-    expect(container.style.pointerEvents, 'none');
-    await tester.tap(find.text('צילום וידאו')); await tester.pumpAndSettle();
-    expect(selected, ChatAttachmentAction.video);
+    expect(find.text('צילום והקלטה'), findsNothing);
+    expect(find.text('הקלטת קול'), findsNothing);
+    await tester.tap(find.text('צילום')); await tester.pumpAndSettle();
+    expect(selected, ChatAttachmentAction.capture);
     expect(container.style.pointerEvents, 'auto');
     expect(mediaPointerBarriers.value, 0);
     await tester.tap(find.byIcon(Icons.attach_file)); await tester.pumpAndSettle();

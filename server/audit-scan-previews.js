@@ -22,7 +22,7 @@ async function ensureAuditScanPreviewSchema(pool) {
   CREATE OR REPLACE FUNCTION purge_audit_scan_previews() RETURNS trigger LANGUAGE plpgsql AS $$
   BEGIN
     IF NEW.content_purged_at IS NOT NULL
-      AND NOT (NEW.file_type='image' AND NEW.moderation_status='rejected') THEN
+      AND NOT (NEW.file_type IN ('image','video') AND NEW.moderation_status IN ('rejected','stopped')) THEN
       DELETE FROM audit_scan_previews WHERE stored_file_id=NEW.id;
     END IF;
     RETURN NEW;
@@ -62,11 +62,12 @@ async function saveAuditScanPreview(pool, { storedFileId, buffer }) {
 }
 
 async function purgeExpiredAuditScanPreviews(pool) {
-  // Bounded batches also cover video sources whose original bytes have a separate lifecycle.
+  // Keep rejected image/video evidence for the admin audit after playback expires.
+  // Deleting the source record still cascades to every retained preview.
   return pool.query(`DELETE FROM audit_scan_previews WHERE id IN (
     SELECT p.id FROM audit_scan_previews p JOIN stored_files sf ON sf.id=p.stored_file_id
     WHERE (sf.content_purged_at IS NOT NULL OR sf.blocked_content_expires_at<=clock_timestamp())
-      AND NOT (sf.file_type='image' AND sf.moderation_status='rejected')
+      AND NOT (sf.file_type IN ('image','video') AND sf.moderation_status IN ('rejected','stopped'))
     ORDER BY p.created_at LIMIT 500)`);
 }
 
@@ -84,7 +85,7 @@ async function attachOperationPreviews(pool, rows, mode) {
     WHERE e.operation_id=ANY($1::uuid[]) AND e.details->>'storedFileId'=sf.id::text
       AND (sf.file_type='image' OR (sf.file_type='video' AND
         (e.details->>'frameIndex'='0' OR (NOT (e.details ? 'frameIndex') AND e.details->>'frameTimestampMs'='0'))))
-      AND ((sf.file_type='image' AND sf.moderation_status='rejected') OR
+      AND ((sf.file_type IN ('image','video') AND sf.moderation_status IN ('rejected','stopped')) OR
         (sf.content_purged_at IS NULL AND
           (sf.blocked_content_expires_at IS NULL OR sf.blocked_content_expires_at>clock_timestamp())))
     ORDER BY e.operation_id,e.id`, [ids]);
@@ -114,7 +115,7 @@ function registerAuditScanPreviewRoutes(app, { getPool, adminMiddleware }) {
         FROM audit_events e JOIN audit_scan_previews p ON p.id::text=e.details->>'scanPreviewId'
         JOIN stored_files sf ON sf.id=p.stored_file_id
         WHERE e.id=$1 AND e.details->>'storedFileId'=sf.id::text
-          AND ((sf.file_type='image' AND sf.moderation_status='rejected') OR
+          AND ((sf.file_type IN ('image','video') AND sf.moderation_status IN ('rejected','stopped')) OR
             (sf.content_purged_at IS NULL AND
               (sf.blocked_content_expires_at IS NULL OR sf.blocked_content_expires_at>clock_timestamp())))`, [id]);
       const bytes = result.rows[0]?.bytes;

@@ -23,6 +23,7 @@ test('local image stages share the exact scanned preview and video frame context
   const tracking = { storedFileId: fileId, videoBudget: { frameIndex: 2, timestampSeconds: 1.25 } };
   const scan = load('scanStaticImage', '// Increment whenever moderation models', {
     process: { env: {} }, MODERATION_CACHE_VERSION: 'test',
+    cachedScanPreviews: require('../server/cached-scan-previews'),
     openAIModerationEnabled: () => true,
     openAIModerationRequired: () => true,
     moderationProviderPolicy: () => 'google_openai_gemini',

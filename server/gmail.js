@@ -5,6 +5,7 @@ const { OAuth2Client } = require('google-auth-library');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const addressParser = require('nodemailer/lib/addressparser');
 const { verifySession, sessionCurrent } = require('./session-security');
+const { accountAgeError } = require('./adult-access-policy');
 
 const SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send'];
@@ -148,12 +149,12 @@ function registerGmailRoutes(app, { secret, getPool, accountModerationError, rat
     res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' }); next();
   }
   async function owner(pool, id, claims) {
-    const { rows } = await pool.query(`SELECT u.email,u.email_verified,u.session_version,
+    const { rows } = await pool.query(`SELECT u.email,u.email_verified,u.session_version,u.birth_date,
       u.moderation_state,u.moderation_reason,u.moderation_until
       FROM users u WHERE u.id=$1`, [id]);
     const user = rows[0];
     return user && user.email?.toLowerCase() === ownerEmail() && user.email_verified === true &&
-      sessionCurrent(claims, user) && !accountModerationError(user);
+      sessionCurrent(claims, user) && !accountAgeError(user) && !accountModerationError(user);
   }
   async function ownerOnly(req, res, next) {
     try {

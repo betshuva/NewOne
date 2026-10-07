@@ -44,11 +44,9 @@ Future<void> showMessageOptionsMenu({
                     api: api,
                     token: token,
                     messageId: message['id'].toString(),
-                    quickChoices: true,
                     showExistingReactions: false,
-                    onQuickSelected: (emoji) =>
-                        Navigator.of(menuContext).pop(emoji),
-                    showAddButton: false),
+                    onReactionSelected: (emoji) =>
+                        Navigator.of(menuContext).pop(emoji)),
                 const Divider(height: 5),
               ],
               ...items,

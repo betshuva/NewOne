@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'calendar_hebrew_date.dart';
 import 'calendar_event_widgets.dart';
+import 'main_navigation_tab.dart';
 import 'hebrew_date_picker.dart';
 import 'location_autocomplete.dart';
 import 'package:http/http.dart' as http;
@@ -156,24 +157,14 @@ class _CalendarNavigationButtonState extends State<CalendarNavigationButton>
   Widget build(BuildContext context) => Semantics(
         key: const ValueKey('calendar-shortcut'),
         selected: widget.selected,
-        child: IconButton(
-          tooltip: 'לוח שנה\n$_label',
-          icon: Badge(
-            isLabelVisible: _pending > 0,
-            label: Text('$_pending'),
-            child: const Icon(Icons.calendar_month_outlined, size: 22),
-          ),
-          color: Colors.white,
-          style: IconButton.styleFrom(
-            minimumSize: const Size(48, 48),
-            backgroundColor: widget.selected ? Colors.white24 : Colors.transparent,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          onPressed: () async {
+        child: Tooltip(
+          message: 'לוח שנה\n$_label${_pending > 0 ? '\n$_pending הזמנות ממתינות' : ''}',
+          child: MainNavigationTab(label: 'יומן', selected: widget.selected,
+          onTap: () async {
             await widget.onTap();
             if (mounted) _load();
           },
-        ),
+        )),
       );
 }
 

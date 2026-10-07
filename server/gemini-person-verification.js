@@ -52,6 +52,7 @@ async function requestGeminiPersonPresence(buffer, options) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
+          store: false,
           contents: [{ role: 'user', parts: [
             { text: PERSON_PRESENCE_PROMPT },
             { inlineData: { mimeType: 'image/jpeg', data: prepared.toString('base64') } },

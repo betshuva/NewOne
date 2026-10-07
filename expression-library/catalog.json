@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "updatedAt": "2026-09-07T00:00:00+03:00",
+  "updatedAt": "2026-10-07T21:32:32.583790+00:00",
   "provenance": "User-provided original files in /home/yaniv/Emoji; atlas cells extracted without redrawing",
   "categories": [
     {
@@ -160,7 +160,13 @@
         "תמיד יש אור",
         "ישראל כאן בשבילך",
         "זהירות מקישור לא ידוע"
-      ]
+      ],
+      "coloredPath": "user-20261008-color"
     }
-  ]
+  ],
+  "colorRefresh": {
+    "recoloredCount": 48,
+    "unchangedCount": 102,
+    "originalArtworkPreserved": true
+  }
 }

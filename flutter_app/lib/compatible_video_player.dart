@@ -57,8 +57,8 @@ class _CompatibleVideoPlayerState extends State<CompatibleVideoPlayer> {
       if (!{'http', 'https'}.contains(url.scheme) || url.host.isEmpty) {
         throw ArgumentError('Unsupported video URL');
       }
-      // Native VideoView avoids both the incompatible ImageReader texture and
-      // Flutter/SurfaceView composition problems on older Android devices.
+      // A separate native player avoids the incompatible ImageReader texture
+      // and Flutter/SurfaceView composition on older Android devices.
       final closed = await _channel
           .invokeMethod<bool>('playVideo', {'url': url.toString()});
       if (!mounted || generation != _generation) return;

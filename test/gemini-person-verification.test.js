@@ -61,6 +61,7 @@ test('Gemini person review uses the shared policy, structured output and exactly
       return response(personBody());
     },
   });
+  assert.equal(request.body.store, false);
   assert.match(request.url, /gemini-3\.5-flash-lite:generateContent$/);
   assert.doesNotMatch(request.url, /synthetic-key/);
   assert.equal(request.options.headers['x-goog-api-key'], 'synthetic-key');

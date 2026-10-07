@@ -35,12 +35,24 @@ test('independent modesty review sends the strict policy and parses its result',
       };
     },
   });
+  assert.equal(requestBody.store, false);
   const prompt = requestBody.input[0].content[0].text;
   assert.match(prompt, /Bare arms, visible forearms, visible upper arms, and short sleeves are allowed/);
   assert.match(prompt, /as long as the shoulders are covered/);
   assert.match(prompt, /Never infer exposed arms, short sleeves, shorts, trouser length/);
   assert.match(prompt, /both the garment hem and exposed leg below that hem are clearly visible/);
   assert.match(prompt, /long skirt/);
+  assert.match(prompt, /exposed calves, shins, ankles and feet strictly below the knee are allowed/);
+  assert.match(prompt, /entire knee, including the kneecap and knee joint, and the thighs must be covered/);
+  assert.match(prompt, /calf-length or cropped pants that cover the entire knee are allowed/);
+  assert.match(prompt, /a knee outline under opaque clothing is not exposed skin/);
+  assert.doesNotMatch(prompt, /must have long pants|shirtlessness, exposed legs/);
+  assert.match(prompt, /infant babies, including animated or illustrated babies/);
+  assert.match(prompt, /A diaper alone satisfies the clothing requirement for these infants/);
+  assert.match(prompt, /covers the genital and buttock areas/);
+  assert.match(prompt, /only to ordinary non-sexual depictions of infants/);
+  assert.match(prompt, /does not apply to older children or adults/);
+  assert.match(prompt, /never exempts another person in the same image/);
   assert.match(prompt, /completely outside the frame are not applicable/);
   assert.doesNotMatch(prompt, /partly outside the frame, or genuinely ambiguous/);
   assert.match(prompt, /Missing pixels outside the frame never count as that ambiguity/);

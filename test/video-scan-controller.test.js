@@ -102,6 +102,23 @@ test('acquired scans freeze actual frames and pass the lease and shared abort si
       sha256: createHash('sha256').update(Buffer.from(sample.jpeg_base64, 'base64')).digest('hex') }))]);
 });
 
+test('cached stopped result links retained evidence without running any scanner or changing the result', async () => {
+  const saved={status:'stopped',reason:'scan_incomplete',result:{frameResults:[{pending:true,timestampSeconds:4}]}};
+  const f=fixture({acquireVideoScan:async()=>({...saved,budget:f.budget})});
+  let linked=0;
+  const result=await f.run(()=>assert.fail('No new scan allowed'),{
+    attachCachedPreview:async state=>{assert.equal(state.result,saved.result);linked++;},
+  });
+  assert.equal(linked,1);
+  assertStopped(result,'scan_incomplete');
+  assert.deepEqual(result.frameResults,saved.result.frameResults);
+  assert.deepEqual(f.calls.map(c=>c.method),['acquireVideoScan']);
+  const unavailable=await f.run(()=>assert.fail('No scan fallback'),{
+    attachCachedPreview:async()=>{throw Error('Preview unavailable');},
+  });
+  assertStopped(unavailable,'scan_incomplete');
+});
+
 test('frame validation rejects mismatched counts and invalid samples before ledger or paid work', async () => {
   const invalid = [[null, 0], [[], 0], [samples, 1], [samples, 2.5],
     [Array.from({ length: 21 }, () => samples[0]), 21],

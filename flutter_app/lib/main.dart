@@ -1,12 +1,21 @@
+import 'voice_recording_bar.dart';
+import 'progressive_audio_recorder.dart';
+import 'recording_upload.dart';
 import 'dart:typed_data' show BytesBuilder;
 import 'web_chat_attachments.dart';
 import 'chat_upload_batch.dart';
+import 'listing_background_images.dart';
+import 'chat_listing_image.dart';
+import 'listing_capture.dart';
+import 'listing_video_draft.dart';
+import 'main_navigation_tab.dart';
 import 'chat_upload_notices.dart';
 import 'drive_storage_summary.dart';
 import 'storage_quota.dart';
 import 'chat_upload_history.dart';
 import 'package:permission_handler/permission_handler.dart' as permissions;
 import 'device_contact_cache.dart';
+import 'contact_read_permission.dart';
 import 'unified_search.dart';
 import 'chat_history_list.dart';
 import 'moderation_user_reason.dart';
@@ -20,6 +29,7 @@ import 'media_playback_progress.dart';
 import 'playback_time_dialog.dart';
 import 'blocked_image_notice.dart';
 import 'location_autocomplete.dart';
+import 'geocoding_consent.dart';
 import 'calendar.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'conversation_cleanup.dart';
@@ -28,7 +38,6 @@ import 'filter_audit_screen.dart';
 import 'system_audit_screen.dart';
 import 'guide_message_draft.dart';
 import 'inline_custom_emoji.dart';
-import 'inline_emoji_picker.dart';
 import 'guide_file.dart';
 import 'guide_table_text.dart';
 import 'safe_information_text.dart';
@@ -71,6 +80,8 @@ import 'media_cache.dart';
 import 'media_delete_dialog.dart';
 import 'media_rename.dart';
 import 'chat_file_name.dart';
+import 'copyable_file_name.dart';
+import 'blocked_video_notice.dart';
 import 'native_video_player.dart';
 import 'compatible_video_player.dart';
 import 'video_thumbnail.dart';
@@ -79,15 +90,17 @@ import 'web_push.dart';
 import 'web_capture_picker.dart';
 import 'clipboard_image_paste.dart';
 import 'web_otp.dart';
-import 'app_screenshot.dart';
 import 'incoming_share.dart';
 import 'read_notifications.dart';
 import 'private_message_outbox.dart';
 import 'foreground_notifications.dart';
 import 'message_action_bar.dart';
+import 'message_reactions.dart';
+import 'message_reaction_activity.dart';
 import 'message_options_menu.dart';
 import 'direct_support_buttons.dart';
 import 'message_hover.dart';
+import 'message_image_bounds.dart';
 import 'document_scanner.dart';
 import 'image_clipboard.dart';
 import 'native_video_capture.dart';
@@ -132,20 +145,23 @@ class _ChatUploadDestination {
 }
 
 Future<bool> _videoWithinDurationLimit(
-    BuildContext context, XFile video) async {
+    BuildContext context, XFile video, {
+    Duration maxDuration = _maxUploadedVideoDuration,
+    Duration tolerance = const Duration(milliseconds: 250),
+    String limitDescription = '90 דקות',
+}) async {
   VideoPlayerController? controller;
   try {
     controller = kIsWeb
         ? VideoPlayerController.networkUrl(Uri.parse(video.path))
         : VideoPlayerController.file(File(video.path));
     await controller.initialize().timeout(const Duration(seconds: 12));
-    if (controller.value.duration <=
-        _maxUploadedVideoDuration + const Duration(milliseconds: 250)) {
+    if (controller.value.duration <= maxDuration + tolerance) {
       return true;
     }
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('ניתן לשלוח סרטון באורך של עד 90 דקות',
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('ניתן לשלוח סרטון באורך של עד $limitDescription',
             textDirection: TextDirection.rtl),
       ));
     }
@@ -682,6 +698,9 @@ Future<Map<String, String>?> _confirmMyContactShare(
                       onPressed: locating
                           ? null
                           : () async {
+                              final approved = await requestGeocodingConsent(
+                                  dialogContext, GeocodingPurpose.address);
+                              if (!approved || !dialogContext.mounted) return;
                               setDialogState(() {
                                 locating = true;
                                 locationError = null;
@@ -712,13 +731,15 @@ Future<Map<String, String>?> _confirmMyContactShare(
                                     'Content-Type': 'application/json',
                                   },
                                   body: jsonEncode({
+                                    'geocodingConsent': geocodingConsentVersion,
                                     'latitude': position.latitude,
                                     'longitude': position.longitude,
                                   }),
                                 );
                                 if (response.statusCode != 200) {
-                                  throw Exception('לא ניתן לזהות את הכתובת');
+                                  throw Exception(geocodingErrorMessage(response.body));
                                 }
+                                if (!dialogContext.mounted) return;
                                 final payload = jsonDecode(response.body)
                                     as Map<String, dynamic>;
                                 cityCtrl.text =
@@ -748,6 +769,9 @@ Future<Map<String, String>?> _confirmMyContactShare(
                           ? 'מאתר את הכתובת...'
                           : 'שיתוף המיקום שלי ומילוי אוטומטי'),
                     ),
+                    const GeocodingAttribution(),
+                    const Text('יש לבדוק את הכתובת ולהשלים מספר בית אם חסר.',
+                        style: TextStyle(fontSize: 12)),
                     if (locationError != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 6),
@@ -1124,6 +1148,29 @@ Future<void> _setMessageImageAsProfile(
       );
     }
   }
+}
+
+Future<bool> _addChatImageToListing(BuildContext context, String token,
+    Map<String, dynamic> message, Map<String, dynamic>? me, {
+  http.Client? client,
+  bool Function()? canAdd,
+}) async {
+  final currentUserId = me?['id']?.toString();
+  if (!canAddChatImageToListing(message, currentUserId: currentUserId) ||
+      canAdd?.call() == false) return false;
+  final sourceId = chatListingImageSourceId(message)!;
+  final target = await showChatListingImageTargetChooser(
+      context: context, api: kApi, token: token, client: client);
+  if (target == null || !context.mounted ||
+      canAdd?.call() == false ||
+      !canAddChatImageToListing(message, currentUserId: currentUserId)) return false;
+  final saved = await Navigator.push<bool>(context, MaterialPageRoute(
+    builder: (_) => target.isNewListing
+        ? PostListingScreen(token: token, me: me, initialMessageId: sourceId)
+        : EditListingScreen(listingId: target.listingId!, token: token,
+            initialMessageId: sourceId),
+  ));
+  return saved == true;
 }
 
 MediaType _mimeFromFileName(String fileName) {
@@ -1930,7 +1977,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.39';
+const kVersion = '1.3.59';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2009,6 +2056,18 @@ void _insertExpressionText(
   );
 }
 
+void _restoreExpressionSelection(
+  TextEditingController controller,
+  TextEditingValue beforePicker,
+) {
+  if (controller.text != beforePicker.text ||
+      !beforePicker.selection.isValid ||
+      beforePicker.selection.end > controller.text.length) {
+    return;
+  }
+  controller.selection = beforePicker.selection;
+}
+
 enum _FileUploadOutcome { approved, rejected, pending, scanBot, failed }
 
 class _FileUploadResult {
@@ -2019,6 +2078,11 @@ class _FileUploadResult {
   _FileUploadResult(this.outcome,
       {this.data = const <String, dynamic>{}, this.error});
 }
+
+bool _isVideoModeration(Map data) => _normalizeIncomingFileType(
+    (data['fileType'] ?? data['type'])?.toString(),
+    fileUrl: (data['fileUrl'] ?? data['url'])?.toString(),
+    fileName: (data['fileName'] ?? data['scanFileName'])?.toString()) == 'video';
 
 bool _isSenderFilterRejection(Map data) =>
     data['code'] == 'SENDER_CONTENT_FILTERED' ||
@@ -2035,34 +2099,7 @@ bool _isScanStopped(Map data) =>
     data['moderationStatus'] == 'stopped' ||
     data['status'] == 'stopped' || data['status'] == 'stopped_scan';
 
-String _scanStoppedReason(Map data) {
-  const reasons = {
-    'credit_balance_exhausted': 'אין יתרה זמינה אצל ספק הסריקה',
-    'required_provider_unavailable': 'שירות הסריקה אינו זמין',
-    'provider_guard_unavailable': 'לא ניתן לאמת את תקציב הסריקה',
-    'provider_not_configured': 'שירות הסריקה אינו מוגדר',
-    'budget_exhausted': 'הושגה מגבלת הבדיקות לסרטון',
-    'deadline_exceeded': 'הסריקה חרגה מהזמן המותר',
-    'legacy_budget_unknown': 'לא ניתן לאמת כמה בדיקות כבר בוצעו לסרטון',
-    'operation_outcome_unknown': 'תוצאת בדיקה קודמת אינה ידועה',
-  };
-  final rawReason = (data['scanReason'] ?? data['scan_reason'] ?? data['reason'])
-      ?.toString().trim();
-  final reason = rawReason != null && rawReason.isNotEmpty
-      ? reasons[rawReason] ?? rawReason
-      : reasons[data['reasonCode']] ?? 'הקובץ לא נשלח';
-  final budget = data['scanBudget'] ?? data['scan_budget'] ?? data['budget'];
-  if (budget is Map && budget['used'] is Map && budget['limits'] is Map) {
-    final used = int.tryParse(budget['used']['total'].toString());
-    final limit = int.tryParse(budget['limits']['total'].toString());
-    if (used != null && limit != null && used >= 0 && limit >= 0) {
-      return '$reason\nבוצעו $used מתוך $limit בדיקות';
-    }
-  }
-  return reason;
-}
-
-String _scanStoppedNotice(Map data) => 'הסריקה נעצרה\n${_scanStoppedReason(data)}';
+String _scanStoppedNotice(Map data) => blockedVideoMessage;
 
 bool _matchesRecentFailedUpload(
     Map<String, dynamic> message, String fileName, String idPrefix) {
@@ -2138,7 +2175,8 @@ Future<_FileUploadResult> _uploadFileRequest({
               ? 'file' : chatAttachmentType(fileName) ?? 'file',
           maxBytes: maxBytes, token: token);
     }
-    final webResponse = await uploadPickedWebAttachment(
+    final webResponse = await RecordingUpload.upload(file: file, token: token,
+        name: fileName, fields: fields) ?? await uploadPickedWebAttachment(
         file: file, url: '$kApi/upload', token: token, fields: fields);
     late int responseStatus;
     late String body;
@@ -2220,6 +2258,73 @@ Future<_FileUploadResult> _uploadFileRequest({
     return _FileUploadResult(_FileUploadOutcome.failed,
         error: 'שגיאת העלאה של "$fileName": $error');
   }
+}
+
+Future<_FileUploadResult> _uploadListingImageRequest(XFile file, String token) =>
+    _uploadListingMediaRequest(file, token);
+
+Future<String> _uploadListingVideoRequest(XFile file, String token) async {
+  final result = await _uploadListingMediaRequest(file, token, video: true);
+  final url = result.data['url']?.toString();
+  if (result.outcome == _FileUploadOutcome.approved &&
+      url != null && url.isNotEmpty) {
+    return url;
+  }
+  throw Exception(result.error ?? result.data['reason']?.toString() ??
+      'הסרטון לא אושר לצירוף למודעה');
+}
+
+Future<_FileUploadResult> _uploadListingMediaRequest(XFile file, String token,
+    {bool video = false}) async {
+  final result = await _uploadFileRequest(file: file, fileName: file.name,
+      token: token, fields: {video ? 'listingVideo' : 'listingImage': 'true'});
+  final url = result.data['url']?.toString();
+  if (result.outcome != _FileUploadOutcome.pending || url == null || url.isEmpty) {
+    return result;
+  }
+  try {
+    // Keep the upload task alive while a delayed scan finishes, including
+    // after the user saves the listing and leaves its form.
+    final scan = await waitForListingImageScan(
+        api: kApi, token: token, url: url, video: video);
+    return _FileUploadResult(
+        scan.status == 'approved' ? _FileUploadOutcome.approved
+            : scan.status == 'rejected' ? _FileUploadOutcome.rejected
+            : _FileUploadOutcome.failed,
+        data: {...result.data, 'status': scan.status,
+          if (scan.reason != null) 'reason': scan.reason},
+        error: scan.status == 'unavailable' ? scan.reason : null);
+  } catch (_) {
+    return _FileUploadResult(_FileUploadOutcome.failed, data: result.data,
+        error: 'לא ניתן היה לקבל אישור לסריקת המדיה. יש לבדוק את החיבור ולנסות שוב');
+  }
+}
+
+Future<void> _completeChatListingImageUpload({
+  required String token,
+  required String messageId,
+  required Completer<ListingImageAttachment?> task,
+  required bool Function() shouldUpload,
+  required void Function(_FileUploadResult) onResult,
+}) async {
+  _FileUploadResult result;
+  try {
+    final file = await loadChatListingImageSource(
+        api: kApi, token: token, messageId: messageId);
+    if (!shouldUpload()) {
+      task.complete(null);
+      return;
+    }
+    result = await _uploadListingImageRequest(file, token);
+  } catch (error) {
+    result = _FileUploadResult(_FileUploadOutcome.failed,
+        error: error.toString());
+  }
+  final url = result.data['url']?.toString();
+  final approved = result.outcome == _FileUploadOutcome.approved &&
+      url != null && url.isNotEmpty;
+  task.complete(approved ? ListingImageAttachment(url: url) : null);
+  onResult(result);
 }
 
 Future<List<_FileUploadResult>> _runImageUploadQueue(
@@ -2384,6 +2489,7 @@ class _PersistentMediaImage extends StatefulWidget {
   final double? width;
   final double? height;
   final BoxFit fit;
+  final bool fitNaturalBounds;
   final WidgetBuilder? loadingBuilder;
   final WidgetBuilder? errorBuilder;
   final VoidCallback? onDisplayed;
@@ -2394,6 +2500,7 @@ class _PersistentMediaImage extends StatefulWidget {
     this.width,
     this.height,
     this.fit = BoxFit.cover,
+    this.fitNaturalBounds = false,
     this.loadingBuilder,
     this.errorBuilder,
     this.onDisplayed,
@@ -2473,10 +2580,10 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
         final bytes = snapshot.data;
         if (bytes != null && bytes.isNotEmpty) {
           _retryTimer?.cancel();
-          return Image.memory(
+          final image = Image.memory(
             bytes,
-            width: widget.width,
-            height: widget.height,
+            width: widget.fitNaturalBounds ? null : widget.width,
+            height: widget.fitNaturalBounds ? null : widget.height,
             fit: widget.fit,
             gaplessPlayback: true,
             frameBuilder: (context, child, frame, synchronous) {
@@ -2484,11 +2591,22 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
                 _hasFrame = true;
                 WidgetsBinding.instance.addPostFrameCallback((_) => _observeDisplay());
               }
+              if (widget.fitNaturalBounds && frame == null && !synchronous) {
+                return widget.loadingBuilder?.call(context) ??
+                    SizedBox(width: widget.width, height: widget.height);
+              }
               return child;
             },
             errorBuilder: (_, __, ___) =>
                 widget.errorBuilder?.call(context) ?? const SizedBox.shrink(),
           );
+          return widget.fitNaturalBounds
+              ? MessageImageBounds(
+                  maxWidth: widget.width ?? double.infinity,
+                  maxHeight: widget.height ?? double.infinity,
+                  child: image,
+                )
+              : image;
         }
         if (snapshot.connectionState != ConnectionState.done) {
           return widget.loadingBuilder?.call(context) ??
@@ -2659,8 +2777,31 @@ Future<void> _clearGroupMessagesCache(Object? userId, Object? groupId) async {
 }
 
 Future<ForwardChatResult> _forwardChatMessage(BuildContext context, String token,
-        io.Socket? socket, Map<String, dynamic> message) =>
-    forwardChatMessages(context, token, socket, [message]);
+        io.Socket? socket, Map<String, dynamic> message, {
+  Map<String, dynamic>? me,
+}) =>
+    forwardChatMessages(context, token, socket, [message], me: me);
+
+bool _canForwardToListing(List<Map<String, dynamic>> messages,
+    {String? currentUserId}) =>
+    messages.length == 1 &&
+    messages.single['localPath'] == null &&
+    messages.single['localBytes'] == null &&
+    canAddChatImageToListing(messages.single, currentUserId: currentUserId);
+
+String _forwardListingUnavailableReason(List<Map<String, dynamic>> messages) {
+  if (messages.length != 1) {
+    return 'בחר תמונה אחת מהשיחה כדי להוסיף למודעה';
+  }
+  final message = messages.single;
+  if ((message['fileType'] ?? message['type']) != 'image') {
+    return 'ניתן להוסיף למודעה תמונה מהשיחה';
+  }
+  if (message['localPath'] != null || message['localBytes'] != null) {
+    return 'אפשר להוסיף רק תמונה שכבר נשמרה בשיחה';
+  }
+  return chatListingImageUnavailableReason(message);
+}
 
 class ForwardChatResult {
   /// Message indexes accepted by every selected destination. A queued scan is
@@ -2689,6 +2830,7 @@ Future<ForwardChatResult> forwardChatMessages(
   String? initialRecipientId,
   http.Client? client,
   bool Function()? canForward,
+  Map<String, dynamic>? me,
 }) async {
   if (messages.isEmpty) return const ForwardChatResult();
   if (messages.any((message) {
@@ -2843,6 +2985,8 @@ Future<ForwardChatResult> forwardChatMessages(
         initialSelection: initialSelection,
         messages: messages,
         directUserName: directUser?['name']?.toString(),
+        currentUserId: me?['id']?.toString(),
+        showListings: directUser == null,
         targetLoadFailed: directUser == null && targetData.loadFailed,
         filterCheckFailed: targetData.filterCheckFailed,
         reloadTargets: () async {
@@ -2861,6 +3005,20 @@ Future<ForwardChatResult> forwardChatMessages(
         !context.mounted ||
         canForward?.call() == false) {
       return const ForwardChatResult(cancelled: true);
+    }
+    // Listings use their own editor and scan/upload flow. Never treat this
+    // navigation choice as a user/group delivery or clear the source selection.
+    if (targets.any((target) => target['kind'] == 'listing')) {
+      if (targets.length != 1 ||
+          !_canForwardToListing(messages, currentUserId: me?['id']?.toString())) {
+        return const ForwardChatResult(cancelled: true);
+      }
+      final saved = await _addChatImageToListing(
+        context, token, messages.single, me,
+        client: transport,
+        canAdd: canForward,
+      );
+      return ForwardChatResult(cancelled: !saved);
     }
     var sentCount = 0;
     var pendingCount = 0;
@@ -3063,6 +3221,8 @@ class _ForwardTargetsSheet extends StatefulWidget {
   final Map<String, Map<String, dynamic>> initialSelection;
   final List<Map<String, dynamic>> messages;
   final String? directUserName;
+  final String? currentUserId;
+  final bool showListings;
   final bool targetLoadFailed;
   final bool filterCheckFailed;
   final Future<_ForwardTargetsData> Function()? reloadTargets;
@@ -3073,6 +3233,8 @@ class _ForwardTargetsSheet extends StatefulWidget {
     required this.initialSelection,
     required this.messages,
     required this.directUserName,
+    required this.currentUserId,
+    required this.showListings,
     required this.targetLoadFailed,
     required this.filterCheckFailed,
     required this.reloadTargets,
@@ -3245,129 +3407,151 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                     ],
                   ),
                 ),
-                if (widget.messages.any((m) => m['localPath'] != null))
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 18),
-                    child: Text(
-                      widget.messages
-                          .where((m) => m['localPath'] != null)
-                          .map((m) => m['fileName'])
-                          .take(3)
-                          .join(' • '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                Text(
-                  '${widget.messages.length} פריטים • ${_selected.length} יעדים',
-                  style: const TextStyle(color: kSubtext),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                  child: TextField(
-                    key: const ValueKey('forward-target-search'),
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'חיפוש משתמשים או קבוצות',
-                      prefixIcon: const Icon(Icons.search),
-                      isDense: true,
-                      border: const OutlineInputBorder(),
-                      suffixIcon: _query.isEmpty
-                          ? null
-                          : IconButton(
-                              tooltip: 'ניקוי חיפוש',
-                              onPressed: () => setState(() {
-                                _searchController.clear();
-                                _query = '';
-                              }),
-                              icon: const Icon(Icons.close),
-                            ),
-                    ),
-                    onChanged: (value) =>
-                        setState(() => _query = value.trim().toLowerCase()),
-                  ),
-                ),
-                if (_selected.isNotEmpty)
-                  SizedBox(
-                    height: 44,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      children: _selected.entries.map((entry) {
-                        final name = entry.value['name']?.toString() ?? '';
-                        return Padding(
-                          padding: const EdgeInsetsDirectional.only(end: 6),
-                          child: InputChip(
-                            key: ValueKey('forward-selected-${entry.key}'),
-                            avatar: Icon(
-                              entry.value['kind'] == 'group'
-                                  ? Icons.group_outlined
-                                  : Icons.person_outline,
-                            ),
-                            label: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 150),
-                              child: Text(
-                                name,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            deleteButtonTooltipMessage: 'הסרת $name מהבחירה',
-                            onDeleted: () =>
-                                setState(() => _selected.remove(entry.key)),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                if (_targetLoadFailed && entries.isNotEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16),
-                    child: Text(
-                      'חלק מהמשתתפים או הקבוצות לא נטענו. ניתן לנסות שוב.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: kSubtext),
-                    ),
-                  ),
-                if (_filterCheckFailed)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 16),
-                    child: Text('בדיקת הסינון לא הושלמה. ניתן לנסות שוב.',
-                      textAlign: TextAlign.center, style: TextStyle(color: kSubtext)),
-                  ),
-                if (_targetLoadFailed || _filterCheckFailed)
-                  TextButton.icon(
-                    key: const ValueKey('forward-target-retry'),
-                    onPressed: _reloading ? null : _reloadTargets,
-                    icon: _reloading
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.refresh),
-                    label: Text(_reloading ? 'טוען…' : 'נסו שוב'),
-                  ),
                 Expanded(
-                  child: entries.isEmpty
-                      ? Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Text(
-                              _targetLoadFailed
-                                  ? 'לא ניתן לטעון כרגע את המשתתפים והקבוצות. נסו שוב.'
-                                  : _query.isNotEmpty
-                                  ? 'לא נמצאו משתמשים או קבוצות התואמים לחיפוש'
-                                  : 'לא נמצאו משתתפים או קבוצות שניתן להעביר אליהם.',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: kSubtext),
-                            ),
+                  child: ListView(
+                    key: const ValueKey('forward-target-list'),
+                    padding: EdgeInsets.zero,
+                    children: [
+                      if (widget.messages.any((m) => m['localPath'] != null))
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 18),
+                          child: Text(
+                            widget.messages
+                                .where((m) => m['localPath'] != null)
+                                .map((m) => m['fileName'])
+                                .take(3)
+                                .join(' • '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      Text(
+                        '${widget.messages.length} פריטים • ${_selected.length} יעדים',
+                        style: const TextStyle(color: kSubtext),
+                      ),
+                      if (widget.showListings)
+                        ListTile(
+                          key: const ValueKey('forward-listings-target'),
+                          enabled: _canForwardToListing(widget.messages,
+                              currentUserId: widget.currentUserId),
+                          leading: const Icon(Icons.post_add_outlined),
+                          title: const Text('מודעות'),
+                          subtitle: Text(
+                            _canForwardToListing(widget.messages,
+                                    currentUserId: widget.currentUserId)
+                                ? 'מודעה חדשה או אחת מהמודעות שלי'
+                                : _forwardListingUnavailableReason(widget.messages),
+                            key: const ValueKey('forward-listings-target-reason'),
+                          ),
+                          onTap: !_canForwardToListing(widget.messages,
+                                  currentUserId: widget.currentUserId)
+                              ? null
+                              : () => Navigator.pop(context, [
+                                  <String, dynamic>{'kind': 'listing'},
+                                ]),
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                        child: TextField(
+                          key: const ValueKey('forward-target-search'),
+                          controller: _searchController,
+                          decoration: InputDecoration(
+                            hintText: 'חיפוש משתמשים או קבוצות',
+                            prefixIcon: const Icon(Icons.search),
+                            isDense: true,
+                            border: const OutlineInputBorder(),
+                            suffixIcon: _query.isEmpty
+                                ? null
+                                : IconButton(
+                                    tooltip: 'ניקוי חיפוש',
+                                    onPressed: () => setState(() {
+                                      _searchController.clear();
+                                      _query = '';
+                                    }),
+                                    icon: const Icon(Icons.close),
+                                  ),
+                          ),
+                          onChanged: (value) =>
+                              setState(() => _query = value.trim().toLowerCase()),
+                        ),
+                      ),
+                      if (_selected.isNotEmpty)
+                        SizedBox(
+                          height: 44,
+                          child: ListView(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            children: _selected.entries.map((entry) {
+                              final name = entry.value['name']?.toString() ?? '';
+                              return Padding(
+                                padding: const EdgeInsetsDirectional.only(end: 6),
+                                child: InputChip(
+                                  key: ValueKey('forward-selected-${entry.key}'),
+                                  avatar: Icon(
+                                    entry.value['kind'] == 'group'
+                                        ? Icons.group_outlined
+                                        : Icons.person_outline,
+                                  ),
+                                  label: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 150),
+                                    child: Text(
+                                      name,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  deleteButtonTooltipMessage: 'הסרת $name מהבחירה',
+                                  onDeleted: () =>
+                                      setState(() => _selected.remove(entry.key)),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      if (_targetLoadFailed && entries.isNotEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text(
+                            'חלק מהמשתתפים או הקבוצות לא נטענו. ניתן לנסות שוב.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: kSubtext),
+                          ),
+                        ),
+                      if (_filterCheckFailed)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16),
+                          child: Text('בדיקת הסינון לא הושלמה. ניתן לנסות שוב.',
+                            textAlign: TextAlign.center, style: TextStyle(color: kSubtext)),
+                        ),
+                      if (_targetLoadFailed || _filterCheckFailed)
+                        TextButton.icon(
+                          key: const ValueKey('forward-target-retry'),
+                          onPressed: _reloading ? null : _reloadTargets,
+                          icon: _reloading
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.refresh),
+                          label: Text(_reloading ? 'טוען…' : 'נסו שוב'),
+                        ),
+                      if (entries.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text(
+                            _targetLoadFailed
+                                ? 'לא ניתן לטעון כרגע את המשתתפים והקבוצות. נסו שוב.'
+                                : _query.isNotEmpty
+                                ? 'לא נמצאו משתמשים או קבוצות התואמים לחיפוש'
+                                : 'לא נמצאו משתתפים או קבוצות שניתן להעביר אליהם.',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: kSubtext),
                           ),
                         )
-                      : ListView.builder(
-                          key: const ValueKey('forward-target-list'),
-                          itemCount: entries.length,
-                          itemBuilder: (_, index) => entries[index],
-                        ),
+                      else
+                        ...entries,
+                    ],
+                  ),
                 ),
                 Padding(
                   padding: const EdgeInsets.all(12),
@@ -3566,16 +3750,13 @@ class BetshuvApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: appScreenshotNavigatorKey,
       title: 'בתשובה',
       debugShowCheckedModeBanner: false,
       locale: const Locale('he', 'IL'),
       supportedLocales: const [Locale('he', 'IL'), Locale('en')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
-      builder: (ctx, child) => RepaintBoundary(
-          key: appScreenshotBoundaryKey,
-          child:
-              Directionality(textDirection: TextDirection.rtl, child: child!)),
+      builder: (ctx, child) =>
+          Directionality(textDirection: TextDirection.rtl, child: child!),
       theme: ThemeData(
         scaffoldBackgroundColor: kBg,
         colorScheme: const ColorScheme.light(
@@ -3856,11 +4037,6 @@ class _RegistrationFilterSelector extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _GeneralFilterEnforcementCard(
-            value: filter['enforceGeneralFilter'] == true,
-            onChanged: (value) =>
-                onChanged({...filter, 'enforceGeneralFilter': value}),
-          ),
           Row(children: [
             Container(
               width: 38,
@@ -3968,6 +4144,11 @@ class _RegistrationFilterSelector extends StatelessWidget {
             }).toList(),
           ),
           const SizedBox(height: 14),
+          _GeneralFilterEnforcementCard(
+            value: filter['enforceGeneralFilter'] == true,
+            onChanged: (value) =>
+                onChanged({...filter, 'enforceGeneralFilter': value}),
+          ),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
@@ -4110,22 +4291,11 @@ class PhoneAuthScreen extends StatefulWidget {
 }
 
 class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
-  final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _otpCtrl = TextEditingController();
   bool _otpSent = false;
   bool _loading = false;
-  bool _acceptedTerms = false;
-  bool _ageConfirmed = false;
-  bool _filterConfirmed = false;
-  Map<String, bool> _registrationFilter = _newAccountFilter();
-  String? _gender;
-  DateTime? _birthDate;
   String? _error;
-  final _googleSignIn = GoogleSignIn(
-    clientId: kIsWeb ? kGoogleWebClientId : null,
-    serverClientId: kIsWeb ? null : kGoogleWebClientId,
-  );
 
   bool get _supportsAutomaticSms =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -4148,85 +4318,11 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     await _verifyOtp();
   }
 
-  Future<void> _signInWithGoogle({GoogleSignInAccount? webAccount}) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      if (!kIsWeb) await _googleSignIn.signOut();
-      final account = kIsWeb ? webAccount : await _googleSignIn.signIn();
-      if (account == null) {
-        if (mounted) setState(() => _loading = false);
-        return;
-      }
-      final idToken = (await account.authentication).idToken;
-      if (idToken == null) throw Exception('לא התקבל טוקן מגוגל');
-      final res = await http
-          .post(
-            Uri.parse('$kApi/auth/google'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'idToken': idToken,
-              'acceptedTerms': _acceptedTerms,
-              'ageConfirmed': _ageConfirmed,
-              'gender': _gender,
-              'birthDate':
-                  _birthDate == null ? null : _formatBirthDate(_birthDate!),
-              'contentFilter': _registrationFilter,
-              'contentFilterConfirmed': _filterConfirmed,
-              if (kPendingInviteId != null) 'inviteId': kPendingInviteId,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
-      if (!mounted) return;
-      final data = jsonDecode(res.body);
-      if (res.statusCode != 200) {
-        setState(() {
-          _error = data['error'] ?? 'שגיאה';
-          _loading = false;
-        });
-        return;
-      }
-      final token = data['token'] as String;
-      final user = data['user'] as Map<String, dynamic>?;
-      final hasPhone = user != null &&
-          (user['phone'] as String?) != null &&
-          (user['phone'] as String).isNotEmpty;
-      if (!mounted) return;
-      if (!hasPhone) {
-        Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-                builder: (_) => GooglePhoneSetupScreen(
-                      token: token,
-                      requireVerification: false,
-                    )));
-      } else {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('token', token);
-        if (!mounted) return;
-        Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-                builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
-      }
-    } catch (e) {
-      debugPrint('Google sign-in failed: $e');
-      if (!mounted) return;
-      setState(() {
-        _error = 'כניסה עם Google נכשלה: $e';
-        _loading = false;
-      });
-    }
-  }
-
   @override
   void dispose() {
     if (_supportsAutomaticSms) {
       unawaited(SmartAuth.instance.removeSmsRetrieverApiListener());
     }
-    _nameCtrl.dispose();
     _phoneCtrl.dispose();
     _otpCtrl.dispose();
     super.dispose();
@@ -4236,19 +4332,6 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
     final phone = _normalizeIsraeliMobile(_phoneCtrl.text);
     if (!_isValidIsraeliMobile(phone)) {
       setState(() => _error = 'נא להזין מספר טלפון תקין');
-      return;
-    }
-    if (!_acceptedTerms || !_ageConfirmed) {
-      setState(() =>
-          _error = 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה');
-      return;
-    }
-    if (_birthDate == null) {
-      setState(() => _error = 'יש לבחור תאריך לידה');
-      return;
-    }
-    if (!_filterConfirmed) {
-      setState(() => _error = 'יש לבחור ולאשר את הגדרות הסינון');
       return;
     }
     setState(() {
@@ -4263,17 +4346,11 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'phone': phone,
-              'name': _nameCtrl.text.trim(),
-              'acceptedTerms': true,
-              'ageConfirmed': true,
-              'gender': _gender,
-              'birthDate': _formatBirthDate(_birthDate!),
-              'contentFilter': _registrationFilter,
-              'contentFilterConfirmed': _filterConfirmed,
               if (appSignature != null) 'appSignature': appSignature,
             }),
           )
           .timeout(const Duration(seconds: 30));
+      if (!mounted) return;
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
         setState(() {
@@ -4287,6 +4364,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         _loading = false;
       });
     } catch (_) {
+      if (!mounted) return;
       setState(() {
         _error = 'שגיאת חיבור. נסה שוב.';
         _loading = false;
@@ -4313,6 +4391,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
             body: jsonEncode({'phone': phone, 'code': code}),
           )
           .timeout(const Duration(seconds: 30));
+      if (!mounted) return;
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
         setState(() {
@@ -4330,6 +4409,7 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
         MaterialPageRoute(builder: (_) => MainShell(token: token)),
       );
     } catch (_) {
+      if (!mounted) return;
       setState(() {
         _error = 'שגיאת חיבור. נסה שוב.';
         _loading = false;
@@ -4338,233 +4418,72 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kIsWeb ? const Color(0xFFF2F7FB) : kBg,
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-              decoration: BoxDecoration(
-                color: kBg,
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: kIsWeb
-                    ? const [
-                        BoxShadow(
-                          color: Color(0x1A0D4F82),
-                          blurRadius: 28,
-                          offset: Offset(0, 10),
-                        ),
-                      ]
-                    : null,
-              ),
-              child: SingleChildScrollView(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    const SizedBox(height: 40),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(22),
-                      child: Image.asset(
-                        'icon_source.png',
-                        width: 88,
-                        height: 88,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    const Text('בתשובה',
-                        style: TextStyle(
-                            fontSize: 34,
-                            fontWeight: FontWeight.bold,
-                            color: kPrimary)),
-                    const SizedBox(height: 8),
-                    Text(
-                      _otpSent
-                          ? 'הזן את הקוד שנשלח ב-SMS'
-                          : 'הרשמה / כניסה עם טלפון',
-                      style: const TextStyle(fontSize: 15, color: kSubtext),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 22),
-                    _RegistrationProgress(current: _otpSent ? 2 : 1),
-                    if (!_otpSent) ...[
-                      TextField(
-                        controller: _nameCtrl,
-                        textDirection: TextDirection.rtl,
-                        textCapitalization: TextCapitalization.words,
-                        decoration: const InputDecoration(
-                          labelText: 'שם מלא',
-                          helperText: 'חובה בהרשמה חדשה בלבד',
-                          prefixIcon: Icon(Icons.person_outline),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      _BirthDateField(
-                        value: _birthDate,
-                        onChanged: (value) =>
-                            setState(() => _birthDate = value),
-                      ),
-                      const SizedBox(height: 14),
-                      DropdownButtonFormField<String>(
-                        initialValue: _gender,
-                        decoration: const InputDecoration(
-                          labelText: 'מגדר (חובה בהרשמה חדשה)',
-                          prefixIcon: Icon(Icons.wc_outlined),
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: 'male', child: Text('זכר')),
-                          DropdownMenuItem(
-                              value: 'female', child: Text('נקבה')),
-                        ],
-                        onChanged: (value) => setState(() => _gender = value),
-                      ),
-                      const SizedBox(height: 14),
-                      TextField(
-                        controller: _phoneCtrl,
-                        keyboardType: TextInputType.phone,
-                        textDirection: TextDirection.ltr,
-                        decoration: const InputDecoration(
-                          labelText: 'מספר טלפון',
-                          hintText: '05X-XXX-XXXX',
-                          prefixIcon: Icon(Icons.phone_android),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      const _BetaNotice(),
-                      _RegistrationFilterSelector(
-                        filter: _registrationFilter,
-                        confirmed: _filterConfirmed,
-                        onChanged: (value) => setState(() {
-                          _registrationFilter = value;
-                          _filterConfirmed = false;
-                        }),
-                        onConfirmed: (value) =>
-                            setState(() => _filterConfirmed = value),
-                      ),
-                      CheckboxListTile(
-                        contentPadding: EdgeInsets.zero,
-                        value: _ageConfirmed,
-                        onChanged: (value) =>
-                            setState(() => _ageConfirmed = value == true),
-                        title: const Text('אני בן/בת 13 ומעלה',
-                            style: TextStyle(fontSize: 13)),
-                      ),
-                      _TermsAgreementTile(
-                        value: _acceptedTerms,
-                        onChanged: (value) =>
-                            setState(() => _acceptedTerms = value == true),
-                      ),
-                    ] else ...[
-                      const _SmsCodeWaitingAnimation(),
-                      TextField(
-                        controller: _otpCtrl,
-                        autofillHints: const [AutofillHints.oneTimeCode],
-                        keyboardType: TextInputType.number,
-                        maxLength: 6,
-                        textAlign: TextAlign.center,
-                        textDirection: TextDirection.ltr,
-                        style: const TextStyle(
-                            fontSize: 32,
-                            letterSpacing: 12,
-                            fontWeight: FontWeight.bold),
-                        decoration: const InputDecoration(
-                            labelText: 'קוד אימות', counterText: ''),
-                      ),
-                    ],
-                    if (_error != null) ...[
-                      const SizedBox(height: 8),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                            color: Colors.red.shade50,
-                            borderRadius: BorderRadius.circular(8)),
-                        child: Text(_error!,
-                            style: const TextStyle(
-                                color: Colors.red, fontSize: 13)),
-                      ),
-                    ],
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: _loading
-                            ? null
-                            : (_otpSent ? _verifyOtp : _sendOtp),
-                        child: _loading
-                            ? const SizedBox(
-                                height: 22,
-                                width: 22,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white))
-                            : Text(
-                                _otpSent ? 'אמת קוד' : 'שלח קוד SMS',
-                                style: const TextStyle(
-                                    fontSize: 16, fontWeight: FontWeight.bold),
-                              ),
-                      ),
-                    ),
-                    if (_otpSent) ...[
-                      const SizedBox(height: 14),
-                      TextButton(
-                        onPressed: () => setState(() {
-                          _otpSent = false;
-                          _error = null;
-                          _otpCtrl.clear();
-                        }),
-                        child: const Text('שנה מספר טלפון',
-                            style: TextStyle(color: kSubtext)),
-                      ),
-                    ] else ...[
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        width: double.infinity,
-                        child: kIsWeb
-                            ? GoogleWebSignInButton(
-                                googleSignIn: _googleSignIn,
-                                enabled: !_loading,
-                                onSignedIn: (account) =>
-                                    _signInWithGoogle(webAccount: account),
-                              )
-                            : OutlinedButton.icon(
-                                onPressed: _loading ? null : _signInWithGoogle,
-                                icon: Image.network(
-                                  'https://developers.google.com/static/identity/images/g-logo.png',
-                                  width: 18,
-                                  height: 18,
-                                  errorBuilder: (_, __, ___) =>
-                                      const SizedBox(width: 18, height: 18),
-                                ),
-                                label: const Text('המשך עם Google',
-                                    style: TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w600,
-                                        color: kTextDark)),
-                                style: OutlinedButton.styleFrom(
-                                  side: const BorderSide(color: kBorder, width: 1.5),
-                                  padding: const EdgeInsets.symmetric(vertical: 13),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12)),
-                                ),
-                              ),
-                      ),
-                      const SizedBox(height: 8),
-                      _androidDownloadLink(),
-                    ],
-                  ],
-                ),
-              ),
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: kBg,
+    body: SafeArea(child: Center(child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 480),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Image.asset('icon_source.png', width: 72, height: 72),
+          const SizedBox(height: 20),
+          const Text('כניסה לחשבון קיים עם SMS',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 12),
+          const Text('הרשמה חדשה זמינה באמצעות Google בלבד.',
+              textAlign: TextAlign.center),
+          const SizedBox(height: 20),
+          if (!_otpSent)
+            TextField(
+              controller: _phoneCtrl,
+              keyboardType: TextInputType.phone,
+              textDirection: TextDirection.ltr,
+              decoration: const InputDecoration(
+                  labelText: 'מספר הטלפון של החשבון', hintText: '05X-XXX-XXXX'),
+            )
+          else ...[
+            const Text('הזן את הקוד שנשלח ב־SMS'),
+            const _SmsCodeWaitingAnimation(),
+            TextField(
+              controller: _otpCtrl,
+              keyboardType: TextInputType.number,
+              autofillHints: const [AutofillHints.oneTimeCode],
+              textDirection: TextDirection.ltr,
+              textAlign: TextAlign.center,
+              maxLength: 6,
+              decoration: const InputDecoration(labelText: 'קוד אימות'),
             ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 12),
+            Text(_error!, style: const TextStyle(color: Colors.red)),
+          ],
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: _loading ? null : (_otpSent ? _verifyOtp : _sendOtp),
+            child: Text(_loading ? 'נא להמתין...' : (_otpSent ? 'כניסה' : 'שליחת קוד')),
           ),
-        ),
+          if (_otpSent)
+            TextButton(onPressed: _loading ? null : () => setState(() {
+              _otpSent = false;
+              _otpCtrl.clear();
+              _error = null;
+            }), child: const Text('שינוי מספר טלפון')),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: _loading ? null : () => Navigator.pushReplacement(context,
+                MaterialPageRoute(builder: (_) => const AuthScreen(initialRegistration: true))),
+            child: const Text('הרשמה חדשה באמצעות Google'),
+          ),
+          TextButton(
+            onPressed: _loading ? null : () => Navigator.pushReplacement(context,
+                MaterialPageRoute(builder: (_) => const AuthScreen())),
+            child: const Text('כניסה עם Google או אימייל וסיסמה'),
+          ),
+        ]),
       ),
-    );
-  }
+    ))),
+  );
 }
 
 // ── Auth Screen (Login / Register) ───────────────────────────────
@@ -4691,7 +4610,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _ageConfirmed = false;
   bool _filterConfirmed = true;
   int _registrationStep = 0;
-  String _registrationMethod = 'email';
+  String _registrationMethod = 'google';
   Map<String, bool> _registrationFilter = _newAccountFilter();
   String? _gender;
   DateTime? _birthDate;
@@ -4742,13 +4661,18 @@ class _AuthScreenState extends State<AuthScreen> {
     _emailCtrl.text = widget.initialEmail ?? '';
   }
 
-  Future<void> _signInWithGoogle({GoogleSignInAccount? webAccount}) async {
+  Future<void> _signInWithGoogle({GoogleSignInAccount? webAccount,
+      bool existingAccount = false}) async {
+    final loginAttempt = _isLogin;
+    final completingRegistration = !loginAttempt && !existingAccount;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      String? idToken = webAccount == null ? _googleRegistrationIdToken : null;
+      String? idToken = webAccount == null &&
+              (completingRegistration || existingAccount)
+          ? _googleRegistrationIdToken : null;
       if (idToken == null) {
         if (!kIsWeb) await _googleSignIn.signOut();
         final account = kIsWeb ? webAccount : await _googleSignIn.signIn();
@@ -4766,13 +4690,15 @@ class _AuthScreenState extends State<AuthScreen> {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'idToken': idToken,
-              'acceptedTerms': _acceptedTerms,
-              'ageConfirmed': _ageConfirmed,
-              'gender': _gender,
-              'birthDate':
-                  _birthDate == null ? null : _formatBirthDate(_birthDate!),
-              'contentFilter': _registrationFilter,
-              'contentFilterConfirmed': _filterConfirmed,
+              if (completingRegistration) ...{
+                'acceptedTerms': _acceptedTerms,
+                'ageConfirmed': _ageConfirmed,
+                'gender': _gender,
+                'birthDate':
+                    _birthDate == null ? null : _formatBirthDate(_birthDate!),
+                'contentFilter': _registrationFilter,
+                'contentFilterConfirmed': _filterConfirmed,
+              },
               if (kPendingInviteId != null) 'inviteId': kPendingInviteId,
             }),
           )
@@ -4780,6 +4706,35 @@ class _AuthScreenState extends State<AuthScreen> {
       if (!mounted) return;
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
+        if (loginAttempt && _isLogin && res.statusCode == 400 &&
+            data['code'] == 'REGISTRATION_REQUIRED') {
+          setState(() {
+            _isLogin = false;
+            _choosingVerification = false;
+            _verificationRequired = false;
+            _registrationStep = 0;
+            _registrationMethod = 'google';
+            _verificationMethod = 'email';
+            _identityVerified = false;
+            _verificationProof = null;
+            _registrationCodeSent = false;
+            _showVerificationSuccess = false;
+            _registrationCodeCtrl.clear();
+            _googleRegistrationIdToken = idToken;
+            _acceptedTerms = false;
+            _ageConfirmed = false;
+            _registrationFilter = _newAccountFilter();
+            _filterConfirmed = true;
+            _gender = null;
+            _birthDate = null;
+            _nameCtrl.clear();
+            _emailCtrl.clear();
+            _phoneCtrl.clear();
+            _passCtrl.clear();
+          });
+          await _verifyGoogleRegistrationIdToken(idToken);
+          return;
+        }
         setState(() {
           _error = data['error'] ?? 'שגיאה';
           _loading = false;
@@ -4799,6 +4754,8 @@ class _AuthScreenState extends State<AuthScreen> {
                 builder: (_) => GooglePhoneSetupScreen(
                       token: token,
                       requireVerification: false,
+                      offerDriveBackup:
+                          !completingRegistration && !existingAccount,
                     )));
       } else {
         final prefs = await SharedPreferences.getInstance();
@@ -4807,7 +4764,9 @@ class _AuthScreenState extends State<AuthScreen> {
         Navigator.pushReplacement(
             context,
             MaterialPageRoute(
-                builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
+                builder: (_) => existingAccount || completingRegistration
+                    ? MainShell(token: token)
+                    : GoogleDriveBackupOfferScreen(token: token)));
       }
     } catch (e) {
       debugPrint('Google sign-in failed: $e');
@@ -4854,7 +4813,7 @@ class _AuthScreenState extends State<AuthScreen> {
     } else {
       if (!_acceptedTerms || !_ageConfirmed) {
         setState(() =>
-            _error = 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה');
+            _error = 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 18 ומעלה');
         return;
       }
       if (name.isEmpty) {
@@ -4866,7 +4825,7 @@ class _AuthScreenState extends State<AuthScreen> {
         return;
       }
       if (_birthDate == null) {
-        setState(() => _error = 'יש לבחור תאריך לידה');
+        setState(() => _error = 'יש להזין תאריך לידה תקין');
         return;
       }
       if (!_filterConfirmed) {
@@ -5041,10 +5000,12 @@ class _AuthScreenState extends State<AuthScreen> {
 
   Future<void> _selectRegistrationMethod(String method,
       {GoogleSignInAccount? webAccount}) async {
+    if (method != 'google') return;
     setState(() {
       _registrationMethod = method;
       _verificationMethod = method == 'phone' ? 'phone' : 'email';
       _identityVerified = false;
+      _googleRegistrationIdToken = null;
       _verificationProof = null;
       _registrationCodeSent = false;
       _showVerificationSuccess = false;
@@ -5063,26 +5024,57 @@ class _AuthScreenState extends State<AuthScreen> {
       }
       final auth = await account.authentication;
       if (auth.idToken == null) throw Exception('לא התקבל טוקן מגוגל');
-      final response = await http
-          .post(
-            Uri.parse('$kApi/registration/verify-google'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'idToken': auth.idToken}),
-          )
-          .timeout(const Duration(seconds: 30));
-      final data = _registrationResponseData(response);
-      if (response.statusCode != 200) {
-        throw Exception(data['error'] ?? 'אימות Google נכשל');
+      _googleRegistrationIdToken = auth.idToken;
+      await _verifyGoogleRegistrationIdToken(auth.idToken!);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
       }
-      if (!mounted) return;
-      setState(() {
-        _googleRegistrationIdToken = auth.idToken;
-        _identityVerified = true;
-        _nameCtrl.text = (data['name'] as String?) ?? '';
-        _emailCtrl.text = (data['email'] as String?) ?? '';
-        _loading = false;
-      });
-      await _showSuccessfulVerification();
+    }
+  }
+
+  Future<void> _verifyGoogleRegistrationIdToken(String idToken) async {
+    if (!mounted) return;
+    final response = await http
+        .post(
+          Uri.parse('$kApi/registration/verify-google'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'idToken': idToken}),
+        )
+        .timeout(const Duration(seconds: 30));
+    final data = _registrationResponseData(response);
+    if (response.statusCode != 200) {
+      throw Exception(data['error'] ?? 'אימות Google נכשל');
+    }
+    if (!mounted) return;
+    if (data['existingAccount'] == true) {
+      _googleRegistrationIdToken = idToken;
+      await _signInWithGoogle(existingAccount: true);
+      return;
+    }
+    setState(() {
+      _googleRegistrationIdToken = idToken;
+      _identityVerified = true;
+      _nameCtrl.text = (data['name'] as String?) ?? '';
+      _emailCtrl.text = (data['email'] as String?) ?? '';
+      _loading = false;
+      _registrationStep = 1;
+    });
+    await _showSuccessfulVerification();
+  }
+
+  Future<void> _retryGoogleRegistrationVerification() async {
+    final idToken = _googleRegistrationIdToken;
+    if (idToken == null || _loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await _verifyGoogleRegistrationIdToken(idToken);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -5231,13 +5223,17 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   void _nextRegistrationStep() {
-    if (_registrationStep == 2) {
+    if (!_identityVerified || _googleRegistrationIdToken == null) {
+      _registrationError('יש להתחבר באמצעות Google כדי להמשיך');
+      return;
+    }
+    if (_registrationStep == 3) {
       if (_nameCtrl.text.trim().isEmpty) {
         _registrationError('נא להזין שם מלא');
         return;
       }
       if (_birthDate == null) {
-        _registrationError('יש לבחור תאריך לידה');
+        _registrationError('יש להזין תאריך לידה תקין');
         return;
       }
       if (_gender == null) {
@@ -5264,13 +5260,18 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _finishRegistration() async {
+    if (!_identityVerified || _googleRegistrationIdToken == null ||
+        _registrationMethod != 'google') {
+      _registrationError('יש להתחבר באמצעות Google כדי להשלים הרשמה');
+      return;
+    }
     if (_registrationMethod != 'google' && _passCtrl.text.length < 6) {
       _registrationError('הסיסמה חייבת להיות לפחות 6 תווים');
       return;
     }
     if (!_ageConfirmed || !_acceptedTerms) {
       _registrationError(
-          'יש לאשר גיל 13 ומעלה ואת תנאי השימוש ומדיניות הפרטיות');
+          'יש לאשר גיל 18 ומעלה ואת תנאי השימוש ומדיניות הפרטיות');
       return;
     }
     if (_registrationMethod == 'google') {
@@ -5342,10 +5343,10 @@ class _AuthScreenState extends State<AuthScreen> {
     switch (_registrationStep) {
       case 0:
         return Column(children: [
-          const Text('איך תרצה להירשם?',
+          const Text('הרשמה באמצעות Google',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
-          const Text('בחר דרך אחת. ניתן להשלים את התהליך בתוך דקות.',
+          const Text('יצירת חשבון חדש עם חשבון Google שלך. חיבור Google Drive יוצע בהמשך לבחירתך.',
               textAlign: TextAlign.center,
               style: TextStyle(color: kSubtext, fontSize: 12.5)),
           const SizedBox(height: 20),
@@ -5363,17 +5364,15 @@ class _AuthScreenState extends State<AuthScreen> {
               title: 'הרשמה באמצעות Google',
               subtitle: 'מהיר ומאובטח — ללא יצירת סיסמה נוספת'),
           const SizedBox(height: 12),
-          _registrationMethodCard(
-              method: 'email',
-              icon: Icons.alternate_email_rounded,
-              title: 'הרשמה באימייל',
-              subtitle: 'יצירת חשבון עם אימייל, טלפון וסיסמה'),
-          const SizedBox(height: 12),
-          _registrationMethodCard(
-              method: 'phone',
-              icon: Icons.sms_outlined,
-              title: 'הרשמה עם SMS',
-              subtitle: 'קוד אימות מיידי למספר הטלפון'),
+          if (_googleRegistrationIdToken != null && !_identityVerified)
+            TextButton.icon(
+              onPressed: _loading ? null : _retryGoogleRegistrationVerification,
+              icon: const Icon(Icons.refresh),
+              label: const Text('נסה שוב לאמת את חשבון Google שנבחר'),
+            ),
+          const Text('יש לך כבר חשבון? אפשר להיכנס עם פרטי הכניסה הקיימים.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: kSubtext, fontSize: 12.5)),
         ]);
       case 1:
         if (_showVerificationSuccess) {
@@ -5505,7 +5504,7 @@ class _AuthScreenState extends State<AuthScreen> {
               style: const TextStyle(color: kSubtext, fontSize: 12.5),
             ),
         ]);
-      case 2:
+      case 3:
         return Column(children: [
           const Text('השלמת פרטים',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
@@ -5554,7 +5553,7 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
           ],
         ]);
-      case 3:
+      case 2:
         const filterItems = <String, (String, String, IconData)>{
           'men': ('גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
           'women': ('נשים', 'תמונות שסווגו כתמונות נשים', Icons.woman),
@@ -5576,15 +5575,6 @@ class _AuthScreenState extends State<AuthScreen> {
           const Text('בחר אילו סוגי תוכן תרצה לקבל',
               style: TextStyle(color: kSubtext, fontSize: 12.5)),
           const SizedBox(height: 14),
-          _GeneralFilterEnforcementCard(
-            value: _registrationFilter['enforceGeneralFilter'] == true,
-            onChanged: (value) => setState(() {
-              _registrationFilter = {
-                ..._registrationFilter,
-                'enforceGeneralFilter': value
-              };
-            }),
-          ),
           ...filterItems.entries.map((entry) {
             final selected = _registrationFilter[entry.key] == true;
             return Padding(
@@ -5694,6 +5684,15 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
             );
           }),
+          _GeneralFilterEnforcementCard(
+            value: _registrationFilter['enforceGeneralFilter'] == true,
+            onChanged: (value) => setState(() {
+              _registrationFilter = {
+                ..._registrationFilter,
+                'enforceGeneralFilter': value
+              };
+            }),
+          ),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
             child: Text(
@@ -5718,16 +5717,23 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
             const SizedBox(height: 8),
           ],
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _ageConfirmed,
-            onChanged: (value) => setState(() => _ageConfirmed = value == true),
-            title: const Text('אני בן/בת 13 ומעלה'),
-          ),
-          _TermsAgreementTile(
-            value: _acceptedTerms,
-            onChanged: (value) =>
-                setState(() => _acceptedTerms = value == true),
+          Material(
+            type: MaterialType.transparency,
+            child: Column(children: [
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _ageConfirmed,
+                onChanged: (value) =>
+                    setState(() => _ageConfirmed = value == true),
+                title: const Text('אני בן/בת 18 ומעלה'),
+              ),
+              _TermsAgreementTile(
+                value: _acceptedTerms,
+                onChanged: (value) =>
+                    setState(() => _acceptedTerms = value == true),
+              ),
+            ]),
           ),
           if (_registrationMethod == 'google') ...[
             const SizedBox(height: 10),
@@ -5748,6 +5754,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Widget _buildRegistrationWizard() {
+    final visibleStep = _registrationStep == 0 ? 0 : _registrationStep - 1;
     return Scaffold(
       backgroundColor: kIsWeb ? const Color(0xFFF2F7FB) : kBg,
       body: SafeArea(
@@ -5790,23 +5797,25 @@ class _AuthScreenState extends State<AuthScreen> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () => setState(() {
-                      _isLogin = true;
-                      _error = null;
-                    }),
+                    onPressed: _loading || _showVerificationSuccess
+                        ? null
+                        : () => setState(() {
+                              _isLogin = true;
+                              _error = null;
+                            }),
                     child: const Text('כניסה'),
                   ),
                 ]),
                 const SizedBox(height: 10),
                 Row(
                   children: List.generate(
-                      5,
+                      4,
                       (index) => Expanded(
                             child: Container(
                               height: 5,
-                              margin: EdgeInsets.only(left: index == 4 ? 0 : 5),
+                              margin: EdgeInsets.only(left: index == 3 ? 0 : 5),
                               decoration: BoxDecoration(
-                                color: index <= _registrationStep
+                                color: index <= visibleStep
                                     ? kPrimary
                                     : kBorder,
                                 borderRadius: BorderRadius.circular(5),
@@ -5815,7 +5824,7 @@ class _AuthScreenState extends State<AuthScreen> {
                           )),
                 ),
                 const SizedBox(height: 6),
-                Text('שלב ${_registrationStep + 1} מתוך 5',
+                Text('שלב ${visibleStep + 1} מתוך 4',
                     style: const TextStyle(color: kSubtext, fontSize: 11)),
                 const SizedBox(height: 12),
                 Expanded(
@@ -5855,7 +5864,8 @@ class _AuthScreenState extends State<AuthScreen> {
                       onPressed: _loading || _showVerificationSuccess
                           ? null
                           : () => setState(() {
-                                _registrationStep--;
+                                _registrationStep = _registrationStep <= 2
+                                    ? 0 : _registrationStep - 1;
                                 _error = null;
                               }),
                       child: const Text('חזרה'),
@@ -5863,7 +5873,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   if (_registrationStep > 0) const SizedBox(width: 10),
                   Expanded(
                     child: FilledButton(
-                      onPressed: _loading
+                      onPressed: _loading || _showVerificationSuccess ||
+                              _registrationStep == 0
                           ? null
                           : (_registrationStep == 1 && !_identityVerified
                               ? (_registrationCodeSent
@@ -5959,19 +5970,25 @@ class _AuthScreenState extends State<AuthScreen> {
                         _TabBtn(
                             label: 'כניסה',
                             active: _isLogin,
-                            onTap: () => setState(() {
-                                  _isLogin = true;
-                                  _choosingVerification = false;
-                                  _error = null;
-                                })),
+                            onTap: () {
+                              if (_loading || _showVerificationSuccess) return;
+                              setState(() {
+                                _isLogin = true;
+                                _choosingVerification = false;
+                                _error = null;
+                              });
+                            }),
                         _TabBtn(
                             label: 'הרשמה',
                             active: !_isLogin,
-                            onTap: () => setState(() {
-                                  _isLogin = false;
-                                  _choosingVerification = false;
-                                  _error = null;
-                                })),
+                            onTap: () {
+                              if (_loading || _showVerificationSuccess) return;
+                              setState(() {
+                                _isLogin = false;
+                                _choosingVerification = false;
+                                _error = null;
+                              });
+                            }),
                       ]),
                     ),
                     const SizedBox(height: 24),
@@ -6086,7 +6103,7 @@ class _AuthScreenState extends State<AuthScreen> {
                         value: _ageConfirmed,
                         onChanged: (value) =>
                             setState(() => _ageConfirmed = value == true),
-                        title: const Text('אני בן/בת 13 ומעלה',
+                        title: const Text('אני בן/בת 18 ומעלה',
                             style: TextStyle(fontSize: 13)),
                       ),
                       _TermsAgreementTile(
@@ -6397,8 +6414,12 @@ class _GoogleDriveBackupOfferScreenState
 class GooglePhoneSetupScreen extends StatefulWidget {
   final String token;
   final bool requireVerification;
+  final bool offerDriveBackup;
   const GooglePhoneSetupScreen(
-      {super.key, required this.token, this.requireVerification = true});
+      {super.key,
+      required this.token,
+      this.requireVerification = true,
+      this.offerDriveBackup = true});
   @override
   State<GooglePhoneSetupScreen> createState() => _GooglePhoneSetupScreenState();
 }
@@ -6473,7 +6494,9 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
           Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                  builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
+                  builder: (_) => widget.offerDriveBackup
+                      ? GoogleDriveBackupOfferScreen(token: token)
+                      : MainShell(token: token)));
         } else {
           setState(() {
             _error = data['error'] as String? ?? 'שמירת המספר נכשלה';
@@ -6556,7 +6579,9 @@ class _GooglePhoneSetupScreenState extends State<GooglePhoneSetupScreen> {
         Navigator.pushReplacement(
             context,
             MaterialPageRoute(
-                builder: (_) => GoogleDriveBackupOfferScreen(token: token)));
+                builder: (_) => widget.offerDriveBackup
+                    ? GoogleDriveBackupOfferScreen(token: token)
+                    : MainShell(token: token)));
       } else {
         final d = jsonDecode(res.body);
         setState(() {
@@ -7448,39 +7473,102 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
 String _formatBirthDate(DateTime value) =>
     '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
 
-class _BirthDateField extends StatelessWidget {
+class _BirthDateField extends StatefulWidget {
   final DateTime? value;
-  final ValueChanged<DateTime> onChanged;
+  final ValueChanged<DateTime?> onChanged;
+  final bool enabled;
 
-  const _BirthDateField({required this.value, required this.onChanged});
+  const _BirthDateField(
+      {required this.value, required this.onChanged, this.enabled = true});
 
   @override
-  Widget build(BuildContext context) => InkWell(
-        onTap: () async {
-          final now = DateTime.now();
-          final latestEligibleDate =
-              DateTime(now.year - 13, now.month, now.day);
-          final selected = await showDatePicker(
-            context: context,
-            initialDate: value ?? DateTime(now.year - 18, now.month, now.day),
-            firstDate: DateTime(now.year - 120),
-            lastDate: latestEligibleDate,
-            helpText: 'בחירת תאריך לידה',
-          );
-          if (selected != null) onChanged(selected);
-        },
-        child: InputDecorator(
-          decoration: const InputDecoration(
-            labelText: 'תאריך לידה',
-            helperText: 'נדרש גיל 13+. בגיל 13–17 מופעלות הגנות נוער.',
-            prefixIcon: Icon(Icons.cake_outlined),
-          ),
-          child: Text(
-            value == null
-                ? 'יש לבחור תאריך'
-                : '${value!.day.toString().padLeft(2, '0')}/${value!.month.toString().padLeft(2, '0')}/${value!.year}',
-            textDirection: TextDirection.ltr,
-          ),
+  State<_BirthDateField> createState() => _BirthDateFieldState();
+}
+
+class _BirthDateFieldState extends State<_BirthDateField> {
+  late final TextEditingController _controller;
+  DateTime? _reportedValue;
+  String? _error;
+
+  String _displayDate(DateTime? date) => date == null
+      ? ''
+      : '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year.toString().padLeft(4, '0')}';
+
+  @override
+  void initState() {
+    super.initState();
+    _reportedValue = widget.value;
+    _controller = TextEditingController(text: _displayDate(widget.value));
+  }
+
+  @override
+  void didUpdateWidget(covariant _BirthDateField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value != _reportedValue) {
+      _reportedValue = widget.value;
+      _controller.text = _displayDate(widget.value);
+      _error = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _changed(String text) {
+    final input = text.trim();
+    final match = RegExp(r'^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$')
+        .firstMatch(input);
+    DateTime? date;
+    String? error;
+    if (match == null) {
+      if (input.length >= 8) {
+        error = 'יש להזין תאריך בפורמט יום/חודש/שנה';
+      }
+    } else {
+      final day = int.parse(match.group(1)!);
+      final month = int.parse(match.group(2)!);
+      final year = int.parse(match.group(3)!);
+      final candidate = DateTime(year, month, day);
+      final now = DateTime.now();
+      final latestEligibleDate = DateTime(now.year - 18, now.month,
+          math.min(now.day, DateTime(now.year - 18, now.month + 1, 0).day));
+      if (candidate.year != year ||
+          candidate.month != month ||
+          candidate.day != day ||
+          candidate.isBefore(DateTime(now.year - 120))) {
+        error = 'תאריך הלידה אינו תקין';
+      } else if (candidate.isAfter(latestEligibleDate)) {
+        error = 'ניתן להירשם מגיל 18 ומעלה בלבד';
+      } else {
+        date = candidate;
+      }
+    }
+    _reportedValue = date;
+    setState(() => _error = error);
+    widget.onChanged(date);
+  }
+
+  @override
+  Widget build(BuildContext context) => TextField(
+        controller: _controller,
+        enabled: widget.enabled,
+        keyboardType: TextInputType.datetime,
+        textDirection: TextDirection.ltr,
+        inputFormatters: [
+          FilteringTextInputFormatter.allow(RegExp(r'[0-9/.-]')),
+          LengthLimitingTextInputFormatter(10),
+        ],
+        onChanged: _changed,
+        decoration: InputDecoration(
+          labelText: 'תאריך לידה',
+          hintText: 'יום/חודש/שנה',
+          hintTextDirection: TextDirection.rtl,
+          helperText: 'לדוגמה 18/10/1972 • השירות לבני 18 ומעלה בלבד.',
+          prefixIcon: const Icon(Icons.cake_outlined),
+          errorText: _error,
         ),
       );
 }
@@ -7499,7 +7587,7 @@ class _BetaNotice extends StatelessWidget {
         ),
         child: const Text(
           'BETSHUVA מופעלת על ידי בתשובה פתרונות דיגיטליים בע״מ, ח״פ '
-          '517401238, בגרסת בטא פתוחה וללא תשלום. '
+          '517401238, בגרסת בטא פתוחה וללא תשלום לבני 18 ומעלה בלבד. '
           'השירות נמצא בבדיקה ועלולות להתרחש תקלות, הפסקות זמניות, שינויים '
           'או אובדן מידע. אין לשמור בשירות מידע שהעותק היחיד שלו נמצא '
           'באפליקציה. השימוש כפוף לתנאי השימוש ולמדיניות הפרטיות. '
@@ -7909,11 +7997,13 @@ class _BirthDateCheckFailure implements Exception {
   final String message;
   final int retryAfterSeconds;
   final bool requiresLogin;
+  final bool ageRestricted;
 
   const _BirthDateCheckFailure(
     this.message, {
     this.retryAfterSeconds = 0,
     this.requiresLogin = false,
+    this.ageRestricted = false,
   });
 }
 
@@ -7979,7 +8069,15 @@ class _MainShellState extends State<MainShell> {
     }
   }
 
-  Future<bool> _checkBirthDate() async {
+  Future<bool> _checkBirthDate() {
+    final future = _fetchBirthDate();
+    // A fast response can complete between setState and FutureBuilder's next
+    // subscription. Keep the error observed; FutureBuilder still displays it.
+    future.ignore();
+    return future;
+  }
+
+  Future<bool> _fetchBirthDate() async {
     try {
       final response = await http
           .get(
@@ -8000,6 +8098,13 @@ class _MainShellState extends State<MainShell> {
         );
       }
       final status = _birthDateResponseData(response);
+      if (response.statusCode == 403 && status['code'] == 'AGE_RESTRICTED') {
+        throw const _BirthDateCheckFailure(
+          'בתשובה מיועדת לבני 18 ומעלה בלבד. לפי תאריך הלידה בחשבון, לא ניתן להמשיך להשתמש בשירות. לסיוע או למחיקת החשבון ניתן לפנות לתמיכה.',
+          requiresLogin: true,
+          ageRestricted: true,
+        );
+      }
       if (response.statusCode == 200 && status['birthDateMissing'] is bool) {
         return status['birthDateMissing'] == false;
       }
@@ -8053,51 +8158,51 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) => PopScope(
-    canPop: kIsWeb,
-    onPopInvokedWithResult: (didPop, _) {
-      if (!didPop && !kIsWeb) _confirmExit();
-    },
-    child: KeyedSubtree(
-      key: ValueKey(widget.token),
-      child: FutureBuilder<bool>(
-        future: _birthDateReady,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
-          }
-          if (snapshot.hasError) {
-            return _BirthDateStatusErrorScreen(
-              key: ValueKey(snapshot.error),
-              failure: snapshot.error is _BirthDateCheckFailure
-                  ? snapshot.error! as _BirthDateCheckFailure
-                  : const _BirthDateCheckFailure(
-                      'לא ניתן לבדוק כרגע את פרטי החשבון. נסה שוב.',
-                    ),
-              onRetry: () => setState(() {
-                _birthDateReady = _checkBirthDate();
-              }),
-              onSignIn: _signInAgain,
-            );
-          }
-          if (snapshot.data == false) {
-            final token = widget.token;
-            return _CompleteBirthDateScreen(
-              token: token,
-              onCompleted: () {
-                if (!mounted || widget.token != token) return;
-                setState(() {
-                  _birthDateReady = Future.value(true);
-                });
-              },
-            );
-          }
-          return _MainShellContent(token: widget.token);
+        canPop: kIsWeb,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && !kIsWeb) _confirmExit();
         },
-      ),
-    ),
-  );
+        child: KeyedSubtree(
+          key: ValueKey(widget.token),
+          child: FutureBuilder<bool>(
+            future: _birthDateReady,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Scaffold(
+                  body: Center(child: CircularProgressIndicator()),
+                );
+              }
+              if (snapshot.hasError) {
+                return _BirthDateStatusErrorScreen(
+                  key: ValueKey(snapshot.error),
+                  failure: snapshot.error is _BirthDateCheckFailure
+                      ? snapshot.error! as _BirthDateCheckFailure
+                      : const _BirthDateCheckFailure(
+                          'לא ניתן לבדוק כרגע את פרטי החשבון. נסה שוב.',
+                        ),
+                  onRetry: () => setState(() {
+                    _birthDateReady = _checkBirthDate();
+                  }),
+                  onSignIn: _signInAgain,
+                );
+              }
+              if (snapshot.data == false) {
+                final token = widget.token;
+                return _CompleteBirthDateScreen(
+                  token: token,
+                  onCompleted: () {
+                    if (!mounted || widget.token != token) return;
+                    setState(() {
+                      _birthDateReady = _checkBirthDate();
+                    });
+                  },
+                );
+              }
+              return _MainShellContent(token: widget.token);
+            },
+          ),
+        ),
+      );
 }
 
 class _BirthDateStatusErrorScreen extends StatefulWidget {
@@ -8128,53 +8233,62 @@ class _BirthDateStatusErrorScreenState
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: kBg,
-    body: SafeArea(
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 440),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.cloud_off_outlined, size: 64, color: kPrimary),
-                const SizedBox(height: 20),
-                const Text(
-                  'בדיקת פרטי החשבון',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 12),
-                Text(widget.failure.message, textAlign: TextAlign.center),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _retrySeconds > 0 ? null : widget.onRetry,
-                    child: Text(
-                      _retrySeconds > 0
-                          ? 'ניסיון נוסף בעוד $_retrySeconds שניות'
-                          : 'נסה שוב',
+        backgroundColor: kBg,
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                        widget.failure.ageRestricted
+                            ? Icons.lock_outline
+                            : Icons.cloud_off_outlined,
+                        size: 64,
+                        color: kPrimary),
+                    const SizedBox(height: 20),
+                    Text(
+                      widget.failure.ageRestricted
+                          ? 'השירות לבני 18 ומעלה'
+                          : 'בדיקת פרטי החשבון',
+                      style: const TextStyle(
+                          fontSize: 24, fontWeight: FontWeight.bold),
                     ),
-                  ),
+                    const SizedBox(height: 12),
+                    Text(widget.failure.message, textAlign: TextAlign.center),
+                    const SizedBox(height: 24),
+                    if (!widget.failure.ageRestricted)
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: _retrySeconds > 0 ? null : widget.onRetry,
+                          child: Text(
+                            _retrySeconds > 0
+                                ? 'ניסיון נוסף בעוד $_retrySeconds שניות'
+                                : 'נסה שוב',
+                          ),
+                        ),
+                      ),
+                    if (widget.failure.requiresLogin)
+                      TextButton(
+                        onPressed: widget.onSignIn,
+                        child: const Text('כניסה מחדש'),
+                      ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'לסיוע: support@betshuva.com',
+                      style: TextStyle(color: kSubtext),
+                    ),
+                  ],
                 ),
-                if (widget.failure.requiresLogin)
-                  TextButton(
-                    onPressed: widget.onSignIn,
-                    child: const Text('כניסה מחדש'),
-                  ),
-                const SizedBox(height: 12),
-                const Text(
-                  'לסיוע: support@betshuva.com',
-                  style: TextStyle(color: kSubtext),
-                ),
-              ],
+              ),
             ),
           ),
         ),
-      ),
-    ),
-  );
+      );
 }
 
 class _CompleteBirthDateScreen extends StatefulWidget {
@@ -8200,7 +8314,7 @@ class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen>
   Future<void> _save() async {
     if (_loading || _retrySeconds > 0) return;
     if (_birthDate == null) {
-      setState(() => _error = 'יש לבחור תאריך לידה');
+      setState(() => _error = 'יש להזין תאריך לידה תקין');
       return;
     }
     setState(() {
@@ -8246,75 +8360,79 @@ class _CompleteBirthDateScreenState extends State<_CompleteBirthDateScreen>
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: kBg,
-    body: SafeArea(
-      child: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 440),
-            child: Column(
-              children: [
-                const Icon(Icons.shield_outlined, size: 72, color: kPrimary),
-                const SizedBox(height: 20),
-                const Text(
-                  'השלמת הגנת גיל',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+        backgroundColor: kBg,
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(28),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 440),
+                child: Column(
+                  children: [
+                    const Icon(Icons.shield_outlined,
+                        size: 72, color: kPrimary),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'השלמת הגנת גיל',
+                      style:
+                          TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'כדי להמשיך יש להזין תאריך לידה אמיתי. לא ניתן לשנות אותו באפליקציה לאחר השמירה. השירות מיועד לבני 18 ומעלה בלבד.',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 24),
+                    IgnorePointer(
+                      ignoring: _loading,
+                      child: _BirthDateField(
+                        value: _birthDate,
+                        enabled: !_loading,
+                        onChanged: (value) =>
+                            setState(() => _birthDate = value),
+                      ),
+                    ),
+                    if (_error != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.red),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: _loading || _retrySeconds > 0 ? null : _save,
+                        child: _loading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : Text(
+                                _retrySeconds > 0
+                                    ? 'שמירה אפשרית בעוד $_retrySeconds שניות'
+                                    : 'שמירה והמשך',
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'לסיוע: support@betshuva.com',
+                      style: TextStyle(color: kSubtext),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                const Text(
-                  'כדי להמשיך יש להזין תאריך לידה אמיתי. לא ניתן לשנות אותו באפליקציה לאחר השמירה. בגיל 13–17 יופעל אוטומטית חשבון נוער מוגן.',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                IgnorePointer(
-                  ignoring: _loading,
-                  child: _BirthDateField(
-                    value: _birthDate,
-                    onChanged: (value) => setState(() => _birthDate = value),
-                  ),
-                ),
-                if (_error != null) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    _error!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                ],
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _loading || _retrySeconds > 0 ? null : _save,
-                    child: _loading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : Text(
-                            _retrySeconds > 0
-                                ? 'שמירה אפשרית בעוד $_retrySeconds שניות'
-                                : 'שמירה והמשך',
-                          ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const Text(
-                  'לסיוע: support@betshuva.com',
-                  style: TextStyle(color: kSubtext),
-                ),
-              ],
+              ),
             ),
           ),
         ),
-      ),
-    ),
-  );
+      );
 }
 
 // ── Main Shell (Bottom Nav) ───────────────────────────────────────
@@ -8352,6 +8470,11 @@ class _MainShellContentState extends State<_MainShellContent> {
   Timer? _usersRefreshTimer;
   Map<String, int> _unreadCounts = {}; // userId → count of unread incoming msgs
   Map<String, int> _groupUnreadCounts = {}; // groupId → unread count
+  int _unreadLoadSerial = 0;
+  int _groupUnreadLoadSerial = 0;
+  final _reactionEvents = MessageReactionEventDeduplicator();
+  bool _reactionRefreshRunning = false;
+  bool _reactionRefreshRequested = false;
   final Map<String, String> _groupTypingNames = {};
   final Map<String, Timer> _groupTypingTimers = {};
   final Set<String> _typingUserIds = {};
@@ -8453,31 +8576,6 @@ class _MainShellContentState extends State<_MainShellContent> {
         _profilePictureFilterChanges.stream.listen(_profilePictureFilterChanged);
     _conversationChangesSubscription =
         conversationChanges.stream.listen(_conversationListChanged);
-    registerAppScreenshotMenu(this, _openScreenshotThroughIsrael);
-    appScreenshotToken.value = widget.token;
-    appScreenshotDestination.value =
-        const AppScreenshotDestination.user(kSystemGuideId);
-    appScreenshotIssueOpened = (issueId) async {
-      if (!mounted) return;
-      if (MediaQuery.sizeOf(context).width >= 900) {
-        setState(() {
-          _idx = 0;
-          _desktopIssueId = issueId;
-          _desktopDocument = null;
-          _desktopListing = null;
-        });
-        return;
-      }
-      await Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) =>
-              OpenIssuesScreen(token: widget.token, initialIssueId: issueId)));
-    };
-    appScreenshotTargetSender = (senderContext, bytes, name) =>
-        _forwardChatMessage(senderContext, widget.token, _socket, {
-          'localBytes': bytes,
-          'fileName': name,
-          'fileType': 'image',
-        });
     _lifecycleObserver = _AppLifecycleObserver(onResume: _handleAppResume);
     _decodeMe();
     _loadMyProfile();
@@ -8543,7 +8641,7 @@ class _MainShellContentState extends State<_MainShellContent> {
             if (messages.isNotEmpty) {
               await forwardChatMessages(
                   context, widget.token, _socket, messages,
-                  initialRecipientId: recipient);
+                  initialRecipientId: recipient, me: _me);
             } else if (recipient != null) {
               final response = await http.get(Uri.parse('$kApi/users'),
                   headers: {'Authorization': 'Bearer ${widget.token}'});
@@ -8634,12 +8732,6 @@ class _MainShellContentState extends State<_MainShellContent> {
     _localNotificationOpen.removeListener(_consumeLocalNotificationOpen);
     _profilePictureFilterSubscription.cancel();
     _conversationChangesSubscription.cancel();
-    unregisterAppScreenshotMenu(this);
-    appScreenshotIssueOpened = null;
-    appScreenshotTargetSender = null;
-    if (appScreenshotToken.value == widget.token) {
-      appScreenshotToken.value = null;
-    }
     _shareChannel.setMethodCallHandler(null);
     _usersRefreshTimer?.cancel();
     for (final timer in _groupTypingTimers.values) {
@@ -8655,6 +8747,7 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _loadAdminPerm() async {
+    if (!kIsWeb) return;
     try {
       final res = await http.get(
         Uri.parse('$kApi/admin/db'),
@@ -8681,43 +8774,6 @@ class _MainShellContentState extends State<_MainShellContent> {
         }
       }
     } catch (_) {}
-  }
-
-  void _openScreenshotThroughIsrael() {
-    _closeDesktopContentRoutes();
-    final guide = _users.cast<Map<String, dynamic>?>().firstWhere(
-          (user) => user?['id']?.toString() == kSystemGuideId,
-          orElse: () => <String, dynamic>{
-            'id': kSystemGuideId,
-            'name': 'ישראל מדריך בתשובה',
-            'profile_pic_url':
-                '/betshuva-app/assets/assets/guide/israel-profile-20260907.png',
-          },
-        )!;
-    final isDesktop = MediaQuery.sizeOf(context).width >= 900;
-    if (isDesktop) {
-      setState(() {
-        _idx = 0;
-        _desktopSearchMessageId = _desktopSearchMessageAt = null;
-        _desktopRecipient = guide;
-        _desktopGroup = null;
-        _desktopListing = null;
-        _desktopDocument = null;
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) openRegisteredAppScreenshotMenu();
-      });
-      return;
-    }
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ChatScreen(
-        token: widget.token,
-        me: _me,
-        recipient: guide,
-        socket: _socket,
-        openScreenshotMenuOnStart: true,
-      ),
-    ));
   }
 
   Future<void> _loadMessageRequests() async {
@@ -8986,12 +9042,13 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _loadUnreadCounts() async {
+    final serial = ++_unreadLoadSerial;
     try {
       final res = await http.get(
         Uri.parse('$kApi/messages/unread'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (res.statusCode == 200 && mounted) {
+      if (res.statusCode == 200 && mounted && serial == _unreadLoadSerial) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         setState(() => _unreadCounts = data.map((k, v) => MapEntry(
             k, v is num ? v.toInt() : int.tryParse(v.toString()) ?? 0)));
@@ -9000,12 +9057,13 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _loadGroupUnreadCounts() async {
+    final serial = ++_groupUnreadLoadSerial;
     try {
       final res = await http.get(
         Uri.parse('$kApi/groups/unread'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (res.statusCode == 200 && mounted) {
+      if (res.statusCode == 200 && mounted && serial == _groupUnreadLoadSerial) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         setState(() => _groupUnreadCounts = data.map((k, v) => MapEntry(
             k, v is num ? v.toInt() : int.tryParse(v.toString()) ?? 0)));
@@ -9026,6 +9084,32 @@ class _MainShellContentState extends State<_MainShellContent> {
       if (groups != null) groups._loadGroups(),
     ]);
     if (mounted) await reconcileReadNotifications(kApi, widget.token);
+  }
+
+  Future<void> _refreshReactionConversationState() async {
+    if (!mounted) return;
+    _reactionRefreshRequested = true;
+    if (_reactionRefreshRunning) return;
+    _reactionRefreshRunning = true;
+    try {
+      do {
+        _reactionRefreshRequested = false;
+        final conversations = _conversationsKey.currentState;
+        final groups = _groupsKey.currentState;
+        if (conversations != null) conversations._groupsLoadGeneration++;
+        if (groups != null) groups._groupsLoadGeneration++;
+        await Future.wait([
+          _loadUsers(),
+          _loadUnreadCounts(),
+          _loadGroupUnreadCounts(),
+          if (conversations != null) conversations._loadGroups(force: true),
+          if (groups != null) groups._loadGroups(),
+        ]);
+        if (mounted) await reconcileReadNotifications(kApi, widget.token);
+      } while (mounted && _reactionRefreshRequested);
+    } finally {
+      _reactionRefreshRunning = false;
+    }
   }
 
   void _updateGroupMemberCount(String? groupId, int count) {
@@ -9134,6 +9218,11 @@ class _MainShellContentState extends State<_MainShellContent> {
       });
       return;
     }
+    final groupId = msg.data['groupId'];
+    if (type == 'group' && groupId is String && groupId.isNotEmpty) {
+      _openNotificationGroup(groupId);
+      return;
+    }
     if (type == 'chat' && fromUserId != null) {
       final user = _users.firstWhere(
         (u) => u['id'] == fromUserId,
@@ -9159,6 +9248,36 @@ class _MainShellContentState extends State<_MainShellContent> {
         ));
       });
     }
+  }
+
+  Future<void> _openNotificationGroup(String groupId) async {
+    final accountId = _accountId;
+    try {
+      // Resolve current membership instead of trusting stale push metadata.
+      final response = await http.get(Uri.parse('$kApi/groups'),
+          headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (!mounted || accountId != _accountId || response.statusCode != 200) return;
+      final groups = jsonDecode(response.body);
+      if (groups is! List) return;
+      final matching = groups.whereType<Map>().where((group) =>
+          group['id']?.toString() == groupId && group['status'] == 'member');
+      if (matching.isEmpty) return;
+      final group = Map<String, dynamic>.from(matching.first);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || accountId != _accountId) return;
+        if (MediaQuery.sizeOf(context).width >= 900) {
+          _openGroup(group, false);
+        } else {
+          setState(() => _groupUnreadCounts.remove(groupId));
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => GroupChatScreen(
+              group: group, me: _me, token: widget.token, socket: _socket,
+            ),
+          ));
+        }
+      });
+      WidgetsBinding.instance.ensureVisualUpdate();
+    } catch (_) {}
   }
 
   Future<void> _loadUsers() async {
@@ -9281,6 +9400,25 @@ class _MainShellContentState extends State<_MainShellContent> {
       if (id != null) phoneSharingChanges.add(id);
       _loadUsers();
       _loadPhoneRequests();
+    });
+    _socket!.on('message:reaction', (data) {
+      if (!mounted) return;
+      final activity = MessageReactionActivity.tryParse(data);
+      if (activity == null || !_reactionEvents.accept(activity)) return;
+      MessageReactionsCache.shared.invalidate(
+        api: kApi, token: widget.token,
+        messageId: activity.messageId, eventId: activity.eventId,
+      );
+      // Use server truth for both own and incoming activity; reactions do not
+      // create chat messages or increment delivery/unread counts locally.
+      _usersLoadGeneration++;
+      _refreshReactionConversationState();
+    });
+    _socket!.on('message:reactions-read', (data) {
+      if (!mounted || data is! Map ||
+          !const ['chat', 'group'].contains(data['kind']) ||
+          data['targetId'] is! String) return;
+      _refreshReactionConversationState();
     });
 
     // הודעה חדשה בזמן שהאפליקציה פתוחה — עדכן badge
@@ -14572,9 +14710,17 @@ class _ListingsScreenState extends State<ListingsScreen> {
   bool _showMyListings = false;
   final _desktopContentNavigatorKey = GlobalKey<NavigatorState>();
 
+  int _imageRevision = listingBackgroundImages.revision;
+  void _onBackgroundImages() {
+    if (!mounted || _imageRevision == listingBackgroundImages.revision) return;
+    _imageRevision = listingBackgroundImages.revision;
+    _load();
+  }
+
   @override
   void initState() {
     super.initState();
+    listingBackgroundImages.addListener(_onBackgroundImages);
     _load();
     _refreshListingCatalog().then((changed) {
       if (changed && mounted) setState(() {});
@@ -14588,6 +14734,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
 
   @override
   void dispose() {
+    listingBackgroundImages.removeListener(_onBackgroundImages);
     _searchDebounce?.cancel();
     _listingCatalogTimer?.cancel();
     _searchCtrl.dispose();
@@ -14737,6 +14884,7 @@ class _ListingsScreenState extends State<ListingsScreen> {
   Widget build(BuildContext context) {
     final listPane = Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
+      bottomNavigationBar: ListingBackgroundImageStatus(token: widget.token),
       appBar: AppBar(
         backgroundColor: kPrimary,
         elevation: 0,
@@ -15460,7 +15608,15 @@ class _ListingCard extends StatelessWidget {
                     height: 110,
                     fit: BoxFit.cover,
                     errorBuilder: (_) => _placeholder())
-                : _placeholder(),
+                : item['video_url'] != null
+                    ? SizedBox(width: 110, height: 110,
+                        child: VideoThumbnail(
+                          url: _absoluteMediaUrl(item['video_url'].toString()),
+                          small: true,
+                          fallback: Container(color: const Color(0xFFE8F4FD),
+                            child: const Icon(Icons.play_circle_outline, color: kPrimary)),
+                        ))
+                    : _placeholder(),
           ),
           // Info
           Expanded(
@@ -15660,10 +15816,24 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
 
+  int _imageRevision = listingBackgroundImages.revision;
+  void _onBackgroundImages() {
+    if (!mounted || _imageRevision == listingBackgroundImages.revision) return;
+    _imageRevision = listingBackgroundImages.revision;
+    _load();
+  }
+
   @override
   void initState() {
     super.initState();
+    listingBackgroundImages.addListener(_onBackgroundImages);
     _load();
+  }
+
+  @override
+  void dispose() {
+    listingBackgroundImages.removeListener(_onBackgroundImages);
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -15737,6 +15907,7 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
+      bottomNavigationBar: ListingBackgroundImageStatus(token: widget.token),
       appBar: AppBar(
         backgroundColor: kPrimary,
         title: const Text('המודעות שלי',
@@ -15822,7 +15993,15 @@ class _MyListingCard extends StatelessWidget {
                       height: 66,
                       fit: BoxFit.cover,
                       errorBuilder: (_) => _imgPlaceholder())
-                  : _imgPlaceholder(),
+                  : item['video_url'] != null
+                      ? SizedBox(width: 66, height: 66,
+                          child: VideoThumbnail(
+                            url: _absoluteMediaUrl(item['video_url'].toString()),
+                            small: true,
+                            fallback: Container(color: const Color(0xFFE8F4FD),
+                              child: const Icon(Icons.play_circle_outline, color: kPrimary)),
+                          ))
+                      : _imgPlaceholder(),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -16004,6 +16183,7 @@ class PostListingScreen extends StatefulWidget {
   final bool embedded;
   final VoidCallback? onClose;
   final Future<void> Function()? onPublished;
+  final String? initialMessageId;
   const PostListingScreen({
     super.key,
     required this.token,
@@ -16011,6 +16191,7 @@ class PostListingScreen extends StatefulWidget {
     this.embedded = false,
     this.onClose,
     this.onPublished,
+    this.initialMessageId,
   });
   @override
   State<PostListingScreen> createState() => _PostListingScreenState();
@@ -16045,7 +16226,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final _categoryDetailCtrls = _newCategoryDetailControllers();
   late final _cityCtrl =
       TextEditingController(text: widget.me?['city'] as String? ?? '');
-  String _category = 'אחר';
+  String _category = 'רכב';
   String _condition = 'good';
   String _deliveryMethod = 'pickup';
   int _expiryDays = 30;
@@ -16056,10 +16237,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final _contactHoursCtrl = TextEditingController();
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
+  final _listingVideo = ListingVideoDraft();
+  bool _preparingVideo = false;
+  final _imageUploadTasks = List<Completer<ListingImageAttachment?>?>.filled(8, null);
+  final _imageOriginalUrls = List<String?>.filled(8, null);
   final List<_FileUploadOutcome?> _imageOutcomes =
       List<_FileUploadOutcome?>.filled(8, null);
   final List<String?> _imageReasons = List<String?>.filled(8, null);
   bool _saving = false;
+  bool _initialMessageImageStarted = false, _retainInitialImageUpload = false;
   bool _vehicleLookupLoading = false;
   String? _vehicleLookupMessage;
   String _vehicleTransmission = 'automatic';
@@ -16286,6 +16472,9 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _titleCtrl.addListener(_mirrorTitleIntoDescription);
     _listenToVehicleFields();
     _listenToAllListingFields();
+    if (widget.initialMessageId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _addInitialMessageImage());
+    }
     if (_cityCtrl.text.trim().isEmpty) _loadCityFromProfile();
     _refreshListingCatalog().then((changed) {
       if (changed && mounted) setState(() {});
@@ -16319,6 +16508,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
     }
   }
 
+  bool _locatingCity = false;
+
   Future<void> _loadCityFromProfile() async {
     try {
       final response = await http.get(Uri.parse('$kApi/profile'),
@@ -16330,25 +16521,28 @@ class _PostListingScreenState extends State<PostListingScreen> {
       final city = profile is Map ? profile['city']?.toString().trim() : null;
       if (city != null && city.isNotEmpty) {
         setState(() => _cityCtrl.text = city);
-      } else {
-        await _loadCityFromDevice();
       }
     } catch (_) {
-      await _loadCityFromDevice();
+      // Manual selection remains available; opening a form never requests GPS.
     }
   }
 
   Future<void> _loadCityFromDevice() async {
-    if (!mounted || _cityCtrl.text.trim().isNotEmpty) return;
+    if (!mounted || _locatingCity) return;
+    setState(() => _locatingCity = true);
     try {
+      final approved = await requestGeocodingConsent(
+          context, GeocodingPurpose.city);
+      if (!approved || !mounted) return;
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        return;
+        throw Exception('לא ניתנה הרשאת מיקום. אפשר לבחור עיר ידנית');
       }
+      final originalCity = _cityCtrl.text;
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.low,
@@ -16362,18 +16556,27 @@ class _PostListingScreenState extends State<PostListingScreen> {
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
+          'geocodingConsent': geocodingConsentVersion,
           'latitude': position.latitude,
           'longitude': position.longitude,
         }),
       );
-      if (!mounted || response.statusCode != 200) return;
+      if (!mounted) return;
+      if (response.statusCode != 200) {
+        throw Exception(geocodingErrorMessage(response.body));
+      }
       final payload = jsonDecode(response.body);
       final city = payload is Map ? payload['city']?.toString().trim() : null;
-      if (city != null && city.isNotEmpty && _cityCtrl.text.trim().isEmpty) {
+      if (city != null && city.isNotEmpty && _cityCtrl.text == originalCity) {
         setState(() => _cityCtrl.text = city);
       }
-    } catch (_) {
-      // The locality can always be selected manually when location is denied.
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(error.toString().replaceFirst('Exception: ', ''))));
+      }
+    } finally {
+      if (mounted) setState(() => _locatingCity = false);
     }
   }
 
@@ -16440,72 +16643,136 @@ class _PostListingScreenState extends State<PostListingScreen> {
     }
   }
 
-  Future<void> _pickImage(int slot) async {
-    final picker = ImagePicker();
-    final picked = await picker.pickMultiImage(imageQuality: 80);
-    if (picked.isEmpty || !mounted) return;
+  void _addInitialMessageImage() {
+    final messageId = widget.initialMessageId;
+    if (!mounted || messageId == null || _initialMessageImageStarted) return;
+    _initialMessageImageStarted = true;
+    final slot = _imageUrls.asMap().entries.where((entry) =>
+        entry.value == null && !_uploadingSlot[entry.key]).map((entry) => entry.key).firstOrNull;
+    if (slot == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('המודעה כבר כוללת 8 תמונות')));
+      return;
+    }
+    final token = widget.token;
+    final task = Completer<ListingImageAttachment?>();
+    // Reserve before fetching the chat bytes, so early save retains this task.
+    setState(() {
+      _uploadingSlot[slot] = true;
+      _imageUploadTasks[slot] = task;
+      _imageOriginalUrls[slot] = null;
+    });
+    unawaited(_completeChatListingImageUpload(token: token, messageId: messageId,
+        task: task, shouldUpload: () => mounted || _retainInitialImageUpload,
+        onResult: (result) {
+          _applyImageUploadResult(slot, result);
+          if (mounted) _showImageBatchSummary(context, [result]);
+        }));
+  }
+
+  void _applyImageUploadResult(int slot, _FileUploadResult result,
+      {String? previousUrl}) {
+    if (!mounted) return;
+    final url = result.data['url']?.toString();
+    final approved = result.outcome == _FileUploadOutcome.approved &&
+        url != null && url.isNotEmpty;
+    setState(() {
+      _uploadingSlot[slot] = false;
+      _imageReasons[slot] = result.data['reason']?.toString() ?? result.error;
+      if (approved || previousUrl == null) {
+        _imageUrls[slot] = url;
+        _imageOutcomes[slot] = result.outcome;
+      }
+    });
+  }
+
+  Future<void> _pickImage(int slot, {bool camera = false}) async {
+    if (_saving || _uploadingSlot[slot]) return;
+    final token = widget.token;
+    final free = _imageUrls.asMap().entries.where((entry) =>
+        entry.value == null && !_uploadingSlot[entry.key]).length;
+    List<XFile> picked;
+    try {
+      picked = camera
+          ? await captureListingPhotos(context, maxPhotos: free,
+              creatorId: 'listing')
+          : await ImagePicker().pickMultiImage(imageQuality: 80);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('לא ניתן לפתוח את התמונות. נסה שוב')));
+      }
+      return;
+    }
+    if (picked.isEmpty || !mounted || _saving) return;
     final availableSlots = <int>[
-      slot,
+      if (!_uploadingSlot[slot]) slot,
       for (var i = 0; i < _imageUrls.length; i++)
-        if (i != slot && _imageUrls[i] == null) i,
+        if (i != slot && _imageUrls[i] == null && !_uploadingSlot[i]) i,
     ];
     final selected = picked.take(availableSlots.length).toList();
+    if (selected.isEmpty) return;
     if (picked.length > availableSlots.length) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('ניתן לצרף עד 8 תמונות למודעה'),
       ));
     }
+    final previousUrls = [for (final target in availableSlots.take(selected.length))
+      _imageOutcomes[target] == _FileUploadOutcome.approved ? _imageUrls[target] : null];
+    final tasks = [for (final _ in selected) Completer<ListingImageAttachment?>()];
     setState(() {
       for (var i = 0; i < selected.length; i++) {
-        _uploadingSlot[availableSlots[i]] = true;
+        final target = availableSlots[i];
+        _uploadingSlot[target] = true;
+        _imageUploadTasks[target] = tasks[i];
+        _imageOriginalUrls[target] = previousUrls[i];
       }
     });
     final completed = ValueNotifier<int>(0);
     try {
       final results = await _runImageUploadQueue(
         selected,
-        (file) => _uploadFileRequest(
-          file: file,
-          fileName: file.name,
-          token: widget.token,
-          fields: const {'listingImage': 'true'},
-        ),
+        (file) => _uploadListingImageRequest(file, token),
         completed,
-      );
-      if (!mounted) return;
-      setState(() {
-        for (var i = 0; i < results.length; i++) {
-          final target = availableSlots[i];
-          final result = results[i];
+        onResult: (index, file, result) async {
           final url = result.data['url']?.toString();
-          _imageOutcomes[target] = result.outcome;
-          _imageReasons[target] =
-              result.data['reason']?.toString() ?? result.error;
-          // The server keeps rejected/pending uploads for moderation. Show the
-          // returned image to its owner, but only approved URLs are published.
-          if (url != null && url.isNotEmpty) _imageUrls[target] = url;
-        }
-      });
-      _showImageBatchSummary(context, results);
+          final approved = result.outcome == _FileUploadOutcome.approved &&
+              url != null && url.isNotEmpty;
+          // Delivery belongs to the saved listing, independently of this route.
+          tasks[index].complete(approved ? ListingImageAttachment(
+              url: url, expectedOldUrl: previousUrls[index]) : null);
+          _applyImageUploadResult(availableSlots[index], result,
+              previousUrl: previousUrls[index]);
+        },
+      );
+      if (mounted) {
+        _showImageBatchSummary(context, results);
+      }
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
+          SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
       }
     } finally {
+      for (final task in tasks) {
+        if (!task.isCompleted) task.complete(null);
+      }
       completed.dispose();
       if (mounted) {
         setState(() {
           for (var i = 0; i < selected.length; i++) {
-            _uploadingSlot[availableSlots[i]] = false;
+            if (identical(_imageUploadTasks[availableSlots[i]], tasks[i])) {
+              _uploadingSlot[availableSlots[i]] = false;
+            }
           }
         });
       }
     }
   }
 
+
   Future<void> _removeImage(int slot) async {
-    if (_imageUrls[slot] == null) return;
+    if (_saving || _uploadingSlot[slot] || _imageUrls[slot] == null) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -16530,6 +16797,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
     if (confirmed == true && mounted) {
       setState(() {
         _imageUrls[slot] = null;
+        _imageUploadTasks[slot] = null;
+        _imageOriginalUrls[slot] = null;
         _imageOutcomes[slot] = null;
         _imageReasons[slot] = null;
       });
@@ -16537,6 +16806,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
   }
 
   Future<void> _submit() async {
+    if (_saving || _preparingVideo) return;
     if (!_contactInApp && !_contactEmail && !_contactPhone && !_contactPhone) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('יש לבחור לפחות דרך אחת ליצירת קשר')));
@@ -16573,13 +16843,26 @@ class _PostListingScreenState extends State<PostListingScreen> {
           .showSnackBar(const SnackBar(content: Text('יש להזין עיר או אזור')));
       return;
     }
+    final token = widget.token;
+    final hasPendingImages = _imageUploadTasks.any((task) => task != null && !task.isCompleted);
+    final pendingImages = hasPendingImages
+        ? [for (final task in _imageUploadTasks) if (task != null) task.future]
+        : <Future<ListingImageAttachment?>>[];
+    final pendingVideo = _listingVideo.pendingUpload;
+    final savedVideoUrl = _listingVideo.url;
+    final saveVideoChange = _listingVideo.changed;
+    final pendingMedia = [...pendingImages,
+      if (pendingVideo != null) pendingVideo];
     setState(() => _saving = true);
     try {
       final urls = <String>[];
       for (var i = 0; i < _imageUrls.length; i++) {
-        if (_imageUrls[i] != null &&
-            _imageOutcomes[i] == _FileUploadOutcome.approved) {
-          urls.add(_imageUrls[i]!);
+        // Keep original images until the ordered background batch is linked.
+        // Fast images from this batch must not jump ahead of slower ones.
+        final original = hasPendingImages && _imageUploadTasks[i] != null;
+        final url = original ? _imageOriginalUrls[i] : _imageUrls[i];
+        if (url != null && (original || _imageOutcomes[i] == _FileUploadOutcome.approved)) {
+          urls.add(url);
         }
       }
       final city = _cityCtrl.text.trim();
@@ -16590,6 +16873,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
           : '$title\n\n$enteredDescription';
       final body = <String, dynamic>{
         'type': listingType,
+        if (saveVideoChange) 'video_url': savedVideoUrl,
         'title': title,
         'description': description,
         'category': _category,
@@ -16655,14 +16939,25 @@ class _PostListingScreenState extends State<PostListingScreen> {
           .post(
             Uri.parse('$kApi/listings'),
             headers: {
-              'Authorization': 'Bearer ${widget.token}',
+              'Authorization': 'Bearer $token',
               'Content-Type': 'application/json'
             },
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 30));
-      if (!mounted) return;
       if (res.statusCode == 200) {
+        final listingId = (jsonDecode(res.body) as Map)['id']?.toString();
+        if (pendingMedia.isNotEmpty && listingId != null) {
+          _retainInitialImageUpload = true;
+          listingBackgroundImages.start(api: kApi, token: token,
+              listingId: listingId, title: title, uploads: pendingMedia,
+              includesVideo: pendingVideo != null);
+        }
+        if (!mounted) return;
+        if (pendingMedia.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('המודעה נשמרה. המדיה ממשיכה לעלות ולהיסרק ברקע')));
+        }
         if (widget.embedded) {
           await widget.onPublished?.call();
         } else {
@@ -16670,6 +16965,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
         }
         return;
       }
+      if (!mounted) return;
       var message = 'פרסום המודעה נכשל';
       try {
         final response = jsonDecode(res.body);
@@ -16693,6 +16989,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
 
   @override
   void dispose() {
+    _listingVideo.dispose();
     _titleCtrl.removeListener(_mirrorTitleIntoDescription);
     _titleCtrl.dispose();
     _descCtrl.dispose();
@@ -16871,6 +17168,13 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       label: 'עיר או אזור *',
                       hint: 'התחל להקליד ובחר מהרשימה',
                     ),
+                    TextButton.icon(
+                      onPressed: _locatingCity ? null : _loadCityFromDevice,
+                      icon: const Icon(Icons.my_location),
+                      label: Text(_locatingCity
+                          ? 'מאתר יישוב...' : 'זיהוי עיר לפי המיקום שלי'),
+                    ),
+                    const GeocodingAttribution(),
                     if (_category != 'רכב' && _category != 'נדל״ן') ...[
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
@@ -16944,12 +17248,14 @@ class _PostListingScreenState extends State<PostListingScreen> {
                         style: TextStyle(fontSize: 13, color: kSubtext)),
                     const SizedBox(height: 10),
                     _dynamicImagePicker(),
+                    const SizedBox(height: 16),
+                    _listingVideoPicker(),
                     const SizedBox(height: 24),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                           backgroundColor: kPrimary,
                           padding: const EdgeInsets.symmetric(vertical: 14)),
-                      onPressed: _saving ? null : _submit,
+                      onPressed: _saving || _preparingVideo ? null : _submit,
                       child: _saving
                           ? const CircularProgressIndicator(color: Colors.white)
                           : const Text('פרסם',
@@ -17225,7 +17531,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
         outcome == _FileUploadOutcome.failed;
     final pending = outcome == _FileUploadOutcome.pending;
     return GestureDetector(
-      onTap: uploading ? null : () => _pickImage(i),
+      onTap: uploading || _saving ? null : () => _pickImage(i),
       onLongPress: url != null ? () => _removeImage(i) : null,
       child: Container(
         decoration: BoxDecoration(
@@ -17311,6 +17617,22 @@ class _PostListingScreenState extends State<PostListingScreen> {
     );
   }
 
+  Widget _listingVideoPicker() {
+    final token = widget.token;
+    return ListingVideoPicker(
+      draft: _listingVideo,
+      enabled: !_saving,
+      onPreparingChanged: (value) {
+        if (mounted) setState(() => _preparingVideo = value);
+      },
+      upload: (file) => _uploadListingVideoRequest(file, token),
+      validate: (file) => _videoWithinDurationLimit(context, file,
+          maxDuration: const Duration(seconds: 10),
+          tolerance: Duration.zero, limitDescription: '10 שניות'),
+      preview: (url) => _ChatVideoPlayer(url: url),
+    );
+  }
+
   Widget _dynamicImagePicker() {
     final occupied = <int>[
       for (var i = 0; i < 8; i++)
@@ -17334,9 +17656,19 @@ class _PostListingScreenState extends State<PostListingScreen> {
             width: 150,
             height: 150,
             child: OutlinedButton.icon(
-              onPressed: () => _pickImage(firstFree!),
+              onPressed: _saving ? null : () => _pickImage(firstFree!),
               icon: const Icon(Icons.add_photo_alternate_outlined),
               label: Text(occupied.isEmpty ? 'בחירת תמונות' : 'הוסף תמונות'),
+            ),
+          ),
+        if (firstFree != null)
+          SizedBox(
+            width: 150,
+            height: 150,
+            child: OutlinedButton.icon(
+              onPressed: _saving ? null : () => _pickImage(firstFree!, camera: true),
+              icon: const Icon(Icons.photo_camera_outlined),
+              label: const Text('צילום תמונות'),
             ),
           ),
       ],
@@ -17700,8 +18032,10 @@ class _PostListingScreenState extends State<PostListingScreen> {
 class EditListingScreen extends StatefulWidget {
   final String listingId;
   final String token;
+  final String? initialMessageId;
   const EditListingScreen(
-      {super.key, required this.listingId, required this.token});
+      {super.key, required this.listingId, required this.token,
+        this.initialMessageId});
   @override
   State<EditListingScreen> createState() => _EditListingScreenState();
 }
@@ -17757,11 +18091,16 @@ class _EditListingScreenState extends State<EditListingScreen> {
   final _contactHoursCtrl = TextEditingController();
   final List<String?> _imageUrls = List<String?>.filled(8, null);
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
+  final _listingVideo = ListingVideoDraft();
+  bool _preparingVideo = false;
+  final _imageUploadTasks = List<Completer<ListingImageAttachment?>?>.filled(8, null);
+  final _imageOriginalUrls = List<String?>.filled(8, null);
   final List<_FileUploadOutcome?> _imageOutcomes =
       List<_FileUploadOutcome?>.filled(8, null);
   final List<String?> _imageReasons = List<String?>.filled(8, null);
   bool _loading = true;
   bool _saving = false;
+  bool _initialMessageImageStarted = false, _retainInitialImageUpload = false;
   String _mirroredTitle = '';
   // Kept as draft state for the vehicle editor's next UI stage.
   // ignore: unused_field
@@ -18273,6 +18612,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
 
   @override
   void dispose() {
+    _listingVideo.dispose();
     _listingCatalogTimer?.cancel();
     _titleCtrl.removeListener(_mirrorTitleIntoDescription);
     _titleCtrl.dispose();
@@ -18329,6 +18669,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
       final categoryDetails = item['category_details'] is Map
           ? Map<String, dynamic>.from(item['category_details'] as Map)
           : <String, dynamic>{};
+      _listingVideo.load(item['video_url']?.toString());
       setState(() {
         _category = item['category'] as String? ?? 'אחר';
         for (final entry in categoryDetails.entries) {
@@ -18399,74 +18740,141 @@ class _EditListingScreenState extends State<EditListingScreen> {
         _descriptionManuallyEdited = _descCtrl.text.trim().isNotEmpty;
         _loading = false;
       });
+      if (res.statusCode == 200) _addInitialMessageImage();
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _pickImage(int slot) async {
-    final picker = ImagePicker();
-    final picked = await picker.pickMultiImage(imageQuality: 80);
-    if (picked.isEmpty || !mounted) return;
+  void _addInitialMessageImage() {
+    final messageId = widget.initialMessageId;
+    if (!mounted || messageId == null || _initialMessageImageStarted) return;
+    _initialMessageImageStarted = true;
+    final slot = _imageUrls.asMap().entries.where((entry) =>
+        entry.value == null && !_uploadingSlot[entry.key]).map((entry) => entry.key).firstOrNull;
+    if (slot == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('המודעה כבר כוללת 8 תמונות')));
+      return;
+    }
+    final token = widget.token;
+    final task = Completer<ListingImageAttachment?>();
+    setState(() {
+      _uploadingSlot[slot] = true;
+      _imageUploadTasks[slot] = task;
+      _imageOriginalUrls[slot] = null;
+    });
+    unawaited(_completeChatListingImageUpload(token: token, messageId: messageId,
+        task: task, shouldUpload: () => mounted || _retainInitialImageUpload,
+        onResult: (result) {
+          _applyImageUploadResult(slot, result);
+          if (mounted) _showImageBatchSummary(context, [result]);
+        }));
+  }
+
+  void _applyImageUploadResult(int slot, _FileUploadResult result,
+      {String? previousUrl}) {
+    if (!mounted) return;
+    final url = result.data['url']?.toString();
+    final approved = result.outcome == _FileUploadOutcome.approved &&
+        url != null && url.isNotEmpty;
+    setState(() {
+      _uploadingSlot[slot] = false;
+      _imageReasons[slot] = result.data['reason']?.toString() ?? result.error;
+      if (approved || previousUrl == null) {
+        _imageUrls[slot] = url;
+        _imageOutcomes[slot] = result.outcome;
+      }
+    });
+  }
+
+  Future<void> _pickImage(int slot, {bool camera = false}) async {
+    if (_saving || _uploadingSlot[slot]) return;
+    final token = widget.token;
+    final free = _imageUrls.asMap().entries.where((entry) =>
+        entry.value == null && !_uploadingSlot[entry.key]).length;
+    List<XFile> picked;
+    try {
+      picked = camera
+          ? await captureListingPhotos(context, maxPhotos: free,
+              creatorId: 'listing')
+          : await ImagePicker().pickMultiImage(imageQuality: 80);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('לא ניתן לפתוח את התמונות. נסה שוב')));
+      }
+      return;
+    }
+    if (picked.isEmpty || !mounted || _saving) return;
     final availableSlots = <int>[
-      slot,
+      if (!_uploadingSlot[slot]) slot,
       for (var i = 0; i < _imageUrls.length; i++)
-        if (i != slot && _imageUrls[i] == null) i,
+        if (i != slot && _imageUrls[i] == null && !_uploadingSlot[i]) i,
     ];
     final selected = picked.take(availableSlots.length).toList();
+    if (selected.isEmpty) return;
     if (picked.length > availableSlots.length) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('ניתן לצרף עד 8 תמונות למודעה'),
       ));
     }
+    final previousUrls = [for (final target in availableSlots.take(selected.length))
+      _imageOutcomes[target] == _FileUploadOutcome.approved ? _imageUrls[target] : null];
+    final tasks = [for (final _ in selected) Completer<ListingImageAttachment?>()];
     setState(() {
       for (var i = 0; i < selected.length; i++) {
-        _uploadingSlot[availableSlots[i]] = true;
+        final target = availableSlots[i];
+        _uploadingSlot[target] = true;
+        _imageUploadTasks[target] = tasks[i];
+        _imageOriginalUrls[target] = previousUrls[i];
       }
     });
     final completed = ValueNotifier<int>(0);
     try {
       final results = await _runImageUploadQueue(
         selected,
-        (file) => _uploadFileRequest(
-          file: file,
-          fileName: file.name,
-          token: widget.token,
-          fields: const {'listingImage': 'true'},
-        ),
+        (file) => _uploadListingImageRequest(file, token),
         completed,
-      );
-      if (!mounted) return;
-      setState(() {
-        for (var i = 0; i < results.length; i++) {
-          final target = availableSlots[i];
-          final result = results[i];
+        onResult: (index, file, result) async {
           final url = result.data['url']?.toString();
-          _imageOutcomes[target] = result.outcome;
-          _imageReasons[target] =
-              result.data['reason']?.toString() ?? result.error;
-          if (url != null && url.isNotEmpty) _imageUrls[target] = url;
-        }
-      });
-      _showImageBatchSummary(context, results);
+          final approved = result.outcome == _FileUploadOutcome.approved &&
+              url != null && url.isNotEmpty;
+          // Delivery belongs to the saved listing, independently of this route.
+          tasks[index].complete(approved ? ListingImageAttachment(
+              url: url, expectedOldUrl: previousUrls[index]) : null);
+          _applyImageUploadResult(availableSlots[index], result,
+              previousUrl: previousUrls[index]);
+        },
+      );
+      if (mounted) {
+        _showImageBatchSummary(context, results);
+      }
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
+          SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
       }
     } finally {
+      for (final task in tasks) {
+        if (!task.isCompleted) task.complete(null);
+      }
       completed.dispose();
       if (mounted) {
         setState(() {
           for (var i = 0; i < selected.length; i++) {
-            _uploadingSlot[availableSlots[i]] = false;
+            if (identical(_imageUploadTasks[availableSlots[i]], tasks[i])) {
+              _uploadingSlot[availableSlots[i]] = false;
+            }
           }
         });
       }
     }
   }
 
+
   Future<void> _submit() async {
+    if (_saving || _preparingVideo) return;
     if (!_contactInApp && !_contactEmail && !_contactPhone && !_contactPhone) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('יש לבחור לפחות דרך אחת ליצירת קשר')));
@@ -18477,13 +18885,27 @@ class _EditListingScreenState extends State<EditListingScreen> {
           .showSnackBar(const SnackBar(content: Text('נדרשת כותרת')));
       return;
     }
+    final token = widget.token;
+    final listingId = widget.listingId;
+    final hasPendingImages = _imageUploadTasks.any((task) => task != null && !task.isCompleted);
+    final pendingImages = hasPendingImages
+        ? [for (final task in _imageUploadTasks) if (task != null) task.future]
+        : <Future<ListingImageAttachment?>>[];
+    final pendingVideo = _listingVideo.pendingUpload;
+    final savedVideoUrl = _listingVideo.url;
+    final saveVideoChange = _listingVideo.changed;
+    final pendingMedia = [...pendingImages,
+      if (pendingVideo != null) pendingVideo];
     setState(() => _saving = true);
     try {
       final urls = <String>[];
       for (var i = 0; i < _imageUrls.length; i++) {
-        if (_imageUrls[i] != null &&
-            _imageOutcomes[i] == _FileUploadOutcome.approved) {
-          urls.add(_imageUrls[i]!);
+        // Keep original images until the ordered background batch is linked.
+        // Fast images from this batch must not jump ahead of slower ones.
+        final original = hasPendingImages && _imageUploadTasks[i] != null;
+        final url = original ? _imageOriginalUrls[i] : _imageUrls[i];
+        if (url != null && (original || _imageOutcomes[i] == _FileUploadOutcome.approved)) {
+          urls.add(url);
         }
       }
       final city = _cityCtrl.text.trim();
@@ -18496,6 +18918,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
       final listingType = parsedPrice <= 0 ? 'free' : 'sale';
       final body = <String, dynamic>{
         'type': listingType,
+        if (saveVideoChange) 'video_url': savedVideoUrl,
         'title': title,
         'description': description,
         'category': _category,
@@ -18558,14 +18981,25 @@ class _EditListingScreenState extends State<EditListingScreen> {
           'category_details': _categoryDetailsPayload(),
       };
       final res = await http.put(
-        Uri.parse('$kApi/listings/${widget.listingId}'),
+        Uri.parse('$kApi/listings/$listingId'),
         headers: {
-          'Authorization': 'Bearer ${widget.token}',
+          'Authorization': 'Bearer $token',
           'Content-Type': 'application/json'
         },
         body: jsonEncode(body),
       );
-      if (res.statusCode == 200 && mounted) {
+      if (res.statusCode == 200) {
+        if (pendingMedia.isNotEmpty) {
+          _retainInitialImageUpload = true;
+          listingBackgroundImages.start(api: kApi, token: token,
+              listingId: listingId, title: title, uploads: pendingMedia,
+              includesVideo: pendingVideo != null);
+        }
+        if (!mounted) return;
+        if (pendingMedia.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('המודעה נשמרה. המדיה ממשיכה לעלות ולהיסרק ברקע')));
+        }
         Navigator.pop(context, true);
       } else if (mounted) {
         final err = jsonDecode(res.body)['error'] ?? 'שגיאה';
@@ -18603,6 +19037,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
                                 fontWeight: FontWeight.w500)),
                         const SizedBox(height: 8),
                         _dynamicImagePicker(),
+                        const SizedBox(height: 16),
+                        _listingVideoPicker(),
                         const SizedBox(height: 16),
                         TextField(
                             controller: _titleCtrl,
@@ -18766,7 +19202,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
                               backgroundColor: kPrimary,
                               padding:
                                   const EdgeInsets.symmetric(vertical: 14)),
-                          onPressed: _saving ? null : _submit,
+                          onPressed: _saving || _preparingVideo ? null : _submit,
                           child: _saving
                               ? const CircularProgressIndicator(
                                   color: Colors.white)
@@ -18791,7 +19227,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
         outcome == _FileUploadOutcome.failed;
     final pending = outcome == _FileUploadOutcome.pending;
     return GestureDetector(
-      onTap: uploading ? null : () => _pickImage(i),
+      onTap: uploading || _saving ? null : () => _pickImage(i),
       onLongPress: url != null ? () => _clearEditImage(i) : null,
       child: Container(
         decoration: BoxDecoration(
@@ -18874,11 +19310,32 @@ class _EditListingScreenState extends State<EditListingScreen> {
     );
   }
 
-  void _clearEditImage(int index) => setState(() {
+  void _clearEditImage(int index) {
+    if (_saving || _uploadingSlot[index]) return;
+    setState(() {
+        _imageUploadTasks[index] = null;
+        _imageOriginalUrls[index] = null;
         _imageUrls[index] = null;
         _imageOutcomes[index] = null;
         _imageReasons[index] = null;
       });
+  }
+
+  Widget _listingVideoPicker() {
+    final token = widget.token;
+    return ListingVideoPicker(
+      draft: _listingVideo,
+      enabled: !_saving,
+      onPreparingChanged: (value) {
+        if (mounted) setState(() => _preparingVideo = value);
+      },
+      upload: (file) => _uploadListingVideoRequest(file, token),
+      validate: (file) => _videoWithinDurationLimit(context, file,
+          maxDuration: const Duration(seconds: 10),
+          tolerance: Duration.zero, limitDescription: '10 שניות'),
+      preview: (url) => _ChatVideoPlayer(url: url),
+    );
+  }
 
   Widget _dynamicImagePicker() {
     final occupied = <int>[
@@ -18903,9 +19360,19 @@ class _EditListingScreenState extends State<EditListingScreen> {
             width: 150,
             height: 150,
             child: OutlinedButton.icon(
-              onPressed: () => _pickImage(firstFree!),
+              onPressed: _saving ? null : () => _pickImage(firstFree!),
               icon: const Icon(Icons.add_photo_alternate_outlined),
               label: Text(occupied.isEmpty ? 'בחירת תמונות' : 'הוסף תמונות'),
+            ),
+          ),
+        if (firstFree != null)
+          SizedBox(
+            width: 150,
+            height: 150,
+            child: OutlinedButton.icon(
+              onPressed: _saving ? null : () => _pickImage(firstFree!, camera: true),
+              icon: const Icon(Icons.photo_camera_outlined),
+              label: const Text('צילום תמונות'),
             ),
           ),
       ],
@@ -18961,19 +19428,71 @@ class ListingDetailScreen extends StatefulWidget {
 
 class _ListingDetailScreenState extends State<ListingDetailScreen> {
   late String _status;
+  List<String>? _backgroundImageUrls;
+  String? _backgroundVideoUrl;
+  bool _hasBackgroundVideo = false;
+  int _imageRevision = listingBackgroundImages.revision;
+
+  void _onBackgroundImages() {
+    if (!mounted || _imageRevision == listingBackgroundImages.revision) return;
+    final previousRevision = _imageRevision;
+    _imageRevision = listingBackgroundImages.revision;
+    final jobs = listingBackgroundImages.forToken(widget.token).where((job) =>
+        job.listingId == widget.item['id']?.toString() &&
+        job.attachedRevision > previousRevision &&
+        (job.imageUrls != null || job.hasVideoResult))
+        .toList()..sort((a, b) => a.attachedRevision.compareTo(b.attachedRevision));
+    if (jobs.isNotEmpty) {
+      setState(() {
+        for (final job in jobs) {
+          if (job.imageUrls != null) _backgroundImageUrls = List.of(job.imageUrls!);
+          if (job.hasVideoResult) {
+            _hasBackgroundVideo = true;
+            _backgroundVideoUrl = job.videoUrl;
+          }
+        }
+      });
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _status = widget.item['status'] as String? ?? 'active';
+    listingBackgroundImages.addListener(_onBackgroundImages);
+  }
+
+  @override
+  void didUpdateWidget(covariant ListingDetailScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.token != widget.token ||
+        oldWidget.item['id'] != widget.item['id'] ||
+        !identical(oldWidget.item, widget.item)) {
+      // A fresh server snapshot owns its current media. Old completed jobs
+      // must not restore a video that was removed or replaced afterwards.
+      _backgroundImageUrls = null;
+      _backgroundVideoUrl = null;
+      _hasBackgroundVideo = false;
+      _imageRevision = listingBackgroundImages.revision;
+    }
+  }
+
+  @override
+  void dispose() {
+    listingBackgroundImages.removeListener(_onBackgroundImages);
+    super.dispose();
   }
 
   List<String> get _images {
+    if (_backgroundImageUrls != null) return _backgroundImageUrls!;
     final raw = widget.item['images'];
     if (raw is List && raw.isNotEmpty) return List<String>.from(raw);
     final single = widget.item['image_url'] as String?;
     return single != null ? [single] : [];
   }
+
+  String? get _videoUrl => _hasBackgroundVideo
+      ? _backgroundVideoUrl : widget.item['video_url']?.toString();
 
   Future<void> _openImageViewer(List<String> images, int initialIndex) async {
     final controller = PageController(initialPage: initialIndex);
@@ -19192,6 +19711,7 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
         ? Map<String, dynamic>.from(widget.item['contact_preferences'] as Map)
         : <String, dynamic>{'in_app': true};
     final images = _images.take(8).toList(growable: false);
+    final videoUrl = _videoUrl;
     const conditionLabels = {
       'new': 'חדש',
       'like_new': 'כמו חדש',
@@ -19324,11 +19844,19 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
                       );
                     },
                   )
-          else
+          else if (videoUrl == null)
             Container(
                 height: galleryHeight,
                 color: const Color(0xFFE8F4FD),
                 child: Icon(Icons.image_outlined, size: 80, color: kSubtext)),
+          if (videoUrl != null && videoUrl.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: _ChatVideoPlayer(url: videoUrl),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.all(16),
             child:
@@ -20458,8 +20986,6 @@ class _MainNavigationTabs extends StatelessWidget {
     required this.onSelected,
   });
 
-  static const _labels = ['שיחות', 'קבוצות', 'מודעות'];
-
   Future<void> _openCalendar(BuildContext context) async {
     if (MediaQuery.sizeOf(context).width >= 900) {
       onSelected(5);
@@ -20482,47 +21008,21 @@ class _MainNavigationTabs extends StatelessWidget {
   Widget build(BuildContext context) => Row(
         textDirection: TextDirection.rtl,
         children: [
-          CalendarNavigationButton(
+          Expanded(child: MainNavigationTab(label: 'שיחות',
+            selected: currentIndex == 0, onTap: () => onSelected(0))),
+          Expanded(child: CalendarNavigationButton(
             api: kApi,
             token: token,
             selected: currentIndex == 5,
             onTap: () => _openCalendar(context),
-          ),
-          _PersonalMediaNavigationButton(
+          )),
+          Expanded(child: _PersonalMediaNavigationButton(
             token: token,
             selected: currentIndex == 4,
             onTap: () => _openMedia(context),
-          ),
-          ...List.generate(_labels.length, (index) {
-          final active = currentIndex == index;
-          return Expanded(
-            child: InkWell(
-              onTap: () => onSelected(index),
-              child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 9),
-                decoration: BoxDecoration(
-                  border: Border(
-                    bottom: BorderSide(
-                      color: active ? Colors.white : Colors.transparent,
-                      width: 2,
-                    ),
-                  ),
-                ),
-                child: Text(
-                  _labels[index],
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                    color: active
-                        ? Colors.white
-                        : Colors.white.withValues(alpha: 0.6),
-                  ),
-                ),
-              ),
-            ),
-          );
-        }),
+          )),
+          Expanded(child: MainNavigationTab(label: 'מודעות',
+            selected: currentIndex == 2, onTap: () => onSelected(2))),
         ],
       );
 }
@@ -20688,7 +21188,12 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && !kIsWeb) {
-      _refreshDeviceSearchContacts();
+      final refreshDialog = _findFriendPermissionRefresh;
+      if (refreshDialog != null) {
+        refreshDialog().ignore();
+      } else {
+        _refreshDeviceSearchContacts();
+      }
     }
   }
 
@@ -20704,6 +21209,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _findFriendPermissionRefresh = null;
     _contactWarmup?.cancel();
     _contactRefresh?.cancel();
     widget.socket?.off('group:invited', _groupInvitedHandler);
@@ -20740,23 +21246,37 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
   int _deviceContactsRevision = 0;
   Timer? _contactWarmup;
   Timer? _contactRefresh;
+  Future<void> Function()? _findFriendPermissionRefresh;
 
   Future<List<Map<String, dynamic>>> _loadDeviceSearchContacts({bool requestPermission = false}) async {
     if (kIsWeb) return [];
-    if (!requestPermission && !await permissions.Permission.contacts.isGranted) {
+    final granted = await ContactReadPermission.isGranted;
+    if (!granted) {
       _deviceSearchResults = null;
-      await DeviceContactCache.clear(widget.me?['id']?.toString() ?? '');
-      return [];
+      if (!requestPermission) {
+        await DeviceContactCache.clear(widget.me?['id']?.toString() ?? '');
+        return [];
+      }
     }
-    if (!requestPermission && _deviceSearchResults != null) return Future.value(_deviceSearchResults!);
+    if (granted && _deviceSearchResults != null) return _deviceSearchResults!;
     return _deviceSearchLoad ??= _readDeviceSearchContacts(requestPermission: requestPermission)
-        .then((rows) { if (mounted) setState(() { _deviceSearchResults = rows; _deviceContactsRevision++; }); return rows; })
+        .then((rows) async {
+          final stillGranted = await ContactReadPermission.isGranted;
+          final visibleRows = stillGranted ? rows : <Map<String, dynamic>>[];
+          if (mounted) {
+            setState(() {
+              _deviceSearchResults = stillGranted ? visibleRows : null;
+              _deviceContactsRevision++;
+            });
+          }
+          return visibleRows;
+        })
         .whenComplete(() => _deviceSearchLoad = null);
   }
 
   Future<List<Map<String, dynamic>>> _quickDeviceSearchContacts() async {
     if (kIsWeb) return [];
-    if (!await permissions.Permission.contacts.isGranted) return _loadDeviceSearchContacts();
+    if (!await ContactReadPermission.isGranted) return _loadDeviceSearchContacts();
     if (_deviceSearchResults != null) return _deviceSearchResults!;
     final local = await _deviceContactCache.load();
     _loadDeviceSearchContacts().ignore();
@@ -20887,7 +21407,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
   Future<void> _showFindFriendDialog() async {
     String normalizeContactPhone(String value) => DeviceContactCache.normalizePhone(value);
     final deviceResults = List<Map<String, dynamic>>.from(await _loadDeviceSearchContacts(requestPermission: true));
-    final contactsPermissionDenied = !kIsWeb && !await permissions.Permission.contacts.isGranted;
+    var contactsPermissionDenied = !kIsWeb && !await ContactReadPermission.isGranted;
     if (!mounted) return;
     final directoryResults = <Map<String, dynamic>>[];
 
@@ -20896,18 +21416,13 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
       Iterable<Map<String, dynamic>> secondary,
     ) {
       final merged = <Map<String, dynamic>>[];
+      final seen = <String>{};
       for (final item in [...primary, ...secondary]) {
-        // Contacts that were already saved belong in the conversations list,
-        // not in the friend discovery dialog.
-        if (item['saved'] == true) continue;
         final key = item['id']?.toString() ??
             '${item['phone'] ?? ''}|${item['email'] ?? ''}';
-        if (!merged.any((existing) =>
-            (existing['id']?.toString() ??
-                '${existing['phone'] ?? ''}|${existing['email'] ?? ''}') ==
-            key)) {
-          merged.add(item);
-        }
+        // A fresh saved result also excludes an older unsaved copy in cache.
+        if (!seen.add(key) || item['saved'] == true) continue;
+        merged.add(item);
       }
       merged.sort((a, b) {
         final sourceOrder = (a['device_only'] == true ? 1 : 0)
@@ -20931,13 +21446,142 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
     Timer? searchDebounce;
     var results = List<Map<String, dynamic>>.from(initialResults);
     var loading = false;
+    var searchGeneration = 0;
     var directoryLoading = true;
     var directoryLoadStarted = false;
+    var permissionBusy = false;
+    var dialogActive = true;
+    final queryServerResults = <Map<String, dynamic>>[];
+    String? queryServerText;
+    Future<void> Function()? refreshPermissionOnResume;
+    Future<dynamic>? dialogRemoved;
     String? error;
-    await showDialog(
+    try {
+      await showDialog(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) {
+          final route = ModalRoute.of(dialogContext);
+          if (route != null) dialogRemoved ??= route.completed;
+          bool dialogIsActive() =>
+              dialogActive && mounted && dialogContext.mounted;
+
+          Iterable<Map<String, dynamic>> localMatches(String query) {
+            final lowerQuery = query.toLowerCase();
+            final phoneQuery = RegExp(r'^[+\d ()-]+$').hasMatch(query)
+                ? normalizeContactPhone(query)
+                : '';
+            return [...deviceResults, ...directoryResults].where((item) {
+              final phone = item['device_only'] == true
+                  ? (item['phone'] ?? '').toString()
+                  : visibleContactPhone(item);
+              final text = [item['name'], item['device_name'], phone, item['email']]
+                  .whereType<Object>().join(' ').toLowerCase();
+              return text.contains(lowerQuery) ||
+                  (phoneQuery.isNotEmpty &&
+                      normalizeContactPhone(phone).contains(phoneQuery));
+            });
+          }
+
+          void rebuildContactResults() {
+            initialResults = mergeAndSort(deviceResults, directoryResults);
+            final query = searchController.text.trim();
+            results = query.isEmpty
+                ? List<Map<String, dynamic>>.from(initialResults)
+                : mergeAndSort(
+                    queryServerText == query ? queryServerResults : [],
+                    localMatches(query));
+          }
+
+          Future<void> refreshContactsPermission({bool request = false}) async {
+            if (!dialogIsActive() || permissionBusy) return;
+            setDialogState(() => permissionBusy = true);
+            try {
+              var status = await ContactReadPermission.status;
+              if (!dialogIsActive()) return;
+              if (!request && status.isGranted && !contactsPermissionDenied) return;
+              if (request && !status.isGranted) {
+                FocusManager.instance.primaryFocus?.unfocus();
+                if (status.isPermanentlyDenied || status.isRestricted) {
+                  final opened = await permissions.openAppSettings();
+                  if (!dialogIsActive()) return;
+                  if (!opened) {
+                    setDialogState(() => error = 'לא ניתן לפתוח את הגדרות האפליקציה');
+                  }
+                } else {
+                  await ContactReadPermission.request();
+                  if (!dialogIsActive()) return;
+                }
+                status = await ContactReadPermission.status;
+              }
+              if (!dialogIsActive()) return;
+              if (!status.isGranted) {
+                await _deviceContactCache.load();
+                if (!dialogIsActive()) return;
+                _deviceSearchResults = null;
+                setDialogState(() {
+                  contactsPermissionDenied = true;
+                  deviceResults.clear();
+                  rebuildContactResults();
+                });
+                return;
+              }
+              final pendingLoad = _deviceSearchLoad;
+              if (pendingLoad != null) await pendingLoad;
+              if (!dialogIsActive()) return;
+              await _deviceContactCache.refresh();
+              if (!dialogIsActive()) return;
+              _deviceSearchResults = null;
+              final rows = await _loadDeviceSearchContacts();
+              if (!dialogIsActive()) return;
+              final pictureRevision = _profilePicturesRevision;
+              try {
+                final response = await http.get(
+                  Uri.parse('$kApi/users/directory'),
+                  headers: {'Authorization': 'Bearer ${widget.token}'},
+                ).timeout(const Duration(seconds: 20));
+                if (!dialogIsActive()) return;
+                if (response.statusCode == 200) {
+                  directoryResults
+                    ..clear()
+                    ..addAll((jsonDecode(response.body) as List)
+                        .cast<Map<String, dynamic>>());
+                  _approveProfilePictures(directoryResults, pictureRevision);
+                }
+              } catch (_) {
+                // Keep the current directory available if refreshing fails.
+              }
+              if (!dialogIsActive()) return;
+              final granted = await ContactReadPermission.isGranted;
+              if (!dialogIsActive()) return;
+              if (!granted) {
+                await _deviceContactCache.load();
+                if (!dialogIsActive()) return;
+                _deviceSearchResults = null;
+              }
+              setDialogState(() {
+                contactsPermissionDenied = !granted;
+                deviceResults
+                  ..clear()
+                  ..addAll(granted ? rows : <Map<String, dynamic>>[]);
+                rebuildContactResults();
+                error = null;
+              });
+            } catch (_) {
+              if (dialogIsActive()) {
+                setDialogState(() => error = 'לא ניתן לטעון אנשי קשר. נסה שוב');
+              }
+            } finally {
+              if (dialogIsActive()) {
+                setDialogState(() => permissionBusy = false);
+              }
+            }
+          }
+
+          refreshPermissionOnResume ??= () => refreshContactsPermission();
+          if (dialogIsActive()) {
+            _findFriendPermissionRefresh = refreshPermissionOnResume;
+          }
           if (!directoryLoadStarted) {
             directoryLoadStarted = true;
             Future<void>(() async {
@@ -20958,22 +21602,28 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                 // Search remains available even if the initial directory
                 // cannot be loaded.
               }
-              if (!dialogContext.mounted) return;
+              if (!dialogIsActive()) return;
               setDialogState(() {
                 directoryLoading = false;
-                initialResults = mergeAndSort(deviceResults, directoryResults);
-                if (searchController.text.trim().isEmpty) {
-                  results = List<Map<String, dynamic>>.from(initialResults);
-                }
+                rebuildContactResults();
               });
             });
           }
 
           Future<void> search() async {
+            searchDebounce?.cancel();
+            if (!dialogIsActive()) return;
+            final generation = ++searchGeneration;
             final pictureRevision = _profilePicturesRevision;
             final query = searchController.text.trim();
+            bool searchIsCurrent() => dialogIsActive() &&
+                generation == searchGeneration &&
+                searchController.text.trim() == query;
             if (query.isEmpty) {
               setDialogState(() {
+                loading = false;
+                queryServerText = null;
+                queryServerResults.clear();
                 results = List<Map<String, dynamic>>.from(initialResults);
                 error = null;
               });
@@ -20988,33 +21638,28 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                 Uri.parse('$kApi/users/search')
                     .replace(queryParameters: {'q': query}),
                 headers: {'Authorization': 'Bearer ${widget.token}'},
-              );
-              if (!dialogContext.mounted) return;
-              final serverResults = response.statusCode == 200
-                  ? (jsonDecode(response.body) as List)
-                      .cast<Map<String, dynamic>>()
-                  : <Map<String, dynamic>>[];
+              ).timeout(const Duration(seconds: 15));
+              if (!searchIsCurrent()) return;
+              if (response.statusCode != 200) {
+                setDialogState(() {
+                  loading = false;
+                  error = response.statusCode == 429
+                      ? 'בוצעו חיפושים רבים. המתן רגע ונסה שוב'
+                      : response.statusCode == 401
+                          ? 'החיבור לחשבון פג. יש להתחבר מחדש'
+                          : 'לא ניתן לבצע חיפוש כרגע. נסה שוב';
+                });
+                return;
+              }
+              final serverResults = (jsonDecode(response.body) as List)
+                  .cast<Map<String, dynamic>>();
               _approveProfilePictures(serverResults, pictureRevision);
               final manualPhone = normalizeContactPhone(query);
               if (RegExp(r'^[+\d ()-]+$').hasMatch(query) &&
-                  manualPhone.length >= 9 && manualPhone.length <= 15) {
+                  manualPhone.length >= 8 && manualPhone.length <= 15) {
                 // The proof is the number the user entered, not a number
-                // obtained from a directory response. POST also updates an
-                // already-saved contact whose exact number is known locally.
-                try {
-                  final matched = await http.post(Uri.parse('$kApi/contacts/match'),
-                    headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-                    body: jsonEncode({'phones': [manualPhone], 'source': 'phone_manual'}));
-                  if (matched.statusCode == 200) {
-                    for (final user in (jsonDecode(matched.body) as List).cast<Map<String, dynamic>>()) {
-                      final index = serverResults.indexWhere((item) => item['id'] == user['id']);
-                      if (index < 0) { serverResults.add(user); } else { serverResults[index] = user; }
-                    }
-                    _approveProfilePictures(serverResults, pictureRevision);
-                    await widget.onContactsChanged();
-                  }
-                } catch (_) {}
-                if (!dialogContext.mounted) return;
+                // obtained from a directory response. Persist it only when
+                // the user explicitly saves the exact matching friend.
                 for (final user in serverResults) {
                   if (normalizeContactPhone(visibleContactPhone(user)) == manualPhone) {
                     user['_known_phone'] = query;
@@ -21022,24 +21667,18 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                   }
                 }
               }
-              final lowerQuery = query.toLowerCase();
-              final localMatches = deviceResults.where((item) {
-                final haystack = [
-                  item['name'],
-                  item['device_name'],
-                  item['phone'],
-                  item['email'],
-                ].whereType<Object>().join(' ').toLowerCase();
-                return haystack.contains(lowerQuery);
-              });
-              final merged = mergeAndSort(localMatches, serverResults);
+              final merged = mergeAndSort(serverResults, localMatches(query));
               setDialogState(() {
+                queryServerText = query;
+                queryServerResults
+                  ..clear()
+                  ..addAll(serverResults);
                 loading = false;
                 results = merged;
                 if (results.isEmpty) error = 'לא נמצאו משתמשים';
               });
             } catch (_) {
-              if (dialogContext.mounted) {
+              if (searchIsCurrent()) {
                 setDialogState(() {
                   loading = false;
                   error = 'שגיאה בחיפוש';
@@ -21070,6 +21709,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                 initialResults.removeWhere(sameUser);
                 deviceResults.removeWhere(sameUser);
                 directoryResults.removeWhere(sameUser);
+                queryServerResults.removeWhere(sameUser);
               });
             }
           }
@@ -21208,8 +21848,18 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                     ),
                     onChanged: (_) {
                       searchDebounce?.cancel();
-                      searchDebounce = Timer(
-                          const Duration(milliseconds: 300), () => search());
+                      searchGeneration++;
+                      setDialogState(() {
+                        loading = false;
+                        queryServerText = null;
+                        queryServerResults.clear();
+                        error = null;
+                        rebuildContactResults();
+                      });
+                      if (searchController.text.trim().isNotEmpty) {
+                        searchDebounce = Timer(
+                            const Duration(milliseconds: 300), () => search());
+                      }
                     },
                     onSubmitted: (_) => search(),
                   ),
@@ -21217,12 +21867,22 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                   if (directoryLoading && !loading)
                     const LinearProgressIndicator(minHeight: 2),
                   if (contactsPermissionDenied && !kIsWeb)
-                    const Padding(
-                      padding: EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        'כדי להציג אנשי קשר יש לאשר הרשאת אנשי קשר בהגדרות הטלפון',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.orange),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: TextButton.icon(
+                        key: const ValueKey('friend-contacts-permission-action'),
+                        onPressed: permissionBusy
+                            ? null
+                            : () => refreshContactsPermission(request: true),
+                        style: TextButton.styleFrom(foregroundColor: Colors.orange),
+                        icon: permissionBusy
+                            ? const SizedBox(width: 16, height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.contacts_outlined, size: 18),
+                        label: const Text(
+                          'כדי להציג אנשי קשר, לחץ כאן לאישור גישה',
+                          textAlign: TextAlign.center,
+                        ),
                       ),
                     ),
                   if (loading) const CircularProgressIndicator(),
@@ -21280,8 +21940,16 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
         },
       ),
     );
-    searchDebounce?.cancel();
-    searchController.dispose();
+    } finally {
+      dialogActive = false;
+      searchGeneration++;
+      if (identical(_findFriendPermissionRefresh, refreshPermissionOnResume)) {
+        _findFriendPermissionRefresh = null;
+      }
+      searchDebounce?.cancel();
+      if (dialogRemoved != null) await dialogRemoved;
+      searchController.dispose();
+    }
   }
 
   void updateGroupMemberCount(String groupId, int count) {
@@ -21421,24 +22089,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
             icon: const Icon(Icons.more_vert, color: Colors.white),
             tooltip: 'תפריט',
             onSelected: (value) {
-              if (value == 'screenshot') {
-                openAppScreenshot(context,
-                    token: widget.token,
-                    destination:
-                        const AppScreenshotDestination.user(kSystemGuideId));
-              }
               if (value == 'settings') widget.onSettings();
               if (value == 'logout') _confirmLogout();
             },
             itemBuilder: (_) => const [
-              PopupMenuItem<String>(
-                value: 'screenshot',
-                child: Row(children: [
-                  Icon(Icons.screenshot_monitor_outlined),
-                  SizedBox(width: 10),
-                  Text('צילום מסך'),
-                ]),
-              ),
               PopupMenuItem<String>(
                 value: 'settings',
                 child: Row(
@@ -21817,6 +22471,7 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                                 children: [
                                   if (typingName == null &&
                                       lastMessageIsMine &&
+                                      group['last_message_type'] != 'reaction' &&
                                       lastMessage.isNotEmpty) ...[
                                     const Icon(Icons.done,
                                         size: 15, color: kPrimaryMid),
@@ -21967,6 +22622,8 @@ String _conversationPreview(Map<String, dynamic> item) {
       return 'הודעה קולית';
     case 'video':
       return 'סרטון וידאו';
+    case 'reaction':
+      return conversationReactionPreview(item, includeActor: false);
     default:
       return item['last_message'] as String? ?? '';
   }
@@ -21985,6 +22642,12 @@ IconData? _conversationPreviewIcon(Map<String, dynamic> item) {
     default:
       return null;
   }
+}
+
+bool _reactionConversationIsActive(BuildContext context) {
+  final lifecycle = WidgetsBinding.instance.lifecycleState;
+  return (lifecycle == null || lifecycle == AppLifecycleState.resumed) &&
+      (ModalRoute.of(context)?.isCurrent ?? true);
 }
 
 // A personal library shortcut in the main navigation bar.
@@ -22083,20 +22746,14 @@ class _PersonalMediaNavigationButtonState
   Widget build(BuildContext context) => Semantics(
         key: const ValueKey('personal-media-shortcut'),
         selected: widget.selected,
-        child: IconButton(
-          tooltip: 'המדיה שלי${_summary == null ? '' : '\n$_summary'}',
-          icon: const Icon(Icons.photo_library_outlined, size: 22),
-          color: Colors.white,
-          style: IconButton.styleFrom(
-            minimumSize: const Size(48, 48),
-            backgroundColor: widget.selected ? Colors.white24 : Colors.transparent,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          ),
-          onPressed: () async {
+        child: Tooltip(
+          message: 'המדיה שלי${_summary == null ? '' : '\n$_summary'}',
+          child: MainNavigationTab(label: 'מדיה', selected: widget.selected,
+          onTap: () async {
             await widget.onTap();
             if (mounted) _loadSummary();
           },
-        ),
+        )),
       );
 }
 
@@ -22185,7 +22842,8 @@ class _ConversationTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Row(children: [
-                    if (!isTyping && user['last_message_is_mine'] == true) ...[
+                    if (!isTyping && user['last_message_is_mine'] == true &&
+                        user['last_message_type'] != 'reaction') ...[
                       _lastMessageStatus(),
                       const SizedBox(width: 4),
                     ],
@@ -22199,7 +22857,9 @@ class _ConversationTile extends StatelessWidget {
                       child: InlineEmojiText(
                         isTyping
                             ? 'מקליד...'
-                            : _conversationPreview(user).isNotEmpty
+                            : user['last_message_type'] == 'reaction'
+                                ? conversationReactionPreview(user)
+                                : _conversationPreview(user).isNotEmpty
                                 ? _conversationPreview(user)
                                 : unreadCount > 0
                                     ? 'יש הודעות חדשות!'
@@ -22793,7 +23453,6 @@ class ChatScreen extends StatefulWidget {
   final VoidCallback? onVoiceCall;
   final void Function(String fileUrl, String? fileName, bool isPdf)?
       onDocumentOpen;
-  final bool openScreenshotMenuOnStart;
 
   const ChatScreen({
     super.key,
@@ -22812,7 +23471,6 @@ class ChatScreen extends StatefulWidget {
     this.onBlocked,
     this.onVoiceCall,
     this.onDocumentOpen,
-    this.openScreenshotMenuOnStart = false,
   });
 
   @override
@@ -22838,6 +23496,8 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _loading = true;
   bool _isTyping = false;
   late final void Function(dynamic) _chatMessageHandler;
+  late final void Function(dynamic) _messageReactionHandler;
+  late final MessageReactionReadTracker _reactionReadTracker;
   late final void Function(dynamic) _messagesReadHandler;
   late final void Function(dynamic) _messagesDeliveredHandler;
   late final void Function(dynamic) _messageDeliveredHandler;
@@ -22937,7 +23597,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  final AudioRecorder _audioRecorder = AudioRecorder();
+  final ProgressiveAudioRecorder _audioRecorder = ProgressiveAudioRecorder();
   bool _isRecording = false;
   bool _voiceSubmissionInProgress = false;
   bool _cameraCaptureOpen = false;
@@ -22994,7 +23654,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (selected.isEmpty) return;
     final selectedKeys = selected.map(_selectionKey).toList();
     final result =
-        await forwardChatMessages(context, widget.token, widget.socket, selected);
+        await forwardChatMessages(context, widget.token, widget.socket, selected,
+            me: widget.me);
     if (mounted && result.completedMessageIndexes.isNotEmpty) {
       setState(() {
         for (final index in result.completedMessageIndexes) {
@@ -23067,9 +23728,6 @@ class _ChatScreenState extends State<ChatScreen> {
           targetId: widget.recipient['id'].toString());
     }
 
-    registerAppScreenshotMenu(this, _showAttachMenu);
-    appScreenshotDestination.value = AppScreenshotDestination.user(
-        widget.recipient['id']?.toString() ?? kSystemGuideId);
     _clipboardImagePasteListener = ClipboardImagePasteListener(
       focusNode: _msgFocusNode,
       onFiles: (files) => _pickAttachments(pastedFiles: files),
@@ -23112,17 +23770,15 @@ class _ChatScreenState extends State<ChatScreen> {
         await _send();
       });
     }
-    if (widget.openScreenshotMenuOnStart) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _showAttachMenu();
-      });
-    }
     // WebSocket delivery is best-effort (a browser can sleep or reconnect).
     // Quietly reconcile with the server so an incoming message can never stay
     // invisible until the user closes and reopens the conversation.
     _messageRefreshTimer = Timer.periodic(
       const Duration(seconds: 4),
-      (_) => _loadMessages(silent: true),
+      (_) {
+        _reactionReadTracker.flush();
+        _loadMessages(silent: true);
+      },
     );
   }
 
@@ -23392,6 +24048,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (sticker != null) 'stickerId': sticker.id,
       'fileDeleted': map['file_deleted'] == true,
       'clientUploadId': map['client_upload_id'],
+      'scanFileName': map['scan_file_name'],
       'filterHidden': map['filter_hidden'] == true,
       'hiddenReason': map['hidden_reason'],
       'moderationStatus': map['moderation_status'],
@@ -23420,6 +24077,17 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _setupSocket() {
+    _reactionReadTracker = MessageReactionReadTracker(
+      currentUserId: widget.me?['id']?.toString(),
+      kind: 'chat', targetId: widget.recipient['id'].toString(),
+      isActive: () => mounted && _reactionConversationIsActive(context),
+      markRead: _markAsRead,
+    );
+    _messageReactionHandler = (data) {
+      final activity = MessageReactionActivity.tryParse(data);
+      if (activity != null) _reactionReadTracker.handle(activity);
+    };
+    widget.socket?.on('message:reaction', _messageReactionHandler);
     _chatMessageHandler = (data) {
       if (!mounted || data is! Map) return;
       final fileUrl = data['fileUrl'] as String?;
@@ -23528,7 +24196,8 @@ class _ChatScreenState extends State<ChatScreen> {
             const ['pending_scan', 'uploading', 'rejected_scan']
                 .contains(message['status'])));
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(_senderFilterRejectionMessage(data)),
+            content: Text(_isVideoModeration(data) ? blockedVideoMessage
+                : _senderFilterRejectionMessage(data)),
             backgroundColor: Colors.red));
         return;
       }
@@ -23600,7 +24269,8 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       }
       ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
-          _isSenderFilterRejection(data)
+          _isVideoModeration(data) ? blockedVideoMessage
+              : _isSenderFilterRejection(data)
               ? _senderFilterRejectionMessage(data)
               : data['reason']?.toString() ?? 'ההודעה נחסמה'));
     };
@@ -23677,7 +24347,8 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.on('message:edited', _messageEditedHandler);
   }
 
-  Future<void> _markAsRead() async {
+  Future<bool> _markAsRead() async {
+    if (!mounted || !_reactionConversationIsActive(context)) return false;
     try {
       final response = await http.put(
         Uri.parse('$kApi/messages/read'),
@@ -23689,8 +24360,10 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (response.statusCode == 200) {
         await reconcileReadNotifications(kApi, widget.token);
+        return true;
       }
     } catch (_) {}
+    return false;
   }
 
   @override
@@ -23700,19 +24373,14 @@ class _ChatScreenState extends State<ChatScreen> {
     _receivingFilterSubscription.cancel();
     widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
     widget.socket?.off('conversation:changed', _conversationChangedHandler);
-    unregisterAppScreenshotMenu(this);
-    final screenshotDestination = AppScreenshotDestination.user(
-        widget.recipient['id']?.toString() ?? kSystemGuideId);
-    if (appScreenshotDestination.value.sameAs(screenshotDestination)) {
-      appScreenshotDestination.value =
-          const AppScreenshotDestination.user(kSystemGuideId);
-    }
     _clipboardImagePasteListener.dispose();
     _messageRefreshTimer?.cancel();
     _recordTimer?.cancel();
     _recordDeadlineTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('chat:message', _chatMessageHandler);
+    widget.socket?.off('message:reaction', _messageReactionHandler);
+    _reactionReadTracker.dispose();
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
     for (final event in ['message:request-pending', 'message:request-accepted', 'message:request-declined']) {
       widget.socket?.off(event, _contactRequestChangedHandler);
@@ -23735,6 +24403,16 @@ class _ChatScreenState extends State<ChatScreen> {
   String _nowTime() {
     final n = DateTime.now();
     return '${n.hour.toString().padLeft(2, '0')}:${n.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _cancelVoiceRecording() async {
+    if (!_isRecording || _voiceSubmissionInProgress) return;
+    _voiceSubmissionInProgress = true;
+    _recordTimer?.cancel();
+    _recordDeadlineTimer?.cancel();
+    if (mounted) setState(() => _isRecording = false);
+    try { await _audioRecorder.cancel(); }
+    finally { _voiceSubmissionInProgress = false; }
   }
 
   Future<void> _toggleVoiceRecording() async {
@@ -23802,7 +24480,7 @@ class _ChatScreenState extends State<ChatScreen> {
               numChannels: 1,
               sampleRate: 16000,
               bitRate: 32000),
-          path: path);
+          path: path, api: kApi, token: widget.token, name: _voiceFileName);
       if (!await _audioRecorder.isRecording()) {
         throw Exception('המיקרופון לא התחיל להקליט');
       }
@@ -23821,6 +24499,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _toggleVoiceRecording();
       });
     } catch (error) {
+      await _audioRecorder.cancel();
       _recordTimer?.cancel();
       _recordDeadlineTimer?.cancel();
       if (mounted) {
@@ -24264,9 +24943,19 @@ class _ChatScreenState extends State<ChatScreen> {
           title: const Text('העבר'),
           onTap: () {
             Navigator.pop(context);
-            _forwardChatMessage(context, widget.token, widget.socket, msg);
+            _forwardChatMessage(context, widget.token, widget.socket, msg,
+                me: widget.me);
           },
         ),
+        if (canAddChatImageToListing(msg, currentUserId: widget.me?['id']?.toString()))
+          CompactMessageMenuItem(
+            leading: const Icon(Icons.post_add_outlined, color: kPrimary),
+            title: const Text('הוסף למודעה'),
+            onTap: () {
+              Navigator.pop(context);
+              _addChatImageToListing(context, widget.token, msg, widget.me);
+            },
+          ),
         if (msg['fileType'] == 'image' && msg['fileUrl'] != null)
           CompactMessageMenuItem(
             leading: const Icon(Icons.copy_outlined, color: kPrimary),
@@ -24448,44 +25137,48 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       barrierColor: Colors.black87,
       builder: (dialogContext) => ValueListenableBuilder<Set<String>?>(
-        valueListenable: _approvedProfilePictures,
-        builder: (_, __, ___) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.all(24),
-        child: Stack(alignment: Alignment.topRight, children: [
-          GestureDetector(
-            onTap: () => Navigator.pop(dialogContext),
-            child: InteractiveViewer(
-              minScale: .8,
-              maxScale: 4,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: !_profilePictureAllowed(imageUrl)
-                    ? const SizedBox(width: 280, height: 280,
-                        child: Icon(Icons.person, color: Colors.white, size: 56))
-                    : Image.network(
-                  _absoluteMediaUrl(imageUrl),
-                  fit: BoxFit.contain,
-                  semanticLabel: 'תמונה של $name',
-                  errorBuilder: (_, __, ___) => const SizedBox(
-                    width: 280,
-                    height: 280,
-                    child: Center(
-                      child: Icon(Icons.broken_image_outlined,
-                          color: Colors.white, size: 58),
+          valueListenable: _approvedProfilePictures,
+          builder: (_, __, ___) => Dialog(
+                backgroundColor: Colors.transparent,
+                insetPadding: const EdgeInsets.all(24),
+                child: Stack(alignment: Alignment.topRight, children: [
+                  GestureDetector(
+                    onTap: () => Navigator.pop(dialogContext),
+                    child: InteractiveViewer(
+                      minScale: .8,
+                      maxScale: 4,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(18),
+                        child: !_profilePictureAllowed(imageUrl)
+                            ? const SizedBox(
+                                width: 280,
+                                height: 280,
+                                child: Icon(Icons.person,
+                                    color: Colors.white, size: 56))
+                            : Image.network(
+                                _absoluteMediaUrl(imageUrl),
+                                fit: BoxFit.contain,
+                                semanticLabel: 'תמונה של $name',
+                                errorBuilder: (_, __, ___) => const SizedBox(
+                                  width: 280,
+                                  height: 280,
+                                  child: Center(
+                                    child: Icon(Icons.broken_image_outlined,
+                                        color: Colors.white, size: 58),
+                                  ),
+                                ),
+                              ),
+                      ),
                     ),
                   ),
-                ),
-              ),
-            ),
-          ),
-          IconButton(
-            tooltip: 'סגור',
-            onPressed: () => Navigator.pop(dialogContext),
-            icon: const Icon(Icons.close, color: Colors.white, size: 30),
-          ),
-        ]),
-      )),
+                  IconButton(
+                    tooltip: 'סגור',
+                    onPressed: () => Navigator.pop(dialogContext),
+                    icon:
+                        const Icon(Icons.close, color: Colors.white, size: 30),
+                  ),
+                ]),
+              )),
     );
   }
 
@@ -24758,12 +25451,6 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted) return;
         await _showContactDetails();
         break;
-      case 'screenshot':
-        await openAppScreenshot(context,
-            token: widget.token,
-            destination: AppScreenshotDestination.user(
-                widget.recipient['id']?.toString() ?? kSystemGuideId));
-        break;
       case 'search':
         _searchInMessages();
         break;
@@ -24953,6 +25640,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final allowed = switch (action) {
         ChatAttachmentAction.photo || ChatAttachmentAction.paste => _recipientAllowsImages,
         ChatAttachmentAction.video => _recipientAllowsVideo,
+        ChatAttachmentAction.capture => _recipientAllowsImages || _recipientAllowsVideo,
         ChatAttachmentAction.upload => true,
         _ => _recipientAllowsText,
       };
@@ -24963,6 +25651,8 @@ class _ChatScreenState extends State<ChatScreen> {
       switch (action) {
         case ChatAttachmentAction.upload:
           await _pickAttachments();
+        case ChatAttachmentAction.capture:
+          await _captureCamera();
         case ChatAttachmentAction.photo:
           await _capturePhoto();
         case ChatAttachmentAction.video:
@@ -24975,8 +25665,6 @@ class _ChatScreenState extends State<ChatScreen> {
           await _sharePhoneContact();
         case ChatAttachmentAction.myContact:
           await _shareMyContact();
-        case ChatAttachmentAction.expression:
-          await _showExpressions();
         case ChatAttachmentAction.paste:
           await pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
       }
@@ -24985,12 +25673,56 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  Future<void> _showExpressions() async {
-    if (!_recipientAllowsText) return;
+  Future<void> _showExpressions({bool? inlineEmoji}) async {
+    final destination = _uploadDestination;
+    final accountId = widget.me?['id'];
+    bool currentDestination() => mounted &&
+        widget.token == destination.token && widget.me?['id'] == accountId &&
+        widget.recipient['id'].toString() == destination.targetId;
+    await _loadRecipientReceivingFilter();
+    if (!mounted || !currentDestination()) return;
+    if (inlineEmoji == true && !_recipientAllowsText) {
+      _showRecipientFilterNotice('אימוג׳י בתוך הטקסט');
+      return;
+    }
+    if (inlineEmoji == false && !_recipientAllowsImages) {
+      _showRecipientFilterNotice('מדבקות');
+      return;
+    }
+    if (!_recipientAllowsText && !_recipientAllowsImages) {
+      _showRecipientFilterNotice('מדבקות ואימוג׳י');
+      return;
+    }
     final beforePicker = _msgCtrl.value;
-    final choice = await _showExpressionPicker(context, widget.token);
-    if (choice == null || !mounted) return;
+    final choice = await _showExpressionPicker(context, widget.token,
+        initialInlineEmoji: inlineEmoji,
+        stickersAllowed: _recipientAllowsImages,
+        inlineEmojiAllowed: _recipientAllowsText,
+        blockedLabel: 'חסום בסינון הנמען');
+    if (choice == null || !mounted || !currentDestination()) return;
+    if (choice.startsWith(_remoteStickerPrefix)) {
+      _restoreExpressionSelection(_msgCtrl, beforePicker);
+      _msgFocusNode.requestFocus();
+      try {
+        if (!await _preparePrivateUpload('image') || !currentDestination()) return;
+        final sticker = await _loadRemoteLibrarySticker(
+            choice.substring(_remoteStickerPrefix.length));
+        if (!mounted || !currentDestination()) return;
+        await _uploadAndSend(sticker.file, sticker.fileName, 'image',
+            preparedDestination: destination,
+            extraFields: const {'builtinExpression': 'true'});
+      } catch (_) {
+        if (currentDestination()) _showError('לא ניתן לשלוח את המדבקה כרגע. נסה שוב');
+      }
+      return;
+    }
     if (choice.startsWith(_remoteExpressionPrefix)) {
+      await _loadRecipientReceivingFilter();
+      if (!mounted || !currentDestination()) return;
+      if (!_recipientAllowsText) {
+        _showRecipientFilterNotice('אימוג׳י בתוך הטקסט');
+        return;
+      }
       final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
       final emojiId = inlineEmojiIdFromUrl(remoteUrl);
       if (emojiId == null) {
@@ -25084,6 +25816,36 @@ class _ChatScreenState extends State<ChatScreen> {
     _msgFocusNode.requestFocus();
   }
 
+  Future<void> _captureCamera() async {
+    if (_cameraCaptureOpen) return;
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return;
+    _cameraCaptureOpen = true;
+    XFile? captured;
+    try {
+      captured = kIsWeb
+          ? await captureWebCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
+              imagesAllowed: _recipientAllowsImages, videoAllowed: _recipientAllowsVideo)
+          : await captureNativeCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
+              maxDuration: _maxVideoDuration,
+              imagesAllowed: _recipientAllowsImages, videoAllowed: _recipientAllowsVideo);
+    } finally {
+      _cameraCaptureOpen = false;
+    }
+    if (captured == null || !mounted) { await RecordingUpload.discard(captured); return; }
+    final video = captured.mimeType?.startsWith('video/') == true;
+    if (video && !await _videoWithinDurationLimit(context, captured)) {
+      await RecordingUpload.discard(captured); return;
+    }
+    if (!mounted) return;
+    final name = !kIsWeb && !video
+        ? await capturedPhotoFileName(captured, creatorId: creatorId)
+        : captured.name;
+    if (!mounted) return;
+    await _uploadAndSend(captured, name, video ? 'video' : 'image',
+        extraFields: {'captureKind': video ? 'camera_video' : 'camera_image'});
+  }
+
   Future<void> _capturePhoto() async {
     if (_cameraCaptureOpen) return;
     final creatorId = _captureCreatorId(context, widget.me);
@@ -25134,13 +25896,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<int> _uploadPrivateImageBatch(List<XFile> files,
-      _ChatUploadDestination destination) async {
+      _ChatUploadDestination destination, {ChatUploadBatchOrder? batchOrder}) async {
     if (files.isEmpty) return 0;
     final completed = ValueNotifier<int>(0);
     var refreshScanBot = false;
     final startedAt = DateTime.now();
     final uploadMessageIds = List.generate(
         files.length, (index) => _newUploadMessageId('uploading_batch_$index'));
+    batchOrder?.uploadIds.addAll(uploadMessageIds);
     if (mounted) {
       setState(() {
         for (var index = 0; index < files.length; index++) {
@@ -25187,6 +25950,7 @@ class _ChatScreenState extends State<ChatScreen> {
           showNotice: false,
           refreshScanBot: false,
         );
+        batchOrder?.recordResult(result.data);
         if (needsRefresh) refreshScanBot = true;
       },
     );
@@ -25216,16 +25980,20 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _showUploadBatchNotice(String text,
-      {ChatUploadNotices? store}) async {
+      {ChatUploadNotices? store, ChatUploadBatchOrder? batchOrder}) async {
     final notices = store ?? _uploadNotices;
     final notice = <String, dynamic>{
       'id': _newUploadMessageId('batch_notice_'),
       'isUploadBatchNotice': true,
+      ...?batchOrder?.noticeFields,
       'text': text,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     };
     if (mounted) {
-      setState(() => _messages.add(notice));
+      setState(() {
+        final merged = mergeChatUploadHistory(_messages, [notice]);
+        _messages..clear()..addAll(merged);
+      });
       _scrollToBottom();
     }
     await notices.save(notice);
@@ -25262,12 +26030,13 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted) return;
         final destination = _uploadDestination;
         final notices = _uploadNotices;
+        final batchOrder = ChatUploadBatchOrder();
         var failed = 0;
         await runChatUploadBatch(
           count: images.length,
           failedCount: () => failed,
-          onNotice: (text) => _showUploadBatchNotice(text, store: notices),
-          upload: () async { failed = await _uploadPrivateImageBatch(images, destination); },
+          onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
+          upload: () async { failed = await _uploadPrivateImageBatch(images, destination, batchOrder: batchOrder); },
         );
         return;
       }
@@ -25295,15 +26064,16 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted || prepared.isEmpty) return;
       final destination = _uploadDestination;
       final notices = _uploadNotices;
+      final batchOrder = ChatUploadBatchOrder();
       var failed = files.length - prepared.length;
       await runChatUploadBatch(
         count: files.length,
         failedCount: () => failed,
-        onNotice: (text) => _showUploadBatchNotice(text, store: notices),
+        onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
         upload: () async {
           for (final (file, type) in prepared) {
             await _uploadAndSend(file, file.name, type,
-                preparedDestination: destination,
+                preparedDestination: destination, batchOrder: batchOrder,
                 onComplete: (hasFailed) { if (hasFailed) failed++; });
           }
         },
@@ -25326,11 +26096,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final creatorId = _captureCreatorId(context, widget.me);
     if (creatorId == null) return;
     final video = kIsWeb
-        ? await captureWebVideo(context, creatorId: creatorId)
-        : await captureNativeVideo(context,
+        ? await captureWebVideo(context, api: kApi, token: widget.token, creatorId: creatorId)
+        : await captureNativeVideo(context, api: kApi, token: widget.token,
             maxDuration: _maxVideoDuration, creatorId: creatorId);
-    if (video == null || !mounted) return;
-    if (!await _videoWithinDurationLimit(context, video)) return;
+    if (video == null || !mounted) { await RecordingUpload.discard(video); return; }
+    if (!await _videoWithinDurationLimit(context, video)) {
+      await RecordingUpload.discard(video); return;
+    }
     if (!mounted) return;
     await _uploadAndSend(video, video.name, 'video',
         extraFields: const {'captureKind': 'camera_video'});
@@ -25364,8 +26136,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _uploadAndSend(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {},
       _ChatUploadDestination? preparedDestination,
+      ChatUploadBatchOrder? batchOrder,
       void Function(bool failed)? onComplete}) async {
-    if (preparedDestination == null && !await _preparePrivateUpload(fileType)) return;
+    if (preparedDestination == null && !await _preparePrivateUpload(fileType)) {
+      await RecordingUpload.discard(file);
+      return;
+    }
     final destination = preparedDestination ?? _uploadDestination;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
     final isLibrarySticker = extraFields['builtinExpression'] == 'true';
@@ -25376,6 +26152,7 @@ class _ChatScreenState extends State<ChatScreen> {
         !isLibrarySticker;
     final showProgress = mounted && !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_');
+    batchOrder?.uploadIds.add(uploadMessageId);
     final uploadStartedAt = DateTime.now();
     if (showInlineProgress && mounted) {
       setState(() {
@@ -25440,7 +26217,8 @@ class _ChatScreenState extends State<ChatScreen> {
     await _applyPrivateUploadResult(result, fileName, fileType,
         destination: destination,
         showNotice:
-            (fileType != 'image' && fileType != 'video') || isClipboardPaste);
+            (fileType != 'image' && fileType != 'video') || isClipboardPaste || isLibrarySticker);
+    batchOrder?.recordResult(result.data);
     onComplete?.call(result.outcome == _FileUploadOutcome.failed);
   }
 
@@ -25513,7 +26291,8 @@ class _ChatScreenState extends State<ChatScreen> {
         });
         _scrollToBottom();
         if (showNotice) {
-          _showBlockedDialog(data['reason'] as String? ?? 'התמונה לא נשלחה');
+          _showBlockedDialog(fileType == 'video' ? blockedVideoMessage
+              : data['reason'] as String? ?? 'התמונה לא נשלחה');
         }
         return false;
       case _FileUploadOutcome.pending:
@@ -25589,11 +26368,19 @@ class _ChatScreenState extends State<ChatScreen> {
             }
             return false;
           }
+          if (sendData['id'] != null) {
+            data['_sentMessageId'] = sendData['requestPending'] == true
+                ? 'request_${sendData['id']}' : sendData['id'].toString();
+          }
           if (sendData['requestPending'] == true) {
             if (!mounted) return false;
+            final listingImageSourceId =
+                contactRequestListingImageSourceId(sendData['id']);
             setState(() {
               _messages.add({
                 'id': sendData['id'] != null ? 'request_${sendData['id']}' : _newUploadMessageId('request_'),
+                if (listingImageSourceId != null)
+                  'listingImageSourceId': listingImageSourceId,
                 'text': fileName,
                 'from': widget.me?['id'],
                 'time': _nowTime(),
@@ -25603,6 +26390,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 'fileType': fileType,
                 'fileUrl': fileUrl,
                 'fileName': fileName,
+                'moderationStatus': 'approved',
               });
             });
             _scrollToBottom();
@@ -25629,6 +26417,7 @@ class _ChatScreenState extends State<ChatScreen> {
           if (!_messages.any((message) => message['id'] == messageId)) {
             _messages.add({
               'id': messageId,
+              'clientUploadId': data['clientUploadId'],
               'text': fileName,
               'from': widget.me?['id'],
               'time': _nowTime(),
@@ -25665,6 +26454,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _showBlockedDialog(String reason) {
     if (!mounted) return;
+    if (reason == blockedVideoMessage) {
+      showDialog<void>(context: context, builder: (context) => AlertDialog(
+        content: const Text(blockedVideoMessage, textAlign: TextAlign.right),
+        actions: [TextButton(onPressed: () => Navigator.pop(context),
+            child: const Text('סגירה'))],
+      ));
+      return;
+    }
     showDialog(
       context: context,
       builder: (dialogContext) => Directionality(
@@ -25820,59 +26617,73 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           actions: [
-            if (!_isUnfilteredAssistantChat) FilledButton.icon(
-              onPressed: !dirty || saving
-                  ? null
-                  : () async {
-                      setDialogState(() => saving = true);
-                      try {
-                        final response = await saveReceivingFilter(context: dialogContext,
-                          api: kApi, token: widget.token,
-                          path: '/contacts/${widget.recipient['id']}/filter-settings',
-                          body: {'filter': personalDraft,
-                            ...phoneChoice.confirmationPayload});
-                        if (response == null) {
-                          if (dialogContext.mounted) setDialogState(() => saving = false);
-                          return;
-                        }
-                        if (!mounted) return;
-                        if (response.statusCode != 200) throw Exception();
-                        setState(() {
-                          final effective = (jsonDecode(response.body) as Map)['filter'];
-                          _outgoingFilter = effective is Map
-                              ? effective.map((key, value) => MapEntry(key.toString(), value == true))
-                              : null;
-                          _requiresFirstMessageFilterChoice = false;
-                        });
-                        await Future.wait([_loadOutgoingFilter(), _loadMessages(silent: true)]);
-                        if (!mounted) return;
-                        if (dialogContext.mounted) {
-                          Navigator.pop(dialogContext);
-                        }
-                        ScaffoldMessenger.of(this.context).showSnackBar(
-                          const SnackBar(content: Text('הסינון האישי נשמר')),
-                        );
-                      } catch (_) {
-                        if (dialogContext.mounted) {
-                          setDialogState(() => saving = false);
-                        }
-                        if (mounted) {
+            if (!_isUnfilteredAssistantChat)
+              FilledButton.icon(
+                onPressed: !dirty || saving
+                    ? null
+                    : () async {
+                        setDialogState(() => saving = true);
+                        try {
+                          final response = await saveReceivingFilter(
+                              context: dialogContext,
+                              api: kApi,
+                              token: widget.token,
+                              path:
+                                  '/contacts/${widget.recipient['id']}/filter-settings',
+                              body: {
+                                'filter': personalDraft,
+                                ...phoneChoice.confirmationPayload
+                              });
+                          if (response == null) {
+                            if (dialogContext.mounted) {
+                              setDialogState(() => saving = false);
+                            }
+                            return;
+                          }
+                          if (!mounted) return;
+                          if (response.statusCode != 200) throw Exception();
+                          setState(() {
+                            final effective =
+                                (jsonDecode(response.body) as Map)['filter'];
+                            _outgoingFilter = effective is Map
+                                ? effective.map((key, value) =>
+                                    MapEntry(key.toString(), value == true))
+                                : null;
+                            _requiresFirstMessageFilterChoice = false;
+                          });
+                          await Future.wait([
+                            _loadOutgoingFilter(),
+                            _loadMessages(silent: true)
+                          ]);
+                          if (!mounted) return;
+                          if (dialogContext.mounted) {
+                            Navigator.pop(dialogContext);
+                          }
                           ScaffoldMessenger.of(this.context).showSnackBar(
-                            const SnackBar(content: Text('שמירת הסינון נכשלה')),
+                            const SnackBar(content: Text('הסינון האישי נשמר')),
                           );
+                        } catch (_) {
+                          if (dialogContext.mounted) {
+                            setDialogState(() => saving = false);
+                          }
+                          if (mounted) {
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('שמירת הסינון נכשלה')),
+                            );
+                          }
                         }
-                      }
-                    },
-              icon: saving
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Icon(Icons.save_outlined, size: 18),
-              label: Text(phoneChoice.confirmationLabel(saveLabel: 'שמור')),
-            ),
+                      },
+                icon: saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(Icons.save_outlined, size: 18),
+                label: Text(phoneChoice.confirmationLabel(saveLabel: 'שמור')),
+              ),
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
               child: const Text('סגור'),
@@ -26032,11 +26843,6 @@ class _ChatScreenState extends State<ChatScreen> {
               onSelected: _handleChatMenuAction,
               itemBuilder: (_) => const [
                 PopupMenuItem(
-                    value: 'screenshot',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.screenshot_monitor_outlined, 'צילום מסך')),
-                PopupMenuItem(
                     value: 'info',
                     height: 40,
                     child:
@@ -26181,7 +26987,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           final msg = _messages[messageIndex];
                           if (msg['isUploadBatchNotice'] == true) {
                             return ChatUploadBatchNotice(
-                                key: ValueKey(msg['id']), text: msg['text'] as String);
+                                key: ValueKey(msg['id']), text: msg['text'] as String,
+                                summary: chatUploadBatchSummary(msg, _messages));
                           }
                           final isMe = msg['from'] == widget.me?['id'];
                           final rawSenderName = isMe
@@ -26261,6 +27068,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                   key: ValueKey('hidden-${msg['id']}'),
                                   api: kApi, token: widget.token,
                                   messageId: msg['id'].toString(),
+                                  fileName: msg['scanFileName']?.toString(),
+                                  fileType: msg['fileType']?.toString(),
                                   hiddenReason: msg['hiddenReason']?.toString(),
                                   status: (msg['moderationStatus'] ?? msg['status'])
                                       ?.toString(),
@@ -26336,6 +27145,10 @@ class _ChatScreenState extends State<ChatScreen> {
                                                     maxWidth: 760,
                                                   ),
                                                   child: MessageHover(
+                                                      reactionsOnChild: msg['isFile'] == true && msg['fileUrl'] != null &&
+                                                          const ['image', 'video'].contains(_normalizeIncomingFileType(
+                                                            msg['fileType'] as String?, fileUrl: msg['fileUrl'] as String?,
+                                                            fileName: msg['fileName'] as String?)),
                                                       sideReactions: MessageReactionSummary(api: kApi, token: widget.token, message: msg),
                                                       actions: MessageActionBar(api: kApi, token: widget.token,
                                                         message: msg, onOptions: (anchor) => _showMessageOptions(msg, isMe, anchorContext: anchor)),
@@ -26480,7 +27293,10 @@ class _ChatScreenState extends State<ChatScreen> {
               alignment: Alignment.centerRight,
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 900),
-                child: Row(
+                child: _isRecording
+                    ? VoiceRecordingBar(timeLabel: _voiceRecordingTime(_recordSeconds),
+                        onSend: _toggleVoiceRecording, onCancel: _cancelVoiceRecording)
+                    : Row(
                   textDirection: TextDirection.rtl,
                   children: [
                     if (_isRecording)
@@ -26510,7 +27326,34 @@ class _ChatScreenState extends State<ChatScreen> {
                                   size: 18, color: kSubtext),
                               onPressed: _showAttachMenu,
                               padding: const EdgeInsets.all(8),
-                              constraints: const BoxConstraints(),
+                              style: const ButtonStyle(
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                              constraints: const BoxConstraints.tightFor(
+                                  width: 36, height: 36),
+                            ),
+                            IconButton(
+                              key: const ValueKey('chat-stickers-shortcut'),
+                              tooltip: 'מדבקות',
+                              icon: const Icon(Icons.sticky_note_2_outlined,
+                                  size: 18, color: kPrimary),
+                              onPressed: () => _showExpressions(inlineEmoji: false),
+                              padding: const EdgeInsets.all(8),
+                              style: const ButtonStyle(
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                              constraints: const BoxConstraints.tightFor(
+                                  width: 36, height: 36),
+                            ),
+                            IconButton(
+                              key: const ValueKey('chat-inline-emoji-shortcut'),
+                              tooltip: 'אימוג׳י',
+                              icon: const Icon(Icons.emoji_emotions_outlined,
+                                  size: 19, color: kPrimary),
+                              onPressed: () => _showExpressions(inlineEmoji: true),
+                              padding: const EdgeInsets.all(8),
+                              style: const ButtonStyle(
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                              constraints: const BoxConstraints.tightFor(
+                                  width: 36, height: 36),
                             ),
                             IconButton(
                               tooltip: _isRecording ? 'סיים ושלח' : 'הקלט הודעה קולית',
@@ -26518,7 +27361,10 @@ class _ChatScreenState extends State<ChatScreen> {
                                   size: 19, color: _isRecording ? Colors.red : kPrimary),
                               onPressed: _toggleVoiceRecording,
                               padding: const EdgeInsets.all(8),
-                              constraints: const BoxConstraints(),
+                              style: const ButtonStyle(
+                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                              constraints: const BoxConstraints.tightFor(
+                                  width: 36, height: 36),
                             ),
                             Expanded(
                               child: Focus(
@@ -26692,30 +27538,30 @@ class _UnreadMessagesDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 8),
-    child: Row(
-      textDirection: TextDirection.rtl,
-      children: [
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 10),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          decoration: BoxDecoration(
-            color: const Color(0xFFDCEEFF),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: const Text(
-            'הודעות שלא נקראו',
-            style: TextStyle(
-              color: kPrimary,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          textDirection: TextDirection.rtl,
+          children: [
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFFDCEEFF),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Text(
+                'הודעות שלא נקראו',
+                style: TextStyle(
+                  color: kPrimary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
-          ),
+            const Expanded(child: Divider(color: kPrimaryMid)),
+          ],
         ),
-        const Expanded(child: Divider(color: kPrimaryMid)),
-      ],
-    ),
-  );
+      );
 }
 
 class _GroupInviteCard extends StatefulWidget {
@@ -27046,14 +27892,6 @@ Future<void> _openGuideAppLink(BuildContext context, String destination,
     }
     return;
   }
-  if (destination == 'screenshot') {
-    await openAppScreenshot(
-      context,
-      token: token,
-      destination: const AppScreenshotDestination.user(kSystemGuideId),
-    );
-    return;
-  }
   if (destination == 'my-issues') {
     final notification = _OpenIssuesNotification(issueId);
     notification.dispatch(context);
@@ -27082,7 +27920,6 @@ String _guideAppLinkLabel(String destination, {String? issueId}) =>
       'personal-media' => 'פתח את המדיה שלי',
       'backup-settings' => 'חיבור וגיבוי ב־Google Drive',
       'guide-file' => 'פתח קובץ Excel',
-      'screenshot' => 'פתח צילום מסך',
       'my-issues' => issueId == null ? 'פתח את הפניות שלי' : 'פתח את הפנייה',
       _ => 'פתח באפליקציה',
     };
@@ -27090,7 +27927,6 @@ String _guideAppLinkLabel(String destination, {String? issueId}) =>
 IconData _guideAppLinkIcon(String destination) => switch (destination) {
       'content-filter' => Icons.tune,
       'profile' => Icons.manage_accounts_outlined,
-      'screenshot' => Icons.screenshot_monitor_outlined,
       'personal-media' => Icons.perm_media_outlined,
       'backup-settings' => Icons.cloud_sync_outlined,
       'guide-file' => Icons.table_chart_outlined,
@@ -28292,28 +29128,32 @@ class _ChatSenderLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(6, 5, 6, 2),
-    child: Align(
-      alignment: Alignment.centerRight,
-      child: Tooltip(
-        message: name,
-        child: Row(
-          textDirection: TextDirection.rtl,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            UserAvatar(picUrl: avatarUrl, name: name, radius: 10),
-            const SizedBox(width: 5),
-            Flexible(
-              child: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.right,
-                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500,
-                  color: Color(0xFF52758A))),
+        padding: const EdgeInsets.fromLTRB(6, 5, 6, 2),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: Tooltip(
+            message: name,
+            child: Row(
+              textDirection: TextDirection.rtl,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                UserAvatar(picUrl: avatarUrl, name: name, radius: 10),
+                const SizedBox(width: 5),
+                Flexible(
+                  child: Text(name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF52758A))),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
-    ),
-  );
+      );
 }
 
 // Upload-result cards sit outside the normal group message bubble. Give them
@@ -28347,6 +29187,7 @@ class _MessageSelectionCard extends StatelessWidget {
 }
 
 class _UploadResultCard extends StatelessWidget {
+  final bool isVideo;
   final bool blocked;
   final Map<String, dynamic>? classification;
   final String title;
@@ -28363,6 +29204,7 @@ class _UploadResultCard extends StatelessWidget {
   final bool showBlockedArtwork;
   final VoidCallback? onMoreActions;
   const _UploadResultCard({
+    this.isVideo = false,
     required this.blocked,
     this.classification,
     required this.title,
@@ -28397,6 +29239,7 @@ class _UploadResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (blocked && isVideo) return BlockedVideoNotice(fileName: fileName);
     if (blocked && !showBlockedArtwork) {
       if (blockedPreviewUrl != null &&
           authToken != null &&
@@ -28449,171 +29292,171 @@ class _UploadResultCard extends StatelessWidget {
   }
 
   Widget _standardCard(BuildContext context) => Container(
-    width: 300,
-    padding: const EdgeInsets.all(14),
-    decoration: BoxDecoration(
-      color: blocked ? const Color(0xFFFFF2F2) : const Color(0xFFFFF8E8),
-      borderRadius: BorderRadius.circular(14),
-      border: Border.all(
-        color: blocked ? const Color(0xFFF0B8B8) : const Color(0xFFF2D28B),
-      ),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (fileName != null && (!blocked || (imageUrl == null && blockedPreviewUrl == null))) ...[
-          Text(fileName!, textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 12, color: kSubtext)),
-          const SizedBox(height: 6),
-        ],
-        if (blocked && showBlockedArtwork) ...[
-          const Center(child: _SystemContentWarningArtwork()),
-          const SizedBox(height: 10),
-        ],
-        if (blocked && contentPurged) ...[
-          const Text(
-            'הקובץ נמחק. אירוע החסימה נשמר למעקב בטיחות.',
-            textDirection: TextDirection.rtl,
-            style: TextStyle(fontSize: 11, color: Colors.red),
+        width: 300,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: blocked ? const Color(0xFFFFF2F2) : const Color(0xFFFFF8E8),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: blocked ? const Color(0xFFF0B8B8) : const Color(0xFFF2D28B),
           ),
-          const SizedBox(height: 8),
-        ],
-        if (blocked &&
-            blockedPreviewUrl != null &&
-            authToken != null &&
-            previewExpiresAt != null) ...[
-          _BlockedImagePreview(
-            url: blockedPreviewUrl!,
-            token: authToken!,
-            expiresAt: previewExpiresAt!,
-          ),
-          if (fileName != null) ...[
-            const SizedBox(height: 5),
-            Text(
-              fileName!,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 10, color: kSubtext),
-            ),
-          ],
-          const SizedBox(height: 10),
-        ],
-        if (blocked && imageUrl != null && blockedPreviewUrl == null) ...[
-          GestureDetector(
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) =>
-                    ImagePreviewScreen(url: imageUrl!, filename: fileName),
-              ),
-            ),
-            child: Container(
-              width: double.infinity,
-              height: 180,
-              clipBehavior: Clip.antiAlias,
-              decoration: BoxDecoration(
-                color: const Color(0xFFF2F4F7),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _PersistentMediaImage(
-                    url: imageUrl!,
-                    width: double.infinity,
-                    height: 180,
-                    fit: BoxFit.contain,
-                    loadingBuilder: (_) => const Center(
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    errorBuilder: (_) =>
-                        const Center(child: Icon(Icons.broken_image_outlined)),
-                  ),
-                  Positioned(
-                    left: 7,
-                    top: 7,
-                    child: Container(
-                      padding: const EdgeInsets.all(5),
-                      decoration: const BoxDecoration(
-                        color: Colors.black54,
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.zoom_in,
-                        size: 20,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (fileName != null) ...[
-            const SizedBox(height: 5),
-            Text(
-              fileName!,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 10, color: kSubtext),
-            ),
-          ],
-          const SizedBox(height: 10),
-        ],
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Icon(
-              blocked ? Icons.gpp_bad_outlined : Icons.error_outline,
-              color: blocked ? Colors.red.shade700 : Colors.orange.shade800,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    title,
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  if (destinationFilterRejected &&
-                      recipientName?.trim().isNotEmpty == true) ...[
-                    const SizedBox(height: 5),
-                    Text(
-                      'נמען: ${recipientName!.trim()}',
-                      textAlign: TextAlign.right,
-                      textDirection: TextDirection.rtl,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 5),
-                  Text(
-                    reason,
-                    textAlign: TextAlign.right,
-                    textDirection: TextDirection.rtl,
-                    style: const TextStyle(fontSize: 12, height: 1.45),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    onlyYouText,
-                    textAlign: TextAlign.right,
-                    textDirection: TextDirection.rtl,
-                    style: TextStyle(fontSize: 10, color: kSubtext),
-                  ),
-                ],
+            if (fileName != null &&
+                (!blocked ||
+                    (imageUrl == null && blockedPreviewUrl == null))) ...[
+              CopyableFileName(fileName!,
+                  style: const TextStyle(fontSize: 12, color: kSubtext)),
+              const SizedBox(height: 6),
+            ],
+            if (blocked && showBlockedArtwork) ...[
+              const Center(child: _SystemContentWarningArtwork()),
+              const SizedBox(height: 10),
+            ],
+            if (blocked && contentPurged) ...[
+              const Text(
+                'הקובץ נמחק. אירוע החסימה נשמר למעקב בטיחות.',
+                textDirection: TextDirection.rtl,
+                style: TextStyle(fontSize: 11, color: Colors.red),
               ),
+              const SizedBox(height: 8),
+            ],
+            if (blocked &&
+                blockedPreviewUrl != null &&
+                authToken != null &&
+                previewExpiresAt != null) ...[
+              _BlockedImagePreview(
+                url: blockedPreviewUrl!,
+                token: authToken!,
+                expiresAt: previewExpiresAt!,
+              ),
+              if (fileName != null) ...[
+                const SizedBox(height: 5),
+                CopyableFileName(
+                  fileName!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 10, color: kSubtext),
+                ),
+              ],
+              const SizedBox(height: 10),
+            ],
+            if (blocked && imageUrl != null && blockedPreviewUrl == null) ...[
+              GestureDetector(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        ImagePreviewScreen(url: imageUrl!, filename: fileName),
+                  ),
+                ),
+                child: Container(
+                  width: double.infinity,
+                  height: 180,
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF2F4F7),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      _PersistentMediaImage(
+                        url: imageUrl!,
+                        width: double.infinity,
+                        height: 180,
+                        fit: BoxFit.contain,
+                        loadingBuilder: (_) => const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        errorBuilder: (_) => const Center(
+                            child: Icon(Icons.broken_image_outlined)),
+                      ),
+                      Positioned(
+                        left: 7,
+                        top: 7,
+                        child: Container(
+                          padding: const EdgeInsets.all(5),
+                          decoration: const BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.zoom_in,
+                            size: 20,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (fileName != null) ...[
+                const SizedBox(height: 5),
+                CopyableFileName(
+                  fileName!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 10, color: kSubtext),
+                ),
+              ],
+              const SizedBox(height: 10),
+            ],
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  blocked ? Icons.gpp_bad_outlined : Icons.error_outline,
+                  color: blocked ? Colors.red.shade700 : Colors.orange.shade800,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        title,
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      if (destinationFilterRejected &&
+                          recipientName?.trim().isNotEmpty == true) ...[
+                        const SizedBox(height: 5),
+                        Text(
+                          'נמען: ${recipientName!.trim()}',
+                          textAlign: TextAlign.right,
+                          textDirection: TextDirection.rtl,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 5),
+                      Text(
+                        reason,
+                        textAlign: TextAlign.right,
+                        textDirection: TextDirection.rtl,
+                        style: const TextStyle(fontSize: 12, height: 1.45),
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        onlyYouText,
+                        textAlign: TextAlign.right,
+                        textDirection: TextDirection.rtl,
+                        style: TextStyle(fontSize: 10, color: kSubtext),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ],
         ),
-      ],
-    ),
-  );
+      );
 }
 
 String _imageBlockTitle(Object? reason) {
@@ -28680,30 +29523,31 @@ class _ImageClassificationBadges extends StatelessWidget {
     categories = categories.where(_icons.containsKey).toSet().toList();
     if (categories.isEmpty) return const SizedBox.shrink();
     return GestureDetector(
-      onTap: () => showScanExplanation(context, message),
-      child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: categories
-          .map((category) => Padding(
-                padding: const EdgeInsets.only(left: 3),
-                child: Tooltip(
-                  message: '${_labels[category]} — לחץ לפרטי הסריקה',
-                  child: Container(
-                    width: 27,
-                    height: 27,
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.94),
-                      shape: BoxShape.circle,
-                      boxShadow: const [
-                        BoxShadow(color: Colors.black26, blurRadius: 3),
-                      ],
+        onTap: () => showScanExplanation(context, message),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: categories
+              .map((category) => Padding(
+                    padding: const EdgeInsets.only(left: 3),
+                    child: Tooltip(
+                      message: '${_labels[category]} — לחץ לפרטי הסריקה',
+                      child: Container(
+                        width: 27,
+                        height: 27,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.94),
+                          shape: BoxShape.circle,
+                          boxShadow: const [
+                            BoxShadow(color: Colors.black26, blurRadius: 3),
+                          ],
+                        ),
+                        child:
+                            Icon(_icons[category], size: 18, color: kPrimary),
+                      ),
                     ),
-                    child: Icon(_icons[category], size: 18, color: kPrimary),
-                  ),
-                ),
-              ))
-          .toList(),
-    ));
+                  ))
+              .toList(),
+        ));
   }
 }
 
@@ -29354,11 +30198,8 @@ class _ScanStoppedCard extends StatelessWidget {
         alignment: Alignment.centerRight,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
-          child: _UploadResultCard(
-            blocked: false,
-            title: 'הסריקה נעצרה',
-            reason: _scanStoppedReason(message),
-            onlyYouText: 'הקובץ לא נשלח',
+          child: BlockedVideoNotice(
+            fileName: (message['scanFileName'] ?? message['fileName'])?.toString(),
           ),
         ),
       );
@@ -29546,6 +30387,7 @@ class _MessageBubble extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadResultCard(
             blocked: true,
+            isVideo: fileType == 'video',
             classification: message['classification'] is Map ? Map<String, dynamic>.from(message['classification']) : null,
             showBlockedArtwork: fileType != 'image',
             onMoreActions: onMessageOptions == null
@@ -29554,7 +30396,7 @@ class _MessageBubble extends StatelessWidget {
             title: fileType == 'audio'
                 ? 'ההקלטה נחסמה ולא נשלחה'
                 : fileType == 'video'
-                    ? 'הווידאו נחסם ולא נשלח'
+                    ? blockedVideoMessage
                     : _imageBlockTitle(message['scanReason']),
             reason: displayedReason,
             imageUrl: fileType == 'audio' ? null : fileUrl,
@@ -29612,7 +30454,9 @@ class _MessageBubble extends StatelessWidget {
             .toList()
         : const <String>[];
     final guideAppLinkRegex = RegExp(
-        r'betshuva://app/(content-filter|profile|personal-media|backup-settings|guide-file|screenshot|my-issues)(?:/([0-9a-fA-F-]{36}))?');
+        r'betshuva://app/(content-filter|profile|personal-media|backup-settings|guide-file|my-issues)(?:/([0-9a-fA-F-]{36}))?');
+    final removedScreenshotLinkRegex =
+        RegExp(r'betshuva://app/screenshot(?:[^\s<>]*)');
     final guideAppLinks = message['from'] == kSystemGuideId
         ? guideAppLinkRegex
             .allMatches(rawText)
@@ -29637,6 +30481,7 @@ class _MessageBubble extends StatelessWidget {
         sharedContact != null ? '' : rawText.replaceAll(linkRegex, '').trim();
     final displayText = displayTextWithInternalLink
         .replaceAll(guideAppLinkRegex, '')
+        .replaceAll(removedScreenshotLinkRegex, '')
         .replaceAll(issueDraftRegex, '')
         .replaceAll(messageDraftRegex, '')
         .replaceAll(RegExp(r'\n{3,}'), '\n\n')
@@ -29773,7 +30618,7 @@ class _MessageBubble extends StatelessWidget {
                     _AudioScanBadge(),
                   ])
             else if (isVideoFile)
-              Stack(children: [
+              MessageObjectReactions(child: Stack(children: [
                 if (kIsWeb)
                   NativeWebVideoPlayer(
                     progressApi: kApi, token: token,
@@ -29795,7 +30640,7 @@ class _MessageBubble extends StatelessWidget {
                   bottom: 7,
                   child: _ImageStatusBadge(message: message, isMe: isMe),
                 ),
-              ])
+              ]))
             else if (isImageFile)
               Column(
                 textDirection: TextDirection.rtl,
@@ -29823,7 +30668,7 @@ class _MessageBubble extends StatelessWidget {
                             initialIndex: selectedImageIndex,
                           ),
                         )),
-                    child: Stack(
+                    child: MessageObjectReactions(child: Stack(
                       children: [
                         ClipRRect(
                           borderRadius: BorderRadius.circular(10),
@@ -29835,6 +30680,7 @@ class _MessageBubble extends StatelessWidget {
                               messageId: message['id']?.toString() ?? '', event: 'displayed'),
                             width: 220,
                             height: 180,
+                            fitNaturalBounds: true,
                             fit: BoxFit.contain,
                             loadingBuilder: (_) => Container(
                               width: 220,
@@ -29865,7 +30711,7 @@ class _MessageBubble extends StatelessWidget {
                           child: _ImageClassificationBadges(message: message),
                         ),
                       ],
-                    ),
+                    )),
                   ),
                   if (displayText.trim().isNotEmpty &&
                       displayText.trim() != (fileName ?? '').trim()) ...[
@@ -30002,6 +30848,7 @@ class _MessageBubble extends StatelessWidget {
             else
               InlineEmojiText(
                 displayText,
+                messageEmojis: true,
                 style: TextStyle(
                     fontSize: 14,
                     height: 1.45,
@@ -30162,6 +31009,38 @@ const _stickerPrefix = '__sticker__:';
 const _avielStickerPrefix = '__aviel_sticker__:';
 const _originalExpressionPrefix = '__betshuva_expression__:';
 const _remoteExpressionPrefix = '__betshuva_remote_expression__:';
+const _remoteStickerPrefix = '__betshuva_remote_sticker__:';
+
+Future<({XFile file, String fileName})> _loadRemoteLibrarySticker(
+    String url) async {
+  final id = inlineEmojiIdFromUrl(url);
+  if (id == null) throw const FormatException('Unknown library sticker');
+  final request = http.Request('GET', Uri.parse(url))..followRedirects = false;
+  final response = await request.send().timeout(const Duration(seconds: 12));
+  if (response.statusCode != 200) {
+    await response.stream.listen(null).cancel();
+    throw const FormatException('Library sticker unavailable');
+  }
+  final downloaded = BytesBuilder(copy: false);
+  await response.stream.forEach((chunk) {
+    if (downloaded.length + chunk.length > 4 * 1024 * 1024) {
+      throw const FormatException('Library sticker too large');
+    }
+    downloaded.add(chunk);
+  }).timeout(const Duration(seconds: 12));
+  final bytes = downloaded.takeBytes();
+  const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (bytes.length < pngSignature.length ||
+      !listEquals(bytes.take(pngSignature.length).toList(), pngSignature)) {
+    throw const FormatException('Library sticker unavailable');
+  }
+  final fileName =
+      'betshuva-sticker-${id.toString().padLeft(2, '0')}.png';
+  return (
+    file: XFile.fromData(bytes, name: fileName, mimeType: 'image/png'),
+    fileName: fileName,
+  );
+}
 const _avielGuideStickers = <({String id, String asset, String label})>[
   (
     id: 'betshuva_guide_welcome',
@@ -30556,7 +31435,12 @@ const _emojiCategories = <String, List<String>>{
     '🇮🇱'
   ],
 };
-Future<String?> _showExpressionPicker(BuildContext context, String token) {
+Future<String?> _showExpressionPicker(BuildContext context, String token, {
+  bool? initialInlineEmoji,
+  required bool stickersAllowed,
+  required bool inlineEmojiAllowed,
+  required String blockedLabel,
+}) {
   return showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
@@ -30567,7 +31451,13 @@ Future<String?> _showExpressionPicker(BuildContext context, String token) {
       padding: EdgeInsets.only(
         bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
       ),
-      child: _ExpressionPickerSheet(token: token),
+      child: _ExpressionPickerSheet(
+        token: token,
+        initialInlineEmoji: initialInlineEmoji,
+        stickersAllowed: stickersAllowed,
+        inlineEmojiAllowed: inlineEmojiAllowed,
+        blockedLabel: blockedLabel,
+      ),
     ),
   );
 }
@@ -30627,7 +31517,16 @@ Future<Map<String, String>?> _requestSharedGifDetails(
 
 class _ExpressionPickerSheet extends StatefulWidget {
   final String token;
-  const _ExpressionPickerSheet({required this.token});
+  final bool? initialInlineEmoji;
+  final bool stickersAllowed, inlineEmojiAllowed;
+  final String blockedLabel;
+  const _ExpressionPickerSheet({
+    required this.token,
+    this.initialInlineEmoji,
+    required this.stickersAllowed,
+    required this.inlineEmojiAllowed,
+    required this.blockedLabel,
+  });
 
   @override
   State<_ExpressionPickerSheet> createState() => _ExpressionPickerSheetState();
@@ -30638,11 +31537,13 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   bool _loading = true;
   String _query = '';
   String? _error;
-  bool _showStandardEmoji = false;
+  bool _showInlineEmoji = false;
 
   @override
   void initState() {
     super.initState();
+    _showInlineEmoji = widget.inlineEmojiAllowed &&
+        (widget.initialInlineEmoji == true || !widget.stickersAllowed);
     _loadExpressionCatalog();
   }
 
@@ -30680,7 +31581,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                 (index) => {
                   'label': labels[index],
                   'url':
-                      '/betshuva-app/expression-library/${category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
+                      '/betshuva-app/expression-library/${category['coloredPath'] ?? category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
                 },
               ),
             };
@@ -30694,7 +31595,17 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
             (category) =>
                 (category['items'] as List? ?? const []).whereType<Map>(),
           )
-          .map((item) => Map<String, dynamic>.from(item))
+          .map((item) {
+            final expression = Map<String, dynamic>.from(item);
+            final coloredUrl = expression['coloredUrl']?.toString();
+            if (coloredUrl != null &&
+                inlineEmojiIdFromUrl(coloredUrl) != null &&
+                inlineEmojiIdFromUrl(coloredUrl) ==
+                    inlineEmojiIdFromUrl(expression['url']?.toString() ?? '')) {
+              expression['url'] = coloredUrl;
+            }
+            return expression;
+          })
           .toList();
       if (mounted) {
         setState(() {
@@ -30709,68 +31620,85 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   }
 
   Widget _buildHeader() => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-        child: Row(
-          children: [
-            const Expanded(
-              child: Text(
-                'אימוג׳י',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: kPrimary,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'מדבקות ואימוג׳י',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: kPrimary,
+                    ),
+                  ),
                 ),
+                IconButton(
+                  tooltip: 'סגירה',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close, size: 20, color: kSubtext),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+            child: Text(
+              _showInlineEmoji
+                  ? 'בחירת אימוג׳י מוסיפה אותו ליד הטקסט במיקום הסמן'
+                  : 'בחירת מדבקה שולחת אותה מיד כהודעה נפרדת',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: kSubtext),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 8,
+              children: [
+                ChoiceChip(
+                  key: const ValueKey('expression-custom-tab'),
+                  label: const Text('מדבקות'),
+                  selected: !_showInlineEmoji,
+                  showCheckmark: false,
+                  onSelected: !widget.stickersAllowed ? null : (_) {
+                    if (!_showInlineEmoji) return;
+                    setState(() {
+                      _showInlineEmoji = false;
+                      _query = '';
+                    });
+                  },
+                ),
+                ChoiceChip(
+                  key: const ValueKey('expression-standard-tab'),
+                  label: const Text('אימוג׳י'),
+                  selected: _showInlineEmoji,
+                  showCheckmark: false,
+                  onSelected: !widget.inlineEmojiAllowed ? null : (_) {
+                    if (_showInlineEmoji) return;
+                    setState(() {
+                      _showInlineEmoji = true;
+                      _query = '';
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+          if (!widget.stickersAllowed || !widget.inlineEmojiAllowed)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+              child: Text(
+                '${!widget.stickersAllowed ? 'מדבקות' : 'אימוג׳י בתוך הטקסט'} — ${widget.blockedLabel}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12, color: kSubtext),
               ),
             ),
-            IconButton(
-              tooltip: 'סגירה',
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.close, size: 20, color: kSubtext),
-            ),
-          ],
-        ),
-      ),
-      const Padding(
-        padding: EdgeInsets.fromLTRB(12, 4, 12, 2),
-        child: Text(
-          'בחירת אימוג׳י מוסיפה אותו ליד הטקסט במיקום הסמן',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 12, color: kSubtext),
-        ),
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        child: Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 8,
-          children: [
-            ChoiceChip(
-              key: const ValueKey('expression-custom-tab'),
-              label: const Text('של בתשובה'),
-              selected: !_showStandardEmoji,
-              showCheckmark: false,
-              onSelected: (_) {
-                if (!_showStandardEmoji) return;
-                setState(() {
-                  _showStandardEmoji = false;
-                  _query = '';
-                });
-              },
-            ),
-            ChoiceChip(
-              key: const ValueKey('expression-standard-tab'),
-              label: const Text('רגילים'),
-              selected: _showStandardEmoji,
-              showCheckmark: false,
-              onSelected: (_) => setState(() => _showStandardEmoji = true),
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
+        ],
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -30787,13 +31715,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
         textDirection: TextDirection.rtl,
         child: SizedBox(
           height: math.min(560.0, math.max(0.0, availableHeight - 32)),
-          child: _showStandardEmoji
-              ? InlineEmojiPicker(
-                  header: _buildHeader(),
-                  primaryColor: kPrimary,
-                  onSelected: (emoji) => Navigator.pop(context, emoji),
-                )
-              : CustomScrollView(
+          child: CustomScrollView(
                   slivers: [
                     SliverToBoxAdapter(
                       child: Column(
@@ -30805,11 +31727,12 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                               vertical: 6,
                             ),
                             child: TextField(
+                              key: ValueKey('expression-search-${_showInlineEmoji ? 'emoji' : 'stickers'}'),
                               onChanged: (value) =>
                                   setState(() => _query = value),
-                              decoration: const InputDecoration(
-                                hintText: 'חיפוש אימוג׳י…',
-                                prefixIcon: Icon(Icons.search),
+                              decoration: InputDecoration(
+                                hintText: _showInlineEmoji ? 'חיפוש אימוג׳י…' : 'חיפוש מדבקות…',
+                                prefixIcon: const Icon(Icons.search),
                               ),
                             ),
                           ),
@@ -30839,7 +31762,10 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                         child: Center(child: Text('לא נמצאו תמונות מתאימות')),
                       )
                     else
-                      _RemoteExpressionGrid(items: visible),
+                      _RemoteExpressionGrid(
+                        items: visible,
+                        inlineEmoji: _showInlineEmoji,
+                      ),
                   ],
                 ),
         ),
@@ -30850,8 +31776,9 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
 
 class _RemoteExpressionGrid extends StatelessWidget {
   final List<Map<String, dynamic>> items;
+  final bool inlineEmoji;
 
-  const _RemoteExpressionGrid({required this.items});
+  const _RemoteExpressionGrid({required this.items, required this.inlineEmoji});
 
   String _absoluteUrl(String value) => Uri.parse(value).hasScheme
       ? value
@@ -30864,15 +31791,49 @@ class _RemoteExpressionGrid extends StatelessWidget {
           sliver: SliverGrid(
             key: const ValueKey('expression-image-grid'),
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: constraints.crossAxisExtent < 500 ? 3 : 4,
-              mainAxisSpacing: 8,
-              crossAxisSpacing: 8,
-              childAspectRatio: 0.9,
+              crossAxisCount: inlineEmoji
+                  ? math.max(1, ((constraints.crossAxisExtent - 20) / 48).floor())
+                  : constraints.crossAxisExtent < 500 ? 3 : 4,
+              mainAxisSpacing: inlineEmoji ? 4 : 8,
+              crossAxisSpacing: inlineEmoji ? 4 : 8,
+              childAspectRatio: inlineEmoji ? 1 : 0.9,
             ),
             delegate: SliverChildBuilderDelegate(
               (_, index) {
                 final item = items[index];
-                final url = _absoluteUrl(item['url']?.toString() ?? '');
+                final rawUrl = item['url']?.toString() ?? '';
+                final url = rawUrl.isEmpty ? '' : _absoluteUrl(rawUrl);
+                final label = item['label']?.toString() ?? '';
+                final choicePrefix = inlineEmoji
+                    ? _remoteExpressionPrefix : _remoteStickerPrefix;
+                final image = Image.network(
+                  url,
+                  width: inlineEmoji ? 24 : null,
+                  height: inlineEmoji ? 24 : null,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.medium,
+                  errorBuilder: (_, __, ___) => const Icon(
+                      Icons.broken_image_outlined, color: kSubtext),
+                );
+                if (inlineEmoji) {
+                  return Tooltip(
+                    message: label,
+                    child: Semantics(
+                      label: label,
+                      button: true,
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          key: ValueKey('expression-image-$url'),
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: url.isEmpty ? null
+                              : () => Navigator.pop(context, '$choicePrefix$url'),
+                          child: Center(child: ExcludeSemantics(child: image)),
+                        ),
+                      ),
+                    ),
+                  );
+                }
                 return Material(
                   color: const Color(0xFFF0F6FC),
                   borderRadius: BorderRadius.circular(15),
@@ -30882,7 +31843,7 @@ class _RemoteExpressionGrid extends StatelessWidget {
                     onTap: url.isEmpty
                         ? null
                         : () => Navigator.pop(
-                            context, '$_remoteExpressionPrefix$url'),
+                            context, '$choicePrefix$url'),
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(5, 7, 5, 5),
                       child: Column(children: [
@@ -30891,20 +31852,13 @@ class _RemoteExpressionGrid extends StatelessWidget {
                             child: ConstrainedBox(
                               constraints: const BoxConstraints(
                                   maxWidth: 150, maxHeight: 150),
-                              child: Image.network(
-                                url,
-                                fit: BoxFit.contain,
-                                filterQuality: FilterQuality.medium,
-                                errorBuilder: (_, __, ___) => const Icon(
-                                    Icons.broken_image_outlined,
-                                    color: kSubtext),
-                              ),
+                              child: image,
                             ),
                           ),
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          item['label']?.toString() ?? '',
+                          label,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           textAlign: TextAlign.center,
@@ -31200,9 +32154,10 @@ class _GroupsScreenState extends State<GroupsScreen> {
                         final isAdmin = g['role'] == 'admin';
                         final isPending = g['status'] == 'pending';
                         final memberCount = g['member_count'] ?? 0;
-                        final lastMsg = g['lastMsg'] as String? ??
-                            g['description'] as String? ??
-                            '';
+                        final lastMsg = g['last_message_type'] == 'reaction'
+                            ? conversationReactionPreview(g)
+                            : g['lastMsg'] as String? ??
+                                g['description'] as String? ?? '';
                         return Container(
                           color: widget.selectedGroupId == g['id']
                               ? const Color(0xFFE9EDEF)
@@ -31282,7 +32237,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
                                   ),
                               ],
                             ),
-                            subtitle: Text(
+                            subtitle: InlineEmojiText(
                               isPending
                                   ? 'ממתין לאישורך'
                                   : (widget.groupTypingNames[g['id']] != null
@@ -31414,6 +32369,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   late final void Function(dynamic) _groupDeletedSocketHandler;
   late final void Function(dynamic) _groupMessageSocketHandler;
   late final void Function(dynamic) _groupViewedSocketHandler;
+  late final void Function(dynamic) _messageReactionHandler;
+  late final MessageReactionReadTracker _reactionReadTracker;
   late final void Function(dynamic) _groupMemberJoinedSocketHandler;
   late final void Function(dynamic) _messageEditedSocketHandler;
   late final void Function(dynamic) _messageDeletedSocketHandler;
@@ -31445,7 +32402,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (selected.isEmpty) return;
     final selectedKeys = selected.map(_selectionKey).toList();
     final result =
-        await forwardChatMessages(context, widget.token, widget.socket, selected);
+        await forwardChatMessages(context, widget.token, widget.socket, selected,
+            me: widget.me);
     if (mounted && result.completedMessageIndexes.isNotEmpty) {
       setState(() {
         for (final index in result.completedMessageIndexes) {
@@ -31455,7 +32413,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
-  final AudioRecorder _audioRecorder = AudioRecorder();
+  final ProgressiveAudioRecorder _audioRecorder = ProgressiveAudioRecorder();
   bool _isRecording = false;
   bool _voiceSubmissionInProgress = false;
   bool _processingInvite = false;
@@ -31643,9 +32601,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           targetId: _groupId);
     }
 
-    registerAppScreenshotMenu(this, _showAttachMenu);
-    appScreenshotDestination.value =
-        AppScreenshotDestination.group(widget.group['id'].toString());
     _clipboardImagePasteListener = ClipboardImagePasteListener(
       focusNode: _msgFocusNode,
       onFiles: (files) => _pickAttachments(pastedFiles: files),
@@ -31677,6 +32632,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _messageRefreshTimer = Timer.periodic(
         const Duration(seconds: 4),
         (_) {
+          _reactionReadTracker.flush();
           _loadMessages(silent: true);
           _reconcileGroupMembership();
         },
@@ -31927,6 +32883,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isFile': isFile,
       'fileDeleted': map['file_deleted'] == true,
       'clientUploadId': map['client_upload_id'],
+      'scanFileName': map['scan_file_name'],
       'filterHidden': map['filter_hidden'] == true,
       'hiddenReason': map['hidden_reason'],
       'moderationStatus': map['moderation_status'],
@@ -32729,14 +33686,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             ..addAll(mergeChatUploadHistory(normalized, pending));
           _loading = false;
         });
-        http.put(
-          Uri.parse('$kApi/groups/$_groupId/read'),
-          headers: {'Authorization': 'Bearer ${widget.token}'},
-        ).then((response) {
-          if (response.statusCode == 200) {
-            reconcileReadNotifications(kApi, widget.token);
-          }
-        }).catchError((_) {});
+        _markAsRead();
         if (!initialHistory) _scrollToBottom();
         // Save to cache
         final prefs = await SharedPreferences.getInstance();
@@ -32803,6 +33753,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isEdited': map['is_edited'] == true || map['is_edited'] == 1,
       'fileDeleted': map['file_deleted'] == true,
       'clientUploadId': map['client_upload_id'],
+      'scanFileName': map['scan_file_name'],
       'filterHidden': map['filter_hidden'] == true,
       'hiddenReason': map['hidden_reason'],
       'moderationStatus': map['moderation_status'],
@@ -32832,7 +33783,35 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
   }
 
+  Future<bool> _markAsRead() async {
+    if (!mounted || _myStatus != 'member' ||
+        !_reactionConversationIsActive(context)) return false;
+    try {
+      final response = await http.put(
+        Uri.parse('$kApi/groups/$_groupId/read'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (response.statusCode == 200) {
+        await reconcileReadNotifications(kApi, widget.token);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   void _setupSocket() {
+    _reactionReadTracker = MessageReactionReadTracker(
+      currentUserId: widget.me?['id']?.toString(),
+      kind: 'group', targetId: _groupId,
+      isActive: () => mounted && _myStatus == 'member' &&
+          _reactionConversationIsActive(context),
+      markRead: _markAsRead,
+    );
+    _messageReactionHandler = (data) {
+      final activity = MessageReactionActivity.tryParse(data);
+      if (activity != null) _reactionReadTracker.handle(activity);
+    };
+    widget.socket?.on('message:reaction', _messageReactionHandler);
     _groupDeletedSocketHandler = (data) {
       if (data is! Map || data['groupId']?.toString() != _groupId) return;
       _handleDeletedGroupEvent();
@@ -32938,7 +33917,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             const ['pending_scan', 'uploading', 'rejected_scan']
                 .contains(message['status'])));
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(_senderFilterRejectionMessage(data)),
+            content: Text(_isVideoModeration(data) ? blockedVideoMessage
+                : _senderFilterRejectionMessage(data)),
             backgroundColor: Colors.red));
         return;
       }
@@ -33012,7 +33992,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
       }
       ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
-          _isSenderFilterRejection(data)
+          _isVideoModeration(data) ? blockedVideoMessage
+              : _isSenderFilterRejection(data)
               ? _senderFilterRejectionMessage(data)
               : data['reason']?.toString() ?? 'ההודעה נחסמה'));
     };
@@ -33085,19 +34066,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _receivingFilterSubscription.cancel();
     widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
     widget.socket?.off('conversation:changed', _conversationChangedHandler);
-    unregisterAppScreenshotMenu(this);
-    final screenshotDestination =
-        AppScreenshotDestination.group(widget.group['id'].toString());
-    if (appScreenshotDestination.value.sameAs(screenshotDestination)) {
-      appScreenshotDestination.value =
-          const AppScreenshotDestination.user(kSystemGuideId);
-    }
     _clipboardImagePasteListener.dispose();
     _recordTimer?.cancel();
     _messageRefreshTimer?.cancel();
     _recordDeadlineTimer?.cancel();
     _audioRecorder.dispose();
     widget.socket?.off('group:message', _groupMessageSocketHandler);
+    widget.socket?.off('message:reaction', _messageReactionHandler);
+    _reactionReadTracker.dispose();
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
     widget.socket?.off('scan:cancelled', _scanCancelledSocketHandler);
     widget.socket?.off('education:updated', _educationUpdatedSocketHandler);
@@ -33118,6 +34094,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   String _nowTime() {
     final n = DateTime.now();
     return '${n.hour.toString().padLeft(2, '0')}:${n.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _cancelVoiceRecording() async {
+    if (!_isRecording || _voiceSubmissionInProgress) return;
+    _voiceSubmissionInProgress = true;
+    _recordTimer?.cancel();
+    _recordDeadlineTimer?.cancel();
+    if (mounted) setState(() => _isRecording = false);
+    try { await _audioRecorder.cancel(); }
+    finally { _voiceSubmissionInProgress = false; }
   }
 
   Future<void> _toggleVoiceRecording() async {
@@ -33186,7 +34172,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               numChannels: 1,
               sampleRate: 16000,
               bitRate: 32000),
-          path: path);
+          path: path, api: kApi, token: widget.token, name: _voiceFileName);
       if (!await _audioRecorder.isRecording()) {
         throw Exception('המיקרופון לא התחיל להקליט');
       }
@@ -33205,6 +34191,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _toggleVoiceRecording();
       });
     } catch (error) {
+      await _audioRecorder.cancel();
       _recordTimer?.cancel();
       _recordDeadlineTimer?.cancel();
       if (mounted) {
@@ -33309,9 +34296,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           title: const Text('העבר'),
           onTap: () {
             Navigator.pop(context);
-            _forwardChatMessage(context, widget.token, widget.socket, msg);
+            _forwardChatMessage(context, widget.token, widget.socket, msg,
+                me: widget.me);
           },
         ),
+        if (canAddChatImageToListing(msg, currentUserId: widget.me?['id']?.toString()))
+          CompactMessageMenuItem(
+            leading: const Icon(Icons.post_add_outlined, color: kPrimary),
+            title: const Text('הוסף למודעה'),
+            onTap: () {
+              Navigator.pop(context);
+              _addChatImageToListing(context, widget.token, msg, widget.me);
+            },
+          ),
         if (msg['fileType'] == 'image' && msg['fileUrl'] != null)
           CompactMessageMenuItem(
             leading: const Icon(Icons.copy_outlined, color: kPrimary),
@@ -33462,13 +34459,62 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
   }
 
-  Future<void> _showGroupExpressions() async {
+  Future<void> _showGroupExpressions({bool? inlineEmoji}) async {
+    final destination = _uploadDestination;
+    final accountId = widget.me?['id'];
+    bool currentDestination() => mounted &&
+        widget.token == destination.token && widget.me?['id'] == accountId &&
+        _groupId == destination.targetId;
+    if (!await _ensureCanSendToGroup() || !mounted || !currentDestination()) return;
+    await _loadGroupReceivingFilter();
+    if (!mounted || !currentDestination()) return;
+    if (inlineEmoji == true && !_groupAllowsText) {
+      _showGroupFilterNotice('אימוג׳י בתוך הטקסט');
+      return;
+    }
+    if (inlineEmoji == false && !_groupAllowsImages) {
+      _showGroupFilterNotice('מדבקות');
+      return;
+    }
+    if (!_groupAllowsText && !_groupAllowsImages) {
+      _showGroupFilterNotice('מדבקות ואימוג׳י');
+      return;
+    }
     final beforePicker = _msgCtrl.value;
-    if (!await _ensureCanSendToGroup()) return;
-    if (!mounted) return;
-    final choice = await _showExpressionPicker(context, widget.token);
-    if (choice == null || !mounted) return;
+    final choice = await _showExpressionPicker(context, widget.token,
+        initialInlineEmoji: inlineEmoji,
+        stickersAllowed: _groupAllowsImages,
+        inlineEmojiAllowed: _groupAllowsText,
+        blockedLabel: 'חסום בסינון הקבוצה');
+    if (choice == null || !mounted || !currentDestination()) return;
+    if (choice.startsWith(_remoteStickerPrefix)) {
+      _restoreExpressionSelection(_msgCtrl, beforePicker);
+      _msgFocusNode.requestFocus();
+      try {
+        if (!await _prepareGroupUpload('image') || !currentDestination()) return;
+        final sticker = await _loadRemoteLibrarySticker(
+            choice.substring(_remoteStickerPrefix.length));
+        if (!mounted || !currentDestination()) return;
+        await _uploadGroupFile(sticker.file, sticker.fileName, 'image',
+            preparedDestination: destination,
+            extraFields: const {'builtinExpression': 'true'});
+      } catch (_) {
+        if (mounted && currentDestination()) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('לא ניתן לשלוח את המדבקה כרגע. נסה שוב'),
+            backgroundColor: Colors.red,
+          ));
+        }
+      }
+      return;
+    }
     if (choice.startsWith(_remoteExpressionPrefix)) {
+      await _loadGroupReceivingFilter();
+      if (!mounted || !currentDestination()) return;
+      if (!_groupAllowsText) {
+        _showGroupFilterNotice('אימוג׳י בתוך הטקסט');
+        return;
+      }
       final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
       final emojiId = inlineEmojiIdFromUrl(remoteUrl);
       if (emojiId == null) {
@@ -33583,6 +34629,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final allowed = switch (action) {
         ChatAttachmentAction.photo || ChatAttachmentAction.paste => _groupAllowsImages,
         ChatAttachmentAction.video => _groupAllowsVideo,
+        ChatAttachmentAction.capture => _groupAllowsImages || _groupAllowsVideo,
         ChatAttachmentAction.upload => true,
         _ => _groupAllowsText,
       };
@@ -33593,6 +34640,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       switch (action) {
         case ChatAttachmentAction.upload:
           await _pickAttachments();
+        case ChatAttachmentAction.capture:
+          await _captureCamera();
         case ChatAttachmentAction.photo:
           await _capturePhoto();
         case ChatAttachmentAction.video:
@@ -33611,14 +34660,42 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           if (contact == null || !mounted) return;
           _msgCtrl.text = _sharedContactText(contact);
           await _send();
-        case ChatAttachmentAction.expression:
-          await _showGroupExpressions();
         case ChatAttachmentAction.paste:
           await pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
       }
     } finally {
       _attachmentMenuOpen = false;
     }
+  }
+
+  Future<void> _captureCamera() async {
+    if (_cameraCaptureOpen) return;
+    final creatorId = _captureCreatorId(context, widget.me);
+    if (creatorId == null) return;
+    _cameraCaptureOpen = true;
+    XFile? captured;
+    try {
+      captured = kIsWeb
+          ? await captureWebCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
+              imagesAllowed: _groupAllowsImages, videoAllowed: _groupAllowsVideo)
+          : await captureNativeCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
+              maxDuration: _maxVideoDuration,
+              imagesAllowed: _groupAllowsImages, videoAllowed: _groupAllowsVideo);
+    } finally {
+      _cameraCaptureOpen = false;
+    }
+    if (captured == null || !mounted) { await RecordingUpload.discard(captured); return; }
+    final video = captured.mimeType?.startsWith('video/') == true;
+    if (video && !await _videoWithinDurationLimit(context, captured)) {
+      await RecordingUpload.discard(captured); return;
+    }
+    if (!mounted) return;
+    final name = !kIsWeb && !video
+        ? await capturedPhotoFileName(captured, creatorId: creatorId)
+        : captured.name;
+    if (!mounted) return;
+    await _uploadGroupFile(captured, name, video ? 'video' : 'image',
+        extraFields: {'captureKind': video ? 'camera_video' : 'camera_image'});
   }
 
   Future<void> _capturePhoto() async {
@@ -33670,12 +34747,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<int> _uploadGroupImageBatch(List<XFile> files,
-      _ChatUploadDestination destination) async {
+      _ChatUploadDestination destination, {ChatUploadBatchOrder? batchOrder}) async {
     if (files.isEmpty) return 0;
     final completed = ValueNotifier<int>(0);
     final startedAt = DateTime.now();
     final uploadMessageIds = List.generate(files.length,
         (index) => _newUploadMessageId('uploading_group_batch_$index'));
+    batchOrder?.uploadIds.addAll(uploadMessageIds);
     if (mounted) {
       setState(() {
         for (var index = 0; index < files.length; index++) {
@@ -33714,6 +34792,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
         await _applyGroupUploadResult(result, file.name, 'image', false,
             destination: destination);
+        batchOrder?.recordResult(result.data);
       },
     );
     completed.dispose();
@@ -33743,16 +34822,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _showUploadBatchNotice(String text,
-      {ChatUploadNotices? store}) async {
+      {ChatUploadNotices? store, ChatUploadBatchOrder? batchOrder}) async {
     final notices = store ?? _uploadNotices;
     final notice = <String, dynamic>{
       'id': _newUploadMessageId('batch_notice_'),
       'isUploadBatchNotice': true,
+      ...?batchOrder?.noticeFields,
       'text': text,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     };
     if (mounted) {
-      setState(() => _messages.add(notice));
+      setState(() {
+        final merged = mergeChatUploadHistory(_messages, [notice]);
+        _messages..clear()..addAll(merged);
+      });
       _scrollToBottom();
     }
     await notices.save(notice);
@@ -33783,12 +34866,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         if (!mounted) return;
         final destination = _uploadDestination;
         final notices = _uploadNotices;
+        final batchOrder = ChatUploadBatchOrder();
         var failed = 0;
         await runChatUploadBatch(
           count: images.length,
           failedCount: () => failed,
-          onNotice: (text) => _showUploadBatchNotice(text, store: notices),
-          upload: () async { failed = await _uploadGroupImageBatch(images, destination); },
+          onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
+          upload: () async { failed = await _uploadGroupImageBatch(images, destination, batchOrder: batchOrder); },
         );
         return;
       }
@@ -33816,15 +34900,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       if (!mounted || prepared.isEmpty) return;
       final destination = _uploadDestination;
       final notices = _uploadNotices;
+      final batchOrder = ChatUploadBatchOrder();
       var failed = files.length - prepared.length;
       await runChatUploadBatch(
         count: files.length,
         failedCount: () => failed,
-        onNotice: (text) => _showUploadBatchNotice(text, store: notices),
+        onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
         upload: () async {
           for (final (file, type) in prepared) {
             await _uploadGroupFile(file, file.name, type,
-                preparedDestination: destination,
+                preparedDestination: destination, batchOrder: batchOrder,
                 onComplete: (hasFailed) { if (hasFailed) failed++; });
           }
         },
@@ -33847,11 +34932,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final creatorId = _captureCreatorId(context, widget.me);
     if (creatorId == null) return;
     final video = kIsWeb
-        ? await captureWebVideo(context, creatorId: creatorId)
-        : await captureNativeVideo(context,
+        ? await captureWebVideo(context, api: kApi, token: widget.token, creatorId: creatorId)
+        : await captureNativeVideo(context, api: kApi, token: widget.token,
             maxDuration: _maxVideoDuration, creatorId: creatorId);
-    if (video == null || !mounted) return;
-    if (!await _videoWithinDurationLimit(context, video)) return;
+    if (video == null || !mounted) { await RecordingUpload.discard(video); return; }
+    if (!await _videoWithinDurationLimit(context, video)) {
+      await RecordingUpload.discard(video); return;
+    }
     if (!mounted) return;
     await _uploadGroupFile(video, video.name, 'video',
         extraFields: const {'captureKind': 'camera_video'});
@@ -33868,8 +34955,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _uploadGroupFile(dynamic file, String fileName, String fileType,
       {Map<String, String> extraFields = const {},
       _ChatUploadDestination? preparedDestination,
+      ChatUploadBatchOrder? batchOrder,
       void Function(bool failed)? onComplete}) async {
-    if (preparedDestination == null && !await _prepareGroupUpload(fileType)) return;
+    if (preparedDestination == null && !await _prepareGroupUpload(fileType)) {
+      await RecordingUpload.discard(file);
+      return;
+    }
     final destination = preparedDestination ?? _uploadDestination;
     final isClipboardPaste = extraFields['clipboardPaste'] == 'true';
     final isLibrarySticker = extraFields['builtinExpression'] == 'true';
@@ -33880,6 +34971,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         !isLibrarySticker;
     final showProgress = mounted && !showInlineProgress && !isLibrarySticker;
     final uploadMessageId = _newUploadMessageId('uploading_group_');
+    batchOrder?.uploadIds.add(uploadMessageId);
     final uploadStartedAt = DateTime.now();
     if (showInlineProgress && mounted) {
       setState(() {
@@ -33939,8 +35031,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           _messages.removeWhere((message) => message['id'] == uploadMessageId));
     }
     await _applyGroupUploadResult(result, fileName, fileType,
-        (fileType != 'image' && fileType != 'video') || isClipboardPaste,
+        (fileType != 'image' && fileType != 'video') || isClipboardPaste || isLibrarySticker,
         destination: destination);
+    batchOrder?.recordResult(result.data);
     onComplete?.call(result.outcome == _FileUploadOutcome.failed);
   }
 
@@ -34015,8 +35108,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
         _scrollToBottom();
         if (showNotice) {
-          _showGroupBlockedDialog(
-              data['reason'] as String? ?? 'התמונה לא נשלחה');
+          _showGroupBlockedDialog(fileType == 'video' ? blockedVideoMessage
+              : data['reason'] as String? ?? 'התמונה לא נשלחה');
         }
         return;
       case _FileUploadOutcome.pending:
@@ -34096,6 +35189,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           }
           return;
         }
+        if (sendData['id'] != null) data['_sentMessageId'] = sendData['id'].toString();
         if (!mounted) return;
         final messageId =
             sendData['id'] ?? _newUploadMessageId('temp_group_file_');
@@ -34107,6 +35201,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           if (!_messages.any((message) => message['id'] == messageId)) {
             _messages.add({
               'id': messageId,
+              'clientUploadId': data['clientUploadId'],
               'text': fileName,
               'senderName': widget.me?['name'] as String? ?? '',
               'time': sendData['createdAt'] != null
@@ -34135,6 +35230,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   void _showGroupBlockedDialog(String reason) {
     if (!mounted) return;
+    if (reason == blockedVideoMessage) {
+      showDialog<void>(context: context, builder: (context) => AlertDialog(
+        content: const Text(blockedVideoMessage, textAlign: TextAlign.right),
+        actions: [TextButton(onPressed: () => Navigator.pop(context),
+            child: const Text('סגירה'))],
+      ));
+      return;
+    }
     showDialog(
       context: context,
       builder: (dialogContext) => Directionality(
@@ -34694,11 +35797,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         break;
       case 'info':
         await _showGroupDetailsPanel();
-        break;
-      case 'screenshot':
-        await openAppScreenshot(context,
-            token: widget.token,
-            destination: AppScreenshotDestination.group(_groupId));
         break;
       case 'members':
         _showMembersDialog();
@@ -35267,11 +36365,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               onSelected: _handleGroupMenuAction,
               itemBuilder: (_) => [
                 const PopupMenuItem(
-                    value: 'screenshot',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.screenshot_monitor_outlined, 'צילום מסך')),
-                const PopupMenuItem(
                     value: 'info',
                     height: 40,
                     child: _CompactMenuItem(Icons.info_outline, 'פרטי הקבוצה')),
@@ -35546,7 +36639,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                             final msg = _messages[messageIndex];
                           if (msg['isUploadBatchNotice'] == true) {
                             return ChatUploadBatchNotice(
-                                key: ValueKey(msg['id']), text: msg['text'] as String);
+                                key: ValueKey(msg['id']), text: msg['text'] as String,
+                                summary: chatUploadBatchSummary(msg, _messages));
                           }
                             final isMe = msg['isMe'] == true;
                             final sender = _voiceMessageSender(msg, isMe);
@@ -35600,6 +36694,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   key: ValueKey('hidden-${msg['id']}'),
                                   api: kApi, token: widget.token,
                                   messageId: msg['id'].toString(),
+                                  fileName: msg['scanFileName']?.toString(),
+                                  fileType: msg['fileType']?.toString(),
                                   hiddenReason: msg['hiddenReason']?.toString(),
                                   status: (msg['moderationStatus'] ?? msg['status'])
                                       ?.toString(),
@@ -35716,156 +36812,196 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   children: [
                                     Flexible(
                                         child: MessageHover(
+                                            reactionsOnChild: !isVisualUploadState && msg['isFile'] == true &&
+                                                msg['fileUrl'] != null && const ['image', 'video'].contains(uploadFileType),
                                             sideReactions: MessageReactionSummary(api: kApi, token: widget.token, message: msg),
                                                       actions: MessageActionBar(api: kApi, token: widget.token,
                                               message: msg, onOptions: (anchor) => _showMessageOptions(msg, anchorContext: anchor)),
                                             child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        if (isVisualUploadState)
-                                          _MessageSelectionCard(
-                                            key: ValueKey('message-selection-${_selectionKey(msg)}'),
-                                            active: _selectedMessageKeys.isNotEmpty,
-                                            selected: _selectedMessageKeys.contains(_selectionKey(msg)),
-                                            onToggle: () => _toggleMessageSelection(msg),
-                                            child: Padding(
-                                              padding: const EdgeInsets.only(
-                                                  bottom: 6),
-                                              child: uploadStatus ==
-                                                          'uploading' ||
-                                                      uploadStatus ==
-                                                          'pending_scan'
-                                                  ? _UploadProcessingCard(
+                                              mainAxisSize: MainAxisSize.min,
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                if (isVisualUploadState)
+                                                  _MessageSelectionCard(
+                                                    key: ValueKey(
+                                                        'message-selection-${_selectionKey(msg)}'),
+                                                    active: _selectedMessageKeys
+                                                        .isNotEmpty,
+                                                    selected:
+                                                        _selectedMessageKeys
+                                                            .contains(
+                                                                _selectionKey(
+                                                                    msg)),
+                                                    onToggle: () =>
+                                                        _toggleMessageSelection(
+                                                            msg),
+                                                    child: Padding(
+                                                      padding:
+                                                          const EdgeInsets.only(
+                                                              bottom: 6),
+                                                      child: uploadStatus ==
+                                                                  'uploading' ||
+                                                              uploadStatus ==
+                                                                  'pending_scan'
+                                                          ? _UploadProcessingCard(
+                                                              fileName: msg[
+                                                                          'fileName']
+                                                                      ?.toString() ??
+                                                                  (uploadFileType ==
+                                                                          'video'
+                                                                      ? 'וידאו'
+                                                                      : uploadFileType ==
+                                                                              'audio'
+                                                                          ? 'הקלטה'
+                                                                          : 'תמונה'),
+                                                              fileType:
+                                                                  uploadFileType ??
+                                                                      'image',
+                                                              scanning:
+                                                                  uploadStatus ==
+                                                                      'pending_scan',
+                                                              startedAt: DateTime.tryParse(msg[
+                                                                              'uploadStartedAt']
+                                                                          ?.toString() ??
+                                                                      msg['createdAt']
+                                                                          ?.toString() ??
+                                                                      '') ??
+                                                                  DateTime
+                                                                      .now(),
+                                                            )
+                                                          : _UploadResultCard(
+                                                              isVideo:
+                                                                  uploadFileType ==
+                                                                      'video',
+                                                              classification: msg[
+                                                                          'classification']
+                                                                      is Map
+                                                                  ? Map<String,
+                                                                          dynamic>.from(
+                                                                      msg['classification'])
+                                                                  : null,
+                                                              blocked:
+                                                                  uploadStatus ==
+                                                                      'rejected_scan',
+                                                              showBlockedArtwork:
+                                                                  uploadFileType !=
+                                                                      'image',
+                                                              onMoreActions: () =>
+                                                                  _showMessageOptions(
+                                                                      msg),
+                                                              blockedPreviewUrl:
+                                                                  msg['blockedPreviewUrl']
+                                                                      ?.toString(),
+                                                              authToken:
+                                                                  widget.token,
+                                                              previewExpiresAt:
+                                                                  DateTime.tryParse(
+                                                                      msg['previewExpiresAt']
+                                                                              ?.toString() ??
+                                                                          ''),
+                                                              title: uploadStatus ==
+                                                                      'rejected_scan'
+                                                                  ? uploadFileType ==
+                                                                          'audio'
+                                                                      ? 'ההקלטה נחסמה ולא נשלחה'
+                                                                      : uploadFileType ==
+                                                                              'video'
+                                                                          ? blockedVideoMessage
+                                                                          : _imageBlockTitle(msg[
+                                                                              'scanReason'])
+                                                                  : uploadFileType ==
+                                                                          'audio'
+                                                                      ? 'העלאת ההקלטה נכשלה'
+                                                                      : uploadFileType ==
+                                                                              'video'
+                                                                          ? 'העלאת הווידאו נכשלה'
+                                                                          : 'העלאת התמונה נכשלה',
+                                                              reason: uploadStatus ==
+                                                                      'rejected_scan'
+                                                                  ? msg['scanReason']
+                                                                          ?.toString() ??
+                                                                      (uploadFileType ==
+                                                                              'audio'
+                                                                          ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
+                                                                          : uploadFileType ==
+                                                                                  'video'
+                                                                              ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
+                                                                              : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
+                                                                  : msg['uploadError']
+                                                                          ?.toString() ??
+                                                                      (uploadFileType ==
+                                                                              'audio'
+                                                                          ? 'אירעה שגיאה בזמן העלאת ההקלטה'
+                                                                          : uploadFileType == 'video'
+                                                                              ? 'אירעה שגיאה בזמן העלאת הווידאו'
+                                                                              : 'אירעה שגיאה בזמן העלאת התמונה'),
+                                                              contentPurged:
+                                                                  msg['contentPurged'] ==
+                                                                      true,
+                                                              imageUrl: uploadStatus ==
+                                                                      'rejected_scan'
+                                                                  ? msg['fileUrl']
+                                                                      as String?
+                                                                  : null,
+                                                              fileName: msg[
+                                                                      'fileName']
+                                                                  as String?,
+                                                              recipientName: uploadStatus ==
+                                                                          'rejected_scan' &&
+                                                                      msg['forwardAllowed'] ==
+                                                                          true
+                                                                  ? 'קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}'
+                                                                  : null,
+                                                              destinationFilterRejected:
+                                                                  msg['forwardAllowed'] ==
+                                                                      true,
+                                                              onlyYouText:
+                                                                  'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
+                                                            ),
+                                                    ),
+                                                  )
+                                                else if (isDocumentModerationState)
+                                                  Padding(
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                            bottom: 6),
+                                                    child:
+                                                        _DocumentModerationCard(
                                                       fileName: msg['fileName']
                                                               ?.toString() ??
-                                                          (uploadFileType ==
-                                                                  'video'
-                                                              ? 'וידאו'
-                                                              : uploadFileType ==
-                                                                      'audio'
-                                                                  ? 'הקלטה'
-                                                                  : 'תמונה'),
-                                                      fileType: uploadFileType ??
-                                                          'image',
-                                                      scanning: uploadStatus ==
-                                                          'pending_scan',
-                                                      startedAt: DateTime.tryParse(
-                                                              msg['uploadStartedAt']
-                                                                      ?.toString() ??
-                                                                  msg['createdAt']
-                                                                      ?.toString() ??
-                                                                  '') ??
-                                                          DateTime.now(),
-                                                    )
-                                                  : _UploadResultCard(
-                                                      classification: msg['classification'] is Map ? Map<String, dynamic>.from(msg['classification']) : null,
+                                                          'מסמך',
                                                       blocked: uploadStatus ==
                                                           'rejected_scan',
-                                                      showBlockedArtwork:
-                                                          uploadFileType !=
-                                                              'image',
-                                                      onMoreActions: () =>
-                                                          _showMessageOptions(msg),
-                                                      blockedPreviewUrl: msg[
-                                                              'blockedPreviewUrl']
+                                                      reason: msg['scanReason']
                                                           ?.toString(),
-                                                      authToken: widget.token,
-                                                      previewExpiresAt:
-                                                          DateTime.tryParse(msg[
-                                                                      'previewExpiresAt']
-                                                                  ?.toString() ??
-                                                              ''),
-                                                      title: uploadStatus ==
-                                                              'rejected_scan'
-                                                          ? uploadFileType ==
-                                                                  'audio'
-                                                              ? 'ההקלטה נחסמה ולא נשלחה'
-                                                              : uploadFileType ==
-                                                                      'video'
-                                                                  ? 'הווידאו נחסם ולא נשלח'
-                                                                  : _imageBlockTitle(msg[
-                                                                      'scanReason'])
-                                                          : uploadFileType ==
-                                                                  'audio'
-                                                              ? 'העלאת ההקלטה נכשלה'
-                                                              : uploadFileType ==
-                                                                      'video'
-                                                                  ? 'העלאת הווידאו נכשלה'
-                                                                  : 'העלאת התמונה נכשלה',
-                                                      reason: uploadStatus ==
-                                                              'rejected_scan'
-                                                          ? msg['scanReason']
-                                                                  ?.toString() ??
-                                                              (uploadFileType ==
-                                                                      'audio'
-                                                                  ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
-                                                                  : uploadFileType ==
-                                                                          'video'
-                                                                      ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
-                                                                      : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
-                                                          : msg['uploadError']
-                                                                  ?.toString() ??
-                                                              (uploadFileType ==
-                                                                      'audio'
-                                                                  ? 'אירעה שגיאה בזמן העלאת ההקלטה'
-                                                                  : uploadFileType ==
-                                                                          'video'
-                                                                      ? 'אירעה שגיאה בזמן העלאת הווידאו'
-                                                                      : 'אירעה שגיאה בזמן העלאת התמונה'),
-                                                      contentPurged:
-                                                          msg['contentPurged'] ==
-                                                              true,
-                                                      imageUrl: uploadStatus ==
-                                                              'rejected_scan'
-                                                          ? msg['fileUrl']
-                                                              as String?
-                                                          : null,
-                                                      fileName: msg['fileName']
-                                                          as String?,
-                                                      recipientName: uploadStatus ==
-                                                                  'rejected_scan' &&
-                                                              msg['forwardAllowed'] ==
-                                                                  true
-                                                          ? 'קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}'
-                                                          : null,
-                                                      destinationFilterRejected:
-                                                          msg['forwardAllowed'] ==
-                                                              true,
-                                                      onlyYouText:
-                                                          'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
                                                     ),
-                                            ),
-                                          )
-                                        else if (isDocumentModerationState)
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                                bottom: 6),
-                                            child: _DocumentModerationCard(
-                                              fileName:
-                                                  msg['fileName']?.toString() ??
-                                                      'מסמך',
-                                              blocked: uploadStatus ==
-                                                  'rejected_scan',
-                                              reason:
-                                                  msg['scanReason']?.toString(),
-                                            ),
-                                          )
-                                        else
-                                          GestureDetector(
-                                            behavior: HitTestBehavior.opaque,
-                                            onTap: _selectedMessageKeys
-                                                    .isNotEmpty
-                                                ? () =>
-                                                    _toggleMessageSelection(msg)
-                                                : isFilterUpdateAnnouncement
-                                                    ? _updateMyGroupFilter
-                                                    : isEducationAnnouncement
+                                                  )
+                                                else
+                                                  GestureDetector(
+                                                    behavior:
+                                                        HitTestBehavior.opaque,
+                                                    onTap: _selectedMessageKeys
+                                                            .isNotEmpty
                                                         ? () =>
-                                                            _openEducationAnnouncement(
+                                                            _toggleMessageSelection(
                                                                 msg)
-                                                        : !kIsWeb &&
+                                                        : isFilterUpdateAnnouncement
+                                                            ? _updateMyGroupFilter
+                                                            : isEducationAnnouncement
+                                                                ? () =>
+                                                                    _openEducationAnnouncement(
+                                                                        msg)
+                                                                : !kIsWeb &&
+                                                                        msg['fileUrl'] ==
+                                                                            null
+                                                                    ? () => _copyMessageText(
+                                                                        context,
+                                                                        msg)
+                                                                    : null,
+                                                    onDoubleTap:
+                                                        !isEducationAnnouncement &&
+                                                                kIsWeb &&
                                                                 msg['fileUrl'] ==
                                                                     null
                                                             ? () =>
@@ -35873,769 +37009,620 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                     context,
                                                                     msg)
                                                             : null,
-                                            onDoubleTap:
-                                                !isEducationAnnouncement &&
-                                                        kIsWeb &&
-                                                        msg['fileUrl'] == null
-                                                    ? () => _copyMessageText(
-                                                        context, msg)
-                                                    : null,
-                                            onLongPress:
-                                                isFilterUpdateAnnouncement
-                                                    ? null
-                                                    : () => _selectedMessageKeys
-                                                            .isNotEmpty
-                                                        ? _toggleMessageSelection(
-                                                            msg)
-                                                        : _showMessageOptions(
-                                                            msg),
-                                            child: Stack(
-                                              children: [
-                                                IgnorePointer(
-                                                  ignoring: _selectedMessageKeys
-                                                      .isNotEmpty,
-                                                  child: Container(
-                                                    margin:
-                                                        const EdgeInsets.only(
-                                                            bottom: 6),
-                                                    padding: msg['isFile'] ==
-                                                                true ||
-                                                            avielSticker != null
-                                                        ? EdgeInsets.zero
-                                                        : const EdgeInsets
-                                                            .symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 5),
-                                                    constraints: BoxConstraints(
-                                                      maxWidth: msg[
-                                                                  'fileUrl'] !=
-                                                              null
-                                                          ? math.min(
-                                                              330,
-                                                              MediaQuery.of(
-                                                                          context)
-                                                                      .size
-                                                                      .width *
-                                                                  0.86)
-                                                          : MediaQuery.of(
-                                                                      context)
-                                                                  .size
-                                                                  .width *
-                                                              0.75,
-                                                    ),
-                                                    decoration: msg['isFile'] ==
-                                                                true ||
-                                                            avielSticker != null
+                                                    onLongPress: isFilterUpdateAnnouncement
                                                         ? null
-                                                        : BoxDecoration(
-                                                            color: kIncoming,
-                                                            borderRadius:
-                                                                BorderRadius
-                                                                    .circular(
-                                                                        6),
-                                                            border: _selectedMessageKeys
-                                                                    .contains(
-                                                                        _selectionKey(
-                                                                            msg))
-                                                                ? Border.all(
-                                                                    color:
-                                                                        kPrimary,
-                                                                    width: 3)
-                                                                : null,
-                                                            boxShadow: [
-                                                              BoxShadow(
-                                                                color: Colors
-                                                                    .black
-                                                                    .withValues(
-                                                                        alpha:
-                                                                            0.05),
-                                                                blurRadius: 3,
-                                                              )
-                                                            ],
-                                                          ),
-                                                    child: Column(
-                                                      mainAxisSize:
-                                                          MainAxisSize.min,
-                                                      textDirection:
-                                                          TextDirection.rtl,
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .start,
+                                                        : () => _selectedMessageKeys
+                                                                .isNotEmpty
+                                                            ? _toggleMessageSelection(
+                                                                msg)
+                                                            : _showMessageOptions(
+                                                                msg),
+                                                    child: Stack(
                                                       children: [
-                                                        if (msg['isFile'] == true && msg['fileUrl'] != null)
-                                                          ChatFileName(
-                                                            key: ValueKey('group-filename-${msg['fileUrl']}'),
-                                                            api: kApi, token: widget.token,
-                                                            url: msg['fileUrl'] as String,
-                                                            filename: msg['fileName'] as String?,
-                                                            editable: isMe && uploadStatus != 'blocked_content',
-                                                            onRenamed: (name) => setState(() => msg['fileName'] = name),
-                                                          ),
-                                                        if (uploadStatus ==
-                                                                'blocked_content' &&
-                                                            uploadFileType !=
-                                                                'image')
-                                                          const Center(
-                                                              child:
-                                                                  _SystemContentWarningArtwork())
-                                                        else if (uploadStatus ==
-                                                            'blocked_content')
-                                                          const SizedBox
-                                                              .shrink()
-                                                        else if (avielSticker !=
-                                                            null)
-                                                          Semantics(
-                                                            image: true,
-                                                            label:
-                                                                'מדבקת עוזר AI: ${avielSticker.label}',
-                                                            child: Image.asset(
-                                                                avielSticker
-                                                                    .asset,
-                                                                width: 180,
-                                                                height: 180,
-                                                                fit: BoxFit
-                                                                    .contain),
-                                                          )
-                                                        else if (msg[
-                                                                    'fileUrl'] !=
-                                                                null &&
-                                                            _normalizeIncomingFileType(
-                                                                    msg['fileType']
-                                                                        as String?,
-                                                                    fileUrl: msg[
-                                                                            'fileUrl']
-                                                                        as String?,
-                                                                    fileName: msg[
-                                                                            'fileName']
-                                                                        as String?) ==
-                                                                'audio')
-                                                          Column(
+                                                        IgnorePointer(
+                                                          ignoring:
+                                                              _selectedMessageKeys
+                                                                  .isNotEmpty,
+                                                          child: Container(
+                                                            margin:
+                                                                const EdgeInsets
+                                                                    .only(
+                                                                    bottom: 6),
+                                                            padding: msg['isFile'] ==
+                                                                        true ||
+                                                                    avielSticker !=
+                                                                        null
+                                                                ? EdgeInsets
+                                                                    .zero
+                                                                : const EdgeInsets
+                                                                    .symmetric(
+                                                                    horizontal:
+                                                                        8,
+                                                                    vertical:
+                                                                        5),
+                                                            constraints:
+                                                                BoxConstraints(
+                                                              maxWidth: msg[
+                                                                          'fileUrl'] !=
+                                                                      null
+                                                                  ? math.min(
+                                                                      330,
+                                                                      MediaQuery.of(context)
+                                                                              .size
+                                                                              .width *
+                                                                          0.86)
+                                                                  : MediaQuery.of(
+                                                                              context)
+                                                                          .size
+                                                                          .width *
+                                                                      0.75,
+                                                            ),
+                                                            decoration: msg['isFile'] ==
+                                                                        true ||
+                                                                    avielSticker !=
+                                                                        null
+                                                                ? null
+                                                                : BoxDecoration(
+                                                                    color:
+                                                                        kIncoming,
+                                                                    borderRadius:
+                                                                        BorderRadius
+                                                                            .circular(6),
+                                                                    border: _selectedMessageKeys.contains(_selectionKey(
+                                                                            msg))
+                                                                        ? Border.all(
+                                                                            color:
+                                                                                kPrimary,
+                                                                            width:
+                                                                                3)
+                                                                        : null,
+                                                                    boxShadow: [
+                                                                      BoxShadow(
+                                                                        color: Colors
+                                                                            .black
+                                                                            .withValues(alpha: 0.05),
+                                                                        blurRadius:
+                                                                            3,
+                                                                      )
+                                                                    ],
+                                                                  ),
+                                                            child: Column(
+                                                              mainAxisSize:
+                                                                  MainAxisSize
+                                                                      .min,
+                                                              textDirection:
+                                                                  TextDirection
+                                                                      .rtl,
                                                               crossAxisAlignment:
                                                                   CrossAxisAlignment
-                                                                      .end,
+                                                                      .start,
                                                               children: [
-                                                                VoiceMessagePlayer(
-                                                                  showFileName: false,
-                                                                    token: widget.token,
-                                                                    fileName: msg['fileName']?.toString(),
+                                                                if (msg['isFile'] ==
+                                                                        true &&
+                                                                    msg['fileUrl'] !=
+                                                                        null)
+                                                                  ChatFileName(
+                                                                    key: ValueKey(
+                                                                        'group-filename-${msg['fileUrl']}'),
+                                                                    api: kApi,
+                                                                    token: widget
+                                                                        .token,
                                                                     url: msg[
                                                                             'fileUrl']
                                                                         as String,
-                                                                    isMe: isMe,
-                                                                    senderAvatarUrl:
-                                                                        _voiceMessageSender(msg, isMe)?['profile_pic_url']
-                                                                            ?.toString(),
-                                                                    senderName: _voiceMessageSender(msg, isMe)?['name']
-                                                                            ?.toString() ??
-                                                                        msg['senderName']
-                                                                            ?.toString() ??
-                                                                        '',
-                                                                    initialDurationSeconds:
-                                                                        (msg['audioDurationSeconds']
-                                                                                as num?)
-                                                                            ?.toDouble()),
-                                                                _AudioScanBadge(),
-                                                              ])
-                                                        else if (msg[
-                                                                    'fileUrl'] !=
-                                                                null &&
-                                                            _normalizeIncomingFileType(
-                                                                    msg['fileType']
-                                                                        as String?,
-                                                                    fileUrl: msg[
-                                                                            'fileUrl']
-                                                                        as String?,
-                                                                    fileName: msg[
+                                                                    filename: msg[
                                                                             'fileName']
-                                                                        as String?) ==
-                                                                'video')
-                                                          Stack(
-                                                            children: [
-                                                              if (kIsWeb)
-                                                                NativeWebVideoPlayer(
-                                                                  progressApi: kApi, token: widget.token,
-                                                                  key: ValueKey(
-                                                                      'group-video-${msg['fileUrl']}'),
-                                                                  url: _absoluteMediaUrl(
-                                                                      msg['fileUrl']
-                                                                          as String),
-                                                                  onOptions: () =>
-                                                                      _showMessageOptions(
-                                                                          msg),
-                                                                )
-                                                              else
-                                                                _ChatVideoPlayer(
-                                                                  url: msg[
-                                                                          'fileUrl']
-                                                                      as String,
-                                                                ),
-                                                              Positioned(
-                                                                right: 7,
-                                                                top: 7,
-                                                                child:
-                                                                    _ImageClassificationBadges(
-                                                                  message: msg,
-                                                                ),
-                                                              ),
-                                                              Positioned(
-                                                                left: 7,
-                                                                bottom: 7,
-                                                                child:
-                                                                    _ImageStatusBadge(
-                                                                  message: msg,
-                                                                  isMe: isMe,
-                                                                ),
-                                                              ),
-                                                            ],
-                                                          )
-                                                        else if (msg[
-                                                                    'fileUrl'] !=
-                                                                null &&
-                                                            _normalizeIncomingFileType(
-                                                                    msg['fileType']
                                                                         as String?,
-                                                                    fileUrl: msg[
-                                                                            'fileUrl']
-                                                                        as String?,
-                                                                    fileName: msg[
-                                                                            'fileName']
-                                                                        as String?) ==
-                                                                'image')
-                                                          GestureDetector(
-                                                            onTap: () => Navigator.push(
-                                                                context,
-                                                                MaterialPageRoute(
-                                                                    builder: (_) => ImagePreviewScreen(
-                                                                        filterToken: widget.token,
-                                                                        currentUserId: widget.me?['id']?.toString(),
-                                                                        url: msg['fileUrl']
-                                                                            as String,
-                                                                        filename:
-                                                                            msg['fileName']
-                                                                                as String?,
-                                                                        urls: _conversationImageMessages(_messages)
-                                                                            .map((item) => item['fileUrl']
-                                                                                as String)
-                                                                            .toList(),
-                                                                        filenames: _conversationImageMessages(_messages)
-                                                                            .map((item) =>
-                                                                                item['fileName'] as String?)
-                                                                            .toList(),
-                                                                        dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
-                                                                        messages: _conversationImageMessages(_messages),
-                                                                        onMessageOptions: _showMessageOptions,
-                                                                        initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
-                                                            child: Stack(
-                                                              children: [
-                                                                ClipRRect(
-                                                                  borderRadius:
-                                                                      BorderRadius
-                                                                          .circular(
-                                                                              8),
-                                                                  child:
-                                                                      _PersistentMediaImage(
-                                                                    key: ValueKey('group-image-${msg['id']}'),
-                                                                    url: msg[
-                                                                            'fileUrl']
-                                                                        as String,
-                                                                    onDisplayed: () => reportFilterDisplay(
-                                                                      api: kApi, token: widget.token,
-                                                                      messageId: msg['id']?.toString() ?? '', event: 'displayed'),
-                                                                    width: 200,
-                                                                    height: 160,
-                                                                    fit: BoxFit
-                                                                        .contain,
-                                                                    loadingBuilder: (_) => Container(
-                                                                        width:
-                                                                            200,
-                                                                        height:
-                                                                            160,
-                                                                        color:
-                                                                            kBorder,
-                                                                        child: const Center(
-                                                                            child:
-                                                                                CircularProgressIndicator(color: kPrimary, strokeWidth: 2))),
-                                                                    errorBuilder: (_) => Container(
-                                                                        width:
-                                                                            200,
-                                                                        height:
-                                                                            160,
-                                                                        color:
-                                                                            kBorder,
-                                                                        child: const Icon(
-                                                                            Icons
-                                                                                .broken_image,
-                                                                            color:
-                                                                                kSubtext)),
+                                                                    editable: isMe &&
+                                                                        uploadStatus !=
+                                                                            'blocked_content',
+                                                                    onRenamed: (name) =>
+                                                                        setState(() =>
+                                                                            msg['fileName'] =
+                                                                                name),
                                                                   ),
-                                                                ),
-                                                                Positioned(
-                                                                  left: 7,
-                                                                  bottom: 7,
-                                                                  child: _ImageStatusBadge(
-                                                                      message:
-                                                                          msg,
-                                                                      isMe:
-                                                                          isMe),
-                                                                ),
-                                                                Positioned(
-                                                                  right: 7,
-                                                                  top: 7,
-                                                                  child: _ImageClassificationBadges(
-                                                                      message:
-                                                                          msg),
-                                                                ),
-                                                              ],
-                                                            ),
-                                                          )
-                                                        else if (msg[
-                                                                'fileUrl'] !=
-                                                            null)
-                                                          InkWell(
-                                                            onTap: () =>
-                                                                isPdfFile
-                                                                    ? widget.onDocumentOpen !=
-                                                                            null
-                                                                        ? widget.onDocumentOpen!(
-                                                                            msg['fileUrl']
-                                                                                as String,
-                                                                            msg['fileName']
+                                                                if (uploadStatus ==
+                                                                        'blocked_content' &&
+                                                                    uploadFileType !=
+                                                                        'image')
+                                                                  const Center(
+                                                                      child:
+                                                                          _SystemContentWarningArtwork())
+                                                                else if (uploadStatus ==
+                                                                    'blocked_content')
+                                                                  const SizedBox
+                                                                      .shrink()
+                                                                else if (avielSticker !=
+                                                                    null)
+                                                                  Semantics(
+                                                                    image: true,
+                                                                    label:
+                                                                        'מדבקת עוזר AI: ${avielSticker.label}',
+                                                                    child: Image.asset(
+                                                                        avielSticker
+                                                                            .asset,
+                                                                        width:
+                                                                            180,
+                                                                        height:
+                                                                            180,
+                                                                        fit: BoxFit
+                                                                            .contain),
+                                                                  )
+                                                                else if (msg[
+                                                                            'fileUrl'] !=
+                                                                        null &&
+                                                                    _normalizeIncomingFileType(
+                                                                            msg['fileType']
                                                                                 as String?,
-                                                                            true)
-                                                                        : _openPdfInsideApp(
-                                                                            context,
-                                                                            msg['fileUrl']
+                                                                            fileUrl: msg['fileUrl']
+                                                                                as String?,
+                                                                            fileName: msg['fileName']
+                                                                                as String?) ==
+                                                                        'audio')
+                                                                  Column(
+                                                                      crossAxisAlignment:
+                                                                          CrossAxisAlignment
+                                                                              .end,
+                                                                      children: [
+                                                                        VoiceMessagePlayer(
+                                                                            showFileName:
+                                                                                false,
+                                                                            token: widget
+                                                                                .token,
+                                                                            fileName: msg['fileName']
+                                                                                ?.toString(),
+                                                                            url: msg['fileUrl']
                                                                                 as String,
-                                                                            msg['fileName']
-                                                                                as String?)
-                                                                    : isOfficeFile
-                                                                        ? widget.onDocumentOpen !=
-                                                                                null
-                                                                            ? widget.onDocumentOpen!(
-                                                                                msg['fileUrl']
-                                                                                    as String,
-                                                                                msg['fileName']
-                                                                                    as String?,
-                                                                                false)
-                                                                            : _openOfficeInsideApp(
-                                                                                context,
-                                                                                msg['fileUrl']
-                                                                                    as String,
-                                                                                msg['fileName']
-                                                                                    as String?,
-                                                                                widget
-                                                                                    .token)
-                                                                        : _downloadChatFile(
-                                                                            context,
-                                                                            msg['fileUrl']
-                                                                                as String,
-                                                                            msg['fileName']
-                                                                                as String?),
-                                                            borderRadius:
-                                                                BorderRadius
-                                                                    .circular(
-                                                                        8),
-                                                            child: Padding(
-                                                              padding:
-                                                                  const EdgeInsets
-                                                                      .symmetric(
-                                                                      vertical:
-                                                                          4),
-                                                              child: Column(
-                                                                mainAxisSize:
-                                                                    MainAxisSize
-                                                                        .min,
-                                                                crossAxisAlignment:
-                                                                    CrossAxisAlignment
-                                                                        .end,
-                                                                children: [
-                                                                  if (isPdfFile) ...[
-                                                                    _PdfFirstPagePreview(
-                                                                        url: msg['fileUrl']
-                                                                            as String),
-                                                                    const SizedBox(
+                                                                            isMe:
+                                                                                isMe,
+                                                                            senderAvatarUrl: _voiceMessageSender(msg, isMe)?['profile_pic_url']
+                                                                                ?.toString(),
+                                                                            senderName: _voiceMessageSender(msg, isMe)?['name']?.toString() ??
+                                                                                msg['senderName']?.toString() ??
+                                                                                '',
+                                                                            initialDurationSeconds: (msg['audioDurationSeconds'] as num?)?.toDouble()),
+                                                                        _AudioScanBadge(),
+                                                                      ])
+                                                                else if (msg[
+                                                                            'fileUrl'] !=
+                                                                        null &&
+                                                                    _normalizeIncomingFileType(
+                                                                            msg['fileType']
+                                                                                as String?,
+                                                                            fileUrl: msg['fileUrl']
+                                                                                as String?,
+                                                                            fileName:
+                                                                                msg['fileName'] as String?) ==
+                                                                        'video')
+                                                                  MessageObjectReactions(child: Stack(
+                                                                    children: [
+                                                                      if (kIsWeb)
+                                                                        NativeWebVideoPlayer(
+                                                                          progressApi:
+                                                                              kApi,
+                                                                          token:
+                                                                              widget.token,
+                                                                          key: ValueKey(
+                                                                              'group-video-${msg['fileUrl']}'),
+                                                                          url: _absoluteMediaUrl(msg['fileUrl']
+                                                                              as String),
+                                                                          onOptions: () =>
+                                                                              _showMessageOptions(msg),
+                                                                        )
+                                                                      else
+                                                                        _ChatVideoPlayer(
+                                                                          url: msg['fileUrl']
+                                                                              as String,
+                                                                        ),
+                                                                      Positioned(
+                                                                        right:
+                                                                            7,
+                                                                        top: 7,
+                                                                        child:
+                                                                            _ImageClassificationBadges(
+                                                                          message:
+                                                                              msg,
+                                                                        ),
+                                                                      ),
+                                                                      Positioned(
+                                                                        left: 7,
+                                                                        bottom:
+                                                                            7,
+                                                                        child:
+                                                                            _ImageStatusBadge(
+                                                                          message:
+                                                                              msg,
+                                                                          isMe:
+                                                                              isMe,
+                                                                        ),
+                                                                      ),
+                                                                    ],
+                                                                  ))
+                                                                else if (msg[
+                                                                            'fileUrl'] !=
+                                                                        null &&
+                                                                    _normalizeIncomingFileType(
+                                                                            msg['fileType']
+                                                                                as String?,
+                                                                            fileUrl: msg['fileUrl']
+                                                                                as String?,
+                                                                            fileName:
+                                                                                msg['fileName'] as String?) ==
+                                                                        'image')
+                                                                  GestureDetector(
+                                                                    onTap: () => Navigator.push(
+                                                                        context,
+                                                                        MaterialPageRoute(
+                                                                            builder: (_) => ImagePreviewScreen(
+                                                                                filterToken: widget.token,
+                                                                                currentUserId: widget.me?['id']?.toString(),
+                                                                                url: msg['fileUrl'] as String,
+                                                                                filename: msg['fileName'] as String?,
+                                                                                urls: _conversationImageMessages(_messages).map((item) => item['fileUrl'] as String).toList(),
+                                                                                filenames: _conversationImageMessages(_messages).map((item) => item['fileName'] as String?).toList(),
+                                                                                dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
+                                                                                messages: _conversationImageMessages(_messages),
+                                                                                onMessageOptions: _showMessageOptions,
+                                                                                initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
+                                                                    child:
+                                                                        MessageObjectReactions(child: Stack(
+                                                                      children: [
+                                                                        ClipRRect(
+                                                                          borderRadius:
+                                                                              BorderRadius.circular(8),
+                                                                          child:
+                                                                              _PersistentMediaImage(
+                                                                            key:
+                                                                                ValueKey('group-image-${msg['id']}'),
+                                                                            url:
+                                                                                msg['fileUrl'] as String,
+                                                                            onDisplayed: () => reportFilterDisplay(
+                                                                                api: kApi,
+                                                                                token: widget.token,
+                                                                                messageId: msg['id']?.toString() ?? '',
+                                                                                event: 'displayed'),
+                                                                            width:
+                                                                                200,
+                                                                            height:
+                                                                                160,
+                                                                            fitNaturalBounds: true,
+                                                                            fit:
+                                                                                BoxFit.contain,
+                                                                            loadingBuilder: (_) => Container(
+                                                                                width: 200,
+                                                                                height: 160,
+                                                                                color: kBorder,
+                                                                                child: const Center(child: CircularProgressIndicator(color: kPrimary, strokeWidth: 2))),
+                                                                            errorBuilder: (_) => Container(
+                                                                                width: 200,
+                                                                                height: 160,
+                                                                                color: kBorder,
+                                                                                child: const Icon(Icons.broken_image, color: kSubtext)),
+                                                                          ),
+                                                                        ),
+                                                                        Positioned(
+                                                                          left:
+                                                                              7,
+                                                                          bottom:
+                                                                              7,
+                                                                          child: _ImageStatusBadge(
+                                                                              message: msg,
+                                                                              isMe: isMe),
+                                                                        ),
+                                                                        Positioned(
+                                                                          right:
+                                                                              7,
+                                                                          top:
+                                                                              7,
+                                                                          child:
+                                                                              _ImageClassificationBadges(message: msg),
+                                                                        ),
+                                                                      ],
+                                                                    )),
+                                                                  )
+                                                                else if (msg[
+                                                                        'fileUrl'] !=
+                                                                    null)
+                                                                  InkWell(
+                                                                    onTap: () => isPdfFile
+                                                                        ? widget.onDocumentOpen != null
+                                                                            ? widget.onDocumentOpen!(msg['fileUrl'] as String, msg['fileName'] as String?, true)
+                                                                            : _openPdfInsideApp(context, msg['fileUrl'] as String, msg['fileName'] as String?)
+                                                                        : isOfficeFile
+                                                                            ? widget.onDocumentOpen != null
+                                                                                ? widget.onDocumentOpen!(msg['fileUrl'] as String, msg['fileName'] as String?, false)
+                                                                                : _openOfficeInsideApp(context, msg['fileUrl'] as String, msg['fileName'] as String?, widget.token)
+                                                                            : _downloadChatFile(context, msg['fileUrl'] as String, msg['fileName'] as String?),
+                                                                    borderRadius:
+                                                                        BorderRadius
+                                                                            .circular(8),
+                                                                    child:
+                                                                        Padding(
+                                                                      padding: const EdgeInsets
+                                                                          .symmetric(
+                                                                          vertical:
+                                                                              4),
+                                                                      child:
+                                                                          Column(
+                                                                        mainAxisSize:
+                                                                            MainAxisSize.min,
+                                                                        crossAxisAlignment:
+                                                                            CrossAxisAlignment.end,
+                                                                        children: [
+                                                                          if (isPdfFile) ...[
+                                                                            _PdfFirstPagePreview(url: msg['fileUrl'] as String),
+                                                                            const SizedBox(height: 6),
+                                                                          ] else if (isOfficeFile) ...[
+                                                                            _OfficeDocumentPreview(
+                                                                                fileUrl: msg['fileUrl'] as String,
+                                                                                fileName: msg['fileName']?.toString() ?? 'מסמך',
+                                                                                token: widget.token),
+                                                                            const SizedBox(height: 6),
+                                                                          ],
+                                                                          MessageDetails(
+                                                                              enabled: isPdfFile || isOfficeFile,
+                                                                              child: Row(
+                                                                                mainAxisSize: MainAxisSize.min,
+                                                                                children: [
+                                                                                  Icon(
+                                                                                      isPdfFile
+                                                                                          ? Icons.picture_as_pdf_outlined
+                                                                                          : isOfficeFile
+                                                                                              ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true ? Icons.table_chart_outlined : Icons.description_outlined)
+                                                                                              : Icons.insert_drive_file,
+                                                                                      size: 16,
+                                                                                      color: isPdfFile ? Colors.red : kSubtext),
+                                                                                  const SizedBox(width: 4),
+                                                                                  Flexible(child: const Text('פתיחת הקובץ', style: TextStyle(fontSize: 13))),
+                                                                                  const SizedBox(width: 10),
+                                                                                  const Icon(Icons.download, size: 19, color: kPrimary),
+                                                                                  const SizedBox(width: 3),
+                                                                                  const Text('הורדה', style: TextStyle(fontSize: 12, color: kPrimary, fontWeight: FontWeight.w600)),
+                                                                                ],
+                                                                              )),
+                                                                        ],
+                                                                      ),
+                                                                    ),
+                                                                  )
+                                                                else if (isFilterUpdateAnnouncement)
+                                                                  InkWell(
+                                                                    onTap:
+                                                                        _updateMyGroupFilter,
+                                                                    borderRadius:
+                                                                        BorderRadius
+                                                                            .circular(8),
+                                                                    child:
+                                                                        Padding(
+                                                                      padding: const EdgeInsets
+                                                                          .symmetric(
+                                                                          vertical:
+                                                                              4),
+                                                                      child:
+                                                                          Column(
+                                                                        crossAxisAlignment:
+                                                                            CrossAxisAlignment.start,
+                                                                        children: [
+                                                                          const Row(
+                                                                            mainAxisSize:
+                                                                                MainAxisSize.min,
+                                                                            children: [
+                                                                              Icon(Icons.shield_outlined, color: kPrimary, size: 21),
+                                                                              SizedBox(width: 8),
+                                                                              Text(
+                                                                                'סינון הקבוצה עודכן',
+                                                                                style: TextStyle(
+                                                                                  fontSize: 15,
+                                                                                  fontWeight: FontWeight.w800,
+                                                                                ),
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                          const SizedBox(
+                                                                              height: 5),
+                                                                          Text(
+                                                                            filterUpdateDetails.isEmpty
+                                                                                ? 'מדיניות התוכן של הקבוצה השתנתה.'
+                                                                                : filterUpdateDetails,
+                                                                            textAlign:
+                                                                                TextAlign.right,
+                                                                            textDirection:
+                                                                                TextDirection.rtl,
+                                                                            style: const TextStyle(
+                                                                                fontSize: 12,
+                                                                                color: kTextDark,
+                                                                                height: 1.5),
+                                                                          ),
+                                                                          const SizedBox(
+                                                                              height: 7),
+                                                                          Row(
+                                                                            mainAxisSize:
+                                                                                MainAxisSize.min,
+                                                                            children: [
+                                                                              const Icon(Icons.tune_rounded, size: 17, color: kPrimary),
+                                                                              const SizedBox(width: 4),
+                                                                              const Text(
+                                                                                'עדכון הסינון האישי שלי',
+                                                                                style: TextStyle(
+                                                                                  color: kPrimary,
+                                                                                  fontWeight: FontWeight.bold,
+                                                                                  decoration: TextDecoration.underline,
+                                                                                ),
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                    ),
+                                                                  )
+                                                                else if (isEducationAnnouncement)
+                                                                  InkWell(
+                                                                    onTap: () =>
+                                                                        _openEducationAnnouncement(
+                                                                            msg),
+                                                                    borderRadius:
+                                                                        BorderRadius
+                                                                            .circular(8),
+                                                                    child:
+                                                                        Padding(
+                                                                      padding: const EdgeInsets
+                                                                          .symmetric(
+                                                                          vertical:
+                                                                              4),
+                                                                      child:
+                                                                          Column(
+                                                                        crossAxisAlignment:
+                                                                            CrossAxisAlignment.end,
+                                                                        children: [
+                                                                          Row(
+                                                                            mainAxisSize:
+                                                                                MainAxisSize.min,
+                                                                            children: [
+                                                                              const Icon(Icons.fact_check_outlined, color: kPrimary),
+                                                                              const SizedBox(width: 8),
+                                                                              Flexible(
+                                                                                child: Text(
+                                                                                  msg['text'] as String? ?? '',
+                                                                                  style: const TextStyle(fontSize: 15, height: 1.4, fontWeight: FontWeight.w600),
+                                                                                  textDirection: TextDirection.rtl,
+                                                                                ),
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                          const SizedBox(
+                                                                              height: 8),
+                                                                          Row(
+                                                                            mainAxisSize:
+                                                                                MainAxisSize.min,
+                                                                            children: [
+                                                                              const Icon(Icons.touch_app, size: 17, color: kPrimary),
+                                                                              const SizedBox(width: 4),
+                                                                              const Text('לחץ לפתיחת המסמך', style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold)),
+                                                                              const SizedBox(width: 12),
+                                                                              Container(
+                                                                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                                                                                decoration: BoxDecoration(
+                                                                                  color: educationStatusColor.withValues(alpha: .12),
+                                                                                  borderRadius: BorderRadius.circular(14),
+                                                                                ),
+                                                                                child: Text(
+                                                                                  educationStatusLabel,
+                                                                                  style: TextStyle(
+                                                                                    color: educationStatusColor,
+                                                                                    fontWeight: FontWeight.bold,
+                                                                                    fontSize: 12,
+                                                                                  ),
+                                                                                ),
+                                                                              ),
+                                                                            ],
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                    ),
+                                                                  )
+                                                                else if (sharedContact !=
+                                                                    null)
+                                                                  _SharedContactCard(
+                                                                    sharedContact,
+                                                                    token: widget
+                                                                        .token,
+                                                                    me: widget
+                                                                        .me,
+                                                                  )
+                                                                else
+                                                                  InlineEmojiText(
+                                                                    msg['text']
+                                                                            as String? ??
+                                                                        '',
+                                                                    messageEmojis: true,
+                                                                    style: const TextStyle(
+                                                                        fontSize:
+                                                                            15,
                                                                         height:
-                                                                            6),
-                                                                  ] else if (isOfficeFile) ...[
-                                                                    _OfficeDocumentPreview(
-                                                                        fileUrl:
-                                                                            msg['fileUrl']
-                                                                                as String,
-                                                                        fileName:
-                                                                            msg['fileName']?.toString() ??
-                                                                                'מסמך',
-                                                                        token: widget
-                                                                            .token),
-                                                                    const SizedBox(
-                                                                        height:
-                                                                            6),
-                                                                  ],
-                                                                  MessageDetails(
-                                                                      enabled:
-                                                                          isPdfFile ||
-                                                                              isOfficeFile,
+                                                                            1.4),
+                                                                    textDirection:
+                                                                        TextDirection
+                                                                            .rtl,
+                                                                  ),
+                                                                if (sharedUrl !=
+                                                                    null) ...[
+                                                                  const SizedBox(
+                                                                      height:
+                                                                          8),
+                                                                  _WebsiteLinkPreview(
+                                                                      sharedUrl,
+                                                                      widget
+                                                                          .token),
+                                                                ],
+                                                                if (isMe &&
+                                                                    msg['deliverySummary']
+                                                                        is Map)
+                                                                  _GroupDeliverySummary(
+                                                                    Map<String,
+                                                                        dynamic>.from(msg[
+                                                                            'deliverySummary']
+                                                                        as Map),
+                                                                  ),
+                                                                if (uploadFileType !=
+                                                                        'image' &&
+                                                                    uploadFileType !=
+                                                                        'video')
+                                                                  Align(
+                                                                      alignment:
+                                                                          Alignment
+                                                                              .centerLeft,
+                                                                      widthFactor:
+                                                                          1,
                                                                       child:
                                                                           Row(
                                                                         mainAxisSize:
                                                                             MainAxisSize.min,
                                                                         children: [
-                                                                          Icon(
-                                                                              isPdfFile
-                                                                                  ? Icons.picture_as_pdf_outlined
-                                                                                  : isOfficeFile
-                                                                                      ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true ? Icons.table_chart_outlined : Icons.description_outlined)
-                                                                                      : Icons.insert_drive_file,
-                                                                              size: 16,
-                                                                              color: isPdfFile ? Colors.red : kSubtext),
-                                                                          const SizedBox(
-                                                                              width: 4),
-                                                                          Flexible(
-                                                                              child: const Text('פתיחת הקובץ', style: TextStyle(fontSize: 13))),
-                                                                          const SizedBox(
-                                                                              width: 10),
-                                                                          const Icon(
-                                                                              Icons.download,
-                                                                              size: 19,
-                                                                              color: kPrimary),
-                                                                          const SizedBox(
-                                                                              width: 3),
-                                                                          const Text(
-                                                                              'הורדה',
-                                                                              style: TextStyle(fontSize: 12, color: kPrimary, fontWeight: FontWeight.w600)),
+                                                                          if (msg['isEdited'] ==
+                                                                              true)
+                                                                            const Text('נערך · ',
+                                                                                style: TextStyle(fontSize: 10, color: kSubtext, fontStyle: FontStyle.italic)),
+                                                                          Text(
+                                                                              msg['time'] as String? ?? '',
+                                                                              style: const TextStyle(fontSize: 11, color: kSubtext)),
+                                                                          if (isMe) ...[
+                                                                            const SizedBox(width: 3),
+                                                                            Icon(msg['status'] == 'read' || msg['status'] == 'delivered' ? Icons.done_all : Icons.done,
+                                                                                size: 14,
+                                                                                color: kPrimary),
+                                                                          ],
                                                                         ],
                                                                       )),
-                                                                ],
-                                                              ),
+                                                              ],
                                                             ),
-                                                          )
-                                                        else if (isFilterUpdateAnnouncement)
-                                                          InkWell(
-                                                            onTap:
-                                                                _updateMyGroupFilter,
-                                                            borderRadius:
-                                                                BorderRadius
-                                                                    .circular(
-                                                                        8),
-                                                            child: Padding(
-                                                              padding:
-                                                                  const EdgeInsets
-                                                                      .symmetric(
-                                                                      vertical:
-                                                                          4),
-                                                              child: Column(
-                                                                crossAxisAlignment:
-                                                                    CrossAxisAlignment
-                                                                        .start,
-                                                                children: [
-                                                                  const Row(
-                                                                    mainAxisSize:
-                                                                        MainAxisSize
-                                                                            .min,
-                                                                    children: [
-                                                                      Icon(
-                                                                          Icons
-                                                                              .shield_outlined,
-                                                                          color:
-                                                                              kPrimary,
-                                                                          size:
-                                                                              21),
-                                                                      SizedBox(
-                                                                          width:
-                                                                              8),
-                                                                      Text(
-                                                                        'סינון הקבוצה עודכן',
-                                                                        style:
-                                                                            TextStyle(
-                                                                          fontSize:
-                                                                              15,
-                                                                          fontWeight:
-                                                                              FontWeight.w800,
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                  const SizedBox(
-                                                                      height:
-                                                                          5),
-                                                                  Text(
-                                                                    filterUpdateDetails
-                                                                            .isEmpty
-                                                                        ? 'מדיניות התוכן של הקבוצה השתנתה.'
-                                                                        : filterUpdateDetails,
-                                                                    textAlign:
-                                                                        TextAlign
-                                                                            .right,
-                                                                    textDirection:
-                                                                        TextDirection
-                                                                            .rtl,
-                                                                    style: const TextStyle(
-                                                                        fontSize:
-                                                                            12,
-                                                                        color:
-                                                                            kTextDark,
-                                                                        height:
-                                                                            1.5),
-                                                                  ),
-                                                                  const SizedBox(
-                                                                      height:
-                                                                          7),
-                                                                  Row(
-                                                                    mainAxisSize:
-                                                                        MainAxisSize
-                                                                            .min,
-                                                                    children: [
-                                                                      const Icon(
-                                                                          Icons
-                                                                              .tune_rounded,
-                                                                          size:
-                                                                              17,
-                                                                          color:
-                                                                              kPrimary),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              4),
-                                                                      const Text(
-                                                                        'עדכון הסינון האישי שלי',
-                                                                        style:
-                                                                            TextStyle(
-                                                                          color:
-                                                                              kPrimary,
-                                                                          fontWeight:
-                                                                              FontWeight.bold,
-                                                                          decoration:
-                                                                              TextDecoration.underline,
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                ],
-                                                              ),
-                                                            ),
-                                                          )
-                                                        else if (isEducationAnnouncement)
-                                                          InkWell(
-                                                            onTap: () =>
-                                                                _openEducationAnnouncement(
-                                                                    msg),
-                                                            borderRadius:
-                                                                BorderRadius
-                                                                    .circular(
-                                                                        8),
-                                                            child: Padding(
-                                                              padding:
-                                                                  const EdgeInsets
-                                                                      .symmetric(
-                                                                      vertical:
-                                                                          4),
-                                                              child: Column(
-                                                                crossAxisAlignment:
-                                                                    CrossAxisAlignment
-                                                                        .end,
-                                                                children: [
-                                                                  Row(
-                                                                    mainAxisSize:
-                                                                        MainAxisSize
-                                                                            .min,
-                                                                    children: [
-                                                                      const Icon(
-                                                                          Icons
-                                                                              .fact_check_outlined,
-                                                                          color:
-                                                                              kPrimary),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              8),
-                                                                      Flexible(
-                                                                        child:
-                                                                            Text(
-                                                                          msg['text'] as String? ??
-                                                                              '',
-                                                                          style: const TextStyle(
-                                                                              fontSize: 15,
-                                                                              height: 1.4,
-                                                                              fontWeight: FontWeight.w600),
-                                                                          textDirection:
-                                                                              TextDirection.rtl,
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                  const SizedBox(
-                                                                      height:
-                                                                          8),
-                                                                  Row(
-                                                                    mainAxisSize:
-                                                                        MainAxisSize
-                                                                            .min,
-                                                                    children: [
-                                                                      const Icon(
-                                                                          Icons
-                                                                              .touch_app,
-                                                                          size:
-                                                                              17,
-                                                                          color:
-                                                                              kPrimary),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              4),
-                                                                      const Text(
-                                                                          'לחץ לפתיחת המסמך',
-                                                                          style: TextStyle(
-                                                                              color: kPrimary,
-                                                                              fontWeight: FontWeight.bold)),
-                                                                      const SizedBox(
-                                                                          width:
-                                                                              12),
-                                                                      Container(
-                                                                        padding: const EdgeInsets
-                                                                            .symmetric(
-                                                                            horizontal:
-                                                                                9,
-                                                                            vertical:
-                                                                                3),
-                                                                        decoration:
-                                                                            BoxDecoration(
-                                                                          color:
-                                                                              educationStatusColor.withValues(alpha: .12),
-                                                                          borderRadius:
-                                                                              BorderRadius.circular(14),
-                                                                        ),
-                                                                        child:
-                                                                            Text(
-                                                                          educationStatusLabel,
-                                                                          style:
-                                                                              TextStyle(
-                                                                            color:
-                                                                                educationStatusColor,
-                                                                            fontWeight:
-                                                                                FontWeight.bold,
-                                                                            fontSize:
-                                                                                12,
-                                                                          ),
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ),
-                                                                ],
-                                                              ),
-                                                            ),
-                                                          )
-                                                        else if (sharedContact !=
-                                                            null)
-                                                          _SharedContactCard(
-                                                            sharedContact,
-                                                            token: widget.token,
-                                                            me: widget.me,
-                                                          )
-                                                        else
-                                                          InlineEmojiText(
-                                                            msg['text']
-                                                                    as String? ??
-                                                                '',
-                                                            style: const TextStyle(
-                                                                fontSize: 15,
-                                                                height: 1.4),
-                                                            textDirection:
-                                                                TextDirection
-                                                                    .rtl,
                                                           ),
-                                                        if (sharedUrl !=
-                                                            null) ...[
-                                                          const SizedBox(
-                                                              height: 8),
-                                                          _WebsiteLinkPreview(
-                                                              sharedUrl,
-                                                              widget.token),
-                                                        ],
-                                                        if (isMe &&
-                                                            msg['deliverySummary']
-                                                                is Map)
-                                                          _GroupDeliverySummary(
-                                                            Map<String,
-                                                                    dynamic>.from(
-                                                                msg['deliverySummary']
-                                                                    as Map),
+                                                        ),
+                                                        if (_selectedMessageKeys
+                                                            .isNotEmpty)
+                                                          Positioned(
+                                                            top: 6,
+                                                            right: 6,
+                                                            child: Icon(
+                                                              _selectedMessageKeys.contains(
+                                                                      _selectionKey(
+                                                                          msg))
+                                                                  ? Icons
+                                                                      .check_circle
+                                                                  : Icons
+                                                                      .radio_button_unchecked,
+                                                              color: _selectedMessageKeys
+                                                                      .contains(
+                                                                          _selectionKey(
+                                                                              msg))
+                                                                  ? kPrimary
+                                                                  : kSubtext,
+                                                              size: 26,
+                                                            ),
                                                           ),
-                                                        if (uploadFileType !=
-                                                                'image' &&
-                                                            uploadFileType !=
-                                                                'video')
-                                                          Align(
-                                                              alignment: Alignment
-                                                                  .centerLeft,
-                                                              widthFactor: 1,
-                                                              child: Row(
-                                                                mainAxisSize:
-                                                                    MainAxisSize
-                                                                        .min,
-                                                                children: [
-                                                                  if (msg['isEdited'] ==
-                                                                      true)
-                                                                    const Text(
-                                                                        'נערך · ',
-                                                                        style: TextStyle(
-                                                                            fontSize:
-                                                                                10,
-                                                                            color:
-                                                                                kSubtext,
-                                                                            fontStyle:
-                                                                                FontStyle.italic)),
-                                                                  Text(
-                                                                      msg['time'] as String? ??
-                                                                          '',
-                                                                      style: const TextStyle(
-                                                                          fontSize:
-                                                                              11,
-                                                                          color:
-                                                                              kSubtext)),
-                                                                  if (isMe) ...[
-                                                                    const SizedBox(
-                                                                        width:
-                                                                            3),
-                                                                    Icon(
-                                                                        msg['status'] == 'read' || msg['status'] == 'delivered'
-                                                                            ? Icons
-                                                                                .done_all
-                                                                            : Icons
-                                                                                .done,
-                                                                        size:
-                                                                            14,
-                                                                        color:
-                                                                            kPrimary),
-                                                                  ],
-                                                                ],
-                                                              )),
                                                       ],
                                                     ),
-                                                  ),
-                                                ),
-                                                if (_selectedMessageKeys
-                                                    .isNotEmpty)
-                                                  Positioned(
-                                                    top: 6,
-                                                    right: 6,
-                                                    child: Icon(
-                                                      _selectedMessageKeys
-                                                              .contains(
-                                                                  _selectionKey(
-                                                                      msg))
-                                                          ? Icons.check_circle
-                                                          : Icons
-                                                              .radio_button_unchecked,
-                                                      color: _selectedMessageKeys
-                                                              .contains(
-                                                                  _selectionKey(
-                                                                      msg))
-                                                          ? kPrimary
-                                                          : kSubtext,
-                                                      size: 26,
-                                                    ),
-                                                  ),
+                                                  ), // GestureDetector
                                               ],
-                                            ),
-                                          ), // GestureDetector
-                                      ],
-                                    ))),
+                                            ))),
                                   ],
                                 ),
                               ],
@@ -36714,19 +37701,59 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 alignment: Alignment.centerRight,
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 900),
-                  child: Row(
+                  child: _isRecording
+                    ? VoiceRecordingBar(timeLabel: _voiceRecordingTime(_recordSeconds),
+                        onSend: _toggleVoiceRecording, onCancel: _cancelVoiceRecording)
+                    : Row(
                     children: [
                       IconButton(
                         tooltip:
                             _isRecording ? 'סיים ושלח' : 'הקלט הודעה קולית',
                         onPressed: _toggleVoiceRecording,
                         icon: Icon(_isRecording ? Icons.stop_circle : Icons.mic,
+                            size: 19,
                             color: _isRecording ? Colors.red : kPrimary),
+                        padding: const EdgeInsets.all(8),
+                        style: const ButtonStyle(
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                        constraints: const BoxConstraints.tightFor(
+                            width: 36, height: 36),
                       ),
                       IconButton(
-                              key: _attachmentAnchorKey,
-                        icon: const Icon(Icons.attach_file, color: kSubtext),
+                        key: const ValueKey('chat-inline-emoji-shortcut'),
+                        tooltip: 'אימוג׳י',
+                        icon: const Icon(Icons.emoji_emotions_outlined,
+                            size: 19, color: kPrimary),
+                        onPressed: () => _showGroupExpressions(inlineEmoji: true),
+                        padding: const EdgeInsets.all(8),
+                        style: const ButtonStyle(
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                        constraints: const BoxConstraints.tightFor(
+                            width: 36, height: 36),
+                      ),
+                      IconButton(
+                        key: const ValueKey('chat-stickers-shortcut'),
+                        tooltip: 'מדבקות',
+                        icon: const Icon(Icons.sticky_note_2_outlined,
+                            size: 18, color: kPrimary),
+                        onPressed: () => _showGroupExpressions(inlineEmoji: false),
+                        padding: const EdgeInsets.all(8),
+                        style: const ButtonStyle(
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                        constraints: const BoxConstraints.tightFor(
+                            width: 36, height: 36),
+                      ),
+                      IconButton(
+                        key: _attachmentAnchorKey,
+                        tooltip: 'צירוף קובץ',
+                        icon: const Icon(Icons.attach_file,
+                            size: 18, color: kSubtext),
                         onPressed: _showAttachMenu,
+                        padding: const EdgeInsets.all(8),
+                        style: const ButtonStyle(
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                        constraints: const BoxConstraints.tightFor(
+                            width: 36, height: 36),
                       ),
                       Expanded(
                         child: Focus(
@@ -37436,16 +38463,6 @@ class _ContentFilterSettingsScreenState
                 child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 760),
                 child: ListView(children: [
-                  if (!_isContact && !_isGroup)
-                    Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: _GeneralFilterEnforcementCard(
-                          value: _enforceGeneralFilter,
-                          onChanged: _saving
-                              ? null
-                              : (value) =>
-                                  setState(() => _enforceGeneralFilter = value),
-                        )),
                   if ((_isContact || _isGroup) && _enforceGeneralFilter)
                     const Padding(
                         padding: EdgeInsets.all(16),
@@ -37564,6 +38581,16 @@ class _ContentFilterSettingsScreenState
                       Icons.child_care),
                   _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
                       Icons.videocam_outlined),
+                  if (!_isContact && !_isGroup)
+                    Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: _GeneralFilterEnforcementCard(
+                          value: _enforceGeneralFilter,
+                          onChanged: _saving
+                              ? null
+                              : (value) =>
+                                  setState(() => _enforceGeneralFilter = value),
+                        )),
                   const Padding(
                     padding: EdgeInsets.all(18),
                     child: Text(
@@ -37612,20 +38639,6 @@ class PersonalMediaScreen extends StatefulWidget {
 
 class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   bool _cleanupMode = false;
-  void _showOldFiles() {
-    setState(() {
-      _cleanupMode = true;
-      _sort = 'date_asc';
-      _type = _scope = _moderation = _backup = _classification = 'all';
-      _dateFrom = _dateTo = null;
-      _destinationKind = _destinationId = _destinationLabel = null;
-      _searchCtrl.clear(); _minSizeCtrl.clear(); _maxSizeCtrl.clear();
-      _onlyDeletable = false;
-      _selecting = true;
-      _selectedItems.clear();
-    });
-    _refresh();
-  }
   int _driveStorageRevision = 0;
   bool _openingVideo = false;
   final List<Map<String, dynamic>> _items = [];
@@ -37701,6 +38714,7 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
 
   Widget _hiddenMediaPreview(Map<String, dynamic> item, {bool small = false}) {
     final message = _isScanStopped(item) ? _scanStoppedNotice(item) : hiddenImageMessage(
+      fileType: item['fileType']?.toString(),
       hiddenReason: item['hiddenReason']?.toString(),
       status: item['moderationStatus']?.toString(),
       reason: item['scanReason']?.toString(),
@@ -38705,9 +39719,6 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
             ),
             PopupMenuButton<String>(
               onSelected: (value) {
-                if (value == 'screenshot') {
-                  openAppScreenshot(context, token: widget.token);
-                }
                 if (_mediaHidden(item) &&
                     const [
                       'send',
@@ -38740,14 +39751,6 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                 if (value == 'delete') _delete(item);
               },
               itemBuilder: (_) => [
-                const PopupMenuItem(
-                  value: 'screenshot',
-                  child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(Icons.screenshot_monitor_outlined),
-                    title: Text('צילום מסך'),
-                  ),
-                ),
                 PopupMenuItem(
                   value: 'rename',
                   enabled: !_busyMediaIds.contains(item['id'].toString()) &&
@@ -38818,9 +39821,6 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   Widget _tableActions(Map<String, dynamic> item) => PopupMenuButton<String>(
         tooltip: 'פעולות',
         onSelected: (value) {
-          if (value == 'screenshot') {
-            openAppScreenshot(context, token: widget.token);
-          }
           if (_mediaHidden(item) &&
               const [
                 'send',
@@ -38853,7 +39853,6 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           if (value == 'delete') _delete(item);
         },
         itemBuilder: (_) => [
-          const PopupMenuItem(value: 'screenshot', child: Text('צילום מסך')),
           PopupMenuItem(
             value: 'rename',
             enabled: !_busyMediaIds.contains(item['id'].toString()) &&
@@ -39690,26 +40689,22 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         _minSizeCtrl.text.isNotEmpty || _maxSizeCtrl.text.isNotEmpty,
       ].where((active) => active).length;
 
-  Widget _toolsPanel(double width) => Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: kBorder),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
+  Widget _mediaSearchField() => TextField(
               key: const ValueKey('media-search'),
               controller: _searchCtrl,
+              textInputAction: TextInputAction.search,
+              style: const TextStyle(color: kTextDark),
+              onSubmitted: (_) {
+                _filterDebounce?.cancel();
+                _load(reset: true);
+              },
               onChanged: (_) {
                 setState(() {});
                 _debouncedLoad();
               },
               decoration: InputDecoration(
                 hintText: 'חיפוש קובץ לפי שם…',
-                labelText: 'שם הקובץ',
+                labelText: 'חיפוש קבצים במדיה שלי',
                 prefixIcon: const Icon(Icons.search, color: kPrimary),
                 suffixIcon: _searchCtrl.text.isEmpty
                     ? null
@@ -39724,8 +40719,18 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                 filled: true,
                 fillColor: const Color(0xFFF7FAFE),
               ),
-            ),
-            const SizedBox(height: 12),
+            );
+
+  Widget _toolsPanel(double width) => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: kBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -40185,14 +41190,14 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                   child: _duplicateBadge(item),
                 ),
                 PositionedDirectional(
-                    top: 6,
-                    start: 6,
-                    child: Material(
-                      color: Colors.white,
-                      shape: const CircleBorder(),
-                      child: _selectionCheckbox(item),
-                    ),
+                  top: 6,
+                  start: 6,
+                  child: Material(
+                    color: Colors.white,
+                    shape: const CircleBorder(),
+                    child: _selectionCheckbox(item),
                   ),
+                ),
                 if (item['backupStatus'] == 'verified')
                   const PositionedDirectional(
                     top: 9,
@@ -40582,6 +41587,13 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
               icon: const Icon(Icons.arrow_back),
               onPressed: widget.onClose ?? () => Navigator.maybePop(context),
             ),
+            bottom: PreferredSize(
+              preferredSize: const Size.fromHeight(76),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: _mediaSearchField(),
+              ),
+            ),
             actions: [
               IconButton(
                 tooltip: 'רענון המדיה',
@@ -40613,13 +41625,6 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             _summaryPanel(compact),
-                            StorageQuotaView(api: kApi, token: widget.token,
-                              revision: _driveStorageRevision, onCleanup: _showOldFiles,
-                              onDrive: () async {
-                                await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) =>
-                                  GoogleDriveBackupOfferScreen(token: widget.token, returnToPrevious: true)));
-                                if (mounted) _refresh();
-                              }),
                             if (_cleanupMode)
                               const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text(
                                 'בחרו קבצים ישנים למחיקה. אפשר למיין גם לפי הגודל. לפני המחיקה יוצג פירוט לאישור; לא מוחקים דבר אוטומטית.')),
@@ -40632,9 +41637,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                                   label: Text(_catalogError!),
                                 ),
                               ),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 8),
                             _typeTiles(width),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 12),
                             _toolsPanel(width),
                             _viewToolbar(width),
                           ],
@@ -41549,23 +42554,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _shareLocation() async {
-    final approved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('שיתוף מיקום מדויק'),
-        content: const Text(
-            'אם תאשר/י, המיקום המדויק יישמר בשרת וישמש לחיפוש משתמשים ומודעות בקרבתך. משתמשים אחרים יקבלו עיר ומרחק משוער בלבד. ניתן למחוק את המיקום בכל עת.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('ביטול')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('אישור ושיתוף')),
-        ],
-      ),
-    );
-    if (approved != true) return;
+    final approved = await requestGeocodingConsent(
+        context, GeocodingPurpose.nearby);
+    if (!approved || !mounted) return;
     try {
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
@@ -41585,10 +42576,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             'Content-Type': 'application/json',
           },
           body: jsonEncode({
+            'geocodingConsent': geocodingConsentVersion,
             'latitude': position.latitude,
             'longitude': position.longitude,
           }));
-      if (response.statusCode != 200) throw Exception('שמירת המיקום נכשלה');
+      if (response.statusCode != 200) {
+        throw Exception(geocodingErrorMessage(response.body));
+      }
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('המיקום נשמר')));
@@ -41761,6 +42755,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: kBg,
             child: ListView(
               children: [
+                // Modesty settings
+                const _SectionHeader(title: 'הגדרות תוכן לא ראוי'),
+                Material(
+                  color: kCard,
+                  child: Column(
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.tune, color: kPrimary),
+                        title: const Text('סוגי תוכן מותרים'),
+                        subtitle: const Text(
+                            'טקסט, תמונות, גברים, נשים, ילדים ווידאו'),
+                        trailing: const Icon(Icons.chevron_left),
+                        onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ContentFilterSettingsScreen(
+                                token: widget.token,
+                              ),
+                            )),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+
                 // Profile header
                 InkWell(
                   onTap: () async {
@@ -41800,31 +42819,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         const Icon(Icons.chevron_left, color: kSubtext),
                       ],
                     ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-
-                // Modesty settings
-                const _SectionHeader(title: 'הגדרות תוכן לא ראוי'),
-                Material(
-                  color: kCard,
-                  child: Column(
-                    children: [
-                      ListTile(
-                        leading: const Icon(Icons.tune, color: kPrimary),
-                        title: const Text('סוגי תוכן מותרים'),
-                        subtitle: const Text(
-                            'טקסט, תמונות, גברים, נשים, ילדים ווידאו'),
-                        trailing: const Icon(Icons.chevron_left),
-                        onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ContentFilterSettingsScreen(
-                                token: widget.token,
-                              ),
-                            )),
-                      ),
-                    ],
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -41882,10 +42876,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             : _driveConnected
                                 ? PopupMenuButton<String>(
                                     onSelected: (value) {
-                                      if (value == 'screenshot') {
-                                        openAppScreenshot(context,
-                                            token: widget.token);
-                                      }
                                       if (value == 'verify') {
                                         _verifyPersonalDrive();
                                       }
@@ -41894,9 +42884,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       }
                                     },
                                     itemBuilder: (_) => const [
-                                      PopupMenuItem(
-                                          value: 'screenshot',
-                                          child: Text('צילום מסך')),
                                       PopupMenuItem(
                                           value: 'verify',
                                           child: Text('בדיקת החיבור')),
@@ -42015,6 +43002,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             const Icon(Icons.chevron_left, color: kSubtext),
                         onTap: _shareLocation,
                       ),
+                      const GeocodingAttribution(),
                       ListTile(
                         leading: const Icon(Icons.location_off_outlined,
                             color: kSubtext),
@@ -42044,6 +43032,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         title: Text('בתשובה Messenger'),
                         subtitle: Text('מסרים לקהילה הישראלית'),
                       ),
+                      const GeocodingAttribution(),
                       const Divider(height: 1, indent: 16),
                       ListTile(
                         leading: const Icon(Icons.description_outlined,
@@ -42088,8 +43077,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
 
-                // Admin Panel (visible only to admins)
-                if (widget.adminPerm != null) ...[
+                // System administration is available only in the browser.
+                if (kIsWeb && widget.adminPerm != null) ...[
                   const _SectionHeader(title: 'ניהול'),
                   Material(
                     color: kCard,
@@ -46333,15 +47322,11 @@ class _EducationFormDetailsScreenState
               if (widget.isAdmin)
                 PopupMenuButton<String>(
                     onSelected: (value) {
-                      if (value == 'screenshot') {
-                        openAppScreenshot(context, token: widget.token);
-                      } else {
+                      if (value == 'toggle') {
                         _toggleStatus();
                       }
                     },
                     itemBuilder: (_) => [
-                          const PopupMenuItem(
-                              value: 'screenshot', child: Text('צילום מסך')),
                           PopupMenuItem(
                               value: 'toggle',
                               child: Text(form['status'] == 'open'

@@ -1,4 +1,6 @@
 import 'moderation_user_reason.dart';
+import 'copyable_file_name.dart';
+import 'blocked_video_notice.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -172,11 +174,17 @@ bool isContentFilterHiddenImage({
     _HiddenImageKind.contentFilter;
 
 String hiddenImageMessage({
+  String? fileType,
   String? hiddenReason = 'content_filter',
   String? status,
   String? reason,
   bool contentPurged = false,
 }) {
+  if (fileType == 'video' &&
+      const ['rejected', 'rejected_scan', 'stopped', 'stopped_scan']
+          .contains(status?.trim().toLowerCase())) {
+    return blockedVideoMessage;
+  }
   final kind = _hiddenImageKind(
     hiddenReason: hiddenReason,
     status: status,
@@ -192,7 +200,7 @@ String hiddenImageMessage({
   }
   return switch (kind) {
     _HiddenImageKind.contentFilter => 'התמונה מוסתרת לפי בחירת הסינון שלך',
-    _HiddenImageKind.pending => 'התמונה ממתינה לסריקה ולאישור',
+    _HiddenImageKind.pending => 'הקובץ ממתין לסריקה ולאישור',
     _HiddenImageKind.rejected =>
       'התמונה נחסמה בבדיקת הבטיחות${reason?.trim().isNotEmpty == true ? '\n${reason!.trim()}' : ''}',
     _HiddenImageKind.purged => 'התמונה נמחקה ואינה זמינה עוד',
@@ -213,6 +221,8 @@ class FilterHiddenImage extends StatefulWidget {
   final String? hiddenReason;
   final String? status;
   final String? reason;
+  final String? fileName;
+  final String? fileType;
   final bool contentPurged;
   const FilterHiddenImage(
       {super.key,
@@ -223,6 +233,8 @@ class FilterHiddenImage extends StatefulWidget {
       this.hiddenReason = 'content_filter',
       this.status,
       this.reason,
+      this.fileName,
+      this.fileType,
       this.contentPurged = false});
 
   @override
@@ -318,7 +330,11 @@ class _FilterHiddenImageState extends State<FilterHiddenImage> {
   }
 
   @override
-  Widget build(BuildContext context) => Container(
+  Widget build(BuildContext context) => widget.fileType == 'video' &&
+          const ['rejected', 'rejected_scan', 'stopped', 'stopped_scan']
+              .contains(widget.status?.trim().toLowerCase())
+      ? BlockedVideoNotice(fileName: widget.fileName)
+      : Container(
         constraints: const BoxConstraints(maxWidth: 280),
         margin: const EdgeInsets.symmetric(vertical: 5),
         padding: const EdgeInsets.all(12),
@@ -326,6 +342,11 @@ class _FilterHiddenImageState extends State<FilterHiddenImage> {
             color: const Color(0xFFF0F5F9),
             borderRadius: BorderRadius.circular(10)),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (widget.fileName?.trim().isNotEmpty == true) ...[
+            CopyableFileName(widget.fileName!,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+          ],
           Icon(switch (_hiddenImageKind(
             hiddenReason: _hiddenReason,
             status: widget.status,
@@ -339,6 +360,7 @@ class _FilterHiddenImageState extends State<FilterHiddenImage> {
           const SizedBox(height: 6),
           Text(
               hiddenImageMessage(
+                fileType: widget.fileType,
                 hiddenReason: _hiddenReason,
                 status: widget.status,
                 reason: widget.reason,

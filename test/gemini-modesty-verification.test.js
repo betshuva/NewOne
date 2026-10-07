@@ -27,6 +27,7 @@ test('Gemini modesty review uses the shared strict policy and records usage', as
       });
     },
   });
+  assert.equal(request.body.store, false);
   assert.match(request.url, /gemini-3\.5-flash-lite:generateContent$/);
   assert.doesNotMatch(request.url, /gemini-key/);
   assert.equal(request.options.headers['x-goog-api-key'], 'gemini-key');
@@ -58,6 +59,7 @@ test('Gemini repairs malformed output once without resending the image', async (
     },
   });
   assert.equal(requests.length, 2);
+  assert.ok(requests.every(request => request.store === false));
   assert.ok(requests[0].contents[0].parts.some(part => part.inlineData));
   assert.ok(requests[1].contents[0].parts.every(part => !part.inlineData));
   assert.equal(result.formatRepaired, true);

@@ -6,6 +6,7 @@ const path = require('node:path');
 const drive = require('./personal-drive');
 const { unwrapVaultKey } = require('./backup-vault-key');
 const { decryptBuffer } = require('./media-backup-crypto');
+const { ARCHIVABLE_SQL } = require('./media-storage-policy');
 
 const RELEASE_FROM_SQL = `FROM stored_files sf
   JOIN media_backup_items mbi ON mbi.stored_file_id=sf.id AND mbi.user_id=sf.user_id
@@ -19,8 +20,7 @@ const RELEASE_WHERE_SQL = `(s.enabled=TRUE OR to_jsonb(sf)->>'storage_tier'='per
   AND mbi.remote_file_id IS NOT NULL AND mbi.restore_verified_at IS NOT NULL
   AND mbi.encryption_metadata->>'keySource'='server_vault'
   AND mbi.plaintext_sha256=sf.content_sha256
-  AND sf.moderation_status='approved' AND sf.content_purged_at IS NULL
-  AND sf.moderation_details->>'pending' IS DISTINCT FROM 'true'
+  AND ${ARCHIVABLE_SQL} AND sf.content_purged_at IS NULL
   AND sf.released_at IS NULL AND sf.release_scheduled_at<=now()
   AND NOT EXISTS (SELECT 1 FROM pending_scans ps WHERE ps.file_url=sf.public_url)`;
 

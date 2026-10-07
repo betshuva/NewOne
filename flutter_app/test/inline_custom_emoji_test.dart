@@ -41,6 +41,12 @@ void main() {
     expect(
         inlineEmojiIdFromUrl('https://betshuva.com:443$base/sticker-150.png'),
         150);
+    const colored = '/betshuva-app/expression-library/user-20261008-color';
+    for (var id = 1; id <= 150; id++) {
+      final name = 'sticker-${id.toString().padLeft(2, '0')}.png';
+      expect(inlineEmojiIdFromUrl('$colored/$name'), id);
+      expect(inlineEmojiIdFromUrl('https://betshuva.com$colored/$name'), id);
+    }
     for (final url in [
       'http://betshuva.com$base/sticker-01.png',
       'https://evil.test$base/sticker-01.png',
@@ -59,6 +65,11 @@ void main() {
       '$base/../user-20260907/sticker-01.png',
       '$base/%73ticker-01.png',
       '$base/sticker-%30%31.png',
+      '$colored/sticker-001.png',
+      '$colored/sticker-151.png',
+      '$colored/sticker-01.png?v=1',
+      '$colored/../user-20260907/sticker-01.png',
+      'https://evil.test$colored/sticker-01.png',
     ]) {
       expect(inlineEmojiIdFromUrl(url), isNull, reason: url);
     }
@@ -170,7 +181,7 @@ void main() {
     expect(imageFinder, findsOneWidget);
     final image = tester.widget<Image>(imageFinder);
     expect((image.image as NetworkImage).url,
-        'https://betshuva.com/betshuva-app/expression-library/user-20260907/sticker-01.png');
+        'https://betshuva.com/betshuva-app/expression-library/user-20261008-color/sticker-01.png');
     final size = tester.getSize(imageFinder);
     expect(size.width, closeTo(21.6, 0.1));
     expect(size.height, closeTo(21.6, 0.1));

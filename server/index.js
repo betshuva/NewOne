@@ -1,5 +1,6 @@
 const { attachmentUpload, cleanAttachment, resumableAttachments } = require('./attachment-upload');
 const storageQuota = require('./storage-quota');
+const { ARCHIVABLE_SQL } = require('./media-storage-policy');
 const { sourceHash, sourceBlob, uploadHeader } = require('./upload-file-source');
 const { chatHistoryWindow, chatHistoryQuery } = require('./chat-history-window');
 const { registerConversationSearch } = require('./conversation-search');
@@ -10,6 +11,7 @@ const express = require('express');
 const { publicStatic } = require('./public-static');
 const { trustedProxyAddress, securityHeaders } = require('./http-security');
 const { verifySession, signSession, sessionCurrent } = require('./session-security');
+const { parseBirthDate, validateRegistrationAge, accountAgeError, requestAgeError } = require('./adult-access-policy');
 const { validResetInput, resetPassword } = require('./password-reset');
 const { consumeOtp } = require('./otp-security');
 const { createServer } = require('http');
@@ -20,6 +22,7 @@ const jwt = require('jsonwebtoken');
 const { createApiRateLimit } = require('./api-rate-limit');
 const { SCHEMA: UPLOAD_BATCH_NOTICE_SCHEMA, registerUploadBatchNotices } = require('./upload-batch-notices');
 const nodemailer = require('nodemailer');
+const reportNotifications = require('./report-notifications');
 const crypto     = require('crypto');
 const dns        = require('dns').promises;
 const net        = require('net');
@@ -34,6 +37,12 @@ const sharp      = require('sharp');
 const { cert, getApps, initializeApp } = require('firebase-admin/app');
 const { getMessaging } = require('firebase-admin/messaging');
 const { getPool } = require('./db');
+const { registerLocationRoutes } = require('./location-routes');
+const { registerListingBackgroundImages, validateListingMedia, normalizeListingVideoChange } = require('./listing-background-images');
+const { registerChatListingImage } = require('./chat-listing-image');
+const { probeListingVideo, listingVideoApproved } = require('./listing-video-policy');
+const { googleRegistrationRequired } = require('./registration-policy');
+const { SCHEMA: GEOCODING_BUDGET_SCHEMA } = require('./geocoding-budget');
 const { REQUEST_SCHEMA, lockContactRequests, queueContactRequest, settleContactRequests } = require('./contact-message-requests');
 const calendarService = require('./calendar');
 const {
@@ -45,12 +54,13 @@ const {
 } = require('./google-vision');
 const { verifyPersonClassification } = require('./person-verification');
 const { videoDetectedCategories } = require('./video-classification');
-const { classifyOpenAIModesty } = require('./modesty-verification');
+const { classifyOpenAIModesty, corroboratedCompliantGeminiFlag } = require('./modesty-verification');
 const { openAIModerationEnabled, openAIModerationRequired, moderationProviderPolicy,
   disabledModerationProviderResult } = require('./moderation-provider-policy');
 const { classifyGeminiModesty } = require('./gemini-modesty-verification');
 const { recordProviderCheck } = require('./provider-usage-log');
 const { ensureVideoScanBudgetSchema } = require('./video-scan-budget');
+const cachedScanPreviews = require('./cached-scan-previews');
 const { ensureAuditScanPreviewSchema, saveAuditScanPreview, purgeExpiredAuditScanPreviews,
   registerAuditScanPreviewRoutes } = require('./audit-scan-previews');
 const { runBoundedVideoScan, stoppedVideoResult, videoProviderStop } = require('./video-scan-controller');
@@ -100,7 +110,8 @@ const { auditIds, createRequestAudit, restoreRequestAuditContext, uploadAuditDet
   emitDispatchRejection, auditedSocketHandler, withPendingAudit, auditedMediaQuery, setAuditTransactionContext } = require('./system-audit-context');
 const { FILTER_MEDIA_SCHEMA, lockFilterOwner, prepareFilterHistoryChange,
   finishFilterHistoryChange, projectFilteredHistory, projectFilterMediaLibrary, projectOwnScans, registerFilterHistoryRoutes } = require('./filter-media-history');
-const { registerMessageReactions } = require('./message-reactions');
+const { registerMessageReactions, REACTION_READ_SCHEMA, projectReactionConversations,
+  reactionUnreadCounts, markReactionsRead } = require('./message-reactions');
 const { CONVERSATION_SCHEMA, messageAfterConversationClear, personalMessageVisible, registerConversationHistory } = require('./conversation-history');
 const { RELEASE_FROM_SQL, RELEASE_WHERE_SQL, releaseLocalMediaBatch } = require('./local-media-release');
 const { createReceivedMediaService, personalizeReceivedMessages,
@@ -120,7 +131,7 @@ const { generateSafeInformationAnswer } = require('./safe-information-ai');
 const { searchMarketplace } = require('./ai-marketplace');
 const { loadMarketplaceImages } = require('./marketplace-images');
 const { initializePhonePrivacy, projectContactPhones, saveContactWithPhone,
-  getPhoneSharingStatus, applyPhoneSharingChoices, normalizePhone, phoneFingerprint,
+  getPhoneSharingStatus, applyPhoneSharingChoices, normalizePhone, normalizedPhoneSql, phoneFingerprint,
   rememberKnownContactPhones } = require('./contact-phone-privacy');
 const { registerContactPhoneRoutes, phoneSharingChoices, notifyPhoneSharingChange } = require('./contact-phone-routes');
 
@@ -569,6 +580,7 @@ async function getExpressionCatalog() {
   const categories = [];
   for (const category of source.categories || []) {
     const folder = String(category.path || '');
+    const coloredFolder = String(category.coloredPath || '');
     const prefix = String(category.prefix || '');
     const extension = String(category.extension || '').toLowerCase();
     if (!/^[a-z0-9-]+$/i.test(folder) || !/^[a-z0-9-]+$/i.test(prefix) ||
@@ -578,10 +590,18 @@ async function getExpressionCatalog() {
       const fileName = `${prefix}-${String(index + 1).padStart(2, '0')}.${extension}`;
       try {
         await fs.access(path.join(BUILTIN_EXPRESSION_ROOT, folder, fileName));
+        let coloredUrl;
+        if (/^[a-z0-9-]+$/i.test(coloredFolder)) {
+          try {
+            await fs.access(path.join(BUILTIN_EXPRESSION_ROOT, coloredFolder, fileName));
+            coloredUrl = `${EXPRESSION_PUBLIC_BASE}/${coloredFolder}/${fileName}`;
+          } catch (_) { /* Older clients and incomplete refreshes retain original artwork. */ }
+        }
         items.push({
           id: `${category.id}-${index + 1}`,
           label: String(category.labels[index] || ''),
           url: `${EXPRESSION_PUBLIC_BASE}/${folder}/${fileName}`,
+          ...(coloredUrl ? { coloredUrl } : {}),
           animated: extension === 'gif',
         });
       } catch (_) { /* A missing file is omitted without breaking the catalog. */ }
@@ -629,7 +649,8 @@ async function sendPush(userId, title, body, data = {}) {
     const result = await pool.query(
       `SELECT f.token FROM fcm_tokens f
        JOIN users u ON u.id=f.user_id
-       WHERE f.user_id=$1 AND u.notifications_enabled=TRUE`, [userId]);
+       WHERE f.user_id=$1 AND u.notifications_enabled=TRUE
+         AND u.birth_date <= CURRENT_DATE - INTERVAL '18 years'`, [userId]);
     const tokens = result.rows.map(row => row.token).filter(Boolean);
     if (!tokens.length) {
       await observeAudit(getAuditContext()?.transactionDb || pool, { kind: 'push_skipped',
@@ -1924,8 +1945,11 @@ async function scanStaticImage(buffer, options = {}) {
     const scanPreviewId = await saveAuditScanPreview(await getPool(), {
       storedFileId: options.tracking.storedFileId, buffer,
     });
-    if (scanPreviewId) options = { ...options,
-      tracking: { ...options.tracking, scanPreviewId } };
+    if (scanPreviewId) {
+      await cachedScanPreviews.retainScanPreview(await getPool(), scanPreviewId, options.tracking.videoBudget)
+        .catch(() => console.warn('Cached scan preview retention deferred'));
+      options = { ...options, tracking: { ...options.tracking, scanPreviewId } };
+    }
   }
   const localSafetyPromise = classifyLocalSafety(buffer);
   const capture = promise => promise.then(
@@ -2188,7 +2212,9 @@ async function scanStaticImage(buffer, options = {}) {
     (!modestyVerification.available || !geminiModestyVerification.available ||
       modestyVerification.decision !== 'modest' ||
       geminiModestyVerification.decision !== 'modest');
-  if (modestyReviewsDisagree && (requireOpenAI || geminiModestyVerification.available === true &&
+  const compliantFlagConflict = modestyReviewsDisagree &&
+    corroboratedCompliantGeminiFlag(modestyVerification, geminiModestyVerification);
+  if (modestyReviewsDisagree && (requireOpenAI || compliantFlagConflict || geminiModestyVerification.available === true &&
       geminiModestyVerification.decision === 'modest') && safetyConsensusClean &&
       classification?.category && classification.uncertain !== true) {
     classificationStats.modestyDisagreement = true;
@@ -2200,9 +2226,12 @@ async function scanStaticImage(buffer, options = {}) {
       modestyDisagreement: {
         recorded: true,
         action: 'approved_by_clean_safety_consensus',
+        ...(compliantFlagConflict ? { resolution: 'corroborated_compliant_gemini_flag' } : {}),
         explanation: reviewExplanation(),
       },
-      reason: `התמונה אושרה לאחר מחלוקת מסווגי צניעות; בדיקות הבטיחות נקיות · ${reviewExplanation()}`,
+      reason: compliantFlagConflict
+        ? `התמונה אושרה: שני המסווגים תיארו אזורים תקינים; דגל ההפרה הסותר של Gemini לא מנע אישור · ${reviewExplanation()}`
+        : `התמונה אושרה לאחר מחלוקת מסווגי צניעות; בדיקות הבטיחות נקיות · ${reviewExplanation()}`,
     };
   }
   if (verifiedPeople && activeModestyReviews
@@ -2270,7 +2299,7 @@ async function scanStaticImage(buffer, options = {}) {
 
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
-const MODERATION_CACHE_VERSION = `2026-09-27-visible-clothing-17:${moderationProviderPolicy()}`;
+const MODERATION_CACHE_VERSION = `2026-10-07-high-detail-person-21:${moderationProviderPolicy()}`;
 const VIDEO_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:video20-90min-v1`;
 
 async function scanImage(buffer, options = {}) {
@@ -2376,6 +2405,17 @@ async function sendEmail({ to, subject, html }) {
     html,
   });
 }
+
+const reportMailer = reportNotifications.createReportTransport();
+const notifyReports = reportNotifications.createReportNotifier({
+  getPool,
+  sendMail: message => reportMailer.sendMail({
+    from: `"BETSHUVA" <${process.env.EMAIL_FROM}>`, ...message,
+  }),
+  onError: code => console.error('[report-notification]', code),
+});
+const runReportNotifications = () => notifyReports()
+  .catch(() => console.error('[report-notification] Queue processing failed'));
 
 function welcomeEmail(name) {
   return `<div dir="rtl" style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px">
@@ -2509,6 +2549,8 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS location_attribution JSONB`);
+    await pool.query(GEOCODING_BUDGET_SCHEMA);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_version TEXT`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS age_confirmed BOOLEAN NOT NULL DEFAULT FALSE`);
@@ -2620,6 +2662,7 @@ async function migrateDatabase() {
         updated_at TIMESTAMPTZ DEFAULT now(),
         PRIMARY KEY (message_id, user_id)
       )`);
+    await pool.query(REACTION_READ_SCHEMA);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS message_user_deletions (
         message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -2936,6 +2979,7 @@ async function migrateDatabase() {
       )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS user_reports_status_created_idx
       ON user_reports(status, created_at DESC)`);
+    await pool.query(reportNotifications.SCHEMA);
 
     await pool.query(`CREATE TABLE IF NOT EXISTS guide_message_sends (
       source_message_id UUID PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
@@ -3977,7 +4021,6 @@ function relay(toUserId, event, data) {
   if (sid) io.to(sid).emit(event, data);
 }
 const otpStore    = new Map(); // phone → { code, expires, name }
-const registrationOtpStore = new Map(); // method:value → { code, expires }
 const socketRateBuckets = new Map();
 const activeVoiceCalls = new Map(); // callId → { callerId, calleeId, timeout }
 const userVoiceCalls = new Map();   // userId → callId
@@ -4021,34 +4064,6 @@ const socketRateCleanup = setInterval(() => {
 }, 5 * 60 * 1000);
 socketRateCleanup.unref();
 
-function parseBirthDate(value) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const date = new Date(`${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
-  return value;
-}
-
-function ageFromBirthDate(value, now = new Date()) {
-  const birthDate = parseBirthDate(value instanceof Date
-    ? value.toISOString().slice(0, 10) : String(value || ''));
-  if (!birthDate) return null;
-  const [year, month, day] = birthDate.split('-').map(Number);
-  let age = now.getUTCFullYear() - year;
-  const beforeBirthday = now.getUTCMonth() + 1 < month ||
-    (now.getUTCMonth() + 1 === month && now.getUTCDate() < day);
-  if (beforeBirthday) age--;
-  return age;
-}
-
-function validateRegistrationAge(value) {
-  const birthDate = parseBirthDate(value);
-  const age = ageFromBirthDate(birthDate);
-  if (!birthDate || age == null) return { error: 'יש להזין תאריך לידה תקין' };
-  if (age < 13) return { error: 'השירות אינו זמין למי שטרם מלאו לו 13' };
-  if (age > 120) return { error: 'תאריך הלידה אינו תקין' };
-  return { birthDate, age, isTeen: age < 18 };
-}
-
 async function youthPolicy(pool, ...userIds) {
   const result = await pool.query(
     `SELECT id, birth_date,
@@ -4086,6 +4101,8 @@ async function auth(req, res, next) {
        FROM users WHERE id = $1`, [req.user.id]);
     if (!result.rows.length || !sessionCurrent(req.user, result.rows[0]))
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
+    const ageError = requestAgeError(result.rows[0], req);
+    if (ageError) return res.status(ageError.status).json(ageError);
     const moderationError = accountModerationError(result.rows[0]);
     if (moderationError) return res.status(moderationError.status).json(moderationError);
     if (result.rows[0].name === 'משתמש' && result.rows[0].gender == null)
@@ -4134,6 +4151,8 @@ app.get('/api/registration-status', async (req, res) => {
     if (!result.rows.length || !sessionCurrent(tokenUser, result.rows[0]))
       return res.status(401).json({ error: 'המשתמש אינו קיים' });
     const user = result.rows[0];
+    const ageError = accountAgeError(user, { allowMissing: true });
+    if (ageError) return res.status(ageError.status).json(ageError);
     res.json({
       phoneMissing: !user.phone,
       verificationRequired:
@@ -4192,6 +4211,8 @@ async function authWithDbCheck(req, res, next) {
       console.warn(`[AUTH] ghost session — id:${req.user.id} email:${req.user.email}`);
       return res.status(401).json({ error: 'המשתמש אינו קיים — נא להתחבר מחדש' });
     }
+    const ageError = requestAgeError(exists.rows[0], req);
+    if (ageError) return res.status(ageError.status).json(ageError);
     const moderationError = accountModerationError(exists.rows[0]);
     if (moderationError) return res.status(moderationError.status).json(moderationError);
     if (exists.rows[0].name === 'משתמש' && exists.rows[0].gender == null)
@@ -4223,6 +4244,8 @@ io.use(async (socket, next) => {
       console.warn(`[SOCKET] user_not_found — id:${socket.user.id} email:${socket.user.email} name:${socket.user.name}`);
       return next(new Error('user_not_found'));
     }
+    const ageError = accountAgeError(exists.rows[0]);
+    if (ageError) return next(Object.assign(new Error(ageError.error), { data: { code: ageError.code } }));
     if (accountModerationError(exists.rows[0])) return next(new Error('account_blocked'));
     if (exists.rows[0].name === 'משתמש' && exists.rows[0].gender == null)
       return next(new Error('registration_incomplete'));
@@ -4920,181 +4943,11 @@ io.on('connection', async (socket) => {
   logActivity(socket.user.id, 'connect', {});
 });
 
-// ── Register ─────────────────────────────────────────────────────
-app.post('/api/registration/send-code', authRateLimit, otpRateLimit, async (req, res) => {
-  const method = req.body.method;
-  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-  const phone = normalizeIsraeliMobile(req.body.phone);
-  if (!['email', 'phone'].includes(method)) return res.status(400).json({ error: 'שיטת אימות לא תקינה' });
-  if (method === 'email' && (!email || !email.includes('@'))) return res.status(400).json({ error: 'כתובת אימייל לא תקינה' });
-  if (method === 'phone' && !isValidIsraeliMobile(phone))
-    return res.status(400).json({ error: 'יש להזין מספר סלולרי ישראלי תקין' });
-  try {
-    const pool = await getPool();
-    const exists = method === 'email'
-      ? await pool.query('SELECT id FROM users WHERE lower(email)=lower($1)', [email])
-      : await pool.query('SELECT id FROM users WHERE phone=$1', [phone]);
-    if (exists.rows.length) return res.status(409).json({ error: method === 'email' ? 'האימייל כבר רשום' : 'מספר הטלפון כבר רשום' });
-    const value = method === 'email' ? email : phone;
-    const code = crypto.randomInt(100000, 1000000).toString();
-    const appSignature = typeof req.body.appSignature === 'string' &&
-      /^[A-Za-z0-9+/]{11}$/.test(req.body.appSignature)
-        ? req.body.appSignature : null;
-    registrationOtpStore.set(`${method}:${value}`, { code, expires: Date.now() + 10 * 60 * 1000 });
-    const message = method === 'email'
-      ? { to: email, subject: `קוד האימות שלך לבתשובה: ${code}`, html: `<div dir="rtl" style="font-family:Arial"><h2>אימות אימייל</h2><p>קוד האימות:</p><div style="font-size:32px;font-weight:bold;letter-spacing:8px">${code}</div><p>הקוד בתוקף למשך 10 דקות.</p></div>` }
-      : { to: `${phone}@019sms.co.il`, subject: appSignature
-          ? `<#> קוד האימות שלך לבתשובה: ${code} ${appSignature}`
-          : `קוד האימות שלך לבתשובה: ${code}\n\n@betshuva.com #${code}`, html: '' };
-    await sendEmail(message);
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('registration send-code:', e.message);
-    res.status(500).json({ error: 'שליחת קוד האימות נכשלה' });
-  }
-});
-
-app.post('/api/registration/verify-code', authRateLimit, credentialRateLimit, (req, res) => {
-  const method = req.body.method;
-  const value = method === 'email'
-    ? String(req.body.email || '').trim().toLowerCase()
-    : normalizeIsraeliMobile(req.body.phone);
-  const key = `${method}:${value}`;
-  const entry = registrationOtpStore.get(key);
-  if (!entry || entry.code !== String(req.body.code || '') || Date.now() > entry.expires)
-    return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
-  registrationOtpStore.delete(key);
-  const proof = jwt.sign({ purpose: 'registration', method, value }, JWT_SECRET, { expiresIn: '30m' });
-  res.json({ ok: true, proof });
-});
-
-app.post('/api/register', authRateLimit, credentialRateLimit, async (req, res) => {
-  const { name, password, phone, clientType, verificationMethod, gender } = req.body;
-  if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
-    return res.status(400).json({ error: 'יש לאשר את תנאי השימוש, מדיניות הפרטיות וגיל 13 ומעלה' });
-  const registrationFilter = requestedRegistrationFilter(req.body);
-  if (!registrationFilter)
-    return res.status(400).json({ error: 'יש לבחור ולאשר את הגדרות הסינון' });
-  // Copying an address from RTL text can add invisible bidi controls. They
-  // are formatting characters, not part of an email address.
-  const email = typeof req.body.email === 'string'
-    ? req.body.email.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim().toLowerCase()
-    : req.body.email;
-  if (!name) return res.status(400).json({ error: 'חסר שם' });
-  if (!['male', 'female'].includes(gender))
-    return res.status(400).json({ error: 'יש לבחור מגדר' });
-  const agePolicy = validateRegistrationAge(req.body.birthDate);
-  if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
-  const hasEmail = !!(email && password);
-  const hasPhone = !!phone;
-  const verifyByEmail = verificationMethod !== 'phone';
-  const verifyByPhone = verificationMethod === 'phone';
-  let verificationProof;
-  try {
-    verificationProof = jwt.verify(req.body.verificationProof || '', JWT_SECRET, { algorithms: ['HS256'] });
-  } catch (_) {
-    return res.status(400).json({ error: 'יש להשלים אימות משתמש תחילה' });
-  }
-  const proofMethod = verifyByPhone ? 'phone' : 'email';
-  const proofValue = verifyByPhone ? normalizeIsraeliMobile(phone) : email;
-  if (verificationProof.purpose !== 'registration' ||
-      verificationProof.method !== proofMethod || verificationProof.value !== proofValue)
-    return res.status(400).json({ error: 'אימות המשתמש אינו תואם לפרטי ההרשמה' });
-  if (clientType === 'desktop' && (!hasEmail || !hasPhone))
-    return res.status(400).json({ error: 'בהרשמה ממחשב חובה להזין אימייל ומספר טלפון' });
-  if (!hasEmail && !hasPhone)
-    return res.status(400).json({ error: 'יש לספק אימייל עם סיסמה, מספר טלפון, או שניהם' });
-
-  const cleanPhone = hasPhone ? normalizeIsraeliMobile(phone) : null;
-  if (hasPhone && !isValidIsraeliMobile(cleanPhone))
-    return res.status(400).json({ error: 'יש להזין מספר סלולרי ישראלי תקין' });
-  try {
-    const pool = await getPool();
-    // Every identifier saved on the new account must be unique, even when the
-    // user verified the other identifier. For example, phone registration also
-    // collects an email, so checking only the phone leaks a database constraint
-    // error at the final step when that email already belongs to an account.
-    if (hasEmail) {
-      const emailExists = await pool.query(
-        'SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1', [email]);
-      if (emailExists.rows.length) {
-        return res.status(409).json({
-          error: 'האימייל כבר שייך לחשבון קיים. יש לחזור למסך הכניסה ולהיכנס לחשבון הקיים',
-          code: 'EMAIL_ALREADY_REGISTERED',
-        });
-      }
-    }
-    if (hasPhone) {
-      const phoneExists = await pool.query(
-        'SELECT id FROM users WHERE phone = $1 LIMIT 1', [cleanPhone]);
-      if (phoneExists.rows.length) {
-        return res.status(409).json({
-          error: 'מספר הטלפון כבר שייך לחשבון קיים. יש לחזור למסך הכניסה ולהיכנס לחשבון הקיים',
-          code: 'PHONE_ALREADY_REGISTERED',
-        });
-      }
-    }
-
-    const hash = hasEmail ? await bcrypt.hash(password, 10) : null;
-    const result = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter, email_verified, phone_verified)
-       VALUES ($1, $2, $3, $4, now(), '2026-08-23', TRUE, $5, $6, $7, $8, $9)
-       RETURNING id, short_id, name, email`,
-      [name, hasEmail ? email : null, hasPhone ? cleanPhone : null, hash, gender,
-       agePolicy.birthDate, JSON.stringify(registrationFilter), verifyByEmail, verifyByPhone]);
-    const user = result.rows[0];
-    await provisionSystemConversation(pool, user.id);
-
-    if (hasEmail && !verifyByEmail) {
-      const emailToken = crypto.randomBytes(32).toString('hex');
-      const expires24h = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      await pool.query(
-        'INSERT INTO email_verification_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)',
-        [emailToken, user.id, expires24h]);
-      const base = process.env.APP_URL || 'https://betshuva.com/betshuva-app';
-      sendEmail({
-        to: user.email,
-        subject: 'אמת את כתובת האימייל שלך – בתשובה',
-        html: emailVerificationEmail(user.name, `${base}/verify-email?token=${emailToken}`),
-      }).catch(() => {});
-    }
-
-    if (hasPhone && !verifyByPhone) {
-      const smsCode = crypto.randomInt(100000, 1000000).toString();
-      otpStore.set(cleanPhone, { code: smsCode, expires: Date.now() + 10 * 60 * 1000, name });
-      sendEmail({
-        to: `${cleanPhone}@019sms.co.il`,
-        subject: `קוד אימות הטלפון שלך לבתשובה: ${smsCode}`,
-        html: '',
-      }).catch(() => {});
-    }
-
-    logActivity(user.id, 'register', { email: email || null, phone: cleanPhone }, req.ip);
-    await claimAppInvite(user.id, req.body.inviteId || null);
-    const authToken = signSession(user, JWT_SECRET);
-    res.json({ pending: false, token: authToken, user, phone: cleanPhone, hasEmail, hasPhone,
-      verificationMethod: verifyByPhone ? 'phone' : 'email' });
-  } catch (e) {
-    // The pre-insert checks above improve the normal flow, while this also
-    // handles two simultaneous registration attempts without exposing SQL or
-    // constraint names to the client.
-    if (e.code === '23505') {
-      const isEmail = e.constraint === 'users_email_key';
-      const isPhone = e.constraint === 'users_phone_key';
-      return res.status(409).json({
-        error: isEmail
-          ? 'האימייל כבר שייך לחשבון קיים. יש לחזור למסך הכניסה ולהיכנס לחשבון הקיים'
-          : isPhone
-            ? 'מספר הטלפון כבר שייך לחשבון קיים. יש לחזור למסך הכניסה ולהיכנס לחשבון הקיים'
-            : 'כבר קיים חשבון עם הפרטים שהוזנו',
-        code: isEmail ? 'EMAIL_ALREADY_REGISTERED'
-          : isPhone ? 'PHONE_ALREADY_REGISTERED' : 'ACCOUNT_ALREADY_REGISTERED',
-      });
-    }
-    console.error('register:', e.message);
-    res.status(500).json({ error: 'יצירת החשבון נכשלה. נסה שוב בעוד רגע' });
-  }
-});
+// New accounts require verified Google identity. Keep legacy login and
+// phone-linking routes working, but retire all password/SMS signup endpoints.
+app.post('/api/register', authRateLimit, googleRegistrationRequired);
+app.post('/api/registration/send-code', authRateLimit, googleRegistrationRequired);
+app.post('/api/registration/verify-code', authRateLimit, googleRegistrationRequired);
 
 // ── Login ────────────────────────────────────────────────────────
 app.post('/api/login', authRateLimit, credentialRateLimit, async (req, res) => {
@@ -5110,6 +4963,8 @@ app.post('/api/login', authRateLimit, credentialRateLimit, async (req, res) => {
         (user.phone && password === `otp_${user.phone.replace(/\D/g, '')}`) ||
         !(await bcrypt.compare(password, user.password_hash)))
       return res.status(401).json({ error: 'אימייל או סיסמה שגויים' });
+    const ageError = accountAgeError(user, { allowMissing: true });
+    if (ageError) return res.status(ageError.status).json(ageError);
     const moderationError = accountModerationError(user);
     if (moderationError) return res.status(moderationError.status).json(moderationError);
     if (!user.phone) {
@@ -5188,6 +5043,14 @@ app.post('/api/registration/verify-google', authRateLimit, async (req, res) => {
       '862738339788-umebs5qrpaaikhdr3uuu259hufc65l98.apps.googleusercontent.com']);
     if (!payload.sub || !allowed.has(payload.aud) || (payload.email_verified !== 'true' && payload.email_verified !== true))
       return res.status(401).json({ error: 'חשבון Google לא תקין או לא מאומת' });
+    const pool = await getPool();
+    const existing = await pool.query(
+      'SELECT id FROM users WHERE google_id = $1 OR lower(email) = lower($2) LIMIT 1',
+      [payload.sub, payload.email || null]);
+    if (existing.rows.length) {
+      return res.json({ ok: true, existingAccount: true,
+        name: payload.name || '', email: payload.email || '' });
+    }
     res.json({ ok: true, name: payload.name || '', email: payload.email || '' });
   } catch (_) {
     res.status(500).json({ error: 'אימות Google נכשל' });
@@ -5232,6 +5095,8 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
 
     if (byGoogle.rows.length) {
       const user  = byGoogle.rows[0];
+      const ageError = accountAgeError(user, { allowMissing: true });
+      if (ageError) return res.status(ageError.status).json(ageError);
       console.log(`[GOOGLE] login by google_id — user:${user.name} email:${user.email}`);
       const token = signSession(user, JWT_SECRET);
       logActivity(user.id, 'google_login', { email: user.email }, req.ip);
@@ -5246,6 +5111,8 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
         [email]);
       if (byEmail.rows.length) {
         const user = byEmail.rows[0];
+        const ageError = accountAgeError(user, { allowMissing: true });
+        if (ageError) return res.status(ageError.status).json(ageError);
         await pool.query(
           `UPDATE users
            SET google_id=$1, email_verified=TRUE,
@@ -5261,19 +5128,20 @@ app.post('/api/auth/google', authRateLimit, async (req, res) => {
 
     // 3. Create new user
     if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
-      return res.status(400).json({ error: 'ליצירת חשבון חדש יש לעבור למסך הרשמה ולאשר תנאים וגיל 13 ומעלה' });
+      return res.status(400).json({ error: 'ליצירת חשבון חדש יש לעבור למסך הרשמה ולאשר תנאים וגיל 18 ומעלה',
+        code: 'REGISTRATION_REQUIRED' });
     const registrationFilter = requestedRegistrationFilter(req.body);
     if (!registrationFilter)
       return res.status(400).json({ error: 'יש לבחור ולאשר את הגדרות הסינון' });
     if (!['male', 'female'].includes(req.body.gender))
       return res.status(400).json({ error: 'יש לבחור מגדר בהרשמה' });
     const agePolicy = validateRegistrationAge(req.body.birthDate);
-    if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
+    if (agePolicy.error) return res.status(400).json(agePolicy);
     console.log(`[GOOGLE] new user — name:${name} email:${email}`);
     const inserted = await pool.query(
       `INSERT INTO users (name, email, email_verified, google_id, profile_pic_url,
                           terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter)
-       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-08-23', TRUE, $5, $6, $7)
+       VALUES ($1, $2, TRUE, $3, $4, now(), '2026-10-04', TRUE, $5, $6, $7)
        RETURNING *`,
       [name || (email ? email.split('@')[0] : 'משתמש'), email || null, googleId, picture || null,
        req.body.gender, agePolicy.birthDate, JSON.stringify(registrationFilter)]);
@@ -5381,8 +5249,9 @@ app.get('/api/users', authWithDbCheck, async (req, res) => {
         ? { ...user, receiving_filter: { ...DEFAULT_CONTENT_FILTER },
           filter_override: { ...DEFAULT_CONTENT_FILTER } } : user));
     res.set('Cache-Control', 'no-store');
-    res.json(await projectProfileImages(pool, req.user.id,
-      [...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...contacts]));
+    const conversations = await projectReactionConversations(pool, req.user.id, 'chat',
+      [...self.rows.map(user => ({ ...user, name: 'הודעות לעצמי', is_self: true })), ...contacts], contentAllowedByFilter);
+    res.json(await projectProfileImages(pool, req.user.id, conversations));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -5450,7 +5319,7 @@ app.get('/api/users/search', authWithDbCheck, searchRateLimit, async (req, res) 
            u.birth_date <= CURRENT_DATE - INTERVAL '18 years'
            OR EXISTS (SELECT 1 FROM user_contacts c WHERE c.owner_id=$1 AND c.contact_id=u.id)
          )
-         AND (u.name ILIKE $2 OR u.email ILIKE $2 OR ($3 <> '' AND u.phone = $4))
+         AND (u.name ILIKE $2 OR u.email ILIKE $2 OR ($3 <> '' AND ${normalizedPhoneSql('u.phone')} = $4))
        ORDER BY u.name LIMIT 30`,
       [
         req.user.id,
@@ -5740,7 +5609,7 @@ app.post('/api/contacts/match', authWithDbCheck, searchRateLimit, async (req, re
   const phones = Array.isArray(req.body.phones) ? req.body.phones : [];
   const emails = Array.isArray(req.body.emails) ? req.body.emails : [];
 
-  // Normalize: keep digits only, handle Israeli prefix (972 → 0)
+  // Match the complete normalized number, including international prefixes.
   const normalized = [...new Set(phones.slice(0, 2000).map(normalizePhone).filter(Boolean))];
   const normalizedEmails = [...new Set(emails.slice(0, 2000).map(e => String(e).trim().toLowerCase()).filter(e => e.includes('@')))];
   if (normalized.length === 0 && normalizedEmails.length === 0) return res.json([]);
@@ -5752,7 +5621,7 @@ app.post('/api/contacts/match', authWithDbCheck, searchRateLimit, async (req, re
               EXISTS(SELECT 1 FROM user_contacts c
                      WHERE c.owner_id=$1 AND c.contact_id=users.id) AS saved
        FROM users
-       WHERE (phone = ANY($2::text[]) OR lower(email) = ANY($3::text[]))
+       WHERE (${normalizedPhoneSql('phone')} = ANY($2::text[]) OR lower(email) = ANY($3::text[]))
          AND NOT (name = 'משתמש' AND gender IS NULL)
          AND (email_verified = TRUE OR phone_verified = TRUE)
          AND id != $1
@@ -5790,6 +5659,9 @@ app.get('/api/messages/unread', auth, async (req, res) => {
     `, [req.user.id, SCAN_BOT_ID]);
     const counts = {};
     for (const row of result.rows) counts[row.senderId] = row.cnt;
+    for (const [targetId, count] of Object.entries(await reactionUnreadCounts(pool, req.user.id, 'chat', contentAllowedByFilter))) {
+      if (targetId !== SCAN_BOT_ID && targetId !== req.user.id) counts[targetId] = (counts[targetId] || 0) + count;
+    }
     res.json(counts);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -5822,6 +5694,9 @@ app.get('/api/groups/unread', auth, async (req, res) => {
     `, [req.user.id]);
     const counts = {};
     for (const row of result.rows) counts[row.group_id] = row.cnt;
+    for (const [targetId, count] of Object.entries(await reactionUnreadCounts(pool, req.user.id, 'group', contentAllowedByFilter))) {
+      counts[targetId] = (counts[targetId] || 0) + count;
+    }
     res.json(counts);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5841,6 +5716,8 @@ app.put('/api/groups/:id/read', auth, async (req, res) => {
         )
       ON CONFLICT (message_id, user_id) DO UPDATE SET status='read'
     `, [req.user.id, req.params.id]);
+    await markReactionsRead(pool, req.user.id, 'group', req.params.id, contentAllowedByFilter);
+    relay(req.user.id, 'message:reactions-read', { kind: 'group', targetId: req.params.id, createdAt: new Date().toISOString() });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -5892,6 +5769,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
       SELECT
         m.id, m.sender_id, m.recipient_id, m.type,
         receipt.client_message_id,
+        CASE WHEN sf.user_id=$1 THEN sf.client_upload_id END AS client_upload_id,
         m.body, m.file_url, m.file_name, m.file_size,
         m.reply_to_id, m.created_at,
         (m.delivery_summary->'guideFilterNotice'->>'key') IS NOT NULL AS _guide_filter_notice,
@@ -5995,6 +5873,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         mr.file_url,
         mr.file_name,
         sf.file_size,
+        sf.moderation_status,
         mr.created_at,
         sf.moderation_details->'classification' AS image_classification,
         CASE WHEN mr.status='rejected' THEN 'rejected_request'
@@ -6394,6 +6273,8 @@ app.put('/api/messages/read', auth, async (req, res) => {
          ON CONFLICT (message_id, user_id) DO UPDATE SET status='read', updated_at=now()`,
         [id, req.user.id]);
     }
+    await markReactionsRead(pool, req.user.id, 'chat', senderId, contentAllowedByFilter);
+    relay(req.user.id, 'message:reactions-read', { kind: 'chat', targetId: senderId, createdAt: new Date().toISOString() });
 
     const preference = await pool.query(
       'SELECT read_receipts_enabled FROM users WHERE id=$1', [req.user.id]);
@@ -6408,7 +6289,8 @@ app.put('/api/messages/read', auth, async (req, res) => {
 });
 
 registerMessageReactions(app, { auth: authWithDbCheck, rateLimit: messageRateLimit,
-  getPool, contentAllowedByFilter });
+  getPool, contentAllowedByFilter, sendPush,
+  notifyReaction: (viewerId, payload) => relay(viewerId, 'message:reaction', payload) });
 
 // ── Messages: delete ──────────────────────────────────────────────
 app.delete('/api/messages/:id', auth, async (req, res) => {
@@ -6583,12 +6465,15 @@ app.post('/api/reports', auth, reportRateLimit, async (req, res) => {
        VALUES($1,$2,$3,$4,$5)
        ON CONFLICT(reporter_id,target_type,target_id) DO UPDATE SET
          reason=EXCLUDED.reason, details=EXCLUDED.details,
-         status='pending', reviewed_by=NULL, reviewed_at=NULL, created_at=now()
+         status='pending', reviewed_by=NULL, reviewed_at=NULL, created_at=now(),
+         notification_version=user_reports.notification_version+1,
+         notification_attempts=0,notification_next_at=now(),notification_error=NULL
        RETURNING id,status`,
       [req.user.id, targetType, targetId, reason, details]);
     logActivity(req.user.id, 'submit_report',
       { reportId: inserted.rows[0].id, targetType, targetId }, clientIp(req));
     res.status(201).json({ ok: true, ...inserted.rows[0] });
+    void runReportNotifications();
   } catch (e) {
     console.error('submit report:', e.message);
     res.status(500).json({ error: 'לא ניתן היה לשמור את הדיווח' });
@@ -6835,7 +6720,7 @@ function mediaLibraryRawOwnedSql() {
             WHERE received.source_file_id=sf.id AND received.status='queued'))::int AS pending_refs,
           (SELECT COUNT(*)::int FROM users u WHERE u.profile_pic_url=sf.public_url) AS profile_refs,
           (SELECT COUNT(*)::int FROM groups g WHERE g.profile_pic_url=sf.public_url) AS group_refs,
-          ((SELECT COUNT(*) FROM listings l WHERE l.image_url=sf.public_url) +
+          ((SELECT COUNT(*) FROM listings l WHERE l.image_url=sf.public_url OR l.video_url=sf.public_url) +
            (SELECT COUNT(*) FROM listing_images li WHERE li.url=sf.public_url))::int AS listing_refs,
           (SELECT COUNT(*)::int FROM education_forms ef WHERE ef.file_url=sf.public_url) AS form_refs,
           (SELECT COUNT(*)::int FROM shared_gifs sg
@@ -6854,7 +6739,7 @@ function mediaLibraryRawOwnedSql() {
           || COALESCE((SELECT jsonb_agg(jsonb_build_object(
               'kind','listing','targetId',l.id,
               'label',COALESCE(l.title,'מודעה'),'date',l.created_at))
-            FROM listings l WHERE l.user_id=$1 AND (l.image_url=sf.public_url OR EXISTS (
+            FROM listings l WHERE l.user_id=$1 AND (l.image_url=sf.public_url OR l.video_url=sf.public_url OR EXISTS (
               SELECT 1 FROM listing_images li WHERE li.listing_id=l.id AND li.url=sf.public_url))), '[]'::jsonb)
           || COALESCE((SELECT jsonb_agg(jsonb_build_object(
               'kind','form','targetId',ef.id,'groupId',ef.group_id,
@@ -7157,7 +7042,7 @@ async function deleteOwnMedia(pool, userId, fileId) {
           AND ${personalMessageVisible('m', '$3')}) +
       (SELECT COUNT(*) FROM users WHERE profile_pic_url=$1) +
       (SELECT COUNT(*) FROM groups WHERE profile_pic_url=$1) +
-      (SELECT COUNT(*) FROM listings WHERE image_url=$1) +
+      (SELECT COUNT(*) FROM listings WHERE image_url=$1 OR video_url=$1) +
       (SELECT COUNT(*) FROM listing_images WHERE url=$1) +
       (SELECT COUNT(*) FROM education_forms WHERE file_url=$1) +
       (SELECT COUNT(*) FROM shared_gifs WHERE stored_file_id=$2 AND status='active') AS count`,
@@ -7279,6 +7164,9 @@ registerSystemAuditRoutes(app, { getPool, adminMiddleware: adminAuth });
 require('./audit-column-order').registerAuditColumnOrderRoutes(app, { getPool, adminMiddleware: adminAuth });
 registerAuditScanPreviewRoutes(app, { getPool, adminMiddleware: adminAuth });
 require('./audit-media').registerAuditMediaRoutes(app, { getPool, adminMiddleware: adminAuth,
+  readMedia: (db, file) => readSourceMedia(db, UPLOAD_ROOT, file) });
+require('./admin-scans').registerAdminScanRoutes(app, { getPool, adminMiddleware: adminAuth,
+  uploadRoot: UPLOAD_ROOT, secret: JWT_SECRET,
   readMedia: (db, file) => readSourceMedia(db, UPLOAD_ROOT, file) });
 
 // Phase 1: provider-neutral backup settings and read-only storage accounting.
@@ -7456,9 +7344,11 @@ app.get('/api/backup/google/callback', async (req, res) => {
   try {
     const state = jwt.verify(String(req.query.state), JWT_SECRET, { algorithms: ['HS256'] });
     if (state.purpose !== 'personal_drive_oauth' || !state.userId) return finish('invalid_state');
+    const pool = await getPool();
+    const ageAccount = (await pool.query('SELECT birth_date FROM users WHERE id=$1', [state.userId])).rows[0];
+    if (!ageAccount || accountAgeError(ageAccount)) return finish('age_restricted');
     const tokens = await personalDrive.exchangeCode(String(req.query.code));
     const encrypted = personalDrive.encryptRefreshToken(tokens.refresh_token, state.userId);
-    const pool = await getPool();
     const binding = (await pool.query('SELECT storage_google_account_id FROM cloud_backup_accounts WHERE user_id=$1', [state.userId])).rows[0];
     if (binding?.storage_google_account_id && binding.storage_google_account_id !==
         await personalDrive.getAccountIdentity(tokens.refresh_token)) return finish('different_account');
@@ -7898,7 +7788,7 @@ app.patch('/api/profile/preferences', auth, async (req, res) => {
 // be supplied once and is then immutable through the public API.
 app.put('/api/profile/birth-date', auth, async (req, res) => {
   const agePolicy = validateRegistrationAge(req.body?.birthDate);
-  if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
+  if (agePolicy.error) return res.status(400).json(agePolicy);
   try {
     const pool = await getPool();
     const updated = await pool.query(
@@ -7909,6 +7799,8 @@ app.put('/api/profile/birth-date', auth, async (req, res) => {
     if (!updated.rows.length) {
       const existing = await pool.query('SELECT birth_date FROM users WHERE id=$1', [req.user.id]);
       if (!existing.rows.length) return res.status(404).json({ error: 'החשבון אינו קיים' });
+      const ageError = accountAgeError(existing.rows[0]);
+      if (ageError) return res.status(ageError.status).json(ageError);
       return res.status(409).json({
         error: 'תאריך הלידה כבר הוגדר. לשינוי יש לפנות לתמיכה',
         code: 'BIRTH_DATE_ALREADY_SET',
@@ -7989,85 +7881,11 @@ app.put('/api/profile/photo-from-message', auth, async (req, res) => {
   }
 });
 
-// ── Location: update precise location ────────────────────────────
-async function reverseGeocodeHebrew(lat, lng) {
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=he`;
-    const res  = await fetch(url, { headers: { 'User-Agent': 'betshuva-app/1.0' } });
-    const data = await res.json();
-    const addr = data.address || {};
-    const city = addr.city || addr.town || addr.village || addr.municipality || addr.suburb || null;
-    const street = addr.road || addr.pedestrian || addr.residential || addr.footway || null;
-    const houseNumber = addr.house_number || null;
-    const country = addr.country || null;
-    return { city, street, houseNumber, country };
-  } catch { return { city: null, street: null, houseNumber: null, country: null }; }
-}
-
-// Resolve an address for one-time form completion without retaining precise
-// coordinates or changing the user's saved profile.
-app.put('/api/location/address', auth, async (req, res) => {
-  if (req.user.isTeen)
-    return res.status(403).json({ error: 'שיתוף מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
-  const latitude = Number(req.body?.latitude);
-  const longitude = Number(req.body?.longitude);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
-      Math.abs(latitude) > 90 || Math.abs(longitude) > 180)
-    return res.status(400).json({ error: 'מיקום לא תקין' });
-  try {
-    const { city, street, houseNumber } =
-      await reverseGeocodeHebrew(latitude, longitude);
-    if (!city && !street)
-      return res.status(404).json({ error: 'לא נמצאה כתובת עבור המיקום' });
-    res.json({
-      ok: true,
-      city: city || '',
-      street: street || '',
-      house_number: houseNumber || '',
-    });
-  } catch (_) {
-    res.status(503).json({ error: 'לא ניתן לזהות את הכתובת כרגע' });
-  }
-});
-
-// Resolve the locality for a listing without retaining precise coordinates.
-app.put('/api/location/city', auth, async (req, res) => {
-  if (req.user.isTeen)
-    return res.status(403).json({ error: 'שיתוף מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
-  const latitude = Number(req.body?.latitude);
-  const longitude = Number(req.body?.longitude);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
-      Math.abs(latitude) > 90 || Math.abs(longitude) > 180)
-    return res.status(400).json({ error: 'מיקום לא תקין' });
-  try {
-    const { city, country } = await reverseGeocodeHebrew(latitude, longitude);
-    if (!city) return res.status(404).json({ error: 'לא נמצא יישוב עבור המיקום' });
-    const pool = await getPool();
-    await pool.query(
-      `UPDATE users SET city=$1, country=COALESCE($2, country) WHERE id=$3`,
-      [city, country || null, req.user.id]);
-    res.json({ ok: true, city, country });
-  } catch (_) {
-    res.status(503).json({ error: 'לא ניתן לזהות את היישוב כרגע' });
-  }
-});
-
-app.put('/api/location', auth, async (req, res) => {
-  if (req.user.isTeen)
-    return res.status(403).json({ error: 'שיתוף מיקום אינו זמין בחשבון נוער', code: 'TEEN_LOCATION_DISABLED' });
-  const { latitude, longitude } = req.body;
-  if (latitude == null || longitude == null) return res.status(400).json({ error: 'נדרש מיקום' });
-  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return res.status(400).json({ error: 'מיקום לא תקין' });
-  try {
-    const { city, country } = await reverseGeocodeHebrew(latitude, longitude);
-    const pool = await getPool();
-    await pool.query(
-      `UPDATE users SET latitude=$1, longitude=$2,
-       city=$3, country=$4,
-       location_updated_at=now() WHERE id=$5`,
-      [latitude, longitude, city || null, country || null, req.user.id]);
-    res.json({ ok: true, city, country });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+// ── Location: resolve only after provider disclosure and explicit consent ──
+registerLocationRoutes(app, { auth, getPool,
+  rateLimit: createRateLimiter({ name: 'geocoding', windowMs: 5 * 60 * 1000, max: 10,
+    keyGenerator: req => String(req.user.id),
+    message: 'בוצעו יותר מדי בקשות מיקום. אפשר להזין כתובת ידנית או לנסות בעוד מספר דקות' }),
 });
 
 app.delete('/api/location', auth, async (req, res) => {
@@ -8326,7 +8144,10 @@ app.post('/api/listings', auth, async (req, res) => {
           contact_phone_visible, expires_in_days, license_plate,
           vehicle_details, property_details, category_details,
           contact_preferences } = req.body;
-  const allImages = image_urls?.length ? image_urls.slice(0, 8) : (image_url ? [image_url] : []);
+  const allImages = image_urls === undefined ? (image_url ? [image_url] : []) : image_urls;
+  let videoChange;
+  try { videoChange = normalizeListingVideoChange(req.body); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message, code: e.code }); }
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   if (title.trim().length > 120) return res.status(400).json({ error: 'הכותרת ארוכה מדי' });
   if (!description?.trim() || description.trim().length < 10)
@@ -8365,6 +8186,7 @@ app.post('/api/listings', auth, async (req, res) => {
     return res.status(400).json({ error: 'במודעת נדל״ן נדרשים מחיר, מספר חדרים ושטח במ״ר' });
   if (category === 'נדל״ן' && !validPropertyEntryDate(safePropertyDetails?.entry_date))
     return res.status(400).json({ error: 'יש לבחור תאריך כניסה תקין' });
+  let client, committed = false;
   try {
     const pool = await getPool();
     // use user's stored location if not provided
@@ -8375,13 +8197,16 @@ app.post('/api/listings', auth, async (req, res) => {
       lng      = me.rows[0]?.longitude ?? lng;
       listCity = listCity || me.rows[0]?.city;
     }
-    const result = await pool.query(
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await validateListingMedia(client, req.user.id, allImages, videoChange.url);
+    const result = await client.query(
       `INSERT INTO listings
        (user_id,type,title,description,price,city,latitude,longitude,image_url,category,
         item_condition,negotiable,quantity,delivery_method,pickup_details,
-        contact_phone_visible,contact_preferences,license_plate,vehicle_details,property_details,category_details,expires_at)
+        contact_phone_visible,contact_preferences,license_plate,vehicle_details,property_details,category_details,expires_at,video_url)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-               $17,$18,$19,$20,$21,now() + ($22::text || ' days')::interval)
+               $17,$18,$19,$20,$21,now() + ($22::text || ' days')::interval,$23)
        RETURNING id`,
       [req.user.id, normalizedType, title.trim(),
        listingDescriptionWithTitle(title, description) || null,
@@ -8392,17 +8217,25 @@ app.post('/api/listings', auth, async (req, res) => {
        validDelivery.includes(delivery_method) ? delivery_method : 'pickup',
        pickup_details?.trim() || null, safeContactPreferences.phone,
        safeContactPreferences, safePlate, safeVehicleDetails, safePropertyDetails,
-       safeCategoryDetails, expiryDays]);
+       safeCategoryDetails, expiryDays, videoChange.url || null]);
     const listingId = result.rows[0].id;
     if (allImages.length) {
       for (let i = 0; i < allImages.length; i++) {
-        await pool.query(
+        await client.query(
           `INSERT INTO listing_images (listing_id, url, sort_order) VALUES ($1, $2, $3)`,
           [listingId, allImages[i], i]);
       }
     }
+    await client.query('COMMIT');
+    committed = true;
     res.json({ id: listingId });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code }); }
+  finally {
+    if (client) {
+      if (!committed) await client.query('ROLLBACK').catch(() => {});
+      client.release();
+    }
+  }
 });
 
 app.get('/api/listings', auth, async (req, res) => {
@@ -8489,7 +8322,7 @@ app.get('/api/listings', auth, async (req, res) => {
         : 'l.created_at DESC';
     const result = await pool.query(`
       SELECT id, type, title, description, price, city,
-             image_url, images, category, status, created_at,
+             image_url, images, video_url, category, status, created_at,
              item_condition, negotiable, quantity, delivery_method,
              pickup_details, contact_phone_visible, contact_preferences,
              license_plate, vehicle_details, property_details, category_details,
@@ -8498,7 +8331,7 @@ app.get('/api/listings', auth, async (req, res) => {
              dist AS distance_km
       FROM (
         SELECT l.id, l.type, l.title, l.description, l.price, l.city,
-               l.image_url,
+               l.image_url, l.video_url,
                COALESCE(
                  (SELECT ARRAY_AGG(li.url ORDER BY li.sort_order)
                   FROM listing_images li WHERE li.listing_id=l.id),
@@ -8616,19 +8449,43 @@ app.put('/api/listings/:id', auth, async (req, res) => {
   if (!title?.trim()) return res.status(400).json({ error: 'נדרשת כותרת' });
   const normalizedPrice = Number(price) || 0;
   const safeType   = normalizedPrice > 0 ? 'sale' : 'free';
-  const allImages  = Array.isArray(image_urls) ? image_urls.filter(Boolean).slice(0, 8) : [];
+  const allImages = image_urls === undefined ? [] : image_urls;
+  if (!Array.isArray(allImages) || allImages.length > 8)
+    return res.status(400).json({ error: 'ניתן לצרף עד 8 תמונות למודעה', code: 'INVALID_LISTING_IMAGES' });
+  let videoChange;
+  try { videoChange = normalizeListingVideoChange(req.body); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message, code: e.code }); }
   const validConditions = ['new','like_new','good','fair','for_parts'];
   const validDelivery = ['pickup','delivery','both'];
   const parsedQuantity = Math.max(1, Math.min(999, Number.parseInt(quantity, 10) || 1));
   const expiryDays = [7,14,30,60].includes(Number(expires_in_days))
     ? Number(expires_in_days) : 30;
+  let client;
+  let transactionCommitted = false;
   try {
     const pool = await getPool();
-    const current = await pool.query(
-      'SELECT category FROM listings WHERE id=$1 AND user_id=$2',
+    client = await pool.connect();
+    await client.query('BEGIN');
+    // Serialize image replacement with uploads that finish in the background.
+    const current = await client.query(
+      'SELECT category,video_url FROM listings WHERE id=$1 AND user_id=$2 FOR UPDATE',
       [req.params.id, req.user.id]);
     if (!current.rows.length) return res.status(404).json({ error: 'לא נמצא' });
     const fixedCategory = current.rows[0].category;
+    const nextVideo = videoChange.supplied ? videoChange.url : current.rows[0].video_url;
+    if (videoChange.supplied && Object.hasOwn(req.body, 'expected_old_video_url') &&
+        current.rows[0].video_url !== nextVideo && (current.rows[0].video_url || null) !== videoChange.expected)
+      return res.status(409).json({ error: 'הסרטון השתנה מאז תחילת העריכה; יש לרענן את המודעה', code: 'LISTING_VIDEO_CHANGED' });
+    const previousImages = await client.query(
+      `SELECT url FROM listing_images WHERE listing_id=$1
+       UNION SELECT image_url AS url FROM listings
+       WHERE id=$1 AND image_url IS NOT NULL`,
+      [req.params.id]);
+    const retainedImages = new Set(previousImages.rows.map(row => row.url));
+    await validateListingMedia(client, req.user.id,
+      allImages.filter(url => !retainedImages.has(url)),
+      videoChange.supplied && nextVideo !== current.rows[0].video_url ? nextVideo : null);
+
     const safePlate = fixedCategory === 'רכב' && license_plate
       ? normalizeLicensePlate(license_plate) : null;
     if (fixedCategory === 'רכב' && license_plate && !safePlate)
@@ -8652,19 +8509,14 @@ app.put('/api/listings/:id', auth, async (req, res) => {
       return res.status(400).json({ error: 'במודעת נדל״ן נדרשים מחיר, מספר חדרים ושטח במ״ר' });
     if (fixedCategory === 'נדל״ן' && !validPropertyEntryDate(safePropertyDetails?.entry_date))
       return res.status(400).json({ error: 'יש לבחור תאריך כניסה תקין' });
-    const previousImages = await pool.query(
-      `SELECT url FROM listing_images WHERE listing_id=$1
-       UNION SELECT image_url AS url FROM listings
-       WHERE id=$1 AND image_url IS NOT NULL`,
-      [req.params.id]);
-    const upd = await pool.query(
+    const upd = await client.query(
       `UPDATE listings SET type=$1, title=$2, description=$3,
        price=$4, city=$5, image_url=$6, item_condition=$7,
        negotiable=$8, quantity=$9, delivery_method=$10,
        pickup_details=$11, contact_phone_visible=$12, contact_preferences=$13,
        license_plate=$14, vehicle_details=$15, property_details=$16,
-       category_details=$17, expires_at=now() + ($18::text || ' days')::interval
-       WHERE id=$19 AND user_id=$20`,
+       category_details=$17, expires_at=now() + ($18::text || ' days')::interval,
+       video_url=$21 WHERE id=$19 AND user_id=$20`,
       [safeType, title.trim(), listingDescriptionWithTitle(title, description) || null,
        safeType === 'sale' ? normalizedPrice : null,
        city || null, allImages[0] || null,
@@ -8675,28 +8527,41 @@ app.put('/api/listings/:id', auth, async (req, res) => {
        safeContactPreferences.phone,
        safeContactPreferences, safePlate, safeVehicleDetails, safePropertyDetails,
        safeCategoryDetails, expiryDays,
-       req.params.id, req.user.id]);
+       req.params.id, req.user.id, nextVideo || null]);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'לא נמצא' });
-    await pool.query('DELETE FROM listing_images WHERE listing_id=$1', [req.params.id]);
+    await client.query('DELETE FROM listing_images WHERE listing_id=$1', [req.params.id]);
     for (let i = 0; i < allImages.length; i++) {
-      await pool.query(
+      await client.query(
         'INSERT INTO listing_images (listing_id, url, sort_order) VALUES ($1, $2, $3)',
         [req.params.id, allImages[i], i]);
     }
+    await client.query('COMMIT');
+    transactionCommitted = true;
+    client.release();
+    client = null;
     const removedImages = previousImages.rows
       .map(row => row.url)
       .filter(url => url && !allImages.includes(url));
     for (const url of removedImages) {
       const stillUsed = await pool.query(
         `SELECT 1 FROM listing_images WHERE url=$1
-         UNION SELECT 1 FROM listings WHERE image_url=$1 LIMIT 1`,
+         UNION SELECT 1 FROM listings WHERE image_url=$1 OR video_url=$1 LIMIT 1`,
         [url]);
       if (!stillUsed.rows.length) await deleteStoredFile(url);
     }
     logActivity(req.user.id, 'edit_listing', { id: req.params.id }, req.ip);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code }); }
+  finally {
+    if (client) {
+      if (!transactionCommitted) await client.query('ROLLBACK').catch(() => {});
+      client.release();
+    }
+  }
 });
+
+registerListingBackgroundImages(app, { auth, getPool, logActivity });
+registerChatListingImage(app, { auth, rateLimit: uploadRateLimit, getPool, uploadRoot: UPLOAD_ROOT });
 
 app.delete('/api/listings/:id', auth, async (req, res) => {
   try {
@@ -8807,6 +8672,9 @@ resumableAttachments.setQuotaHooks({
 app.post('/api/upload-sessions', auth, uploadRateLimit, resumableAttachments.create);
 app.get('/api/upload-sessions/:id', auth, resumableAttachments.status);
 app.put('/api/upload-sessions/:id', auth, resumableAttachments.chunk);
+app.patch('/api/upload-sessions/:id', auth, resumableAttachments.chunk);
+app.post('/api/upload-sessions/:id/seal', auth, resumableAttachments.seal);
+app.delete('/api/upload-sessions/:id', auth, resumableAttachments.cancel);
 
 const reserveMultipartStorage = async (req, res, next) => {
   if (req.body?.uploadSessionId) return next();
@@ -8845,6 +8713,15 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
     });
   }
   if (!allowed) return res.status(400).json({ error: 'סוג קובץ לא נתמך' });
+  const listingVideo = req.body.listingVideo === 'true';
+  let listingVideoProof = null;
+  if (listingVideo) {
+    if (req.user.isTeen) return res.status(403).json({ error: 'לוח המודעות אינו זמין בחשבון נוער', code: 'TEEN_LISTINGS_DISABLED' });
+    if (allowed.dbType !== 'video' || req.body.listingImage === 'true' || req.body.toUserId || req.body.groupId)
+      return res.status(400).json({ error: 'אפשר לצרף למודעה סרטון אחד בלבד', code: 'INVALID_LISTING_VIDEO' });
+    try { listingVideoProof = await probeListingVideo(file.buffer || file, file.originalname); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message, code: e.code }); }
+  }
   const recordedAudio = req.body.recordedAudio === 'true';
   if (recordedAudio && allowed.dbType !== 'audio')
     return res.status(400).json({
@@ -8908,6 +8785,7 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
   }
 
   let releaseUploadLock;
+  let releaseScanCacheLock;
   let activeUploadFileId;
   let quotaReservation;
   let unregisteredBlob;
@@ -8916,6 +8794,7 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
     file.originalname = await shortenCapturedFileName(pool, req.user.id, file.originalname);
     const contentSha256 = await sourceHash(file.buffer || file);
     releaseUploadLock = await acquireUploadLock(req.user.id, contentSha256, allowed.dbType);
+    releaseScanCacheLock = await acquireUploadLock('scan-cache', contentSha256, allowed.dbType);
     const trustedBuiltinExpression = allowed.dbType === 'image' &&
       await isTrustedBuiltinExpression(file);
     const visualFingerprint = allowed.dbType === 'image' && !trustedBuiltinExpression
@@ -8961,6 +8840,7 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
     const cachedScanQuery = (trustedBuiltinExpression || allowed.dbType === 'audio') ? { rows: [] } : await pool.query(
       `SELECT moderation_details FROM stored_files
        WHERE content_sha256=$1 AND file_type=$2
+         AND to_jsonb(stored_files)->>'scan_cache_invalidated_at' IS NULL
          AND moderation_status IN ('approved','rejected')
          AND moderation_details->>'moderationVersion'=$3
          AND COALESCE((moderation_details->>'pending')::boolean,FALSE)=FALSE
@@ -8974,13 +8854,16 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
       const visualCandidates = await pool.query(
         `SELECT moderation_details,visual_fingerprint FROM stored_files
          WHERE file_type='image' AND visual_fingerprint IS NOT NULL
+           AND to_jsonb(stored_files)->>'scan_cache_invalidated_at' IS NULL
+           AND NOT EXISTS(SELECT 1 FROM stored_files invalidated WHERE invalidated.content_sha256=$3
+             AND to_jsonb(invalidated)->>'scan_cache_invalidated_at' IS NOT NULL)
            AND moderation_status IN ('approved','rejected')
            AND moderation_details->>'moderationVersion'=$1
            AND moderation_details->>'source' IS DISTINCT FROM 'builtin-expression'
            AND moderation_details->>'scanSkipped' IS DISTINCT FROM 'true'
            AND ABS((visual_fingerprint->>'aspect')::double precision-$2)<=0.01
          ORDER BY created_at DESC LIMIT 100`,
-        [moderationVersion, visualFingerprint.aspect]);
+        [moderationVersion, visualFingerprint.aspect, contentSha256]);
       const match = visualCandidates.rows.find(row =>
         visuallyEquivalent(visualFingerprint, row.visual_fingerprint));
       if (match) { cachedScan = match.moderation_details; cacheMatch = 'visual'; }
@@ -8994,7 +8877,7 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
       ? await findReusableUpload(pool, {
         userId: req.user.id, contentSha256, fileType: allowed.dbType,
         mimeType: file.mimetype, fileSize: file.size,
-        listingImage: req.body.listingImage === 'true',
+        listingImage: req.body.listingImage === 'true' || listingVideo,
         moderationVersion: moderationVersion,
         trustedBuiltinExpression,
       }) : null;
@@ -9023,7 +8906,7 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
        RETURNING id`,
       [req.user.id, file.originalname, blobName, url, file.mimetype, allowed.dbType,
        file.size, req.body.groupId ? 'group' : req.body.toUserId ? 'chat' :
-         req.body.listingImage === 'true' ? 'listing' : 'general',
+         req.body.listingImage === 'true' || listingVideo ? 'listing' : 'general',
        req.body.groupId || req.body.toUserId || null, contentSha256,
        visualFingerprint ? JSON.stringify(visualFingerprint) : null, activeUploadFileId, ...auditIds(),
        typeof req.body.clientUploadId === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(req.body.clientUploadId)
@@ -9067,12 +8950,15 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
       scanResult = approvedAudioResult(audioDurationSeconds);
 
     if (scanResult) {
+      if (listingVideoProof) scanResult.listingVideoProof = listingVideoProof;
       scanResult.moderationVersion = moderationVersion;
       const ss = scanResult.safeSearch || {};
       console.log(`[Vision] ${file.originalname} | ${scanResult.cacheHit ? '♻️ CACHE' : scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
     }
 
-    if (!scanResult?.pending && !scanResult?.blocked) {
+    // Listing videos have their own duration and complete-frame policy below.
+    // Personal conversation preferences must not disable this separate feature.
+    if (!scanResult?.pending && !scanResult?.blocked && !(listingVideo && listingVideoProof)) {
       try {
         await assertSenderMediaAllowed(pool, { userId: req.user.id,
           contextType: req.body.groupId ? 'group' : req.body.toUserId && !scanBotUpload ? 'chat' : 'general',
@@ -9225,6 +9111,17 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
       }
     }
 
+    if (listingVideo && !scanResult?.pending && !listingVideoApproved({
+      file_type: 'video', mime_type: file.mimetype, context_type: 'listing',
+      moderation_status: 'approved', moderation_details: scanResult,
+    })) {
+      const reason = 'במודעות מותר סרטון ללא אנשים באורך עד 10 שניות';
+      if (!reused) await auditedMediaQuery(pool,
+        `UPDATE stored_files SET moderation_status='rejected',moderation_details=$1 WHERE public_url=$2`,
+        [JSON.stringify({ ...scanResult, reason }), url]);
+      return res.json({ url, fileName: file.originalname, fileSize: file.size, fileType: 'video', status: 'rejected', reason });
+    }
+
     if (!scanBotUpload && !scanResult?.pending &&
         ['image', 'video', 'document', 'audio'].includes(allowed.dbType) && recipientPolicy?.isContact &&
         !contentAllowedByFilter(recipientPolicy.filter, allowed.dbType,
@@ -9361,6 +9258,7 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
     if (quotaReservation) await storageQuota.release(await getPool(), req.user.id, quotaReservation).catch(() => {});
     if (activeUploadFileId) activeUploadFileIds.delete(activeUploadFileId);
     releaseUploadLock?.();
+    releaseScanCacheLock?.();
   }
 });
 
@@ -9414,7 +9312,8 @@ app.get('/api/groups', auth, async (req, res) => {
                last_msg.created_at DESC NULLS LAST, g.created_at DESC
     `, [req.user.id]);
     res.set('Cache-Control', 'no-store');
-    res.json(await projectProfileImages(pool, req.user.id, result.rows));
+    res.json(await projectProfileImages(pool, req.user.id,
+      await projectReactionConversations(pool, req.user.id, 'group', result.rows, contentAllowedByFilter)));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -9760,6 +9659,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
     const historySql = `
       SELECT
         m.id, m.sender_id, m.type, m.body, m.file_url, m.file_name, m.reply_to_id, m.created_at,
+        CASE WHEN sf.user_id=$2 THEN sf.client_upload_id END AS client_upload_id,
         CASE WHEN m.sender_id=$2 THEN m.delivery_summary END AS delivery_summary,
         m.education_form_id, education_response.response_status AS education_response_status,
         education_form.status AS education_form_status,
@@ -11904,34 +11804,7 @@ app.post('/api/admin/system-message', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/admin/reports', adminAuth, async (req, res) => {
-  const status = String(req.query.status || 'pending');
-  const allowed = new Set(['pending', 'reviewed', 'resolved', 'dismissed', 'all']);
-  if (!allowed.has(status)) return res.status(400).json({ error: 'סטטוס לא תקין' });
-  try {
-    const pool = await getPool();
-    const result = await pool.query(
-      `SELECT r.*, u.name AS reporter_name, u.email AS reporter_email
-       FROM user_reports r JOIN users u ON u.id=r.reporter_id
-       WHERE ($1='all' OR r.status=$1)
-       ORDER BY r.created_at DESC LIMIT 500`, [status]);
-    res.json(result.rows);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.put('/api/admin/reports/:id', adminAuth, async (req, res) => {
-  const status = String(req.body.status || '');
-  if (!['reviewed', 'resolved', 'dismissed'].includes(status))
-    return res.status(400).json({ error: 'סטטוס לא תקין' });
-  try {
-    const pool = await getPool();
-    const result = await pool.query(
-      `UPDATE user_reports SET status=$1,reviewed_by=$2,reviewed_at=now()
-       WHERE id=$3 RETURNING *`, [status, req.user.id, req.params.id]);
-    if (!result.rows.length) return res.status(404).json({ error: 'דיווח לא נמצא' });
-    res.json(result.rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+require('./admin-reports').registerAdminReportRoutes(app, { getPool, adminMiddleware: adminAuth });
 
 // ── Admin: all users ─────────────────────────────────────────────
 app.get('/api/admin/users', adminAuth, async (req, res) => {
@@ -11999,18 +11872,8 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
         authenticatedUser = sessionCurrent(tokenUser, exists.rows[0]);
       } catch (_) {}
     }
-    if (!existingPhone.rows.length && !authenticatedUser) {
-      if (cleanName.length < 2)
-        return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
-      if (req.body.acceptedTerms !== true || req.body.ageConfirmed !== true)
-        return res.status(400).json({ error: 'יש לאשר תנאים וגיל 13 ומעלה' });
-      if (!['male', 'female'].includes(gender))
-        return res.status(400).json({ error: 'יש לבחור מגדר' });
-      const agePolicy = validateRegistrationAge(req.body.birthDate);
-      if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
-      if (!requestedRegistrationFilter(req.body))
-        return res.status(400).json({ error: 'יש לבחור ולאשר את הגדרות הסינון' });
-    }
+    if (!existingPhone.rows.length && !authenticatedUser)
+      return googleRegistrationRequired(req, res);
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
@@ -12054,59 +11917,27 @@ app.post('/api/send-otp', authRateLimit, otpRateLimit, async (req, res) => {
 
 // ── Verify OTP ───────────────────────────────────────────────────
 app.post('/api/verify-otp', authRateLimit, credentialRateLimit, async (req, res) => {
-  const { phone, code, name } = req.body;
+  const { phone, code } = req.body;
   const clean = (phone || '').replace(/\D/g, '');
   const entry = consumeOtp(otpStore, clean, code);
   if (!entry)
     return res.status(400).json({ error: 'קוד שגוי או פג תוקף' });
-  const requestedName = typeof name === 'string' ? name.trim() : '';
-  const userName  = requestedName || entry.name || '';
-  const userEmail = entry.email || `${clean}@betshuva.app`;
   try {
     const pool = await getPool();
     // Check existing user by phone
     const byPhone = await pool.query(
-      `SELECT id, name, email, session_version FROM users WHERE phone=$1
+      `SELECT id, name, email, session_version, birth_date FROM users WHERE phone=$1
        ORDER BY phone_verified DESC, created_at DESC LIMIT 1`, [clean]);
     let user;
     if (byPhone.rows.length) {
       otpStore.delete(clean);
       user = byPhone.rows[0];
+      const ageError = accountAgeError(user, { allowMissing: true });
+      if (ageError) return res.status(ageError.status).json(ageError);
       await pool.query('UPDATE users SET phone_verified=TRUE WHERE id=$1', [user.id]);
     } else {
-      // Check by email
-      const byEmail = await pool.query(
-        'SELECT id, name, email, session_version FROM users WHERE lower(email)=lower($1) ORDER BY email_verified DESC LIMIT 1',
-        [userEmail]);
-      if (byEmail.rows.length) {
-        otpStore.delete(clean);
-        return res.status(409).json({ error: 'האימייל משויך לחשבון קיים. יש להתחבר אליו לפני קישור טלפון' });
-      } else {
-        // New user — verified by OTP
-        if (entry.acceptedTerms !== true || entry.ageConfirmed !== true)
-          return res.status(400).json({ error: 'יש לאשר תנאים וגיל 13 ומעלה' });
-        if (userName.length < 2) {
-          return res.status(400).json({ error: 'משתמש חדש חייב להזין שם מלא' });
-        }
-        if (!['male', 'female'].includes(entry.gender))
-          return res.status(400).json({ error: 'יש לבחור מגדר' });
-        const agePolicy = validateRegistrationAge(entry.birthDate);
-        if (agePolicy.error) return res.status(400).json({ error: agePolicy.error });
-        otpStore.delete(clean);
-        const hash = null; // SMS-only accounts do not have a password.
-        const result = await pool.query(
-          `INSERT INTO users (name, email, phone, password_hash, phone_verified, email_verified,
-                              terms_accepted_at, terms_version, age_confirmed, gender, birth_date, content_filter)
-           VALUES ($1, $2, $3, $4, TRUE, FALSE, now(), '2026-08-23', TRUE, $5, $6, $7)
-           RETURNING id, name, email, session_version`,
-          [userName, userEmail, clean, hash, entry.gender, agePolicy.birthDate,
-           JSON.stringify(entry.contentFilter || NEW_ACCOUNT_CONTENT_FILTER)]);
-        user = result.rows[0];
-        // הודע לכל המחוברים על משתמש חדש
-        req.app.get('io').emit('users:new', {
-          id: user.id, name: user.name, email: user.email, profile_pic_url: null
-        });
-      }
+      // Even a valid code issued before the policy change cannot create an account.
+      return googleRegistrationRequired(req, res);
     }
     await provisionSystemConversation(pool, user.id);
     const token = signSession(user, JWT_SECRET);
@@ -12161,12 +11992,14 @@ app.post('/api/verify-phone', authRateLimit, credentialRateLimit, async (req, re
   try {
     const pool = await getPool();
     const candidates = await pool.query(
-      `SELECT id, name, email, session_version, email_verified, phone_verified
+      `SELECT id, name, email, session_version, email_verified, phone_verified, birth_date
        FROM users WHERE phone=$1
        ORDER BY phone_verified DESC, created_at DESC`, [cleanPhone]);
     const verified = candidates.rows.find(user => user.phone_verified === true);
     const user = verified || candidates.rows[0];
     if (!user) return res.status(400).json({ error: 'משתמש לא נמצא' });
+    const ageError = accountAgeError(user, { allowMissing: true });
+    if (ageError) return res.status(ageError.status).json(ageError);
     await pool.query('UPDATE users SET phone_verified=TRUE WHERE id=$1', [user.id]);
     const result = await pool.query(
       'SELECT id, name, email, session_version, email_verified FROM users WHERE id=$1', [user.id]);
@@ -12234,12 +12067,14 @@ async function adminAuth(req, res, next) {
   try {
     req.user = verifySession(token, JWT_SECRET);
     const pool   = await getPool();
-    const result = await pool.query(`SELECT a.permission,u.session_version,u.moderation_state,u.moderation_reason,u.moderation_until
+    const result = await pool.query(`SELECT a.permission,u.session_version,u.birth_date,u.moderation_state,u.moderation_reason,u.moderation_until
        FROM admin_permissions a JOIN users u ON u.id=a.user_id WHERE a.user_id=$1`, [req.user.id]);
     if (!result.rows.length)
       return res.status(403).json({ error: 'אין הרשאת גישה לדשבורד' });
     if (!sessionCurrent(req.user, result.rows[0]))
       return res.status(401).json({ error: 'יש להתחבר מחדש' });
+    const ageError = requestAgeError(result.rows[0], req);
+    if (ageError) return res.status(ageError.status).json(ageError);
     const moderationError = accountModerationError(result.rows[0]);
     if (moderationError) return res.status(moderationError.status).json(moderationError);
     req.adminPerm = result.rows[0].permission; // 'view' or 'edit'
@@ -12265,7 +12100,7 @@ const DEFAULT_GOOGLE_PLAY_DESCRIPTION = {
 
 כל התמונות והסרטונים המועלים לאפליקציה עוברים סינון תוכן אוטומטי לפני פרסומם, במטרה לצמצם הפצה של תוכן בלתי הולם. בנוסף זמינים למשתמשים כלי דיווח וחסימה.
 
-האפליקציה נמצאת בגרסת בטא וניתנת לשימוש ללא תשלום. השימוש מיועד לבני 13 ומעלה, ולמשתמשים צעירים מופעלות הגנות נוספות.
+האפליקציה נמצאת בגרסת בטא וניתנת לשימוש ללא תשלום. השימוש מיועד לבני 18 ומעלה בלבד.
 
 השימוש באפליקציה כפוף לתנאי השימוש, למדיניות הפרטיות ולכללי הקהילה של בתשובה.`,
 };
@@ -12572,6 +12407,9 @@ async function purgeExpiredBlockedAudio() {
       WHERE file_type='audio' AND moderation_status='rejected'
         AND moderation_details->>'blocked' IS DISTINCT FROM 'false'
         AND moderation_details->>'destinationFilterRejected' IS DISTINCT FROM 'true' AND content_purged_at IS NULL
+        AND storage_tier<>'personal'
+        AND NOT EXISTS(SELECT 1 FROM cloud_backup_accounts c
+          WHERE c.user_id=stored_files.user_id AND c.status='connected')
         AND blocked_content_expires_at<=now() LIMIT 50`);
     for (const row of expired.rows) {
       const absolutePath = path.resolve(UPLOAD_ROOT, row.storage_path);
@@ -12600,6 +12438,9 @@ async function purgeExpiredBlockedImages() {
              moderation_details
       FROM stored_files
       WHERE file_type='image' AND moderation_status='rejected'
+        AND storage_tier<>'personal'
+        AND NOT EXISTS(SELECT 1 FROM cloud_backup_accounts c
+          WHERE c.user_id=stored_files.user_id AND c.status='connected')
         AND content_purged_at IS NULL AND blocked_content_expires_at IS NOT NULL
         AND blocked_content_expires_at<=now()
         AND COALESCE((moderation_details->>'destinationFilterRejected')::boolean,FALSE)=FALSE
@@ -12893,7 +12734,7 @@ app.delete('/api/account/data', auth, async (req, res) => {
     await client.query(`UPDATE users SET
       city=NULL, country=NULL,
       street=NULL, house_number=NULL, apartment=NULL, profile_pic_url=NULL,
-      latitude=NULL, longitude=NULL, location_updated_at=NULL, gender=NULL,
+      latitude=NULL, longitude=NULL, location_updated_at=NULL, location_attribution=NULL, gender=NULL,
       wins=0, games_played=0
       WHERE id=$1`, [uid]);
     await client.query('COMMIT');
@@ -12939,7 +12780,8 @@ app.delete('/api/admin/users/:userId/full', adminAuth, async (req, res) => {
          JOIN listings l ON l.id=li.listing_id WHERE l.user_id=$1`, [uid]);
       imgs.rows.forEach(r => b2Urls.push(r.url));
       const main = await pool.query(
-        `SELECT image_url FROM listings WHERE user_id=$1 AND image_url IS NOT NULL`, [uid]);
+        `SELECT image_url FROM listings WHERE user_id=$1 AND image_url IS NOT NULL
+         UNION SELECT video_url AS image_url FROM listings WHERE user_id=$1 AND video_url IS NOT NULL`, [uid]);
       main.rows.forEach(r => b2Urls.push(r.image_url));
     }
 
@@ -13545,6 +13387,7 @@ async function initPendingTable() {
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS vehicle_details JSONB`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS property_details JSONB`);
     await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS category_details JSONB`);
+    await pool.query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS video_url TEXT`);
     await pool.query(`UPDATE listings SET category='בגדים והנעלה' WHERE category='בגדים'`);
     await pool.query(`UPDATE listings SET category='כלי בית ומטבח' WHERE category='כלי בית'`);
     await pool.query(`UPDATE listings SET category='צעצועים ומשחקים' WHERE category='צעצועים'`);
@@ -13789,12 +13632,22 @@ async function retryPendingScans() {
 
     const rows = await pool.query(`
       SELECT ps.*, sf.id AS stored_file_id,
-             sf.storage_path, sf.file_size,
+             sf.storage_path, sf.file_size, sf.context_type,
              (sf.file_type='video' AND EXISTS(
                SELECT 1 FROM stored_files prior
                JOIN moderation_provider_calls pc ON pc.stored_file_id=prior.id
                WHERE prior.user_id=sf.user_id AND (prior.id=sf.id OR
                  (sf.content_sha256 IS NOT NULL AND prior.content_sha256=sf.content_sha256))
+                 -- An explicit cache reset archives previous scan usage. Keep
+                 -- that billing history, but do not treat it as unaccounted
+                 -- calls belonging to an upload made after the reset.
+                 AND NOT EXISTS (
+                   SELECT 1 FROM moderation_scan_resets reset
+                   WHERE reset.content_sha256=sf.content_sha256
+                     AND reset.file_type='video'
+                     AND reset.created_at<=sf.created_at
+                     AND reset.created_at>=GREATEST(pc.created_at,pc.completed_at)
+                 )
              )) AS legacy_provider_calls,
              sf.moderation_status AS stored_moderation_status,
              sf.moderation_details AS prior_moderation_details
@@ -13942,6 +13795,8 @@ async function retryPendingScans() {
         else if (row.file_type === 'video')
           scanResult = await runBoundedVideoScan(buffer, row.file_name, row.mime_type, {
             pool, scan: scanVideo, scanVersion: VIDEO_SCAN_VERSION,
+            attachCachedPreview: state => cachedScanPreviews.attachCachedScanPreview(pool, state,
+              { storedFileId:row.stored_file_id,userId:row.user_id,workflow:'retry',attempt }, recordProviderCheck),
             legacyUnsafe: attempt > 1 || row.legacy_provider_calls === true,
             tracking: { storedFileId: row.stored_file_id, userId: row.user_id,
               workflow: 'retry', attempt },
@@ -13956,6 +13811,14 @@ async function retryPendingScans() {
         }
 
         if (row.file_type === 'video' && scanResult) {
+          if (row.prior_moderation_details?.listingVideoProof)
+            scanResult.listingVideoProof = row.prior_moderation_details.listingVideoProof;
+          if (!scanResult.pending && !scanResult.blocked && !scanResult.scanStopped &&
+              row.context_type === 'listing' && !listingVideoApproved({
+                file_type: 'video', mime_type: row.mime_type, context_type: 'listing',
+                moderation_status: 'approved', moderation_details: scanResult,
+              })) scanResult = { ...scanResult, blocked: true, blockedBy: 'listing_video',
+                reason: 'במודעות מותר סרטון ללא אנשים באורך עד 10 שניות' };
           await recordProviderCheck({ provider: 'local', operation: 'video_frames',
             tracking: { storedFileId: row.stored_file_id, userId: row.user_id, workflow: 'retry', attempt },
             result: scanResult, cacheHit: scanResult.cacheHit === true });
@@ -13980,7 +13843,12 @@ async function retryPendingScans() {
         scanCompleted = true;
 
         try {
-          if (!scanResult.blocked) await assertSenderMediaAllowed(pool, { userId: row.user_id,
+          // The listing-specific check above already verified duration and every
+          // frame. Only standalone listing videos use that policy instead of
+          // the owner's personal viewing preferences.
+          const listingVideoAllowed = row.file_type === 'video' && row.context_type === 'listing' &&
+            !row.to_user_id && !row.group_id;
+          if (!scanResult.blocked && !listingVideoAllowed) await assertSenderMediaAllowed(pool, { userId: row.user_id,
             contextType: row.group_id ? 'group' : row.to_user_id && row.to_user_id !== SCAN_BOT_ID ? 'chat' : 'general',
             contextId: row.group_id || (row.to_user_id !== SCAN_BOT_ID ? row.to_user_id : null) || null,
             type: row.file_type, classification: scanResult.classification,
@@ -14611,7 +14479,7 @@ async function runAutomaticBackupWorker(workerIndex) {
        WHERE (s.enabled=TRUE OR mbi.encryption_metadata->>'guideRequested'='true' OR sf.storage_tier='personal')
          AND s.encrypted_data_key IS NOT NULL
          AND c.provider='google_drive' AND c.status='connected'
-         AND sf.moderation_status='approved'
+         AND ${ARCHIVABLE_SQL}
          AND sf.content_purged_at IS NULL AND (sf.released_at IS NULL OR EXISTS (
            SELECT 1 FROM central_drive_objects central WHERE central.file_id=sf.id AND central.status='verified'))
          AND (mbi.id IS NULL OR
@@ -14831,6 +14699,8 @@ async function startServer() {
   setInterval(cleanUploadSessions, 60 * 60 * 1000).unref();
   await migrateDatabase();
   await initPendingTable();
+  setInterval(runReportNotifications, 30000).unref();
+  setTimeout(runReportNotifications, 5000).unref();
   const pool = await getPool();
   await recoverBackupTransfers(pool);
   await pool.query(UPLOAD_BATCH_NOTICE_SCHEMA);
@@ -14846,10 +14716,12 @@ async function startServer() {
     END IF;
   END $$`);
   await ensureVideoScanBudgetSchema(pool);
+  await pool.query(require('./admin-scans').SCHEMA);
   await ensureSystemAuditSchema(pool);
   await pool.query(MEDIA_PROGRESS_SCHEMA);
   await require('./audit-fx').refreshFx();
   await ensureAuditScanPreviewSchema(pool);
+  await pool.query(cachedScanPreviews.SCHEMA);
   const purgeScanPreviews = () => purgeExpiredAuditScanPreviews(pool)
     .catch(error => console.error('[scan-preview-purge]', error.code || error.name));
   await purgeScanPreviews();

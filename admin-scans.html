@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>סריקות תמונות וסרטונים — בתשובה</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0d1117;color:#e6edf3;font:15px Arial,sans-serif}main{max-width:1450px;margin:auto;padding:24px}header,form,.actions,.pager{display:flex;gap:12px;align-items:center;flex-wrap:wrap}header{justify-content:space-between}h1{font-size:24px}a{color:#79c0ff}button,input,select{font:inherit;color:inherit;background:#161b22;border:1px solid #3d444d;border-radius:7px;padding:10px}button{cursor:pointer}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #79c0ff}.danger{color:#ff968e}.hint{color:#aab6c4;line-height:1.6}form{margin:22px 0}label{display:flex;gap:8px;align-items:center}input{width:240px}.scroll{overflow:auto;border:1px solid #30363d;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:850px}th,td{padding:14px;text-align:right;border-bottom:1px solid #30363d;vertical-align:top}th{background:#161b22;white-space:nowrap}td{overflow-wrap:anywhere}.name{max-width:260px}.reason{max-width:360px;font-size:13px;margin-top:7px;line-height:1.6;color:#aab6c4}.approved{color:#7ee787}.rejected,.stopped{color:#ffab70}.pending{color:#e3b341}#message{min-height:24px;line-height:1.6}.pager{justify-content:center;margin:20px}dialog{background:#161b22;color:#e6edf3;border:1px solid #3d444d;border-radius:12px;max-width:95vw;width:600px;padding:24px}dialog::backdrop{background:#000a}dialog h2{font-size:21px;margin-top:0}dialog p{line-height:1.7}#preview-dialog{width:900px}#media{display:flex;justify-content:center;margin:16px 0}#media img,#media video{max-width:100%;max-height:70vh}#file-title{overflow-wrap:anywhere}.muted{color:#aab6c4}@media(max-width:600px){main{padding:12px}h1{font-size:21px}input{width:100%}form>label:first-child{width:100%}header{align-items:flex-start}}
+.column-heading{display:flex;gap:8px;align-items:center;justify-content:space-between}.sort-column{display:inline-flex;align-items:center;gap:6px;border:0;background:none;padding:4px;text-align:right;font-weight:bold}.column-filter{padding:5px 9px;color:#aab6c4}.column-filter.active{background:#173953;border-color:#58a6ff;color:#79c0ff}.sort-column.active{color:#79c0ff}#clear-columns{color:#79c0ff}#column-dialog{position:fixed;right:auto;bottom:auto;margin:0;width:340px;max-height:calc(100dvh - 24px);overflow:auto;padding:16px}#column-dialog label{display:flex;gap:8px;margin:10px 0}#column-dialog input:not([type=checkbox]){width:100%;min-width:0}#column-dialog input[type=checkbox]{width:16px;height:16px;accent-color:#58a6ff;flex-shrink:0}#column-options{max-height:230px;overflow:auto;border-block:1px solid #30363d}#column-options label{overflow-wrap:anywhere}.column-field{flex-direction:column;align-items:stretch}#column-note,#column-error{font-size:13px;line-height:1.5}#column-error{color:#ff968e}#column-dialog .actions{margin-top:16px}.column-option span{min-width:0}#sort-summary{font-size:13px;color:#aab6c4}
+</style></head><body><main>
+<header><h1>סריקות תמונות וסרטונים</h1><nav><a href="admin-audit.html">יומן הפעולות</a> · <a href="admin.html">חזרה לניהול</a></nav></header>
+<p class="hint">שם הקובץ, המשתמש ותוצאת הסריקה. מחיקת סריקה מסירה את התוצאה השמורה לשימוש חוזר; בהעלאה הבאה הקובץ ייבדק מחדש. הקובץ וההודעות נשארים.</p>
+<form id="filters"><label>חיפוש <input id="search" placeholder="שם קובץ, משתמש או מספר משתמש" maxlength="200"></label><label>סוג <select id="type"><option value="all">תמונות וסרטונים</option><option value="image">תמונות</option><option value="video">סרטונים</option></select></label><label>מיון לפי <select id="sort"><option value="date">תאריך הוספה</option><option value="name">שם הקובץ</option><option value="user">משתמש</option><option value="type">סוג מדיה</option><option value="status">תוצאת הסריקה</option></select></label><label>סדר <select id="order"><option value="desc">יורד / חדש תחילה</option><option value="asc">עולה / ישן תחילה</option></select></label><button type="submit">הצג</button><button type="button" id="refresh">רענון</button><button type="button" id="clear-columns" hidden>נקה מסנני עמודות</button></form>
+<p id="sort-summary"></p>
+<p id="message" role="status"></p>
+<div class="scroll"><table><thead><tr id="headings"></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="pager"><button id="previous">הקודם</button><span id="page"></span><button id="next">הבא</button></div>
+<dialog id="delete-dialog"><h2>מחיקת הסריקה הקודמת</h2><p id="delete-name"></p><p>התוצאה השמורה לכל העותקים של אותו תוכן תימחק מהשימוש החוזר ומרשימה זו. בהעלאה הבאה תתבצע סריקה חדשה, שעשויה לצרוך בדיקות בתשלום.</p><p>הקובץ, ההודעות ותיעוד העבר ביומן הפעולות יישארו. לא תתחיל סריקה עכשיו.</p><p id="delete-error" role="alert"></p><div class="actions"><button id="delete-confirm" class="danger">מחק את הסריקה</button><button id="delete-cancel">ביטול</button></div></dialog>
+<dialog id="preview-dialog"><h2 id="file-title"></h2><p id="preview-error" role="status"></p><div id="media"></div><button id="preview-close">סגירה</button></dialog>
+<dialog id="column-dialog" aria-labelledby="column-title"><h2 id="column-title"></h2><div id="column-editor"></div><p id="column-error" role="alert"></p><div class="actions"><button id="column-clear">נקה מסנן</button><button id="column-apply">החל</button><button id="column-cancel">ביטול</button></div></dialog>
+</main><script>
+'use strict';
+const $=id=>document.getElementById(id),token=localStorage.getItem('bt_admin_token')||localStorage.getItem('bt_token');
+const labels={approved:'אושרה',rejected:'נחסמה',stopped:'הסריקה נעצרה',pending:'ממתינה לבדיקה'};
+let page=1,hasMore=false,canDelete=false,loading=false,generation=0,selected=null,deleting=false,previewGeneration=0;
+let applied={search:'',type:'all',order:'desc',sort:'date'},columns={},columnPopup=null;
+const fields={date:'תאריך הוספה',name:'שם הקובץ',user:'משתמש',type:'סוג ותצוגה',status:'תוצאת הסריקה'};
+const node=(tag,text,className)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;if(className)el.className=className;return el;};
+function icon(kind){
+ const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),path=document.createElementNS('http://www.w3.org/2000/svg','path');
+ svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width','16');svg.setAttribute('height','16');svg.setAttribute('aria-hidden','true');svg.style.flexShrink='0';
+ path.setAttribute('d',{filter:'M3 4h18l-7 8v8l-4-2v-6z',dropdown:'M6 9l6 6 6-6z',asc:'M12 5v14M6 11l6-6 6 6',desc:'M12 19V5M6 13l6 6 6-6',sort:'M8 4v16M4 8l4-4 4 4M16 20V4M12 16l4 4 4-4'}[kind]);
+ path.setAttribute('fill',kind==='filter'||kind==='dropdown'?'currentColor':'none');path.setAttribute('stroke','currentColor');path.setAttribute('stroke-width','1.5');svg.append(path);return svg;
+}
+function filterQuery(){return {...applied,...(Object.keys(columns).length?{columnFilters:JSON.stringify(columns)}:{})};}
+function headings(){
+ $('headings').replaceChildren();
+ for(const [field,title]of Object.entries(fields)){
+  const th=node('th'),heading=node('div',null,'column-heading'),sort=node('button',null,'sort-column');sort.append(node('span',title),icon(applied.sort===field?applied.order:'sort'));th.scope='col';
+  th.setAttribute('aria-sort',applied.sort===field?(applied.order==='asc'?'ascending':'descending'):'none');sort.dataset.sort=field;sort.classList.toggle('active',applied.sort===field);sort.title='מיון לפי '+title;
+  sort.onclick=()=>{applied.order=applied.sort===field&&applied.order==='asc'?'desc':'asc';applied.sort=field;$('sort').value=field;$('order').value=applied.order;page=1;load();};
+  const filter=node('button',null,'column-filter');filter.append(icon(columns[field]?'filter':'dropdown'));filter.dataset.columnFilter=field;filter.classList.toggle('active',!!columns[field]);filter.setAttribute('aria-label','סינון: '+title+(columns[field]?' (פעיל)':''));filter.setAttribute('aria-haspopup','dialog');filter.setAttribute('aria-expanded','false');filter.onclick=()=>openColumn(field,filter);
+  heading.append(sort,filter);th.append(heading);$('headings').append(th);
+ }
+ const actions=node('th','פעולות');actions.scope='col';$('headings').append(actions);const count=Object.keys(columns).length;$('clear-columns').hidden=!count;$('clear-columns').textContent='נקה מסנני עמודות ('+count+')';$('sort-summary').textContent='מיון: '+fields[applied.sort]+' · '+(applied.order==='asc'?'עולה':'יורד');
+}
+function positionColumn(){
+ if(!columnPopup)return;const box=$('column-dialog'),rect=columnPopup.trigger.getBoundingClientRect();box.style.left=Math.max(12,Math.min(innerWidth-box.offsetWidth-12,rect.right-box.offsetWidth))+'px';box.style.top=Math.max(12,Math.min(innerHeight-box.offsetHeight-12,rect.bottom+6))+'px';
+}
+function closeColumn(){const popup=columnPopup;if(!popup)return;clearTimeout(popup.timer);columnPopup=null;$('column-dialog').close();popup.trigger.setAttribute('aria-expanded','false');popup.trigger.focus({preventScroll:true});}
+function localDate(value){if(!value)return '';const d=new Date(value);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,19);}
+function optionTitle(field,item){if(item.value===null)return '(ריק)';if(field==='status')return labels[item.value]||item.value;if(field==='type')return item.value==='image'?'תמונה':'סרטון';return item.label||item.value;}
+function renderOptions(){
+ const popup=columnPopup;if(!popup||popup.field==='date')return;const selection=popup.selection,all=$('column-all');all.checked=selection.exclude&&!selection.values.length;all.indeterminate=selection.values.length>0;
+ const list=$('column-options'),focused=document.activeElement?.dataset.optionValue,scrollTop=list.scrollTop;list.replaceChildren();
+ for(const item of popup.options){const label=node('label',null,'column-option'),input=node('input');input.type='checkbox';input.dataset.optionValue=JSON.stringify(item.value);input.checked=selection.exclude?!selection.values.includes(item.value):selection.values.includes(item.value);
+  input.onchange=()=>{const values=selection.values.filter(value=>value!==item.value);if(input.checked!==selection.exclude)values.push(item.value);if(values.length>100){input.checked=!input.checked;$('column-error').textContent='אפשר לבחור עד 100 ערכים';return;}selection.values=values;renderOptions();};label.append(input,node('span',optionTitle(popup.field,item)));$('column-options').append(label);
+ }
+ list.scrollTop=scrollTop;if(focused!==undefined)[...list.querySelectorAll('input')].find(input=>input.dataset.optionValue===focused)?.focus({preventScroll:true});
+ $('column-note').textContent=(selection.exclude?(selection.values.length?'הכול למעט '+selection.values.length+' ערכים':'כל הערכים'):selection.values.length+' ערכים נבחרו')+(popup.loading?' · טוען ערכים…':popup.hasMore?' · מוצגים 100 ערכים; חפשו כדי למצוא נוספים':!popup.options.length?' · אין ערכים תואמים':'');positionColumn();
+}
+async function fetchOptions(popup){
+ const request=++popup.request;popup.loading=true;renderOptions();
+ try{const data=await api('/filter-options?'+new URLSearchParams({...filterQuery(),column:popup.field,optionSearch:$('column-search').value.trim()}));if(columnPopup!==popup||request!==popup.request)return;popup.options=data.options;popup.hasMore=data.hasMore;$('column-error').textContent='';}
+ catch(error){if(columnPopup===popup&&request===popup.request)$('column-error').textContent=error.message;}
+ finally{if(columnPopup===popup&&request===popup.request){popup.loading=false;renderOptions();}}
+}
+function openColumn(field,trigger){
+ closeColumn();const current=columns[field],popup=columnPopup={field,trigger,options:[],request:0,selection:current?JSON.parse(JSON.stringify(current)):{exclude:true,values:[]}};
+ $('column-title').textContent='סינון: '+fields[field];$('column-editor').replaceChildren();$('column-error').textContent='';
+ if(field==='date'){
+  for(const [key,label]of [['from','מתאריך ושעה'],['to','עד תאריך ושעה (לא כולל)']]){const wrapper=node('label',label,'column-field'),input=node('input');input.id='column-'+key;input.type='datetime-local';input.step='1';input.dir='ltr';input.value=localDate(current?.[key]);wrapper.append(input);$('column-editor').append(wrapper);}
+ }else{
+  const label=node('label','חיפוש ערכים','column-field'),search=node('input');search.id='column-search';search.type='search';search.maxLength=200;label.append(search);const allLabel=node('label'),all=node('input');all.id='column-all';all.type='checkbox';allLabel.append(all,node('span','בחירת הכול'));const options=node('div');options.id='column-options';const note=node('p');note.id='column-note';note.setAttribute('role','status');$('column-editor').append(label,allLabel,options,note);
+  all.onchange=()=>{popup.selection={exclude:all.checked,values:[]};renderOptions();};search.oninput=()=>{clearTimeout(popup.timer);popup.request++;popup.timer=setTimeout(()=>fetchOptions(popup),250);};fetchOptions(popup);
+ }
+ $('column-dialog').showModal();trigger.setAttribute('aria-expanded','true');positionColumn();($('column-search')||$('column-from')).focus({preventScroll:true});
+}
+function applyColumn(clear=false){
+ const popup=columnPopup;if(!popup)return;try{
+  let next;
+  if(!clear&&popup.field==='date'){next={};for(const key of ['from','to']){const input=$('column-'+key);if(!input.checkValidity())throw Error('תאריך אינו תקין');if(input.value)next[key]=new Date(input.value).toISOString();}if(next.from&&next.to&&next.from>=next.to)throw Error('תאריך הסיום חייב להיות אחרי תאריך ההתחלה');if(!Object.keys(next).length)next=null;}
+  else if(!clear){next=popup.selection;if(next.exclude&&!next.values.length)next=null;}
+  if(next)columns[popup.field]=next;else delete columns[popup.field];closeColumn();page=1;load();
+ }catch(error){$('column-error').textContent=error.message;}
+}
+async function api(suffix='',options={}){
+ if(!token)throw Error('יש להתחבר ללוח הניהול.');
+ const response=await fetch(new URL('api/admin/scan-results'+suffix,location.href),{...options,cache:'no-store',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},signal:AbortSignal.timeout(30000)});
+ const body=await response.json();if(!response.ok)throw Error(body.error||'הפעולה נכשלה');return body;
+}
+function paging(){$('page').textContent='עמוד '+page;$('previous').disabled=loading||page===1;$('next').disabled=loading||!hasMore;$('refresh').disabled=loading;}
+function render(items){
+ $('rows').replaceChildren();
+ for(const item of items){
+  const row=node('tr');row.dataset.id=item.id;
+  row.append(node('td',new Date(item.created_at).toLocaleString('he-IL')));
+  row.append(node('td',item.original_name||'ללא שם','name'));
+  row.append(node('td',(item.user_name||'משתמש לא זמין')+(item.user_number!=null?' · '+item.user_number:'')));
+  const media=node('td'),kind=item.file_type==='video'?'סרטון':'תמונה';media.append(node('div',kind));
+  const open=node('button',item.available?'הצג '+kind:'הקובץ אינו זמין');open.disabled=!item.available;open.onclick=()=>preview(item);media.append(open);row.append(media);
+  const result=node('td');result.append(node('strong',labels[item.moderation_status]||'לא ידועה',item.moderation_status));if(item.reason)result.append(node('div',item.reason,'reason'));row.append(result);
+  const actions=node('td'),remove=node('button','מחק סריקה קודמת','danger');remove.disabled=!canDelete||!item.can_delete;remove.title=!canDelete?'נדרשת הרשאת עריכה':!item.can_delete?'אין סריקה שניתן למחוק כרגע':'';remove.onclick=()=>{selected=item;$('delete-name').textContent=item.original_name;$('delete-error').textContent='';$('delete-dialog').showModal();};actions.append(remove);row.append(actions);$('rows').append(row);
+ }
+ if(!items.length){const cell=node('td','אין סריקות בטווח החיפוש');cell.colSpan=6;const row=node('tr');row.append(cell);$('rows').append(row);}
+}
+async function load(){
+ const request=++generation;loading=true;headings();paging();$('message').textContent='טוען סריקות…';
+ try{const data=await api('?'+new URLSearchParams({...filterQuery(),page}));if(request!==generation)return;canDelete=data.canDelete;hasMore=data.hasMore;render(data.items);$('message').textContent=data.items.length+' רשומות בעמוד';}
+ catch(error){if(request===generation){$('message').textContent=error.name==='TimeoutError'?'השרת לא השיב בזמן. אפשר לנסות שוב.':error.message;}}
+ finally{if(request===generation){loading=false;paging();}}
+}
+async function preview(item){
+ const request=++previewGeneration;$('file-title').textContent=item.original_name;$('preview-error').textContent='טוען תצוגה…';$('media').replaceChildren();$('preview-dialog').showModal();
+ try{const data=await api('/'+item.id+'/preview-ticket',{method:'POST',body:'{}'});if(request!==previewGeneration)return;
+  const url=new URL(data.url,location.href);if(url.origin!==location.origin)throw Error('כתובת תצוגה אינה תקינה');
+  const el=document.createElement(item.file_type==='video'?'video':'img');if(item.file_type==='video'){el.controls=true;el.preload='metadata';}else el.alt=item.original_name;
+  el.onload=el.onloadedmetadata=()=>{$('preview-error').textContent='';};el.onerror=()=>{$('preview-error').textContent='הקובץ אינו זמין לתצוגה כרגע. ייתכן שנמחק או שאינו נתמך.';};el.src=url.href;$('media').append(el);
+ }catch(error){if(request===previewGeneration)$('preview-error').textContent=error.message;}
+}
+$('filters').onsubmit=event=>{event.preventDefault();applied={search:$('search').value.trim(),type:$('type').value,order:$('order').value,sort:$('sort').value};page=1;load();};
+$('column-apply').onclick=()=>applyColumn();$('column-clear').onclick=()=>applyColumn(true);$('column-cancel').onclick=closeColumn;$('column-dialog').addEventListener('cancel',event=>{event.preventDefault();closeColumn();});
+$('clear-columns').onclick=()=>{columns={};page=1;load();};window.addEventListener('resize',positionColumn);
+$('refresh').onclick=load;$('previous').onclick=()=>{if(page>1){page--;load();}};$('next').onclick=()=>{if(hasMore){page++;load();}};
+$('delete-cancel').onclick=()=>{if(!deleting)$('delete-dialog').close();};$('delete-dialog').addEventListener('cancel',event=>{if(deleting)event.preventDefault();});
+$('delete-confirm').onclick=async()=>{
+ if(!selected||deleting)return;deleting=true;$('delete-confirm').disabled=true;$('delete-cancel').disabled=true;
+ try{const result=await api('/'+selected.id,{method:'DELETE',body:JSON.stringify({confirm:'DELETE_SCAN_CACHE'})});$('delete-dialog').close();selected=null;page=1;await load();$('message').textContent='הסריקה השמורה נמחקה. הקובץ וההודעות נשארו. לא הופעלה סריקה חדשה.';}
+ catch(error){$('delete-error').textContent=error.message;}
+ finally{deleting=false;$('delete-confirm').disabled=false;$('delete-cancel').disabled=false;}
+};
+$('preview-close').onclick=()=>$('preview-dialog').close();$('preview-dialog').addEventListener('close',()=>{previewGeneration++;const video=$('media').querySelector('video');if(video){video.pause();video.removeAttribute('src');video.load();}$('media').replaceChildren();});
+load();
+</script></body></html>

@@ -12,7 +12,7 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 const _pendingId = 'scan_4913a16e-c43c-4f79-91c0-9f3bfc2741c7';
 const _approvedId = '3e8a6340-e21b-40e2-89bc-fc2421577a19';
 const _imageUrl = 'https://example.test/scan-approved-image.png';
-const _pendingText = 'התמונה ממתינה לסריקה ולאישור';
+const _pendingText = 'סורק את התמונה';
 const _hiddenText = 'התמונה מוסתרת לפי בחירת הסינון שלך';
 const _restoreText = 'להחזיר את התמונה הזו';
 const _allowedFilter = {

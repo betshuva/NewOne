@@ -43,7 +43,7 @@ test('public child safety standards include the required protections and contact
   assert.match(childSafety, /CSAE/);
   assert.match(childSafety, /CSAM/);
   assert.match(childSafety, /דיווח בתוך האפליקציה/);
-  assert.match(childSafety, /support@betshuva\.com/);
+  assert.match(childSafety, /betshuva@betshuva\.com/);
   assert.match(childSafety, /מוקד 105/);
 });
 

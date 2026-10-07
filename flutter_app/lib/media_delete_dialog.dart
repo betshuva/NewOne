@@ -44,6 +44,7 @@ Future<bool> _confirmPreview(
   final files = _rows(preview['files']);
   final recipients = _rows(preview['pendingRecipients']);
   final uses = _rows(preview['linkedUses']);
+  final supportIssues = _rows(preview['supportIssues']);
   final count = (preview['fileCount'] as num?)?.toInt() ?? files.length;
   final copies = (preview['copyCount'] as num?)?.toInt() ?? files.length;
   final pending =
@@ -109,6 +110,20 @@ Future<bool> _confirmPreview(
                       for (final use in uses)
                         Text('${_linkedUseName(use['type'])}: ${use['count']}'),
                     ],
+                    if (supportIssues.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        supportIssues.length == 1
+                            ? 'מחיקת הקובץ תמחק לצמיתות גם את פניית התמיכה שאליה הוא מצורף.'
+                            : 'מחיקת הקבצים תמחק לצמיתות גם את פניות התמיכה שאליהן הם מצורפים.',
+                        style: const TextStyle(
+                          color: Color(0xFFAD4C24),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      for (final issue in supportIssues)
+                        Text('מספר פנייה: ${issue['id']}'),
+                    ],
                     const SizedBox(height: 12),
                     const Text('עותקים שכבר התקבלו יישמרו אצל הנמענים.'),
                     if (hasBackup)
@@ -130,7 +145,9 @@ Future<bool> _confirmPreview(
                   backgroundColor: const Color(0xFFAF5157),
                 ),
                 onPressed: () => Navigator.pop(dialogContext, true),
-                child: const Text('מחק לצמיתות'),
+                child: Text(supportIssues.isEmpty
+                    ? 'מחק לצמיתות'
+                    : 'מחק קבצים ופניות לצמיתות'),
               ),
             ],
           ),
@@ -211,6 +228,9 @@ Future<MediaDeleteResult?> confirmPersonalMediaDeletion({
         final completed = await post('delete-confirm', {
           'ids': batch,
           'confirmationToken': preview['confirmationToken'],
+          if (_rows(preview['supportIssues']).isNotEmpty)
+            'confirmedSupportIssueIds': _rows(preview['supportIssues'])
+                .map((issue) => issue['id']).toList(),
         });
         if (!context.mounted || !isCurrent()) return result();
         if (completed.status == 409 &&

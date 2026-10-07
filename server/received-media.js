@@ -189,14 +189,16 @@ function checkedPath(uploadRoot, storagePath) {
   return absolute;
 }
 
-async function readSourceMedia(db, uploadRoot, file) {
-  const absolute = checkedPath(uploadRoot, file.storage_path);
-  try {
-    const real = await fs.realpath(absolute);
-    if (!real.startsWith(await fs.realpath(uploadRoot) + path.sep))
-      throw new Error('Invalid received media symlink');
-    return await fs.readFile(real);
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+async function readSourceMedia(db, uploadRoot, file, { skipLocal = false } = {}) {
+  if (!skipLocal) {
+    const absolute = checkedPath(uploadRoot, file.storage_path);
+    try {
+      const real = await fs.realpath(absolute);
+      if (!real.startsWith(await fs.realpath(uploadRoot) + path.sep))
+        throw new Error('Invalid received media symlink');
+      return await fs.readFile(real);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
   const central = await require('./central-drive').readFile(db, file, undefined, { forProcessing: true });
   if (central) return central;
   const result = await db.query(`SELECT mbi.remote_file_id,mbi.encrypted_sha256,mbi.plaintext_sha256,

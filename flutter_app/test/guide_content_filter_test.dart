@@ -163,9 +163,7 @@ void main() {
         await tester.tap(find.byIcon(Icons.attach_file));
         await tester.pumpAndSettle();
         expect(find.text('חסום בסינון הנמען'), findsNothing);
-        await tester.tap(find.text('צילום והקלטה'));
-        await tester.pumpAndSettle();
-        for (final label in ['צילום תמונה', 'צילום וידאו', 'הקלטת קול']) {
+        for (final label in ['צילום']) {
           final tile = tester.widget<ListTile>(find.ancestor(
               of: find.text(label), matching: find.byType(ListTile)));
           expect(tile.onTap, isNotNull);

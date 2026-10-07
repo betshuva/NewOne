@@ -8,6 +8,7 @@ const crypto = require('node:crypto');
 const { acquireUploadLock, findReusableUpload } = require('../server/upload-reuse');
 const { contentAllowedByFilter, normalizeContentFilter } = require('../server/content-filter-policy');
 const { visuallyEquivalent } = require('../server/visual-fingerprint');
+const { listingVideoApproved, validateListingVideoDuration, VIDEO_PROBE_VERSION } = require('../server/listing-video-policy');
 
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 const routeStart = source.indexOf("app.post('/api/upload',");
@@ -28,12 +29,13 @@ let fixtureId = 0;
 
 function harness({ classification = MEN, result, scanDelay = false,
   fingerprint = null, trustedBuiltinExpression = false, conversionError = null,
-  audioDuration = 10, onScan, realSenderGuard = false, realUploadResolver = false } = {}) {
+  audioDuration = 10, onScan, realSenderGuard = false, realUploadResolver = false,
+  senderFilter = ALL, listingDuration = 9 } = {}) {
   const activeUploadFileIds = new Set();
   const state = { files: [], queries: [], blobs: [], scans: 0, audits: [], reports: [],
     pending: [], gifs: [], senderReads: [], recipientReads: [], senderAllowed: true,
     recipientFilter: { ...ALL }, groupFilter: { ...ALL }, member: { role: 'member', send_permission: 'all' },
-    failNextScan: false, owner: `owner-${++fixtureId}`, audioConversions: [], audioProbes: [] };
+    failNextScan: false, owner: `owner-${++fixtureId}`, audioConversions: [], audioProbes: [], videoProbes: [] };
   const clone = value => JSON.parse(JSON.stringify(value));
   const isExempt = details => details?.source === 'builtin-expression' || details?.scanSkipped === true;
   const assertScannedOnly = statement => {
@@ -111,6 +113,11 @@ function harness({ classification = MEN, result, scanDelay = false,
       return { rows: [{ id: pending.id }] };
     }
     if (statement.startsWith('SELECT gm.role')) return { rows: state.member ? [state.member] : [] };
+    if (statement.startsWith('SELECT u.content_filter AS general_filter'))
+      return { rows: [{ general_filter: senderFilter, scoped_filter: null }] };
+    if (statement.startsWith('INSERT INTO filter_audit_events')) {
+      state.audits.push(JSON.parse(values[7])); return { rows: [{}] };
+    }
     if (statement.startsWith('INSERT INTO shared_gifs')) {
       const file = state.files.find(file => file.public_url === values[3]);
       assert.ok(file);
@@ -149,6 +156,11 @@ function harness({ classification = MEN, result, scanDelay = false,
     probeAudio: async (buffer, name) => {
       state.audioProbes.push({ buffer, name }); return { durationSeconds: audioDuration };
     },
+    probeListingVideo: async (buffer, name) => {
+      state.videoProbes.push({ buffer, name });
+      return { durationSeconds: validateListingVideoDuration(listingDuration), source: VIDEO_PROBE_VERSION };
+    },
+    listingVideoApproved,
     convertRecordedAudio: async (buffer, name, type) => {
       state.audioConversions.push({ buffer, name, type });
       if (conversionError) throw Object.assign(new Error('test conversion failure'), { code: conversionError });
@@ -702,6 +714,81 @@ test('recipient-only upload policy does not bypass a failed safety scan', async 
   const api=harness({realSenderGuard:true,result:{blocked:true,reason:'unsafe-test-content',classification:MEN}});
   const result=await api.upload({body:{toUserId:'friend'}});
   assert.equal(result.body.status,'rejected');assert.equal(result.body.reason,'unsafe-test-content');
+});
+
+const listingVideoScan = () => ({ blocked: false, pending: false, moderationVersion: VERSION,
+  classification: { category: 'video', detectedCategories: ['video', 'nonHumanImages'],
+    uncertain: false, durationSeconds: 9, sampledFrames: 2, fullyScannedFrames: 2 },
+  frameResults: [{ classification: OBJECT }, { classification: OBJECT }],
+  listingVideoProof: { durationSeconds: 9, source: VIDEO_PROBE_VERSION } });
+
+test('listing videos queue and reuse a complete scan when personal video viewing is disabled', async () => {
+  const api = harness({ realSenderGuard: true, senderFilter: { ...ALL, video: false } });
+  const clip = { name: 'listing.mp4', mime: 'video/mp4', bytes: '0000ftypisom', body: { listingVideo: 'true' } };
+  const pending = await api.upload(clip);
+  assert.equal(pending.statusCode, 200);
+  assert.equal(pending.body.status, 'pending');
+  assert.equal(api.state.files[0].context_type, 'listing');
+  assert.equal(api.state.files[0].moderation_details.listingVideoProof.source, VIDEO_PROBE_VERSION);
+  assert.equal(api.state.pending[0].values[1], null);
+  assert.equal(api.state.pending[0].values[2], null);
+  // Simulate the durable worker's completed scan, then exercise the real
+  // upload route's cache/reuse branch with the same account preferences.
+  Object.assign(api.state.files[0], { moderation_status: 'approved', moderation_details: listingVideoScan() });
+  const reused = await api.upload(clip);
+  assert.equal(reused.statusCode, 200);
+  assert.equal(reused.body.fileType, 'video');
+  assert.notEqual(reused.body.status, 'pending');
+  assert.notEqual(reused.body.status, 'rejected');
+  assert.equal(api.state.files[0].moderation_status, 'approved');
+  assert.equal(reused.body.url, pending.body.url);
+  assert.equal(api.state.videoProbes.length, 2, 'duration is checked even on a reusable upload');
+  assert.equal(api.state.senderReads.length, 0);
+  assert.equal(api.state.scans, 0);
+  assert.equal(listingVideoApproved(api.state.files[0]), true);
+
+  const ordinary = await api.upload({ ...clip, body: {} });
+  assert.equal(ordinary.statusCode, 403);
+  assert.equal(ordinary.body.code, 'SENDER_CONTENT_FILTERED');
+  const chat = await api.upload({ ...clip, body: { toUserId: 'friend' } });
+  assert.equal(chat.statusCode, 200, 'outgoing chat still follows its recipient policy');
+  api.state.recipientFilter = { ...ALL, video: false };
+  const recipientBlocked = await api.upload({ ...clip, body: { toUserId: 'friend' } });
+  assert.equal(recipientBlocked.body.status, 'rejected');
+  assert.match(recipientBlocked.body.reason, /הנמען/);
+});
+
+test('listing video upload cannot use its separate policy for chat targets or oversized clips', async () => {
+  for (const body of [{ listingVideo: 'true', toUserId: 'friend' },
+    { listingVideo: 'true', groupId: 'group' }, { listingVideo: 'true', listingImage: 'true' }]) {
+    const api = harness({ realSenderGuard: true, senderFilter: { ...ALL, video: false } });
+    const response = await api.upload({ name: 'clip.mp4', mime: 'video/mp4', bytes: '0000ftypisom', body });
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.body.code, 'INVALID_LISTING_VIDEO');
+    assert.equal(api.state.files.length, 0);
+  }
+  const api = harness({ realSenderGuard: true, senderFilter: { ...ALL, video: false }, listingDuration: 10.01 });
+  const response = await api.upload({ name: 'clip.mp4', mime: 'video/mp4', bytes: '0000ftypisom', body: { listingVideo: 'true' } });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, 'LISTING_VIDEO_TOO_LONG');
+  assert.equal(api.state.files.length, 0);
+});
+
+test('cached listing videos still reject unsafe, people-containing and incomplete scans', async () => {
+  for (const mutation of [scan => { scan.blocked = true; scan.reason = 'unsafe-test-content'; },
+    scan => { scan.frameResults[1].classification = MEN; },
+    scan => { scan.classification.fullyScannedFrames = 1; }]) {
+    const api = harness({ realSenderGuard: true, senderFilter: { ...ALL, video: false } });
+    const clip = { name: 'listing.mp4', mime: 'video/mp4', bytes: '0000ftypisom', body: { listingVideo: 'true' } };
+    await api.upload(clip);
+    const scan = listingVideoScan(); mutation(scan);
+    Object.assign(api.state.files[0], { moderation_status: scan.blocked ? 'rejected' : 'approved', moderation_details: scan });
+    const response = await api.upload(clip);
+    assert.equal(response.body.status, 'rejected');
+    assert.equal(api.state.senderReads.length, 0);
+    if (scan.blocked) assert.equal(response.body.reason, 'unsafe-test-content');
+    else assert.match(response.body.reason, /ללא אנשים/);
+  }
 });
 
 test('audio accepts exactly 150MB and long duration while other file caps remain enforced', async () => {

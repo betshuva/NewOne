@@ -29,6 +29,7 @@ async function findReusableUpload(pool, {
     `SELECT id,public_url FROM stored_files
      WHERE user_id=$1 AND content_sha256=$2 AND file_type=$3 AND mime_type=$4
        AND file_size=$5 AND moderation_status='approved'
+       AND to_jsonb(stored_files)->>'scan_cache_invalidated_at' IS NULL
        AND content_purged_at IS NULL AND released_at IS NULL
        AND moderation_details->>'moderationVersion'=$6
        AND moderation_details->>'pending' IS DISTINCT FROM 'true'

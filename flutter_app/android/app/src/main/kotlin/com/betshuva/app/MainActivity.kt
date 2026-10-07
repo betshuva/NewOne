@@ -4,6 +4,11 @@ import android.app.NotificationManager
 import android.app.Notification
 import android.app.Person
 import android.content.Intent
+import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.drawable.Icon
@@ -21,6 +26,7 @@ import java.util.concurrent.Executors
 class MainActivity: FlutterActivity() {
     private var mediaBridge: NativeMediaBridge? = null
     private var channel: MethodChannel? = null
+    private var contactsPermissionChannel: MethodChannel? = null
     private val pendingShares = ArrayDeque<Map<String, Any?>>()
     private val shareWorker = Executors.newSingleThreadExecutor()
     private val shareCategory = "com.betshuva.app.CONVERSATION"
@@ -29,6 +35,23 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         mediaBridge = NativeMediaBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        contactsPermissionChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.betshuva.app/contacts")
+        contactsPermissionChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "readPermissionStatus" -> {
+                    val permission = Manifest.permission.READ_CONTACTS
+                    val granted = ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+                    val requested = getSharedPreferences("contacts_permission", Context.MODE_PRIVATE).getBoolean("read_requested", false)
+                    val permanent = !granted && requested && !ActivityCompat.shouldShowRequestPermissionRationale(this, permission)
+                    result.success(if (granted) 1 else if (permanent) 4 else 0)
+                }
+                "markReadPermissionRequested" -> {
+                    getSharedPreferences("contacts_permission", Context.MODE_PRIVATE).edit().putBoolean("read_requested", true).apply()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.betshuva.app/share")
         channel?.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -81,6 +104,8 @@ class MainActivity: FlutterActivity() {
         mediaBridge = null
         channel?.setMethodCallHandler(null)
         channel = null
+        contactsPermissionChannel?.setMethodCallHandler(null)
+        contactsPermissionChannel = null
         shareWorker.shutdown()
         super.onDestroy()
     }

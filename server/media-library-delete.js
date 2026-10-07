@@ -14,6 +14,7 @@ const linkedTables = [
   ['users', 'profile_pic_url', 'profile', 'תמונות פרופיל'],
   ['groups', 'profile_pic_url', 'group', 'תמונות קבוצות'],
   ['listings', 'image_url', 'listing', 'תמונות ראשיות במודעות'],
+  ['listings', 'video_url', 'listingVideo', 'סרטונים במודעות'],
   ['listing_images', 'url', 'listingImage', 'תמונות נוספות במודעות'],
   ['education_forms', 'file_url', 'form', 'קבצים בטפסים'],
 ];
@@ -22,6 +23,7 @@ const linkedTables = [
 // URL and remain independently available. A stale client cannot send this URL
 // again, including through an older contact request or delayed scan.
 const MEDIA_DELETE_SCHEMA = `
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS video_url TEXT;
 CREATE TABLE IF NOT EXISTS deleted_media_sources (
   public_url TEXT PRIMARY KEY,
   owner_id UUID NOT NULL,
@@ -65,7 +67,8 @@ $$ LANGUAGE plpgsql;
 ${[['messages', 'file_url'], ['message_requests', 'file_url'], ['pending_scans', 'file_url'],
   ...linkedTables.map(([table, field]) => [table, field])].map(([table, field]) => `
 DROP TRIGGER IF EXISTS guard_deleted_media_reference ON ${table};
-CREATE TRIGGER guard_deleted_media_reference BEFORE INSERT OR UPDATE OF ${field}${table === 'messages' ? ',delivery_summary' : ''}
+DROP TRIGGER IF EXISTS guard_deleted_media_reference_${field} ON ${table};
+CREATE TRIGGER guard_deleted_media_reference_${field} BEFORE INSERT OR UPDATE OF ${field}${table === 'messages' ? ',delivery_summary' : ''}
   ON ${table} FOR EACH ROW EXECUTE FUNCTION guard_deleted_media_reference('${field}');`).join('\n')}
 `;
 
@@ -131,7 +134,14 @@ async function snapshot(db, userId, ids) {
   const gifs = (await db.query(`SELECT id::text,stored_file_id,status FROM shared_gifs
     WHERE stored_file_id=ANY($1::uuid[]) ORDER BY id`, [ids])).rows;
   for (const row of gifs) links.push({ type: 'gif', label: 'קובצי GIF משותפים', ...row });
-  return { files, messages, ledger, readers, pending, members, people, links };
+  const supportIssues = (await db.query(`SELECT si.id,si.user_id,si.updated_at,
+      ARRAY(SELECT a.stored_file_id FROM support_issue_attachments a
+        WHERE a.issue_id=si.id ORDER BY a.stored_file_id) AS attachment_ids
+    FROM support_issues si WHERE EXISTS (SELECT 1 FROM support_issue_attachments a
+      WHERE a.issue_id=si.id AND a.stored_file_id=ANY($1::uuid[])) ORDER BY si.id`, [ids])).rows;
+  if (supportIssues.some(issue => issue.user_id !== userId))
+    throw failure(409, 'SUPPORT_ISSUE_NOT_OWNED', 'הקובץ מקושר לפניית תמיכה שאינה שלך ולא ניתן למחוק אותה.');
+  return { files, messages, ledger, readers, pending, members, people, links, supportIssues };
 }
 
 function describe(state, userId) {
@@ -194,7 +204,8 @@ function describe(state, userId) {
     copyCount: files.length, totalBytes: files.reduce((sum, file) => sum + file.size, 0), files,
     hasBackup: files.some(file => file.hasBackup), pendingCount: candidates.size,
     pendingRecipientCount: recipients.size, pendingRecipients: [...recipients.values()],
-    linkedUses: [...uses.values()], cancellations: [...candidates.values()].filter(row => row.messageId) };
+    linkedUses: [...uses.values()], supportIssues: state.supportIssues.map(issue => ({ id: issue.id })),
+    cancellations: [...candidates.values()].filter(row => row.messageId) };
 }
 
 function createMediaLibraryDeletion({ uploadRoot, secret = crypto.randomBytes(32),
@@ -310,11 +321,23 @@ function createMediaLibraryDeletion({ uploadRoot, secret = crypto.randomBytes(32
       for (const [table, field] of linkedTables)
         await db.query(`SELECT id FROM ${table} WHERE ${field}=ANY($1::text[]) ORDER BY id FOR UPDATE`, [urls]);
       await db.query('SELECT id FROM shared_gifs WHERE stored_file_id=ANY($1::uuid[]) ORDER BY id FOR UPDATE', [ids]);
+      // Lock the affected issues before their attachments so concurrent edits
+      // cannot change what the user approved while the files are deleted.
+      await db.query('SELECT id FROM support_issues WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',
+        [initial.supportIssues.map(issue => issue.id)]);
+      await db.query(`SELECT id FROM support_issue_attachments WHERE issue_id=ANY($1::uuid[])
+        ORDER BY id FOR UPDATE`, [initial.supportIssues.map(issue => issue.id)]);
       await db.query('SELECT id FROM stored_files WHERE user_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE', [userId, ids]);
       await db.query("SELECT stored_file_id FROM media_backup_items WHERE stored_file_id=ANY($1::uuid[]) AND provider='google_drive' ORDER BY stored_file_id FOR UPDATE", [ids]);
       const state = await snapshot(db, userId, ids);
       if (token.expires < now() || token.state !== hash(state))
         throw failure(409, 'DELETE_PREVIEW_CHANGED', 'מצב הקבצים השתנה. יש לבדוק ולאשר שוב את המחיקה.', { preview: makePreview(state, userId) });
+      const supportIssueIds = state.supportIssues.map(issue => issue.id);
+      const approvedIssues = request?.confirmedSupportIssueIds;
+      if (supportIssueIds.length && (!Array.isArray(approvedIssues) ||
+          JSON.stringify([...new Set(approvedIssues)].sort()) !== JSON.stringify(supportIssueIds)))
+        throw failure(409, 'SUPPORT_ISSUE_CONFIRMATION_REQUIRED',
+          'יש לרענן את האפליקציה ולאשר שגם פניות התמיכה המקושרות יימחקו.');
       const cancellations = describe(state, userId).cancellations;
       for (const file of state.files) {
         await db.query('SAVEPOINT delete_personal_file');
@@ -344,6 +367,8 @@ function createMediaLibraryDeletion({ uploadRoot, secret = crypto.randomBytes(32
           }
           // Keep messages and their original URLs: ready recipient projections
           // need that metadata to resolve the independent recipient-owned copy.
+          await db.query('DELETE FROM support_issues WHERE user_id=$1 AND id=ANY($2::uuid[])',
+            [userId, state.supportIssues.filter(issue => issue.attachment_ids.includes(file.id)).map(issue => issue.id)]);
           await db.query('DELETE FROM stored_files WHERE id=$1 AND user_id=$2', [file.id, userId]);
           await db.query('RELEASE SAVEPOINT delete_personal_file');
           result.deletedIds.push(file.id);

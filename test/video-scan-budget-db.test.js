@@ -479,9 +479,9 @@ test('a deadline crossed inside the reservation transaction cannot grant or char
   assert.equal((await f.pool.query('SELECT count(*) FROM video_scan_operations')).rows[0].count, '0');
 });
 
-test('whole-scan summaries support ninety frames while retaining a separate result bound', dbOptions, async t => {
+test('whole-scan summaries support more than 256 KiB while retaining a separate result bound', dbOptions, async t => {
   const f = await fixture(t), context = await f.setup(20);
-  const result = { blocked: true, frameResults: frames(20).map(frame => ({ ...frame, diagnostics: 'x'.repeat(4096) })) };
+  const result = { blocked: true, frameResults: frames(20).map(frame => ({ ...frame, diagnostics: 'x'.repeat(16384) })) };
   assert.ok(Buffer.byteLength(JSON.stringify(result)) > 256 * 1024);
   const completed = await ledger.finishVideoScan(f.pool, context, result);
   assert.equal(completed.status, 'completed');

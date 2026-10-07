@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart' show parseHttpDate;
+import 'message_reaction_details.dart';
 
 const messageReactionEmoji = ['👍', '❤️', '😂', '🙏', '😮', '😢'];
 const _reactionAssets = {
@@ -25,6 +26,7 @@ class _ReactionEntry {
   DateTime lastAccess;
   Future<List<Map<String, dynamic>>?>? pending;
   int revision = 0;
+  String? lastEventId;
 }
 
 /// Reuses recent results when messages scroll out of view and back in. All
@@ -38,6 +40,23 @@ class MessageReactionsCache extends ChangeNotifier {
   final DateTime Function() _now;
   final _entries = <_ReactionKey, _ReactionEntry>{};
   final _cooldowns = <_ReactionScope, DateTime>{};
+
+  /// Socket activity invalidates only this account's message. A late read
+  /// cannot overwrite the refresh, and duplicate events share one request.
+  void invalidate({
+    required String api,
+    required String token,
+    required String messageId,
+    required String eventId,
+  }) {
+    final key = (api, token, messageId);
+    final entry = _entries[key];
+    if (entry == null || entry.lastEventId == eventId) return;
+    entry.lastEventId = eventId;
+    entry.revision++;
+    entry.refreshAfter = null;
+    notifyListeners();
+  }
 
   _ReactionEntry _entry(_ReactionKey key) {
     final now = _now();
@@ -189,7 +208,8 @@ class MessageReactions extends StatefulWidget {
   final bool showAddButton;
   final bool quickChoices;
   final bool showExistingReactions;
-  final ValueChanged<String>? onQuickSelected;
+  final bool compact;
+  final ValueChanged<String>? onReactionSelected;
   const MessageReactions(
       {super.key,
       required this.api,
@@ -199,10 +219,15 @@ class MessageReactions extends StatefulWidget {
       this.cache,
       this.showAddButton = true,
       this.quickChoices = false,
+      this.compact = false,
       this.showExistingReactions = true,
-      this.onQuickSelected});
+      this.onReactionSelected});
   @override
   State<MessageReactions> createState() => _MessageReactionsState();
+}
+
+class _ReactionScopeChanges extends ChangeNotifier {
+  void changed() => notifyListeners();
 }
 
 class _MessageReactionsState extends State<MessageReactions> {
@@ -212,6 +237,10 @@ class _MessageReactionsState extends State<MessageReactions> {
   bool _busy = false;
   Object? _loadingRequest;
   int _revision = 0;
+  bool _refreshNeeded = false;
+  final _scopeChanges = _ReactionScopeChanges();
+  int _scopeRevision = 0;
+  bool _detailsOpen = false;
   _ReactionKey get _key => (widget.api, widget.token, widget.messageId);
   MessageReactionsCache get _cache =>
       widget.cache ?? MessageReactionsCache.shared;
@@ -250,21 +279,29 @@ class _MessageReactionsState extends State<MessageReactions> {
         oldWidget.cache == widget.cache) {
       return;
     }
+    _scopeRevision++;
+    _scopeChanges.changed();
     if (oldWidget.client != widget.client) {
       if (oldWidget.client == null) _client.close();
       _client = widget.client ?? http.Client();
     }
     _revision++;
     _loadingRequest = null;
+    _refreshNeeded = false;
     _busy = false;
     _items = [];
     _load();
   }
 
   void _syncCache() {
-    final items = _cache._entries[_key]?.items;
+    final entry = _cache._entries[_key];
+    final items = entry?.items;
     if (mounted && items != null && !identical(items, _items)) {
       setState(() => _items = items);
+    }
+    if (mounted && entry != null && entry.refreshAfter == null) {
+      _refreshNeeded = true;
+      _load();
     }
   }
 
@@ -272,6 +309,7 @@ class _MessageReactionsState extends State<MessageReactions> {
     if (_loadingRequest != null || _busy) return;
     final request = Object();
     _loadingRequest = request;
+    _refreshNeeded = false;
     final revision = _revision;
     try {
       final items = await _cache._load(_key, _client, _url, _headers);
@@ -283,18 +321,27 @@ class _MessageReactionsState extends State<MessageReactions> {
       }
     } catch (_) {
     } finally {
-      if (identical(_loadingRequest, request)) _loadingRequest = null;
+      if (identical(_loadingRequest, request)) {
+        _loadingRequest = null;
+        if (mounted &&
+            revision == _revision &&
+            !_cache._isCoolingDown(_key) &&
+            (_refreshNeeded || _cache._entries[_key]?.refreshAfter == null)) {
+          _load();
+        }
+      }
     }
   }
 
-  Future<void> _react(String emoji) async {
+  Future<void> _react(String? emoji, {bool toggleOwn = true}) async {
     if (_busy) return;
     if (_cache._isCoolingDown(_key)) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('בוצעו יותר מדי בקשות. נסה שוב בעוד מספר דקות.')));
       return;
     }
-    final mine =
+    final mine = toggleOwn &&
+        emoji != null &&
         _items.any((item) => item['emoji'] == emoji && item['mine'] == true);
     _revision++;
     final revision = _revision;
@@ -321,12 +368,195 @@ class _MessageReactionsState extends State<MessageReactions> {
             const SnackBar(content: Text('לא ניתן לעדכן את התגובה כרגע')));
       }
     } finally {
-      if (mounted && revision == _revision) setState(() => _busy = false);
+      if (mounted && revision == _revision) {
+        setState(() => _busy = false);
+        if (_refreshNeeded || _cache._entries[_key]?.refreshAfter == null)
+          _load();
+      }
     }
+  }
+
+  void _selectReaction(String emoji) {
+    final onSelected = widget.onReactionSelected;
+    if (onSelected != null) {
+      onSelected(emoji);
+    } else {
+      _react(emoji);
+    }
+  }
+
+  Future<void> _chooseReaction(BuildContext anchorContext,
+      {String? ownEmojiOverride, bool ownershipKnown = false}) async {
+    if (_busy) return;
+    final scope = _key;
+    final scopeRevision = _scopeRevision;
+    final entry = _cache._entry(scope);
+    final entryRevision = entry.revision;
+    final own = _items.where((item) => item['mine'] == true).firstOrNull;
+    final ownEmoji =
+        ownershipKnown ? ownEmojiOverride : own?['emoji']?.toString();
+    final overlay = Navigator.of(context).overlay?.context.findRenderObject();
+    final anchor = anchorContext.findRenderObject();
+    if (overlay is! RenderBox || anchor is! RenderBox) return;
+    final selected = await showMenu<String>(
+      context: context,
+      routeSettings: const RouteSettings(name: 'message-reaction-picker'),
+      position: RelativeRect.fromRect(
+          anchor.localToGlobal(Offset.zero, ancestor: overlay) & anchor.size,
+          Offset.zero & overlay.size),
+      items: [
+        for (final emoji in messageReactionEmoji)
+          PopupMenuItem(
+            key: ValueKey('change-reaction-$emoji'),
+            value: emoji,
+            child: Semantics(
+              label: 'תגובה $emoji',
+              child: Row(children: [
+                SvgPicture.asset(
+                    'assets/twemoji/svg/${_reactionAssets[emoji]}.svg',
+                    width: 24,
+                    height: 24,
+                    excludeFromSemantics: true),
+                const SizedBox(width: 12),
+                if (emoji == ownEmoji) const Icon(Icons.check, size: 18),
+              ]),
+            ),
+          ),
+        if (ownEmoji != null)
+          const PopupMenuItem(
+            key: ValueKey('remove-own-reaction'),
+            value: '__remove_own_reaction__',
+            child: Text('הסר את התגובה שלי'),
+          ),
+      ],
+    );
+    if (!mounted ||
+        selected == null ||
+        _key != scope ||
+        _scopeRevision != scopeRevision) return;
+    if (selected == '__remove_own_reaction__') {
+      await _react(null, toggleOwn: false);
+    } else {
+      final currentOwn = ownershipKnown && entry.revision == entryRevision
+          ? ownEmojiOverride
+          : _items.where((item) => item['mine'] == true).firstOrNull?['emoji'];
+      if (selected != currentOwn ||
+          _cache._entries[_key]?.refreshAfter == null) {
+        await _react(selected, toggleOwn: false);
+      }
+    }
+  }
+
+  Widget _detailsEmoji(String emoji, double size) {
+    final asset = _reactionAssets[emoji];
+    return asset == null
+        ? Text(emoji, style: TextStyle(fontSize: size, height: 1))
+        : SvgPicture.asset('assets/twemoji/svg/$asset.svg',
+            width: size, height: size, excludeFromSemantics: true);
+  }
+
+  Future<void> _showDetails() async {
+    if (_busy || _detailsOpen) return;
+    final scope = _key;
+    final scopeRevision = _scopeRevision;
+    bool isCurrent() =>
+        mounted && _key == scope && _scopeRevision == scopeRevision;
+    final connection = _client;
+    final headers = Map<String, String>.from(_headers);
+    final url = Uri.parse('${scope.$1}/messages/${scope.$3}/reactions/details');
+    _detailsOpen = true;
+    try {
+      await showDialog<void>(
+          context: context,
+          builder: (_) => MessageReactionDetailsDialog(
+                api: scope.$1,
+                scopeChanges: _scopeChanges,
+                reactionChanges: _cache,
+                currentReactionRevision: () =>
+                    _cache._entries[scope]?.revision ?? 0,
+                isCurrentScope: isCurrent,
+                emojiBuilder: _detailsEmoji,
+                loadDetails: () async {
+                  for (var attempt = 0; attempt < 2; attempt++) {
+                    if (!isCurrent() || _cache._isCoolingDown(scope)) {
+                      throw StateError('reaction details unavailable');
+                    }
+                    final entry = _cache._entry(scope);
+                    final revision = entry.revision;
+                    final response = await connection
+                        .get(url, headers: headers)
+                        .timeout(const Duration(seconds: 8));
+                    if (!isCurrent())
+                      throw StateError('reaction account changed');
+                    _cache._observeRateLimit(scope, response);
+                    if (response.statusCode != 200) {
+                      throw StateError('reaction details rejected');
+                    }
+                    if (entry.revision != revision) continue;
+                    // Details never overwrite summary/cache state. A delayed
+                    // snapshot cannot undo a newer write or socket refresh.
+                    return Map<String, dynamic>.from(
+                        jsonDecode(response.body) as Map);
+                  }
+                  throw StateError('reaction details changed during load');
+                },
+                onChooseOwn: (anchor, ownEmoji) async {
+                  if (isCurrent() && anchor.mounted)
+                    await _chooseReaction(anchor,
+                        ownEmojiOverride: ownEmoji, ownershipKnown: true);
+                },
+              ));
+    } finally {
+      _detailsOpen = false;
+    }
+  }
+
+  Widget _compactReaction(Map<String, dynamic> item) {
+    final emoji = item['emoji'].toString();
+    final count = int.tryParse('${item['count']}') ?? 0;
+    final asset = _reactionAssets[emoji];
+    return Builder(
+        builder: (anchorContext) => Semantics(
+              button: true,
+              selected: item['mine'] == true,
+              label: 'תגובה $emoji${count >= 2 ? ', $count תגובות' : ''}',
+              child: Tooltip(
+                message: 'הצגת תגובות $emoji',
+                child: TextButton(
+                  key: ValueKey('compact-reaction-$emoji'),
+                  onPressed: _busy ? null : _showDetails,
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    minimumSize: const Size(32, 32),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    backgroundColor: Colors.transparent,
+                    overlayColor: Colors.transparent,
+                    elevation: 0,
+                    side: BorderSide.none,
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (asset != null)
+                      SvgPicture.asset('assets/twemoji/svg/$asset.svg',
+                          width: 20, height: 20, excludeFromSemantics: true)
+                    else
+                      Text(emoji,
+                          style: const TextStyle(fontSize: 20, height: 1)),
+                    if (count >= 2) ...[
+                      const SizedBox(width: 3),
+                      Text('$count',
+                          style: const TextStyle(fontSize: 11, height: 1)),
+                    ],
+                  ]),
+                ),
+              ),
+            ));
   }
 
   @override
   void dispose() {
+    _scopeRevision++;
+    _scopeChanges.changed();
+    _scopeChanges.dispose();
     _timer?.cancel();
     _cache.removeListener(_syncCache);
     if (widget.client == null) _client.close();
@@ -336,21 +566,15 @@ class _MessageReactionsState extends State<MessageReactions> {
   @override
   Widget build(BuildContext context) => Wrap(
         spacing: 4,
+        runSpacing: 2,
+        textDirection: widget.compact ? TextDirection.rtl : null,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           if (widget.quickChoices)
             for (final emoji in messageReactionEmoji)
               IconButton(
                 tooltip: 'תגובה $emoji',
-                onPressed: _busy
-                    ? null
-                    : () {
-                        if (widget.onQuickSelected != null) {
-                          widget.onQuickSelected!(emoji);
-                        } else {
-                          _react(emoji);
-                        }
-                      },
+                onPressed: _busy ? null : () => _selectReaction(emoji),
                 isSelected: widget.showExistingReactions &&
                     _items.any((item) =>
                         item['emoji'] == emoji && item['mine'] == true),
@@ -367,26 +591,31 @@ class _MessageReactionsState extends State<MessageReactions> {
               ),
           if (widget.showExistingReactions)
             for (final item in _items)
-              ActionChip(
-                  label: Text((int.tryParse('${item['count']}') ?? 0) >= 2
-                      ? '${item['emoji']} ${item['count']}'
-                      : '${item['emoji']}'),
-                  visualDensity: VisualDensity.compact,
-                  backgroundColor:
-                      item['mine'] == true ? const Color(0xFFD4E9F7) : null,
-                  onPressed:
-                      _busy ? null : () => _react(item['emoji'] as String)),
+              if (widget.compact)
+                _compactReaction(item)
+              else
+                ActionChip(
+                    label: Text((int.tryParse('${item['count']}') ?? 0) >= 2
+                        ? '${item['emoji']} ${item['count']}'
+                        : '${item['emoji']}'),
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor:
+                        item['mine'] == true ? const Color(0xFFD4E9F7) : null,
+                    onPressed:
+                        _busy ? null : () => _react(item['emoji'] as String)),
           if (widget.showAddButton)
             PopupMenuButton<String>(
-              tooltip: 'תגובה להודעה',
+              key: const ValueKey('add-message-reaction'),
+              tooltip: 'הוספת תגובה',
               enabled: !_busy,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 70),
               icon: const Icon(Icons.add_reaction_outlined, size: 18),
-              onSelected: _react,
+              onSelected: _selectReaction,
               itemBuilder: (_) => [
                 for (final emoji in messageReactionEmoji)
                   PopupMenuItem(
+                      key: ValueKey('select-message-reaction-$emoji'),
                       value: emoji,
                       child: Text(emoji, style: const TextStyle(fontSize: 24)))
               ],

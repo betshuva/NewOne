@@ -41,9 +41,19 @@ void main() {
         expect(find.text('👍'), findsOneWidget);
         await tester.tap(find.text('open'));
         await tester.pumpAndSettle();
-        expect(find.descendant(of: find.byKey(const ValueKey('message-options-menu')),
-            matching: find.byType(ActionChip)), findsNothing);
-        await tester.tap(find.byTooltip('תגובה ❤️'));
+        expect(
+            find.descendant(
+                of: find.byKey(const ValueKey('message-options-menu')),
+                matching: find.byType(ActionChip)),
+            findsNothing);
+        expect(find.byTooltip('תגובה ❤️'), findsNothing);
+        expect(find.byIcon(Icons.add_reaction_outlined), findsOneWidget);
+        expect(writes, isEmpty);
+        await tester.tap(find.byTooltip('הוספת תגובה'));
+        await tester.pumpAndSettle();
+        expect(writes, isEmpty);
+        await tester
+            .tap(find.byKey(const ValueKey('select-message-reaction-❤️')));
         await tester.pumpAndSettle();
         expect(
             find.byKey(const ValueKey('message-options-menu')), findsNothing);
@@ -196,33 +206,63 @@ void main() {
     });
   }
 
-  testWidgets('menu displays quick emoji and dismisses on outside tap',
+  testWidgets(
+      'menu exposes reactions only through plus and cancels without writes',
       (tester) async {
-    await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-            body: Builder(
-      builder: (context) => Center(
-          child: TextButton(
-              onPressed: () {
-                showMessageOptionsMenu(
-                  context: context,
-                  api: 'https://test/api',
-                  token: 'token',
-                  message: const {'id': '00000000-0000-4000-8000-000000000123'},
-                  items: const [],
-                );
-              },
-              child: const Text('open'))),
-    ))));
-    await tester.tap(find.text('open'));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('תגובה 👍'), findsOneWidget);
-    expect(find.byTooltip('תגובה ❤️'), findsOneWidget);
-    expect(find.byTooltip('תגובה 😢'), findsOneWidget);
-    await tester.tapAt(const Offset(10, 10));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('תגובה 👍'), findsNothing);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
+    final requests = <http.Request>[];
+    await http.runWithClient(() async {
+      await tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+              body: Builder(
+        builder: (context) => Center(
+            child: TextButton(
+                onPressed: () {
+                  showMessageOptionsMenu(
+                    context: context,
+                    api: 'https://test/api',
+                    token: 'token',
+                    message: const {
+                      'id': '00000000-0000-4000-8000-000000000123'
+                    },
+                    items: const [],
+                  );
+                },
+                child: const Text('open'))),
+      ))));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('הוספת תגובה'), findsOneWidget);
+      for (final emoji in messageReactionEmoji) {
+        expect(find.byTooltip('תגובה $emoji'), findsNothing);
+        expect(find.byKey(ValueKey('select-message-reaction-$emoji')),
+            findsNothing);
+      }
+      expect(requests.where((request) => request.method == 'PUT'), isEmpty);
+      await tester.tap(find.byTooltip('הוספת תגובה'));
+      await tester.pumpAndSettle();
+      for (final emoji in messageReactionEmoji) {
+        expect(find.byKey(ValueKey('select-message-reaction-$emoji')),
+            findsOneWidget);
+      }
+      expect(requests.where((request) => request.method == 'PUT'), isEmpty);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('הוספת תגובה'), findsOneWidget);
+      expect(find.byKey(const ValueKey('select-message-reaction-👍')),
+          findsNothing);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('הוספת תגובה'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      expect(requests, hasLength(1));
+      expect(requests.single.method, 'GET');
+      expect(requests.single.url.path,
+          '/api/messages/00000000-0000-4000-8000-000000000123/reactions');
+    },
+        () => MockClient((request) async {
+              requests.add(request);
+              return http.Response('[]', 200);
+            }));
   });
 }

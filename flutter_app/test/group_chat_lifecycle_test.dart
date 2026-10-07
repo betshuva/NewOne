@@ -1,4 +1,3 @@
-import 'package:betshuva/app_screenshot.dart';
 import 'package:betshuva/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -67,11 +66,9 @@ void main() {
       'http://localhost:1',
       io.OptionBuilder().disableAutoConnect().enableForceNew().build(),
     );
-    final previousDestination = appScreenshotDestination.value;
     addTearDown(() {
       socket.connected = false;
       socket.dispose();
-      appScreenshotDestination.value = previousDestination;
     });
 
     const events = [

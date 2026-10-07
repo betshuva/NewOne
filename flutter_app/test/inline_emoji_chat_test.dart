@@ -1,9 +1,9 @@
 import 'dart:convert';
 
-import 'package:betshuva/app_screenshot.dart';
 import 'package:betshuva/inline_custom_emoji.dart';
 import 'package:betshuva/main.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -24,6 +24,7 @@ final _pngBytes = base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH9sAAAAASUVORK5CYII=');
 final _labels = List.generate(150, (index) => 'אימוג׳י לבדיקה ${index + 1}');
 var _bundledCatalogReads = 0;
+var _bundledColoredArtwork = false;
 const _standardCatalog = [
   {
     'emoji': '😀',
@@ -48,6 +49,22 @@ const _svgFixture =
     '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" '
     'viewBox="0 0 36 36"><circle cx="18" cy="18" r="16" fill="#ffcc4d"/></svg>';
 
+// Production's catalog is immutable per bundle. Each harness gets its own
+// immutable fixture so cached futures cannot outlive an earlier test's mock.
+class _MessageEmojiBundle extends CachingAssetBundle {
+  @override
+  Future<ByteData> load(String key) async {
+    if (key == 'assets/twemoji/emoji_allowlist.json') {
+      return ByteData.sublistView(
+          Uint8List.fromList(utf8.encode(jsonEncode(_standardCatalog))));
+    }
+    if (key.startsWith('assets/twemoji/svg/')) {
+      return ByteData.sublistView(Uint8List.fromList(utf8.encode(_svgFixture)));
+    }
+    return rootBundle.load(key);
+  }
+}
+
 Map<String, dynamic> get _bundledCatalog => {
       'version': 3,
       'categories': [
@@ -55,6 +72,7 @@ Map<String, dynamic> get _bundledCatalog => {
           'id': 'user-stickers',
           'title': 'מדבקות בתשובה',
           'path': 'user-20260907',
+          if (_bundledColoredArtwork) 'coloredPath': 'user-20261008-color',
           'prefix': 'sticker',
           'extension': 'png',
           'labels': _labels,
@@ -85,8 +103,11 @@ class _ChatHarness {
   final bool allowText;
   final bool allowImages;
   final bool withHistory;
+  final int uploadStatus;
+  final bool coloredArtwork;
   final List<Map<String, dynamic>>? history;
   final requests = <http.Request>[];
+  final messageEmojiBundle = _MessageEmojiBundle();
   final socket = io.io(
     'http://localhost:1',
     io.OptionBuilder().disableAutoConnect().enableForceNew().build(),
@@ -98,21 +119,37 @@ class _ChatHarness {
       this.allowText = true,
       this.allowImages = true,
       this.withHistory = false,
+      this.uploadStatus = 200,
+      this.coloredArtwork = false,
       this.history});
 
   late final client = MockClient((request) async {
     requests.add(request);
     dynamic body = <String, dynamic>{};
     final path = request.url.path;
-    if (path.contains('/expression-library/user-20260907/')) {
+    if (request.method == 'GET' && path.endsWith('.png')) {
       return http.Response.bytes(_pngBytes, 200,
           headers: {'content-type': 'image/png'});
     } else if (request.method == 'POST' && path.endsWith('/upload')) {
-      body = {'url': _uploadedUrl, 'status': 'approved'};
+      return http.Response(
+          jsonEncode(uploadStatus == 200
+              ? {'url': _uploadedUrl, 'status': 'approved'}
+              : {'error': 'העלאת המדבקה נכשלה'}),
+          uploadStatus,
+          headers: {'content-type': 'application/json; charset=utf-8'});
     } else if (request.method == 'POST' && path.endsWith('/messages')) {
       body = {'id': 'emoji-sent-message', 'status': 'sent'};
     } else if (path.endsWith('/expressions/catalog')) {
-      return http.Response(jsonEncode(_catalog), catalogStatus,
+      final catalog = _catalog;
+      if (coloredArtwork) {
+        for (final category in catalog['categories'] as List) {
+          for (final item in category['items'] as List) {
+            item['coloredUrl'] = (item['url'] as String)
+                .replaceFirst('user-20260907', 'user-20261008-color');
+          }
+        }
+      }
+      return http.Response(jsonEncode(catalog), catalogStatus,
           headers: {'content-type': 'application/json; charset=utf-8'});
     } else if (path.endsWith('/groups')) {
       body = [_group];
@@ -210,34 +247,61 @@ class _ChatHarness {
     expect(message['stickerId'], isNull);
   }
 
+  void expectOneSticker() {
+    expect(uploads, hasLength(1));
+    final upload = uploads.single;
+    final multipart = latin1.decode(upload.bodyBytes);
+    expect(multipart, contains('name="builtinExpression"\r\n\r\ntrue'));
+    expect(multipart, isNot(contains('name="scanReport"')));
+    expect(multipart, contains('name="clientUploadId"'));
+    expect(multipart, contains('name="${isGroup ? 'groupId' : 'toUserId'}"'));
+    expect(sentHttpMessages, hasLength(1));
+    expect(sentSocketMessages, isEmpty);
+    final request = sentHttpMessages.single;
+    expect(
+        request.url.path,
+        isGroup
+            ? endsWith('/groups/emoji-test-group/messages')
+            : endsWith('/messages'));
+    final message = jsonDecode(request.body) as Map<String, dynamic>;
+    expect(message['fileType'], 'image');
+    expect(message['fileUrl'], _uploadedUrl);
+    expect(message['fileName'], isNotEmpty);
+    expect(message['text'], isNull);
+    expect(message['stickerId'], isNull);
+    if (!isGroup) expect(message['toUserId'], 'emoji-test-recipient');
+  }
+
   Future<void> mount(WidgetTester tester) async {
-    final previousDestination = appScreenshotDestination.value;
+    _bundledColoredArtwork = coloredArtwork;
     addTearDown(() {
       socket.dispose();
       client.close();
-      appScreenshotDestination.value = previousDestination;
     });
     await tester.pumpWidget(MaterialApp(
-      home: Directionality(
-        textDirection: TextDirection.rtl,
-        child: isGroup
-            ? GroupChatScreen(
-                token: 'emoji-test-token',
-                me: const {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה'},
-                group: Map<String, dynamic>.from(_group),
-                socket: socket,
-                embedded: true,
-              )
-            : ChatScreen(
-                token: 'emoji-test-token',
-                me: const {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה'},
-                recipient: const {
-                  'id': 'emoji-test-recipient',
-                  'name': 'חבר לבדיקה',
-                },
-                socket: socket,
-                embedded: true,
-              ),
+      home: DefaultAssetBundle(
+        bundle: messageEmojiBundle,
+        child: Directionality(
+          textDirection: TextDirection.rtl,
+          child: isGroup
+              ? GroupChatScreen(
+                  token: 'emoji-test-token',
+                  me: const {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה'},
+                  group: Map<String, dynamic>.from(_group),
+                  socket: socket,
+                  embedded: true,
+                )
+              : ChatScreen(
+                  token: 'emoji-test-token',
+                  me: const {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה'},
+                  recipient: const {
+                    'id': 'emoji-test-recipient',
+                    'name': 'חבר לבדיקה',
+                  },
+                  socket: socket,
+                  embedded: true,
+                ),
+        ),
       ),
     ));
     await tester.pump(const Duration(milliseconds: 100));
@@ -260,16 +324,27 @@ Finder get _search =>
 Finder get _customTab => find.byKey(const ValueKey('expression-custom-tab'));
 Finder get _standardTab =>
     find.byKey(const ValueKey('expression-standard-tab'));
+Finder get _stickerShortcut =>
+    find.byKey(const ValueKey('chat-stickers-shortcut'));
+Finder get _inlineEmojiShortcut =>
+    find.byKey(const ValueKey('chat-inline-emoji-shortcut'));
 
-void _expectFlatImages(WidgetTester tester, {int count = 150}) {
-  expect(find.descendant(of: _picker, matching: find.text('אימוג׳י')),
-      findsOneWidget);
+void _expectFlatImages(WidgetTester tester,
+    {int count = 150, bool stickers = false}) {
   expect(find.descendant(of: _picker, matching: find.byType(TabBar)),
       findsNothing);
   expect(find.descendant(of: _picker, matching: find.byType(ChoiceChip)),
       findsNWidgets(2));
-  expect(tester.widget<ChoiceChip>(_customTab).selected, isTrue);
-  expect(tester.widget<ChoiceChip>(_standardTab).selected, isFalse);
+  expect(tester.widget<ChoiceChip>(_customTab).selected, stickers);
+  expect(tester.widget<ChoiceChip>(_standardTab).selected, !stickers);
+  expect(find.descendant(of: _picker, matching: find.text('מדבקות')),
+      findsOneWidget);
+  expect(find.descendant(of: _picker, matching: find.text('אימוג׳י')),
+      findsWidgets);
+  expect(find.descendant(of: _picker, matching: find.text('של בתשובה')),
+      findsNothing);
+  expect(find.descendant(of: _picker, matching: find.text('רגילים')),
+      findsNothing);
   expect(find.descendant(of: _picker, matching: find.text('מדבקות בתשובה')),
       findsNothing);
   expect(find.byKey(const ValueKey('inline-emoji-1f600')), findsNothing);
@@ -277,42 +352,77 @@ void _expectFlatImages(WidgetTester tester, {int count = 150}) {
   expect(tester.widget<SliverGrid>(_grid).delegate.estimatedChildCount, count);
 }
 
-Future<void> _openPicker(WidgetTester tester) async {
-  if (find.text('אימוג׳י ומדבקות').evaluate().isEmpty) {
-    await tester.tap(find.byIcon(Icons.attach_file));
+Future<void> _openPicker(WidgetTester tester,
+    {bool stickers = false, bool defaultStickers = true}) async {
+  await _openShortcut(tester, stickers: defaultStickers);
+  if (stickers != defaultStickers) {
+    await tester.ensureVisible(stickers ? _customTab : _standardTab);
+    await tester.tap(stickers ? _customTab : _standardTab);
     await tester.pumpAndSettle();
   }
-  await tester.ensureVisible(find.text('אימוג׳י ומדבקות'));
-  await tester.tap(find.text('אימוג׳י ומדבקות'));
+  _expectFlatImages(tester, stickers: stickers);
+}
+
+Future<void> _openShortcut(WidgetTester tester,
+    {required bool stickers}) async {
+  await tester.tap(stickers ? _stickerShortcut : _inlineEmojiShortcut);
   await tester
       .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
   await tester.pumpAndSettle();
-  _expectFlatImages(tester);
+  _expectFlatImages(tester, stickers: stickers);
 }
 
-Future<void> _selectEmoji(WidgetTester tester, int id) async {
-  await tester
-      .tap(find.descendant(of: _grid, matching: find.text(_labels[id - 1])));
+void _expectComposerShortcuts(WidgetTester tester) {
+  expect(_stickerShortcut, findsOneWidget);
+  expect(_inlineEmojiShortcut, findsOneWidget);
+  final stickerButton = tester.widget<IconButton>(_stickerShortcut);
+  final emojiButton = tester.widget<IconButton>(_inlineEmojiShortcut);
+  expect(stickerButton.tooltip, 'מדבקות');
+  expect(emojiButton.tooltip, 'אימוג׳י');
+  expect((stickerButton.icon as Icon).icon, Icons.sticky_note_2_outlined);
+  expect((emojiButton.icon as Icon).icon, Icons.emoji_emotions_outlined);
+
+  final microphoneX = tester.getCenter(find.byIcon(Icons.mic)).dx;
+  final attachmentX = tester.getCenter(find.byIcon(Icons.attach_file)).dx;
+  final left = microphoneX < attachmentX ? microphoneX : attachmentX;
+  final right = microphoneX > attachmentX ? microphoneX : attachmentX;
+  for (final shortcut in [_stickerShortcut, _inlineEmojiShortcut]) {
+    expect(tester.getCenter(shortcut).dx, greaterThan(left));
+    expect(tester.getCenter(shortcut).dx, lessThan(right));
+  }
+}
+
+Finder _imageTile(int id, {bool colored = false}) => find.byKey(ValueKey(
+    'expression-image-https://betshuva.com/betshuva-app/expression-library/${colored ? 'user-20261008-color' : 'user-20260907'}/sticker-${id.toString().padLeft(2, '0')}.png'));
+
+Future<void> _selectEmoji(WidgetTester tester, int id,
+    {bool colored = false}) async {
+  final sendsSticker = tester.widget<ChoiceChip>(_customTab).selected;
+  await tester.ensureVisible(_imageTile(id, colored: colored));
   await tester.pumpAndSettle();
+  await tester.tap(_imageTile(id, colored: colored));
+  if (sendsSticker) {
+    // Standalone media exercises real browser FileReader/IndexedDB events and
+    // image decoding, which cannot complete on Flutter's synthetic test clock.
+    // Pump each stage while yielding to that I/O, rather than waiting for a
+    // photo placeholder animation to stop before the decoding event arrives.
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 30)));
+    }
+  } else {
+    await tester.pumpAndSettle();
+  }
   expect(_picker, findsNothing);
 }
 
-Future<void> _openStandardTab(WidgetTester tester) async {
+Future<void> _openInlineTab(WidgetTester tester, {int count = 150}) async {
   await tester.ensureVisible(_standardTab);
   await tester.pumpAndSettle();
   await tester.tap(_standardTab);
   await tester.pumpAndSettle();
-  expect(tester.widget<ChoiceChip>(_standardTab).selected, isTrue);
-  expect(tester.widget<ChoiceChip>(_customTab).selected, isFalse);
-  expect(find.byKey(const ValueKey('inline-emoji-1f600')), findsOneWidget);
-  expect(find.descendant(of: _picker, matching: find.text('רגילים')),
-      findsOneWidget);
-}
-
-Future<void> _selectStandardEmoji(WidgetTester tester, String code) async {
-  await tester.tap(find.byKey(ValueKey('inline-emoji-$code')));
-  await tester.pumpAndSettle();
-  expect(_picker, findsNothing);
+  _expectFlatImages(tester, count: count);
 }
 
 void _expectSmallEmoji(WidgetTester tester, Finder scope, int id) {
@@ -331,6 +441,7 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     _bundledCatalogReads = 0;
+    _bundledColoredArtwork = false;
     rootBundle.evict('assets/stickers/user-catalog.json');
     rootBundle.evict('assets/twemoji/emoji_allowlist.json');
     final messenger =
@@ -367,6 +478,221 @@ void main() {
     final chatKind = isGroup ? 'group' : 'private';
 
     testWidgets(
+        '$chatKind composer shortcuts open the requested mode and retain the caret',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        _expectComposerShortcuts(tester);
+        await tester.enterText(app.composer, _draft);
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection.collapsed(offset: 3);
+        final before = controller.value;
+
+        for (final stickers in [true, false]) {
+          await _openShortcut(tester, stickers: stickers);
+          expect(controller.value, before);
+          app.expectNothingSent();
+          await tester.tap(find.byTooltip('סגירה'));
+          await tester.pumpAndSettle();
+          expect(_picker, findsNothing);
+          expect(controller.value, before);
+        }
+
+        await _openShortcut(tester, stickers: false);
+        await _selectEmoji(tester, 2);
+        final text =
+            '${_draft.substring(0, 3)}${inlineEmojiCharacter(2)}${_draft.substring(3)}';
+        expect(controller.text, text);
+        expect(controller.selection, const TextSelection.collapsed(offset: 4));
+        app.expectNothingSent();
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage(encodeInlineEmojiText(text));
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
+    testWidgets(
+        '$chatKind sticker shortcut immediately sends media and keeps the draft',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer, _draft);
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection.collapsed(offset: 3);
+        final before = controller.value;
+        await _openShortcut(tester, stickers: true);
+        await _selectEmoji(tester, 1);
+        app.expectOneSticker();
+        expect(controller.value, before);
+        await app.dispose(tester);
+      }, () => app.client);
+      // Web resumable media is exercised by the production-browser smoke.
+    }, skip: kIsWeb);
+
+    testWidgets('$chatKind composer shortcuts fit a 320-pixel viewport',
+        (tester) async {
+      tester.view.physicalSize = const Size(320, 568);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        _expectComposerShortcuts(tester);
+        expect(tester.takeException(), isNull);
+        expect(tester.getSize(app.composer).width, greaterThanOrEqualTo(80));
+        for (final tool in [
+          find.byIcon(Icons.mic),
+          _inlineEmojiShortcut,
+          _stickerShortcut,
+          find.byIcon(Icons.attach_file),
+        ]) {
+          final rect = tester.getRect(tool);
+          expect(rect.left, greaterThanOrEqualTo(0));
+          expect(rect.right, lessThanOrEqualTo(320));
+        }
+        app.expectNothingSent();
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
+    for (final stickers in [true, false]) {
+      testWidgets(
+          '$chatKind ${stickers ? 'sticker' : 'inline emoji'} shortcut honors its receiving filter',
+          (tester) async {
+        final app = _ChatHarness(
+            isGroup: isGroup, allowText: stickers, allowImages: !stickers);
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          await tester.tap(stickers ? _stickerShortcut : _inlineEmojiShortcut);
+          await tester.pumpAndSettle();
+          expect(_picker, findsNothing,
+              reason: 'A blocked shortcut must not open the other mode');
+          expect(
+              find.textContaining(
+                  '${stickers ? 'מדבקות' : 'אימוג׳י בתוך הטקסט'} חסום'),
+              findsOneWidget);
+          expect(
+              app.requests.where((request) =>
+                  request.url.path.endsWith('/expressions/catalog')),
+              isEmpty);
+          app.expectNothingSent();
+          expect(tester.takeException(), isNull);
+          await app.dispose(tester);
+        }, () => app.client);
+      });
+    }
+
+    testWidgets('$chatKind downloads the colored sticker from a dual catalog',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup, coloredArtwork: true);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer, _draft);
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection.collapsed(offset: 3);
+        final before = controller.value;
+        await _openPicker(tester, stickers: true);
+        expect(_imageTile(1), findsNothing);
+        expect(_imageTile(1, colored: true), findsOneWidget);
+        await _selectEmoji(tester, 1, colored: true);
+
+        app.expectOneSticker();
+        expect(controller.value, before);
+        expect(
+            app.requests.where((request) =>
+                request.method == 'GET' &&
+                request.url.path.endsWith(
+                    '/expression-library/user-20261008-color/sticker-01.png')),
+            hasLength(1));
+        expect(
+            app.requests.where((request) =>
+                request.method == 'GET' &&
+                request.url.path.endsWith(
+                    '/expression-library/user-20260907/sticker-01.png')),
+            isEmpty);
+        await app.dispose(tester);
+      }, () => app.client);
+      // Browser resumable uploads use XMLHttpRequest and bypass this HTTP mock.
+      // The production-bundle Playwright smoke covers the web media transport.
+    }, skip: kIsWeb);
+
+    testWidgets('$chatKind colored artwork retains the saved inline emoji ID',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup, coloredArtwork: true);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer, 'שלום 😀 סוף');
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection.collapsed(offset: 5);
+        await _openPicker(tester);
+        expect(_imageTile(1), findsNothing);
+        expect(_imageTile(1, colored: true), findsOneWidget);
+        await _selectEmoji(tester, 1, colored: true);
+
+        expect(controller.text, 'שלום ${inlineEmojiCharacter(1)}😀 סוף');
+        app.expectNothingSent();
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage('שלום [[bt-emoji:001]]😀 סוף');
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
+    testWidgets(
+        '$chatKind sends a sticker immediately without sending or clearing the draft',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        final draft = 'שלום ${inlineEmojiCharacter(2)} טיוטה';
+        await tester.enterText(app.composer, draft);
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection(
+            baseOffset: 7, extentOffset: 2, isDirectional: true);
+        final before = controller.value;
+        await _openPicker(tester, stickers: true);
+        app.expectNothingSent();
+
+        await _selectEmoji(tester, 1);
+
+        app.expectOneSticker();
+        expect(controller.value, before);
+        expect(tester.takeException(), isNull);
+        await app.dispose(tester);
+      }, () => app.client);
+      // Browser resumable uploads use XMLHttpRequest and bypass this HTTP mock.
+      // The production-bundle Playwright smoke covers the web media transport.
+    }, skip: kIsWeb);
+
+    testWidgets('$chatKind keeps the draft after a failed sticker upload',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup, uploadStatus: 500);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer, _draft);
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection.collapsed(offset: 3);
+        final before = controller.value;
+        await _openPicker(tester, stickers: true);
+        await _selectEmoji(tester, 1);
+
+        expect(app.uploads, hasLength(1));
+        expect(app.sentHttpMessages, isEmpty);
+        expect(app.sentSocketMessages, isEmpty);
+        expect(controller.value, before);
+        expect(find.text('העלאת המדבקה נכשלה'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        await app.dispose(tester);
+      }, () => app.client);
+      // Browser resumable uploads use XMLHttpRequest and bypass this HTTP mock.
+      // The production-bundle Playwright smoke covers the web media transport.
+    }, skip: kIsWeb);
+
+    testWidgets(
         '$chatKind inserts a small emoji at the caret and sends only on explicit send',
         (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
@@ -378,6 +704,13 @@ void main() {
         expect(controller, isA<InlineEmojiController>());
         controller.selection = const TextSelection.collapsed(offset: 5);
         await _openPicker(tester);
+        final inlineTile = _imageTile(1);
+        final picture =
+            find.descendant(of: inlineTile, matching: find.byType(Image));
+        expect(tester.getSize(picture), const Size(24, 24));
+        final hitSize = tester.getSize(inlineTile);
+        expect(hitSize.width, greaterThanOrEqualTo(44));
+        expect(hitSize.height, greaterThanOrEqualTo(44));
         app.expectNothingSent();
         expect(
             app.requests.where(
@@ -418,8 +751,7 @@ void main() {
         _expectFlatImages(tester,
             count:
                 _labels.where((label) => label.contains(_labels.last)).length);
-        expect(find.descendant(of: _grid, matching: find.text(_labels.last)),
-            findsOneWidget);
+        expect(_imageTile(150), findsOneWidget);
         app.expectNothingSent();
 
         await tester.tap(find.byTooltip('סגירה'));
@@ -431,7 +763,7 @@ void main() {
     });
 
     testWidgets(
-        '$chatKind restores Unicode emoji at the caret beside custom emoji without autosending',
+        '$chatKind inserts another custom image beside a saved emoji without autosending',
         (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
@@ -442,18 +774,20 @@ void main() {
         controller.selection = const TextSelection.collapsed(offset: 5);
 
         await _openPicker(tester);
-        await _openStandardTab(tester);
+        await _openInlineTab(tester);
         app.expectNothingSent();
-        await _selectStandardEmoji(tester, '1f600');
+        await _selectEmoji(tester, 3);
 
-        expect(controller.text, 'שלום 😀abc ${inlineEmojiCharacter(1)} סוף');
-        expect(controller.selection, const TextSelection.collapsed(offset: 7));
+        expect(controller.text,
+            'שלום ${inlineEmojiCharacter(3)}abc ${inlineEmojiCharacter(1)} סוף');
+        expect(controller.selection, const TextSelection.collapsed(offset: 6));
         _expectSmallEmoji(tester, app.composer, 1);
         app.expectNothingSent();
 
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
-        app.expectOneTextMessage('שלום 😀abc [[bt-emoji:001]] סוף');
+        app.expectOneTextMessage(
+            'שלום [[bt-emoji:003]]abc [[bt-emoji:001]] סוף');
         expect(controller.text, isEmpty);
         _expectSmallEmoji(tester, find.byType(InlineEmojiText), 1);
         await app.dispose(tester);
@@ -461,7 +795,7 @@ void main() {
     });
 
     testWidgets(
-        '$chatKind switches both emoji lists and replaces a reversed selection with Unicode',
+        '$chatKind switches both image modes and replaces a reversed selection inline',
         (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
@@ -475,34 +809,33 @@ void main() {
             TextSelection(baseOffset: end, extentOffset: start);
 
         await _openPicker(tester);
-        await _openStandardTab(tester);
+        await _openInlineTab(tester);
         await tester.tap(_customTab);
         await tester.pumpAndSettle();
-        _expectFlatImages(tester);
+        _expectFlatImages(tester, stickers: true);
         await tester.enterText(_search, _labels.last);
         await tester.pumpAndSettle();
-        _expectFlatImages(tester, count: 1);
-        expect(find.descendant(of: _grid, matching: find.text(_labels.last)),
-            findsOneWidget);
+        _expectFlatImages(tester, count: 1, stickers: true);
+        expect(_imageTile(150), findsOneWidget);
 
-        await _openStandardTab(tester);
-        await tester.enterText(_search, 'לב אדום');
+        await _openInlineTab(tester);
+        await tester.enterText(_search, _labels[2]);
         await tester.pumpAndSettle();
-        expect(find.byKey(const ValueKey('inline-emoji-1f600')), findsNothing);
-        expect(find.byKey(const ValueKey('inline-emoji-2764')), findsOneWidget);
+        expect(_imageTile(1), findsNothing);
+        expect(_imageTile(3), findsOneWidget);
         app.expectNothingSent();
-        await _selectStandardEmoji(tester, '2764');
+        await _selectEmoji(tester, 3);
 
         expect(controller.text,
-            '${draft.substring(0, start)}❤️${draft.substring(end)}');
-        expect(controller.selection,
-            TextSelection.collapsed(offset: start + '❤️'.length));
+            '${draft.substring(0, start)}${inlineEmojiCharacter(3)}${draft.substring(end)}');
+        expect(
+            controller.selection, TextSelection.collapsed(offset: start + 1));
         _expectSmallEmoji(tester, app.composer, 2);
         app.expectNothingSent();
 
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
-        app.expectOneTextMessage('לפני [[bt-emoji:002]] ❤️ אחרי');
+        app.expectOneTextMessage('לפני [[bt-emoji:002]] [[bt-emoji:003]] אחרי');
         expect(controller.text, isEmpty);
         await app.dispose(tester);
       }, () => app.client);
@@ -600,7 +933,8 @@ void main() {
       }, () => app.client);
     });
 
-    testWidgets('$chatKind typed Unicode emoji retains normal text size',
+    testWidgets(
+        '$chatKind typed Unicode emoji is enlarged without media upload',
         (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
@@ -617,63 +951,128 @@ void main() {
         expect(messages, hasLength(1));
         expect(messages.single['text'], '😀');
         expect(app.uploads, isEmpty);
-        final message = tester.widget<Text>(find.text('😀'));
-        expect(message.style?.fontSize, isGroup ? 15 : 14);
+        final emoji = find.byKey(const ValueKey('message-unicode-emoji-1f600'));
+        expect(emoji, findsOneWidget);
+        expect(tester.getSize(emoji), const Size(40, 40));
         await app.dispose(tester);
       }, () => app.client);
     });
   }
 
-  for (final policy in [
-    (allowText: false, allowImages: false),
-    (allowText: false, allowImages: true),
-    (allowText: true, allowImages: false),
-  ]) {
-    testWidgets('private inline emoji follows text permission: $policy',
-        (tester) async {
-      final app = _ChatHarness(
-          isGroup: false,
-          allowText: policy.allowText,
-          allowImages: policy.allowImages);
-      await http.runWithClient(() async {
-        await app.mount(tester);
-        await tester.tap(find.byIcon(Icons.attach_file));
-        await tester.pumpAndSettle();
-        final item = tester.widget<ListTile>(find.ancestor(
-            of: find.text('אימוג׳י ומדבקות'), matching: find.byType(ListTile)));
-        expect(item.subtitle, policy.allowText ? isNull : isNotNull);
-        if (policy.allowText) {
-          await _openPicker(tester);
-          await _selectEmoji(tester, 1);
-          expect(app.controller(tester).text, inlineEmojiCharacter(1));
-        }
-        app.expectNothingSent();
-        await app.dispose(tester);
-      }, () => app.client);
-    });
-  }
-
-  testWidgets(
-      'catalog failure still exposes all 150 images and inserts the last as text',
+  testWidgets('colored bundled fallback supplies all 150 images in both modes',
       (tester) async {
-    final app = _ChatHarness(isGroup: false, catalogStatus: 503);
+    final app =
+        _ChatHarness(isGroup: false, catalogStatus: 503, coloredArtwork: true);
     await http.runWithClient(() async {
       await app.mount(tester);
-      await _openPicker(tester);
+      await _openPicker(tester, stickers: true);
       expect(_bundledCatalogReads, 1);
+      expect(_imageTile(1, colored: true), findsOneWidget);
+      expect(_imageTile(1), findsNothing);
+      await _openInlineTab(tester);
       await tester.enterText(_search, _labels.last);
       await tester.pumpAndSettle();
-      await _selectEmoji(tester, 150);
+      await _selectEmoji(tester, 150, colored: true);
       expect(app.controller(tester).text, inlineEmojiCharacter(150));
       app.expectNothingSent();
-      _expectSmallEmoji(tester, app.composer, 150);
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pumpAndSettle();
-      app.expectOneTextMessage('[[bt-emoji:150]]');
-      _expectSmallEmoji(tester, find.byType(InlineEmojiText), 150);
       await app.dispose(tester);
     }, () => app.client);
   });
+
+  for (final isGroup in [false, true]) {
+    final chatKind = isGroup ? 'group' : 'private';
+    for (final policy in [
+      (allowText: false, allowImages: false),
+      (allowText: false, allowImages: true),
+      (allowText: true, allowImages: false),
+      (allowText: true, allowImages: true),
+    ]) {
+      testWidgets('$chatKind separates sticker and text permissions: $policy',
+          (tester) async {
+        final app = _ChatHarness(
+            isGroup: isGroup,
+            allowText: policy.allowText,
+            allowImages: policy.allowImages);
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          await tester.tap(find.byIcon(Icons.attach_file));
+          await tester.pumpAndSettle();
+          final menu = find.byKey(const ValueKey('chat-attachment-menu'));
+          expect(menu, findsOneWidget);
+          expect(find.text('מדבקות ואימוג׳י'), findsNothing);
+          expect(
+              find.descendant(
+                  of: menu,
+                  matching: find.byIcon(Icons.emoji_emotions_outlined)),
+              findsNothing);
+          Navigator.of(tester.element(menu)).pop();
+          await tester.pumpAndSettle();
+          final available = policy.allowText || policy.allowImages;
+          if (!available) {
+            for (final shortcut in [
+              (finder: _stickerShortcut, label: 'מדבקות'),
+              (finder: _inlineEmojiShortcut, label: 'אימוג׳י בתוך הטקסט'),
+            ]) {
+              await tester.tap(shortcut.finder);
+              await tester.pumpAndSettle();
+              expect(_picker, findsNothing);
+              expect(find.textContaining('${shortcut.label} חסום'),
+                  findsOneWidget);
+              ScaffoldMessenger.of(tester.element(app.composer))
+                  .clearSnackBars();
+              await tester.pumpAndSettle();
+            }
+            app.expectNothingSent();
+          } else {
+            await _openPicker(tester,
+                stickers: policy.allowImages,
+                defaultStickers: policy.allowImages);
+            expect(tester.widget<ChoiceChip>(_customTab).onSelected,
+                policy.allowImages ? isNotNull : isNull);
+            expect(tester.widget<ChoiceChip>(_standardTab).onSelected,
+                policy.allowText ? isNotNull : isNull);
+            if (policy.allowText) {
+              await _openInlineTab(tester);
+              await _selectEmoji(tester, 1);
+              expect(app.controller(tester).text, inlineEmojiCharacter(1));
+              app.expectNothingSent();
+            } else {
+              await _selectEmoji(tester, 1);
+              app.expectOneSticker();
+              expect(app.controller(tester).text, isEmpty);
+            }
+          }
+          await app.dispose(tester);
+        }, () => app.client);
+        // Only the image-only policy sends media; other web policy cases retain
+        // the real picker and insertion behavior under the HTTP mock.
+      }, skip: kIsWeb && !policy.allowText && policy.allowImages);
+    }
+
+    testWidgets(
+        '$chatKind catalog failure exposes all 150 images in both modes',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup, catalogStatus: 503);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await _openPicker(tester, stickers: true);
+        expect(_bundledCatalogReads, 1);
+        _expectFlatImages(tester, stickers: true);
+        await _openInlineTab(tester);
+        await tester.enterText(_search, _labels.last);
+        await tester.pumpAndSettle();
+        await _selectEmoji(tester, 150);
+        expect(app.controller(tester).text, inlineEmojiCharacter(150));
+        app.expectNothingSent();
+        _expectSmallEmoji(tester, app.composer, 150);
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage('[[bt-emoji:150]]');
+        _expectSmallEmoji(tester, find.byType(InlineEmojiText), 150);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+  }
 
   for (final viewport in [
     (size: const Size(390, 844), keyboard: 300.0),
@@ -690,7 +1089,7 @@ void main() {
       final app = _ChatHarness(isGroup: false, withHistory: true);
       await http.runWithClient(() async {
         await app.mount(tester);
-        await _openPicker(tester);
+        await _openPicker(tester, stickers: true);
         tester.view.viewInsets = FakeViewPadding(bottom: viewport.keyboard);
         await tester.enterText(_search, _labels.first);
         await tester.pumpAndSettle();
@@ -715,7 +1114,7 @@ void main() {
           scrollable: standardScroll,
         );
         await tester.pumpAndSettle();
-        await tester.enterText(_search, 'חיוך');
+        await tester.enterText(_search, _labels.first);
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
         expect(
@@ -725,13 +1124,13 @@ void main() {
                 .bottom,
             lessThanOrEqualTo(viewport.size.height - viewport.keyboard));
         app.expectNothingSent();
-        final smile = find.byKey(const ValueKey('inline-emoji-1f600'));
+        final smile = _imageTile(1);
         await tester.scrollUntilVisible(smile, 60, scrollable: standardScroll);
         await tester.pumpAndSettle();
         await tester.tap(smile);
         await tester.pumpAndSettle();
         expect(_picker, findsNothing);
-        expect(app.controller(tester).text, '😀');
+        expect(app.controller(tester).text, inlineEmojiCharacter(1));
         app.expectNothingSent();
         await app.dispose(tester);
       }, () => app.client);

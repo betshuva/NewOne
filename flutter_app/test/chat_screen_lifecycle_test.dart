@@ -1,4 +1,3 @@
-import 'package:betshuva/app_screenshot.dart';
 import 'package:betshuva/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,21 +8,16 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 
 void main() {
   testWidgets(
-      'closing an embedded chat preserves other socket listeners and '
-      'clears the screenshot destination after leaving the conversation',
-      (tester) async {
+      'closing an embedded chat preserves other socket listeners without '
+      'sending messages', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final socket = io.io(
       'http://localhost:1',
       io.OptionBuilder().disableAutoConnect().enableForceNew().build(),
     );
-    final previousDestination = appScreenshotDestination.value;
-    const groupDestination = AppScreenshotDestination.group('test-group');
-    appScreenshotDestination.value = groupDestination;
     addTearDown(() {
       socket.connected = false;
       socket.dispose();
-      appScreenshotDestination.value = previousDestination;
     });
 
     const events = [
@@ -60,14 +54,10 @@ void main() {
       ));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pump(const Duration(milliseconds: 100));
-      expect(appScreenshotDestination.value.kind, 'user');
-      expect(appScreenshotDestination.value.id, 'test-recipient');
       expect(sentMessages, isEmpty);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(seconds: 1));
-      expect(appScreenshotDestination.value.kind, 'user');
-      expect(appScreenshotDestination.value.id, kSystemGuideId);
 
       // Deliver local events through the socket's receive path without a
       // connection. Home and group listeners must survive the chat disposal.

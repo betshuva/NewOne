@@ -103,7 +103,7 @@ test('Israel only offers allowlisted in-app destinations', () => {
   assert.match(INTERNAL_APP_LINKS, /betshuva:\/\/app\/content-filter/);
   assert.match(INTERNAL_APP_LINKS, /betshuva:\/\/app\/profile/);
   assert.match(INTERNAL_APP_LINKS, /betshuva:\/\/app\/personal-media/);
-  assert.match(INTERNAL_APP_LINKS, /betshuva:\/\/app\/screenshot/);
+  assert.doesNotMatch(INTERNAL_APP_LINKS, /betshuva:\/\/app\/screenshot/);
   assert.match(INTERNAL_APP_LINKS, /betshuva:\/\/app\/my-issues/);
   assert.match(INTERNAL_APP_LINKS, /אין ליצור כתובת אחרת/);
   assert.match(localGuideAnswer('איך משנים סינון?'),
@@ -112,7 +112,7 @@ test('Israel only offers allowlisted in-app destinations', () => {
   const client = fs.readFileSync(
     path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
   assert.match(client,
-    /betshuva:\/\/app\/\(content-filter\|profile\|personal-media\|backup-settings\|guide-file\|screenshot\|my-issues\)/);
+    /betshuva:\/\/app\/\(content-filter\|profile\|personal-media\|backup-settings\|guide-file\|my-issues\)/);
   assert.match(client, /message\['from'\] == kSystemGuideId/);
   assert.match(client, /_openGuideAppLink\(/);
   assert.match(client,
@@ -131,15 +131,58 @@ test('Israel welcome message explains developer requests and links directly to t
   assert.match(welcome, /betshuva:\/\/app\/my-issues/);
 });
 
-test('Israel explains in-app screenshots and opens the capture action', () => {
-  const answer = localGuideAnswer('איך אני מצלם מסך באפליקציה?');
-  assert.match(answer, /סמל צילום המסך בתחתית המסך/);
-  assert.match(answer, /betshuva:\/\/app\/screenshot/);
-  const client = fs.readFileSync(
-    path.join(__dirname, '..', 'flutter_app', 'lib', 'main.dart'), 'utf8');
-  assert.match(client,
-    /destination == 'screenshot'[\s\S]*?openAppScreenshot\(/);
-  assert.match(client, /'screenshot' => 'פתח צילום מסך'/);
+test('screenshot questions use ordinary existing image attachment guidance', () => {
+  for (const question of ['איך אני מצלם מסך באפליקציה?', 'איך עושים צילום מסך?']) {
+    const answer = localGuideAnswer(question);
+    assert.match(answer, /תפריט הצירוף בשיחה/);
+    assert.match(answer, /תמונה מהמכשיר/);
+    assert.match(answer, /להדביק תמונה/);
+    assert.match(answer, /בהתאם לסינון/);
+    assert.doesNotMatch(answer, /סמל צילום|עריכת צילום|betshuva:\/\/app\/screenshot/);
+  }
+  assert.doesNotMatch(APP_KNOWLEDGE, /סמל צילום המסך|לצילום מסך מתוך בתשובה/);
+  assert.match(APP_KNOWLEDGE, /תפריט הצירוף בשיחה/);
+});
+
+test('new AI replies strip retired screenshot links while preserving ordinary allowed destinations and image filenames', () => {
+  for (const link of ['betshuva://app/screenshot', 'BETSHUVA://APP/SCREENSHOT',
+    'betshuva://app/screenshot?source=history', 'betshuva://app/screenshot#capture',
+    'betshuva://app/screenshot/legacy']) {
+    const answer = sanitizeGuideAnswer(`קובץ קיים: betshuva-screenshot-123.png\n${link}\nbetshuva://app/personal-media`);
+    assert.doesNotMatch(answer, /betshuva:\/\/app\/screenshot/i);
+    assert.match(answer, /betshuva-screenshot-123\.png/);
+    assert.match(answer, /betshuva:\/\/app\/personal-media/);
+    assert.doesNotMatch(sanitizeGuideAnswer(`[תמונה קיימת](${link})`), /\]\(/);
+    assert.equal(sanitizeGuideAnswer(`[תמונה קיימת](${link})`), 'תמונה קיימת');
+  }
+  assert.equal(sanitizeGuideAnswer('https://example.invalid/screenshot.jpg'), 'https://example.invalid/screenshot.jpg');
+  assert.equal(sanitizeGuideAnswer('betshuva://app/screenshot-other'), 'betshuva://app/screenshot-other');
+  assert.equal(sanitizeGuideAnswer('קישור ישן: betshuva://app/screenshot.'), 'קישור ישן: .');
+  assert.equal(sanitizeGuideAnswer('betshuva://app/screenshot, ותמונה קיימת'), ', ותמונה קיימת');
+});
+
+test('AI replay from old screenshot history returns useful attachment help rather than a dead action or empty message', async () => {
+  const history = [{ role: 'assistant', content: 'betshuva://app/screenshot' }];
+  for (const modelAnswer of ['betshuva://app/screenshot',
+    'התמונה שלך זמינה במדיה.\nbetshuva://app/screenshot\nbetshuva://app/personal-media']) {
+    let requested = false;
+    const mock = mockResponse({ in_scope: true, answer: modelAnswer });
+    const answer = await generateGuideAnswer({ apiKey: 'test-key', userId: 'user-1',
+      question: 'איך עושים צילום מסך?', history,
+      fetchImpl: async (url, options) => {
+        requested = true;
+        const body = JSON.parse(options.body);
+        assert.doesNotMatch(body.instructions, /betshuva:\/\/app\/screenshot|סמל צילום המסך/);
+        assert.equal(body.input[0].content, history[0].content);
+        return mock(url, options);
+      } });
+    assert.equal(requested, true);
+    assert.ok(answer.length > 0);
+    assert.doesNotMatch(answer, /betshuva:\/\/app\/screenshot/);
+    if (modelAnswer === 'betshuva://app/screenshot') assert.match(answer, /תפריט הצירוף בשיחה/);
+    else assert.match(answer, /betshuva:\/\/app\/personal-media/);
+  }
+  assert.deepEqual(history, [{ role: 'assistant', content: 'betshuva://app/screenshot' }]);
 });
 
 test('repeated misunderstanding creates a developer-request draft', () => {
@@ -285,5 +328,5 @@ test('a screenshot failure on the first question drafts a bug instead of screens
   const answer = localGuideAnswer('צילום מסך נחסם בפעם הראשונה ובשנייה מתקבל');
   assert.match(answer, /תקלה/);
   assert.doesNotMatch(answer, /כדי לצלם/);
-  assert.match(localGuideAnswer('איך עושים צילום מסך?'), /כדי לצלם/);
+  assert.match(localGuideAnswer('איך עושים צילום מסך?'), /כדי לצרף תמונה קיימת/);
 });

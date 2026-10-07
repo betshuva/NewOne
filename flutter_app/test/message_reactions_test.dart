@@ -109,7 +109,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(writes, [null]);
     expect(find.text('👍'), findsNothing);
-    await tester.tap(find.byTooltip('תגובה להודעה'));
+    await tester.tap(find.byTooltip('הוספת תגובה'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('❤️'));
     await tester.pumpAndSettle();

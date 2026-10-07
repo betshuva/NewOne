@@ -147,6 +147,9 @@ class _Recorder extends RecordPlatform {
   Future<void> dispose(String recorderId) async {}
 
   @override
+  Future<void> cancel(String recorderId) async { recording = false; }
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -254,9 +257,9 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.byIcon(Icons.attach_file));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('צילום והקלטה'));
+        await tester.tap(find.text('צילום'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('צילום וידאו'));
+        await tester.tap(find.text('וידאו'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('התחל צילום'));
         await tester.pump(const Duration(seconds: 1));
@@ -320,11 +323,7 @@ void main() {
           await tester.pumpAndSettle();
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
-          if (camera) {
-            await tester.tap(find.text('צילום והקלטה'));
-            await tester.pumpAndSettle();
-          }
-          await tester.tap(find.text(camera ? 'צילום תמונה' : 'העלאת קבצים'));
+          await tester.tap(find.text(camera ? 'צילום' : 'העלאת קבצים'));
           await tester.pump(const Duration(milliseconds: 100));
           await tester.pump(const Duration(milliseconds: 500));
           if (camera) {
@@ -378,6 +377,41 @@ void main() {
       });
     }
 
+    testWidgets('$scope cancelling voice capture stops the microphone without sending', (tester) async {
+      fixtures.size(tester);
+      SharedPreferences.setMockInitialValues({});
+      final directory = Directory.systemTemp.createTempSync('betshuva-cancel-recording-');
+      final previousPath = PathProviderPlatform.instance;
+      final previousRecorder = RecordPlatform.instance;
+      PathProviderPlatform.instance = _TemporaryPath(directory.path);
+      final recorder = _Recorder(_recordedWav());
+      RecordPlatform.instance = recorder;
+      addTearDown(() {
+        RecordPlatform.instance = previousRecorder;
+        PathProviderPlatform.instance = previousPath;
+        directory.deleteSync(recursive: true);
+      });
+      var sends = 0;
+      await http.runWithClient(() async {
+        await tester.pumpWidget(fixtures.chat(group));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.mic));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(recorder.recording, true);
+        await tester.tap(find.byTooltip('בטל הקלטה'));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(recorder.recording, false);
+        expect(find.byTooltip('בטל הקלטה'), findsNothing);
+        expect(sends, 0);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump(const Duration(seconds: 1));
+      }, () => MockClient((request) async {
+        if (request.url.path.endsWith('/upload')) sends++;
+        if (fixtures.isHistory(request, group)) return fixtures.json([]);
+        return fixtures.defaultResponse(request);
+      }));
+    });
+
     for (final pending in [true, false]) {
       testWidgets(
           '$scope recording uploads real WAV and uses returned MP3 name when ${pending ? 'pending' : 'approved'}',
@@ -416,10 +450,11 @@ void main() {
             await tester.pump(const Duration(seconds: 1));
             await tester.tap(find.byIcon(Icons.stop_circle));
           } else {
-            await tester.pump(const Duration(hours: 1, minutes: 59, seconds: 59));
+            await tester
+                .pump(const Duration(hours: 1, minutes: 59, seconds: 59));
             expect(recorder.recording, isTrue);
             expect(uploaded, isNull);
-            expect(find.text('זמן הקלטה: 01:59:59\nעד שעתיים'), findsOneWidget);
+            expect(find.text('זמן הקלטה: 01:59:59 · עד שעתיים'), findsOneWidget);
             await tester.pump(const Duration(seconds: 1));
           }
           await tester.pump();

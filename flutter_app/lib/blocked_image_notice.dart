@@ -1,4 +1,5 @@
 import 'moderation_user_reason.dart';
+import 'copyable_file_name.dart';
 import 'scan_explanation.dart';
 import 'dart:async';
 import 'dart:math' as math;
@@ -166,7 +167,9 @@ class BlockedImageNotice extends StatelessWidget {
                     ],
                     if (fileName?.isNotEmpty == true) ...[
                       const SizedBox(height: 5),
-                      _textLine(fileName!, size: 10),
+                      CopyableFileName(fileName!,
+                          style: const TextStyle(
+                              fontSize: 10, height: 1.4, color: _text)),
                     ],
                   ]),
                 ],
