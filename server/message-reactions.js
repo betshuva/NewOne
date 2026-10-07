@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const { personalMessageVisible } = require('./conversation-history');
 const { projectProfileImages } = require('./profile-image-policy');
-const REACTIONS = Object.freeze(['👍', '❤️', '😂', '🙏', '😮', '😢']);
+const { REACTIONS, ALLOWED_REACTIONS, REACTION_EMOJI_SCHEMA, reactionLabel } = require('./message-reaction-catalog');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Existing statuses receive the migration time, so past reactions stay read.
 // Missing statuses also stay read until a future reaction explicitly seeds a
@@ -154,7 +154,7 @@ function registerMessageReactions(app, { auth, rateLimit, getPool, contentAllowe
     const emoji = req.body?.emoji;
     // A client's user_id/actorId/mine fields never select the mutation owner.
     // Every insert, replacement and removal is bound to authenticated req.user.
-    if (write && emoji !== null && !REACTIONS.includes(emoji))
+    if (write && emoji !== null && !ALLOWED_REACTIONS.includes(emoji))
       return res.status(400).json({ error: 'תגובה לא נתמכת' });
     try {
       const pool = await getPool();
@@ -198,7 +198,7 @@ function registerMessageReactions(app, { auth, rateLimit, getPool, contentAllowe
                 : { type: 'chat', fromUserId: req.user.id };
               Promise.resolve().then(() => sendPush(viewerId,
                 message.group_id ? `${message.group_name || 'קבוצה'} • ${actorName}` : actorName,
-                `הגיב/ה ${emoji}`, { ...data, messageId: message.id, reaction: 'true' })).catch(() => {});
+                `הגיב/ה ${reactionLabel(emoji)}`, { ...data, messageId: message.id, reaction: 'true' })).catch(() => {});
             }
           }
         }
@@ -212,5 +212,6 @@ function registerMessageReactions(app, { auth, rateLimit, getPool, contentAllowe
   app.get('/api/messages/:id/reactions/details', auth, handler(false, true));
   app.put('/api/messages/:id/reactions', auth, rateLimit, handler(true));
 }
-module.exports = { REACTIONS, REACTION_READ_SCHEMA, visibleMessage, readReactions, readReactionDetails, registerMessageReactions,
+module.exports = { REACTIONS, ALLOWED_REACTIONS, REACTION_EMOJI_SCHEMA, REACTION_READ_SCHEMA,
+  visibleMessage, readReactions, readReactionDetails, registerMessageReactions,
   reactionRows, projectReactionConversations, reactionUnreadCounts, markReactionsRead };

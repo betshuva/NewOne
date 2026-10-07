@@ -22,12 +22,16 @@ const _id = 'reaction-message';
 
 class _ReactionAssets extends CachingAssetBundle {
   @override
-  Future<ByteData> load(String key) async =>
-      ByteData.sublistView(Uint8List.fromList(utf8
-          .encode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">'
-              '<circle cx="18" cy="18" r="16" fill="#ffcc4d"/>'
-              '<circle cx="13" cy="14" r="2" fill="#222"/>'
-              '<circle cx="23" cy="14" r="2" fill="#222"/></svg>')));
+  Future<ByteData> load(String key) async {
+    if (key == 'assets/stickers/user-catalog.json') {
+      return rootBundle.load(key);
+    }
+    return ByteData.sublistView(Uint8List.fromList(utf8
+        .encode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">'
+            '<circle cx="18" cy="18" r="16" fill="#ffcc4d"/>'
+            '<circle cx="13" cy="14" r="2" fill="#222"/>'
+            '<circle cx="23" cy="14" r="2" fill="#222"/></svg>')));
+  }
 }
 
 Map<String, dynamic> _item(String emoji, {int count = 1, bool mine = false}) =>
@@ -95,6 +99,44 @@ Future<void> _dispose(WidgetTester tester, http.Client client,
 }
 
 void main() {
+  for (final id in [1, 150]) {
+    testWidgets('custom reaction $id stays 20px and overlaps the media corner',
+        (tester) async {
+      final emoji = '[[bt-emoji:${id.toString().padLeft(3, '0')}]]';
+      final cache = MessageReactionsCache();
+      final client = MockClient(
+          (request) async => _response([_item(emoji)], request: request));
+      await tester.pumpWidget(_view(client, cache,
+          body: Align(
+            alignment: Alignment.topRight,
+            child: MessageHover(
+              reactionsOnChild: true,
+              sideReactions: _reactions(client, cache),
+              child: const MessageObjectReactions(
+                  child: SizedBox(
+                      key: ValueKey('custom-media'), width: 220, height: 100)),
+            ),
+          )));
+      await tester.pumpAndSettle();
+      final media = tester.getRect(find.byKey(const ValueKey('custom-media')));
+      final hit = tester.getRect(_button(emoji));
+      final glyph = tester.getRect(find.descendant(
+          of: _button(emoji),
+          matching: find.byKey(ValueKey('inline-custom-emoji-$id'))));
+      expect(hit.right, closeTo(media.right, .001));
+      expect(hit.size, const Size(32, 32));
+      expect(glyph.width, closeTo(20, .001));
+      expect(glyph.height, closeTo(20, .001));
+      expect(glyph.top, closeTo(media.bottom - 8, .001));
+      expect(find.byType(ActionChip), findsNothing);
+      expect(find.textContaining('[[bt-emoji:'), findsNothing);
+      final button = tester.widget<TextButton>(_button(emoji));
+      expect(button.style!.backgroundColor!.resolve({}), Colors.transparent);
+      expect(tester.takeException(), isNull);
+      await _dispose(tester, client, cache);
+    });
+  }
+
   testWidgets('compact glyphs are 20px, transparent and count only two or more',
       (tester) async {
     final cache = MessageReactionsCache();

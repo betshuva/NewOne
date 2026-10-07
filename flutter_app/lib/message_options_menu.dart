@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'message_action_bar.dart';
+import 'message_reaction_picker.dart';
 import 'message_reactions.dart';
 
 Future<void> showMessageOptionsMenu({
@@ -29,8 +31,11 @@ Future<void> showMessageOptionsMenu({
     pageBuilder: (menuContext, _, __) => Directionality(
       textDirection: TextDirection.rtl,
       child: CustomSingleChildLayout(
-        delegate: _MessageMenuLayout(anchor, MediaQuery.of(menuContext).padding,
-            MediaQuery.of(menuContext).viewInsets.bottom),
+        delegate: _MessageMenuLayout(
+            anchor,
+            MediaQuery.of(menuContext).padding,
+            MediaQuery.of(menuContext).viewInsets.bottom,
+            canReactToMessage(message) ? 246 : 208),
         child: Material(
           key: const ValueKey('message-options-menu'),
           elevation: 8,
@@ -40,13 +45,18 @@ Future<void> showMessageOptionsMenu({
             padding: const EdgeInsets.all(4),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               if (canReactToMessage(message)) ...[
-                MessageReactions(
-                    api: api,
-                    token: token,
-                    messageId: message['id'].toString(),
-                    showExistingReactions: false,
-                    onReactionSelected: (emoji) =>
-                        Navigator.of(menuContext).pop(emoji)),
+                _MessageReactionRow(
+                    onSelected: (emoji) => Navigator.of(menuContext).pop(emoji),
+                    onMore: () async {
+                      final menuRoute = ModalRoute.of(menuContext);
+                      final selected =
+                          await showMessageReactionEmojiPicker(menuContext);
+                      if (menuContext.mounted &&
+                          selected != null &&
+                          menuRoute?.isCurrent == true) {
+                        Navigator.of(menuContext).pop(selected);
+                      }
+                    }),
                 const Divider(height: 5),
               ],
               ...items,
@@ -71,6 +81,68 @@ Future<void> showMessageOptionsMenu({
           const SnackBar(content: Text('לא ניתן לעדכן את התגובה כרגע')));
     }
   }
+}
+
+class _MessageReactionRow extends StatelessWidget {
+  const _MessageReactionRow({required this.onSelected, required this.onMore});
+
+  final ValueChanged<String> onSelected;
+  final VoidCallback onMore;
+  static const _choices = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+  static const _assets = {
+    '👍': '1f44d',
+    '❤️': '2764',
+    '😂': '1f602',
+    '😮': '1f62e',
+    '😢': '1f622',
+    '🙏': '1f64f',
+  };
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) {
+          final width = math.min(32.0, constraints.maxWidth / 7);
+          Widget button({
+            required Key key,
+            required String tooltip,
+            required VoidCallback onPressed,
+            required Widget icon,
+          }) =>
+              IconButton(
+                key: key,
+                tooltip: tooltip,
+                onPressed: onPressed,
+                padding: EdgeInsets.zero,
+                constraints: BoxConstraints.tightFor(width: width, height: 40),
+                style: IconButton.styleFrom(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                icon: icon,
+              );
+
+          return Row(
+            key: const ValueKey('message-reaction-quick-row'),
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            textDirection: TextDirection.rtl,
+            children: [
+              for (final emoji in _choices)
+                button(
+                    key: ValueKey('select-message-reaction-$emoji'),
+                    tooltip: 'תגובה $emoji',
+                    onPressed: () => onSelected(emoji),
+                    icon: SvgPicture.asset(
+                        'assets/twemoji/svg/${_assets[emoji]}.svg',
+                        width: 24,
+                        height: 24,
+                        excludeFromSemantics: true)),
+              button(
+                  key: const ValueKey('message-reaction-more'),
+                  tooltip: 'כל האימוג׳י',
+                  onPressed: onMore,
+                  icon: const Icon(Icons.add, size: 24)),
+            ],
+          );
+        },
+      );
 }
 
 class CompactMessageMenuItem extends StatelessWidget {
@@ -101,18 +173,20 @@ class CompactMessageMenuItem extends StatelessWidget {
 }
 
 class _MessageMenuLayout extends SingleChildLayoutDelegate {
-  const _MessageMenuLayout(this.anchor, this.padding, this.keyboard);
+  const _MessageMenuLayout(
+      this.anchor, this.padding, this.keyboard, this.desiredWidth);
   final Rect anchor;
   final EdgeInsets padding;
   final double keyboard;
+  final double desiredWidth;
   double get top => padding.top + 6;
   double bottom(double height) =>
       height - math.max(padding.bottom, keyboard) - 6;
 
   @override
   BoxConstraints getConstraintsForChild(BoxConstraints constraints) {
-    final width = math.min(
-        208.0, math.max(0.0, constraints.maxWidth - padding.horizontal - 12));
+    final width = math.min(desiredWidth,
+        math.max(0.0, constraints.maxWidth - padding.horizontal - 12));
     return BoxConstraints.tightFor(width: width)
         .copyWith(maxHeight: math.max(0, bottom(constraints.maxHeight) - top));
   }
@@ -131,5 +205,6 @@ class _MessageMenuLayout extends SingleChildLayoutDelegate {
   bool shouldRelayout(_MessageMenuLayout oldDelegate) =>
       anchor != oldDelegate.anchor ||
       padding != oldDelegate.padding ||
-      keyboard != oldDelegate.keyboard;
+      keyboard != oldDelegate.keyboard ||
+      desiredWidth != oldDelegate.desiredWidth;
 }

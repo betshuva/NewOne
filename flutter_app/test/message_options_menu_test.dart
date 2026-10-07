@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:betshuva/message_action_bar.dart';
 import 'package:betshuva/message_options_menu.dart';
@@ -10,7 +11,24 @@ import 'package:betshuva/message_reactions.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+late String _bundledCatalog;
+
+class _LibraryBundle extends CachingAssetBundle {
+  @override
+  Future<ByteData> load(String key) async {
+    if (key == 'assets/stickers/user-catalog.json') {
+      return ByteData.sublistView(
+          Uint8List.fromList(utf8.encode(_bundledCatalog)));
+    }
+    return rootBundle.load(key);
+  }
+}
+
 void main() {
+  setUpAll(() async {
+    _bundledCatalog =
+        await rootBundle.loadString('assets/stickers/user-catalog.json');
+  });
   for (final fail in [false, true]) {
     testWidgets('emoji closes menu before response and handles failure=$fail',
         (tester) async {
@@ -46,11 +64,8 @@ void main() {
                 of: find.byKey(const ValueKey('message-options-menu')),
                 matching: find.byType(ActionChip)),
             findsNothing);
-        expect(find.byTooltip('תגובה ❤️'), findsNothing);
-        expect(find.byIcon(Icons.add_reaction_outlined), findsOneWidget);
-        expect(writes, isEmpty);
-        await tester.tap(find.byTooltip('הוספת תגובה'));
-        await tester.pumpAndSettle();
+        expect(find.byTooltip('תגובה ❤️'), findsOneWidget);
+        expect(find.byIcon(Icons.add), findsOneWidget);
         expect(writes, isEmpty);
         await tester
             .tap(find.byKey(const ValueKey('select-message-reaction-❤️')));
@@ -207,61 +222,138 @@ void main() {
   }
 
   testWidgets(
-      'menu exposes reactions only through plus and cancels without writes',
+      'six quick reactions and plus fit one row; library cancel does not write',
       (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final requests = <http.Request>[];
     await http.runWithClient(() async {
       await tester.pumpWidget(MaterialApp(
+          builder: (context, child) =>
+              DefaultAssetBundle(bundle: _LibraryBundle(), child: child!),
           home: Scaffold(
               body: Builder(
-        builder: (context) => Center(
-            child: TextButton(
-                onPressed: () {
-                  showMessageOptionsMenu(
-                    context: context,
-                    api: 'https://test/api',
-                    token: 'token',
-                    message: const {
-                      'id': '00000000-0000-4000-8000-000000000123'
+            builder: (context) => Center(
+                child: TextButton(
+                    onPressed: () {
+                      showMessageOptionsMenu(
+                        context: context,
+                        api: 'https://test/api',
+                        token: 'token',
+                        message: const {
+                          'id': '00000000-0000-4000-8000-000000000123'
+                        },
+                        items: const [],
+                      );
                     },
-                    items: const [],
-                  );
-                },
-                child: const Text('open'))),
-      ))));
+                    child: const Text('open'))),
+          ))));
       await tester.tap(find.text('open'));
       await tester.pumpAndSettle();
-      expect(find.byTooltip('הוספת תגובה'), findsOneWidget);
+      expect(find.byTooltip('כל האימוג׳י'), findsOneWidget);
+      final row = tester
+          .getRect(find.byKey(const ValueKey('message-reaction-quick-row')));
+      final plus =
+          tester.getRect(find.byKey(const ValueKey('message-reaction-more')));
+      expect(row.width, lessThanOrEqualTo(246));
+      expect(plus.left, greaterThanOrEqualTo(0));
       for (final emoji in messageReactionEmoji) {
-        expect(find.byTooltip('תגובה $emoji'), findsNothing);
-        expect(find.byKey(ValueKey('select-message-reaction-$emoji')),
-            findsNothing);
+        expect(find.byTooltip('תגובה $emoji'), findsOneWidget);
+        final choice = tester
+            .getRect(find.byKey(ValueKey('select-message-reaction-$emoji')));
+        expect(choice.center.dy, closeTo(plus.center.dy, .1));
+        expect(choice.left, greaterThan(plus.right));
+        expect(choice.right, lessThanOrEqualTo(390));
       }
+      final rowKeys = [
+        'message-reaction-more',
+        ...['🙏', '😢', '😮', '😂', '❤️', '👍']
+            .map((emoji) => 'select-message-reaction-$emoji'),
+      ];
+      for (var index = 0; index < rowKeys.length - 1; index++) {
+        final first = tester.getRect(find.byKey(ValueKey(rowKeys[index])));
+        final next = tester.getRect(find.byKey(ValueKey(rowKeys[index + 1])));
+        expect(first.right, lessThan(next.left));
+      }
+      final thumb = find.byKey(const ValueKey('select-message-reaction-👍'));
+      final glyph = tester.widget<SvgPicture>(
+          find.descendant(of: thumb, matching: find.byType(SvgPicture)));
+      expect(glyph.width, 24);
+      expect(glyph.height, 24);
       expect(requests.where((request) => request.method == 'PUT'), isEmpty);
-      await tester.tap(find.byTooltip('הוספת תגובה'));
+      await tester.tap(find.byTooltip('כל האימוג׳י'));
       await tester.pumpAndSettle();
-      for (final emoji in messageReactionEmoji) {
-        expect(find.byKey(ValueKey('select-message-reaction-$emoji')),
-            findsOneWidget);
-      }
+      expect(find.byKey(const ValueKey('message-reaction-library')),
+          findsOneWidget);
+      expect(find.byKey(const ValueKey('reaction-library-emoji-001')),
+          findsOneWidget);
       expect(requests.where((request) => request.method == 'PUT'), isEmpty);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
-      expect(find.byTooltip('הוספת תגובה'), findsOneWidget);
-      expect(find.byKey(const ValueKey('select-message-reaction-👍')),
-          findsNothing);
+      expect(find.byTooltip('כל האימוג׳י'), findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('message-reaction-library')), findsNothing);
       await tester.tapAt(const Offset(10, 10));
       await tester.pumpAndSettle();
-      expect(find.byTooltip('הוספת תגובה'), findsNothing);
+      expect(find.byTooltip('כל האימוג׳י'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
-      expect(requests, hasLength(1));
-      expect(requests.single.method, 'GET');
-      expect(requests.single.url.path,
-          '/api/messages/00000000-0000-4000-8000-000000000123/reactions');
+      expect(requests, isEmpty);
     },
         () => MockClient((request) async {
               requests.add(request);
+              return http.Response('[]', 200);
+            }));
+  });
+
+  testWidgets('library selection closes both routes before caller-owned write',
+      (tester) async {
+    final response = Completer<http.Response>();
+    final requests = <http.Request>[];
+    await http.runWithClient(() async {
+      await tester.pumpWidget(MaterialApp(
+          builder: (context, child) =>
+              DefaultAssetBundle(bundle: _LibraryBundle(), child: child!),
+          home: Scaffold(
+              body: Builder(
+            builder: (context) => TextButton(
+                onPressed: () => showMessageOptionsMenu(
+                        context: context,
+                        api: 'https://test/api',
+                        token: 'library-reaction-menu',
+                        message: const {
+                          'id': '00000000-0000-4000-8000-000000000151'
+                        },
+                        items: const []),
+                child: const Text('open')),
+          ))));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('כל האימוג׳י'));
+      await tester.pumpAndSettle();
+      expect(requests, isEmpty);
+      await tester
+          .tap(find.byKey(const ValueKey('reaction-library-emoji-001')));
+      await tester.pumpAndSettle();
+      expect(
+          find.byKey(const ValueKey('message-reaction-library')), findsNothing);
+      expect(find.byKey(const ValueKey('message-options-menu')), findsNothing);
+      expect(response.isCompleted, isFalse);
+      final writes =
+          requests.where((request) => request.method == 'PUT').toList();
+      expect(writes, hasLength(1));
+      expect(jsonDecode(writes.single.body), {'emoji': '[[bt-emoji:001]]'});
+      response.complete(http.Response(
+          '[{"emoji":"[[bt-emoji:001]]","count":1,"mine":true}]', 200));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    },
+        () => MockClient((request) async {
+              requests.add(request);
+              if (request.method == 'PUT') return response.future;
               return http.Response('[]', 200);
             }));
   });

@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart' show parseHttpDate;
+import 'inline_custom_emoji.dart';
 import 'message_reaction_details.dart';
+import 'message_reaction_picker.dart';
 
 const messageReactionEmoji = ['👍', '❤️', '😂', '🙏', '😮', '😢'];
 const _reactionAssets = {
@@ -15,6 +17,17 @@ const _reactionAssets = {
   '😮': '1f62e',
   '😢': '1f622'
 };
+final _customReactionToken = RegExp(r'^\[\[bt-emoji:([0-9]{3})\]\]$');
+
+bool _isCustomReaction(String emoji) {
+  final match = _customReactionToken.firstMatch(emoji);
+  if (match == null || match[0] != emoji) return false;
+  final id = int.tryParse(match[1]!);
+  return id != null && id >= 1 && id <= 150;
+}
+
+String _reactionDescription(String emoji) =>
+    _isCustomReaction(emoji) ? 'אימוג׳י' : emoji;
 
 typedef _ReactionKey = (String, String, String);
 typedef _ReactionScope = (String, String);
@@ -241,6 +254,7 @@ class _MessageReactionsState extends State<MessageReactions> {
   final _scopeChanges = _ReactionScopeChanges();
   int _scopeRevision = 0;
   bool _detailsOpen = false;
+  bool _libraryPickerOpen = false;
   _ReactionKey get _key => (widget.api, widget.token, widget.messageId);
   MessageReactionsCache get _cache =>
       widget.cache ?? MessageReactionsCache.shared;
@@ -385,6 +399,29 @@ class _MessageReactionsState extends State<MessageReactions> {
     }
   }
 
+  Future<void> _chooseAdditionalReaction() async {
+    if (_busy || _libraryPickerOpen) return;
+    final scope = _key;
+    final scopeRevision = _scopeRevision;
+    final own = _items.where((item) => item['mine'] == true).firstOrNull;
+    _libraryPickerOpen = true;
+    try {
+      final selected = await showMessageReactionEmojiPicker(context,
+          selectedEmoji: own?['emoji']?.toString());
+      if (!mounted ||
+          selected == null ||
+          _key != scope ||
+          _scopeRevision != scopeRevision) {
+        return;
+      }
+      // The picker only returns a value. Its owning caller decides when and
+      // where the authenticated user's reaction is written.
+      _selectReaction(selected);
+    } finally {
+      _libraryPickerOpen = false;
+    }
+  }
+
   Future<void> _chooseReaction(BuildContext anchorContext,
       {String? ownEmojiOverride, bool ownershipKnown = false}) async {
     if (_busy) return;
@@ -398,8 +435,9 @@ class _MessageReactionsState extends State<MessageReactions> {
     final overlay = Navigator.of(context).overlay?.context.findRenderObject();
     final anchor = anchorContext.findRenderObject();
     if (overlay is! RenderBox || anchor is! RenderBox) return;
-    final selected = await showMenu<String>(
+    var selected = await showMenu<String>(
       context: context,
+      useRootNavigator: false,
       routeSettings: const RouteSettings(name: 'message-reaction-picker'),
       position: RelativeRect.fromRect(
           anchor.localToGlobal(Offset.zero, ancestor: overlay) & anchor.size,
@@ -422,6 +460,15 @@ class _MessageReactionsState extends State<MessageReactions> {
               ]),
             ),
           ),
+        const PopupMenuItem(
+          key: ValueKey('more-message-reactions'),
+          value: '__more_message_reactions__',
+          child: Row(children: [
+            Icon(Icons.add_reaction_outlined, size: 24),
+            SizedBox(width: 12),
+            Text('אימוג׳י נוספים'),
+          ]),
+        ),
         if (ownEmoji != null)
           const PopupMenuItem(
             key: ValueKey('remove-own-reaction'),
@@ -434,6 +481,16 @@ class _MessageReactionsState extends State<MessageReactions> {
         selected == null ||
         _key != scope ||
         _scopeRevision != scopeRevision) return;
+    if (selected == '__more_message_reactions__') {
+      selected = await showMessageReactionEmojiPicker(context,
+          selectedEmoji: ownEmoji);
+      if (!mounted ||
+          selected == null ||
+          _key != scope ||
+          _scopeRevision != scopeRevision) {
+        return;
+      }
+    }
     if (selected == '__remove_own_reaction__') {
       await _react(null, toggleOwn: false);
     } else {
@@ -448,6 +505,22 @@ class _MessageReactionsState extends State<MessageReactions> {
   }
 
   Widget _detailsEmoji(String emoji, double size) {
+    if (_isCustomReaction(emoji)) {
+      // Reuse the immutable, same-origin artwork and its Hebrew semantics.
+      // Inline text scales images by 1.35; compensate here to keep reactions
+      // at the exact 20px/24px glyph size regardless of text accessibility size.
+      return SizedBox.square(
+        dimension: size,
+        child: Center(
+          child: MediaQuery.withNoTextScaling(
+            child: InlineEmojiText(emoji,
+                style: TextStyle(fontSize: size / 1.35, height: 1),
+                textDirection: TextDirection.ltr,
+                maxLines: 1),
+          ),
+        ),
+      );
+    }
     final asset = _reactionAssets[emoji];
     return asset == null
         ? Text(emoji, style: TextStyle(fontSize: size, height: 1))
@@ -514,14 +587,14 @@ class _MessageReactionsState extends State<MessageReactions> {
   Widget _compactReaction(Map<String, dynamic> item) {
     final emoji = item['emoji'].toString();
     final count = int.tryParse('${item['count']}') ?? 0;
-    final asset = _reactionAssets[emoji];
+    final description = _reactionDescription(emoji);
     return Builder(
         builder: (anchorContext) => Semantics(
               button: true,
               selected: item['mine'] == true,
-              label: 'תגובה $emoji${count >= 2 ? ', $count תגובות' : ''}',
+              label: 'תגובה $description${count >= 2 ? ', $count תגובות' : ''}',
               child: Tooltip(
-                message: 'הצגת תגובות $emoji',
+                message: 'הצגת תגובות $description',
                 child: TextButton(
                   key: ValueKey('compact-reaction-$emoji'),
                   onPressed: _busy ? null : _showDetails,
@@ -535,12 +608,7 @@ class _MessageReactionsState extends State<MessageReactions> {
                     side: BorderSide.none,
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    if (asset != null)
-                      SvgPicture.asset('assets/twemoji/svg/$asset.svg',
-                          width: 20, height: 20, excludeFromSemantics: true)
-                    else
-                      Text(emoji,
-                          style: const TextStyle(fontSize: 20, height: 1)),
+                    _detailsEmoji(emoji, 20),
                     if (count >= 2) ...[
                       const SizedBox(width: 3),
                       Text('$count',
@@ -595,30 +663,33 @@ class _MessageReactionsState extends State<MessageReactions> {
                 _compactReaction(item)
               else
                 ActionChip(
-                    label: Text((int.tryParse('${item['count']}') ?? 0) >= 2
-                        ? '${item['emoji']} ${item['count']}'
-                        : '${item['emoji']}'),
+                    label: _isCustomReaction(item['emoji'].toString())
+                        ? Row(mainAxisSize: MainAxisSize.min, children: [
+                            _detailsEmoji(item['emoji'].toString(), 20),
+                            if ((int.tryParse('${item['count']}') ?? 0) >=
+                                2) ...[
+                              const SizedBox(width: 4),
+                              Text('${item['count']}'),
+                            ],
+                          ])
+                        : Text((int.tryParse('${item['count']}') ?? 0) >= 2
+                            ? '${item['emoji']} ${item['count']}'
+                            : '${item['emoji']}'),
                     visualDensity: VisualDensity.compact,
                     backgroundColor:
                         item['mine'] == true ? const Color(0xFFD4E9F7) : null,
                     onPressed:
                         _busy ? null : () => _react(item['emoji'] as String)),
           if (widget.showAddButton)
-            PopupMenuButton<String>(
+            IconButton(
               key: const ValueKey('add-message-reaction'),
               tooltip: 'הוספת תגובה',
-              enabled: !_busy,
+              onPressed: _busy ? null : _chooseAdditionalReaction,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 70),
-              icon: const Icon(Icons.add_reaction_outlined, size: 18),
-              onSelected: _selectReaction,
-              itemBuilder: (_) => [
-                for (final emoji in messageReactionEmoji)
-                  PopupMenuItem(
-                      key: ValueKey('select-message-reaction-$emoji'),
-                      value: emoji,
-                      child: Text(emoji, style: const TextStyle(fontSize: 24)))
-              ],
+              constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+              style: IconButton.styleFrom(
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              icon: const Icon(Icons.add, size: 18),
             ),
         ],
       );

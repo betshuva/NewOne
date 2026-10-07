@@ -110,7 +110,7 @@ const { auditIds, createRequestAudit, restoreRequestAuditContext, uploadAuditDet
   emitDispatchRejection, auditedSocketHandler, withPendingAudit, auditedMediaQuery, setAuditTransactionContext } = require('./system-audit-context');
 const { FILTER_MEDIA_SCHEMA, lockFilterOwner, prepareFilterHistoryChange,
   finishFilterHistoryChange, projectFilteredHistory, projectFilterMediaLibrary, projectOwnScans, registerFilterHistoryRoutes } = require('./filter-media-history');
-const { registerMessageReactions, REACTION_READ_SCHEMA, projectReactionConversations,
+const { registerMessageReactions, REACTION_EMOJI_SCHEMA, REACTION_READ_SCHEMA, projectReactionConversations,
   reactionUnreadCounts, markReactionsRead } = require('./message-reactions');
 const { CONVERSATION_SCHEMA, messageAfterConversationClear, personalMessageVisible, registerConversationHistory } = require('./conversation-history');
 const { RELEASE_FROM_SQL, RELEASE_WHERE_SQL, releaseLocalMediaBatch } = require('./local-media-release');
@@ -3032,6 +3032,7 @@ async function migrateDatabase() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY(message_id,user_id)
     )`);
+    await pool.query(REACTION_EMOJI_SCHEMA);
     // ── Audit Log ──────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS audit_log (

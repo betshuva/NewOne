@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
-const { registerMessageReactions } = require('../server/message-reactions');
+const { registerMessageReactions, REACTION_EMOJI_SCHEMA } = require('../server/message-reactions');
 const { contentAllowedByFilter } = require('../server/content-filter-policy');
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const [a, b, c, outsider, messageId, groupId, groupMessage] = [201, 202, 203, 204, 205, 206, 207].map(id);
@@ -155,7 +155,9 @@ test('PostgreSQL reaction details enforce private/group audience, avatar policy 
       CREATE TEMP TABLE message_user_deletions(message_id uuid,user_id uuid);
       CREATE TEMP TABLE blocked_users(blocker_id uuid,blocked_id uuid);
       CREATE TEMP TABLE conversation_user_state(user_id uuid,kind text,target_id uuid,cleared_at timestamptz);
-      CREATE TEMP TABLE message_reactions(message_id uuid,user_id uuid,emoji text,updated_at timestamptz DEFAULT now(),PRIMARY KEY(message_id,user_id));
+      CREATE TEMP TABLE message_reactions(message_id uuid,user_id uuid,
+        emoji text CHECK (emoji IN ('👍','❤️','😂','🙏','😮','😢')),
+        updated_at timestamptz DEFAULT now(),PRIMARY KEY(message_id,user_id));
       CREATE TEMP TABLE message_status(message_id uuid,user_id uuid,status text,reactions_read_at timestamptz DEFAULT now(),PRIMARY KEY(message_id,user_id));
     `);
     const isolation = await db.query(`SELECT c.relname,c.relpersistence,n.nspname
@@ -164,6 +166,7 @@ test('PostgreSQL reaction details enforce private/group audience, avatar policy 
         'message_user_deletions','blocked_users','conversation_user_state','message_reactions','message_status']::regclass[])`);
     assert.equal(isolation.rows.length, 11);
     assert.ok(isolation.rows.every(row => row.relpersistence === 't' && row.nspname.startsWith('pg_temp_')));
+    await db.query(REACTION_EMOJI_SCHEMA);
     const scopedSql = require('node:fs').readFileSync(require.resolve('../server/scoped-content-filter.sql'), 'utf8');
     await db.query(scopedSql.replace('FUNCTION betshuva_effective_filter', 'FUNCTION pg_temp.betshuva_effective_filter'));
     const originalQuery = db.query.bind(db);
@@ -184,6 +187,21 @@ test('PostgreSQL reaction details enforce private/group audience, avatar policy 
         assert.equal((await request(outsider, { message, details: true })).status, 404);
         assert.equal((await request(outsider, { message, body: { emoji: '😮', user_id: a } })).status, 404);
       }
+    });
+    await t.test('custom catalog endpoints and details round-trip without modifying another actor', async () => {
+      const before = await snapshot();
+      for (const emoji of ['[[bt-emoji:001]]', '[[bt-emoji:150]]']) {
+        const response = await request(a, { body: { emoji, user_id: b, actorId: b, mine: false } });
+        assert.equal(response.status, 200);
+        assert.ok(response.body.some(row => row.emoji === emoji && row.mine));
+        const details = await request(a, { details: true });
+        assert.equal(details.body.users.find(row => row.user_id === a).emoji, emoji);
+        assert.equal(details.body.users.find(row => row.user_id === b).emoji, '❤️');
+        assert.deepEqual(await snapshot(), before);
+      }
+      assert.equal((await request(a, { body: { emoji: null, user_id: b } })).status, 200);
+      assert.deepEqual(await snapshot(), before);
+      await request(a, { body: { emoji: '🙏' } });
     });
     await t.test('private own replace/remove preserve the other actor emoji and timestamp despite forged ownership', async () => {
       const before = await snapshot();
