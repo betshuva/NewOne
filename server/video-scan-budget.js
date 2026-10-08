@@ -6,6 +6,8 @@ const { moderationProviderPolicy } = require('./moderation-provider-policy');
 const VIDEO_SCAN_MAX_FRAMES = 20;
 const VIDEO_SCAN_DEADLINE_MS = 5 * 60 * 1000;
 const VIDEO_SCAN_LEASE_MS = 30 * 1000;
+const VIDEO_SCAN_MAX_UNCERTAINTY_REVIEWS = 3;
+const MODESTY_UNCERTAINTY_REVIEW_OPERATION = 'modesty_uncertainty_review';
 const MAX_OPERATION_RESULT_BYTES = 256 * 1024;
 const MAX_SCAN_RESULT_BYTES = 2 * 1024 * 1024;
 const PROVIDER_OPERATIONS = Object.freeze({
@@ -84,8 +86,8 @@ async function ensureVideoScanBudgetSchema(pool) {
     result jsonb,
     UNIQUE (scan_id,frame_index,provider,operation),
     CONSTRAINT video_scan_operation_kind_check CHECK ((provider='google_vision' AND operation IN ('safe_search','object_localization','face_detection'))
-      OR (provider='openai' AND operation IN ('person_presence','modesty'))
-      OR (provider='gemini' AND operation IN ('person_presence','modesty')))
+      OR (provider='openai' AND operation IN ('person_presence','modesty','modesty_uncertainty_review'))
+      OR (provider='gemini' AND operation IN ('person_presence','modesty','modesty_uncertainty_review')))
   );
   CREATE TABLE IF NOT EXISTS moderation_provider_suspensions (
     provider text NOT NULL,
@@ -132,14 +134,22 @@ async function ensureVideoScanBudgetSchema(pool) {
           AND pg_get_constraintdef(oid) LIKE '%provider%'
           AND pg_get_constraintdef(oid) LIKE '%operation%'
       LOOP EXECUTE format('ALTER TABLE video_scan_operations DROP CONSTRAINT %I',constraint_name); END LOOP;
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='video_scan_operations'::regclass
+        AND conname='video_scan_operation_kind_check'
+        AND pg_get_constraintdef(oid) NOT LIKE '%modesty_uncertainty_review%') THEN
+        ALTER TABLE video_scan_operations DROP CONSTRAINT video_scan_operation_kind_check;
+      END IF;
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='video_scan_operations'::regclass
         AND conname='video_scan_operation_kind_check') THEN
         ALTER TABLE video_scan_operations ADD CONSTRAINT video_scan_operation_kind_check
           CHECK ((provider='google_vision' AND operation IN ('safe_search','object_localization','face_detection'))
-            OR (provider='openai' AND operation IN ('person_presence','modesty'))
-            OR (provider='gemini' AND operation IN ('person_presence','modesty')));
+            OR (provider='openai' AND operation IN ('person_presence','modesty','modesty_uncertainty_review'))
+            OR (provider='gemini' AND operation IN ('person_presence','modesty','modesty_uncertainty_review')));
       END IF;
     END $migration$;
+    CREATE UNIQUE INDEX IF NOT EXISTS video_scan_one_uncertainty_review_per_frame
+      ON video_scan_operations(scan_id,frame_index)
+      WHERE operation='modesty_uncertainty_review';
     CREATE OR REPLACE FUNCTION enforce_video_scan_operation_policy() RETURNS trigger LANGUAGE plpgsql AS $policy$
     DECLARE scan_policy text;
     BEGIN
@@ -325,22 +335,55 @@ async function reserveVideoScanOperation(pool, context) {
     const row = await lockedRow(db, context), blocked = await writable(db, row, context);
     if (blocked) return blocked;
     const operations = VIDEO_SCAN_PROVIDER_POLICIES[row.provider_policy].operations;
-    if (!Object.hasOwn(operations, provider) || !operations[provider].includes(operation))
+    const uncertaintyReview = ['gemini', 'openai'].includes(provider) &&
+      operation === MODESTY_UNCERTAINTY_REVIEW_OPERATION &&
+      operations[provider].length > 0;
+    if (!Object.hasOwn(operations, provider) ||
+        !operations[provider].includes(operation) && !uncertaintyReview)
       return stopLocked(db, row, 'operation_not_allowed');
     if (row.frame_count === null) return stopLocked(db, row, 'frame_manifest_missing');
     if (!Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= row.frame_count)
       return stopLocked(db, row, 'frame_index_invalid');
-    const existing = (await db.query(`SELECT * FROM video_scan_operations
-      WHERE scan_id=$1 AND frame_index=$2 AND provider=$3 AND operation=$4`,
-    [row.id, frameIndex, provider, operation])).rows[0];
+    const existing = (await db.query(uncertaintyReview
+      ? `SELECT * FROM video_scan_operations WHERE scan_id=$1 AND frame_index=$2 AND operation=$3`
+      : `SELECT * FROM video_scan_operations
+        WHERE scan_id=$1 AND frame_index=$2 AND provider=$3 AND operation=$4`,
+    uncertaintyReview ? [row.id, frameIndex, operation]
+      : [row.id, frameIndex, provider, operation])).rows[0];
+    if (uncertaintyReview && existing && existing.provider !== provider)
+      return stopLocked(db, row, 'uncertainty_review_limit');
     if (existing?.status === 'completed' || existing?.status === 'failed' &&
         row.provider_policy === 'google_gemini_optional_openai' && provider === 'openai')
       return { status: 'cached', result: existing.result, budget: budget(row) };
     if (existing?.status === 'reserved') return { status: 'busy', reason: 'operation_in_flight', budget: budget(row) };
     if (existing) return stopLocked(db, row, 'operation_failed');
+    if (uncertaintyReview) {
+      // The scan row remains locked while counting all attempts and reserving;
+      // failed or unfinished calls still consume one of the three reviews.
+      const used = (await db.query(`SELECT count(*)::int AS used FROM video_scan_operations
+        WHERE scan_id=$1 AND operation=$2`,
+      [row.id, MODESTY_UNCERTAINTY_REVIEW_OPERATION])).rows[0].used;
+      if (used >= VIDEO_SCAN_MAX_UNCERTAINTY_REVIEWS)
+        return stopLocked(db, row, 'uncertainty_review_limit');
+    }
     const limits = budget(row).limits;
     if (row.total_used >= limits.total || row[`${provider}_used`] >= limits[provider])
       return stopLocked(db, row, 'budget_exhausted');
+    if (uncertaintyReview) {
+      const baseCalls = (await db.query(`SELECT provider,count(DISTINCT frame_index)::int AS used
+        FROM video_scan_operations WHERE scan_id=$1 AND operation='modesty'
+          AND provider IN ('gemini','openai') GROUP BY provider`, [row.id])).rows;
+      const called = Object.fromEntries(baseCalls.map(item => [item.provider, item.used]));
+      const geminiFloor = Math.max(0, row.frame_count - (called.gemini || 0));
+      const openaiFloor = row.provider_policy === 'google_openai_gemini'
+        ? Math.max(0, row.frame_count - (called.openai || 0)) : 0;
+      // Do not spend another frame's first modesty call on this review. The
+      // separate provider floor is conservative even for optional OpenAI.
+      const providerFloor = Math.max(0, row.frame_count - (called[provider] || 0));
+      if (row.total_used + 1 + geminiFloor + openaiFloor > limits.total ||
+          row[`${provider}_used`] + 1 + providerFloor > limits[provider])
+        return stopLocked(db, row, 'budget_exhausted');
+    }
     const reservationId = randomUUID();
     const saved = (await db.query(`UPDATE video_scan_budgets SET total_used=total_used+1,
       ${provider}_used=${provider}_used+1,updated_at=clock_timestamp()
@@ -467,6 +510,7 @@ async function clearProviderSuspension(pool, { provider, credentialHash, actorId
 }
 
 module.exports = { VIDEO_SCAN_MAX_FRAMES, VIDEO_SCAN_DEADLINE_MS, VIDEO_SCAN_LEASE_MS,
+  VIDEO_SCAN_MAX_UNCERTAINTY_REVIEWS, MODESTY_UNCERTAINTY_REVIEW_OPERATION,
   PROVIDER_OPERATIONS, VIDEO_SCAN_PROVIDER_POLICIES, ensureVideoScanBudgetSchema, acquireVideoScan, setVideoScanManifest,
   reserveVideoScanOperation, finishVideoScanOperation, renewVideoScanLease, stopVideoScan,
   finishVideoScan, getVideoScanBudget, getProviderSuspension, suspendProvider, clearProviderSuspension };

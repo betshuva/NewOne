@@ -64,6 +64,85 @@ test('ledger rejects malformed identities and database failure never grants a re
     scanVersion: 'v1', providerPolicy: 'unchecked_policy' }), /Unknown video scan provider policy/);
 });
 
+test('uncertainty reviews share three scan-wide slots across providers under concurrent row locks', dbOptions, async t => {
+  const f = await fixture(t);
+  const acquired = await f.acquire({ providerPolicy: 'google_gemini_optional_openai' });
+  const context = { scanId: acquired.id, leaseToken: acquired.leaseToken };
+  await ledger.setVideoScanManifest(f.pool, context, frames(8));
+  const reservations = await Promise.all(Array.from({ length: 8 }, (_, frameIndex) =>
+    f.reserve(context, { frameIndex, provider: frameIndex % 2 ? 'openai' : 'gemini',
+      operation: 'modesty_uncertainty_review' })));
+  assert.equal(reservations.filter(result => result.status === 'reserved').length, 3);
+  assert.ok(reservations.filter(result => result.status !== 'reserved')
+    .every(result => result.reason === 'uncertainty_review_limit'));
+  const operations = await f.pool.query("SELECT count(*)::int AS used FROM video_scan_operations WHERE operation='modesty_uncertainty_review'");
+  assert.equal(operations.rows[0].used, 3);
+  assert.equal((await ledger.getVideoScanBudget(f.pool, context)).budget.used.total, 3);
+});
+
+test('review cache is separate from modesty and cross-provider frame reuse cannot pay twice', dbOptions, async t => {
+  const f = await fixture(t);
+  const acquired = await f.acquire({ providerPolicy: 'google_gemini_optional_openai' });
+  const context = { scanId: acquired.id, leaseToken: acquired.leaseToken };
+  await ledger.setVideoScanManifest(f.pool, context, frames(2));
+  const baseline = await f.reserve(context, { provider: 'gemini', operation: 'modesty' });
+  await f.finish(context, baseline, { available: true, decision: 'uncertain' });
+  const review = await f.reserve(context, { provider: 'gemini', operation: 'modesty_uncertainty_review' });
+  assert.equal(review.status, 'reserved');
+  const resolved = { available: true, decision: 'modest', model: 'review-model' };
+  await f.finish(context, review, resolved);
+  const cached = await f.reserve(context, { provider: 'gemini', operation: 'modesty_uncertainty_review' });
+  assert.equal(cached.status, 'cached');
+  assert.deepEqual(cached.result, resolved);
+  assert.equal(cached.budget.used.total, 2);
+  await assert.rejects(f.pool.query(`INSERT INTO video_scan_operations
+    (id,scan_id,frame_index,provider,operation,status,lease_token)
+    VALUES($1,$2,0,'openai','modesty_uncertainty_review','reserved',$3)`,
+  [randomUUID(), context.scanId, context.leaseToken]), { code: '23505' });
+  const otherProvider = await f.reserve(context, { provider: 'openai', operation: 'modesty_uncertainty_review' });
+  assert.equal(otherProvider.reason, 'uncertainty_review_limit');
+  assert.equal(otherProvider.budget.used.total, 2);
+});
+
+test('uncertainty review keeps first modesty quota for other frames and never raises 2N', dbOptions, async t => {
+  const f = await fixture(t);
+  const acquired = await f.acquire({ providerPolicy: 'google_gemini' });
+  const context = { scanId: acquired.id, leaseToken: acquired.leaseToken };
+  await ledger.setVideoScanManifest(f.pool, context, frames(2));
+  for (const [frameIndex, operation] of [[0, 'person_presence'], [0, 'modesty'], [1, 'person_presence']]) {
+    const reservation = await f.reserve(context, { frameIndex, provider: 'gemini', operation });
+    await f.finish(context, reservation);
+  }
+  const denied = await f.reserve(context, { provider: 'gemini', operation: 'modesty_uncertainty_review' });
+  assert.equal(denied.reason, 'budget_exhausted');
+  assert.equal(denied.budget.used.gemini, 3);
+  assert.equal(denied.budget.limits.gemini, 4);
+  assert.equal((await f.pool.query("SELECT count(*)::int AS n FROM video_scan_operations WHERE operation='modesty_uncertainty_review'")).rows[0].n, 0);
+});
+
+test('review schema migration replaces an old named kind check idempotently without changing spent work', dbOptions, async t => {
+  const f = await fixture(t);
+  const acquired = await f.acquire({ providerPolicy: 'google_gemini_optional_openai' });
+  const context = { scanId: acquired.id, leaseToken: acquired.leaseToken };
+  await ledger.setVideoScanManifest(f.pool, context, frames(2));
+  const baseline = await f.reserve(context);
+  await f.finish(context, baseline);
+  const before = await ledger.getVideoScanBudget(f.pool, context);
+  await f.pool.query(`ALTER TABLE video_scan_operations DROP CONSTRAINT video_scan_operation_kind_check;
+    ALTER TABLE video_scan_operations ADD CONSTRAINT video_scan_operation_kind_check
+      CHECK ((provider='google_vision' AND operation IN ('safe_search','object_localization','face_detection'))
+        OR (provider='openai' AND operation IN ('person_presence','modesty'))
+        OR (provider='gemini' AND operation IN ('person_presence','modesty')));`);
+  await ledger.ensureVideoScanBudgetSchema(f.pool);
+  await ledger.ensureVideoScanBudgetSchema(f.pool);
+  const after = await ledger.getVideoScanBudget(f.pool, context);
+  assert.deepEqual(after, before);
+  assert.equal((await f.reserve(context, { provider: 'gemini', operation: 'modesty_uncertainty_review' })).status, 'reserved');
+  const indexes = await f.pool.query(`SELECT count(*)::int AS n FROM pg_indexes
+    WHERE schemaname=current_schema() AND indexname='video_scan_one_uncertainty_review_per_frame'`);
+  assert.equal(indexes.rows[0].n, 1);
+});
+
 test('optional OpenAI failures remain charged once while Gemini completes within original 6N cap', dbOptions, async t => {
   const f = await fixture(t);
   const acquired = await f.acquire({ providerPolicy: 'google_gemini_optional_openai' });

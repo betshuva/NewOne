@@ -6,6 +6,7 @@ const CHECK_TYPE_LABELS = Object.freeze({
   face_detection: 'איתור וספירת פנים',
   person_presence: 'אימות נוכחות אנשים וסיווג גברים, נשים וילדים',
   modesty: 'בדיקת צניעות הלבוש',
+  modesty_uncertainty_review: 'בדיקת השלמה להכרעה באי־ודאות בצניעות',
   modesty_format_repair: 'פענוח חוזר של תשובת בדיקת הצניעות',
   local_safety: 'בדיקת בטיחות מקומית להשוואה',
   local_explicit_content: 'בדיקה מקומית של עירום ותוכן מיני מפורש',
@@ -34,6 +35,11 @@ const FINDING_LABELS = Object.freeze({
   provider_disabled: 'הספק כבוי בהגדרות המערכת',
   fallback_review_used: 'המשך הבדיקה הועבר ל־Gemini',
   out_of_frame_ignored: 'נבדקו החלקים הנראים; חלקים מחוץ לתמונה אינם סיבה לחסימה',
+  modesty_uncertain: 'בדיקת הצניעות נותרה לא ודאית',
+  provider_unavailable: 'שירות הבדיקה אינו זמין',
+  provider_error: 'בדיקת התוכן לא הושלמה עקב תקלה בשירות הבדיקה',
+  uncertainty_review_limit: 'מכסת בדיקות ההשלמה לאי־ודאות מוצתה',
+  uncertainty_review_disabled: 'בדיקת ההשלמה לאי־ודאות כבויה בהגדרות המערכת',
   budget_exhausted: 'מכסת הבדיקות לסרטון מוצתה', deadline_exceeded: 'זמן הסריקה המרבי הסתיים',
   lease_lost: 'הסריקה מנוהלת כעת בתהליך אחר', operation_outcome_unknown: 'תוצאת בקשה קודמת אינה ידועה',
   speech_detected: 'זוהה דיבור', no_speech_detected: 'לא זוהה דיבור',
@@ -46,7 +52,8 @@ const LIKELIHOOD_LABELS = { unknown: 'לא ידוע', very_unlikely: 'סבירו
 const CHECK_KINDS = ['provider_call_finished', 'scan_cache_used', 'moderation_check_finished'];
 const LEGACY_OPERATIONS = { safe_search: 'safe_search', google_safe_search_reuse: 'safe_search',
   object_localization: 'object_localization', face_detection: 'face_detection',
-  person_presence: 'person_presence', modesty: 'modesty', modesty_format_repair: 'modesty_format_repair' };
+  person_presence: 'person_presence', modesty: 'modesty',
+  modesty_uncertainty_review: 'modesty_uncertainty_review', modesty_format_repair: 'modesty_format_repair' };
 const own = (map, key) => typeof key === 'string' && Object.hasOwn(map, key);
 
 function checkType(row) {

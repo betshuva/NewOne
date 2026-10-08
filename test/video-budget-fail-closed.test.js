@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { stoppedVideoResult, videoProviderStop } = require('../server/video-scan-controller');
+const { reviewModestyUncertainty, stoppedImageResult } = require('../server/modesty-uncertainty-review');
 
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 const start = source.indexOf('async function scanStaticImage(');
@@ -14,7 +15,8 @@ const stopped = { available: false, budgetStopped: true, reasonCode: 'credit_bal
 async function frame(stage) {
   const called = [];
   const scan = vm.runInNewContext(`${source.slice(start, end)};scanStaticImage`, {
-    stoppedVideoResult, videoProviderStop, process: { env: {} }, console,
+    stoppedVideoResult, videoProviderStop, reviewModestyUncertainty, stoppedImageResult,
+    process: { env: {} }, console,
     recordProviderCheck: async () => {},
     MODERATION_CACHE_VERSION: 'test',
     openAIModerationEnabled: () => true,

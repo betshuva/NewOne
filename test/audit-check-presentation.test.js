@@ -25,7 +25,8 @@ test('every allowed check type, outcome and finding has a localized display labe
 test('legacy provider purpose is inferred only for known check events and never invents a passed result', () => {
   const operations = { safe_search: 'safe_search', google_safe_search_reuse: 'safe_search',
     object_localization: 'object_localization', face_detection: 'face_detection',
-    person_presence: 'person_presence', modesty: 'modesty', modesty_format_repair: 'modesty_format_repair' };
+    person_presence: 'person_presence', modesty: 'modesty',
+    modesty_uncertainty_review: 'modesty_uncertainty_review', modesty_format_repair: 'modesty_format_repair' };
   for (const kind of ['provider_call_finished', 'scan_cache_used', 'moderation_check_finished']) {
     for (const [operation, expected] of Object.entries(operations)) {
       const original = { kind, status: 'completed', details: { operation, provider: 'google_vision' } };
@@ -42,6 +43,22 @@ test('legacy provider purpose is inferred only for known check events and never 
     assert.equal(checkType(row), null);
     assert.equal(presentAuditCheck(row), row);
   }
+});
+
+test('uncertainty review audit labels preserve provider and initial check while localizing result codes', () => {
+  const details = { provider: 'gemini', operation: 'modesty_uncertainty_review',
+    checkType: 'modesty_uncertainty_review', checkOutcome: 'stopped',
+    checkFindings: ['modesty_uncertain', 'provider_unavailable', 'provider_error', 'uncertainty_review_limit'] };
+  const original = { provider: 'openai', checkType: 'modesty', checkOutcome: 'uncertain' };
+  const row = presentAuditCheck({ kind: 'provider_call_finished', details });
+  assert.equal(row.check_type, 'modesty_uncertainty_review');
+  assert.equal(row.checkLabel, 'בדיקת השלמה להכרעה באי־ודאות בצניעות');
+  assert.equal(row.details.provider, 'gemini');
+  assert.equal(presentAuditCheck({ details: original }).details.provider, 'openai');
+  assert.equal(original.checkType, 'modesty');
+  for (const finding of details.checkFindings) assert.ok(row.checkResultLabel.includes(FINDING_LABELS[finding]));
+  assert.deepEqual(sanitizeAuditDetails({ ...details, providerResponse: 'private prose' }), details);
+  assert.equal(row.checkResultLabel.includes('תתבצע שוב'), false);
 });
 
 test('SafeSearch likelihoods are localized completely without displaying arbitrary findings', () => {

@@ -17,3 +17,9 @@ test('explicit safety blocks cannot be overridden by screenshot classification',
   const scan = { blocked: true, blockedBy: 'googleSafeSearch', classification: { category: 'nonHumanImages' } };
   assert.deepEqual(imageClassificationOutcome(scan), scan);
 });
+test('a terminal unresolved review never becomes approval or a queued classification retry', () => {
+  const scan = { scanStopped: true, blocked: false, pending: false, retryable: false,
+    reasonCode: 'modesty_uncertain', classification: { category: 'men', uncertain: true } };
+  assert.equal(imageClassificationOutcome(scan), scan);
+  assert.equal(imageClassificationOutcome(scan).pending, false);
+});

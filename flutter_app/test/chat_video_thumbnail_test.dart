@@ -14,8 +14,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+// ignore: depend_on_referenced_packages
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
+import 'package:video_player/video_player.dart';
 // ignore: depend_on_referenced_packages
 import 'package:video_player_platform_interface/video_player_platform_interface.dart'
     as platform;
@@ -41,10 +44,21 @@ final _jpeg = base64Decode(
 int _nextUrl = 0;
 String _url() => 'https://example.test/chat-thumbnail-${_nextUrl++}.mp4';
 
+class _NoMediaCachePath extends PathProviderPlatform {
+  @override
+  Future<String?> getApplicationSupportPath() async =>
+      throw UnsupportedError('Disk cache is disabled for this widget test');
+}
+
 class _DecoderFailurePlatform extends platform.VideoPlayerPlatform {
+  _DecoderFailurePlatform(
+      {this.decoderFails = true, this.delayInitialization = false});
+  final bool decoderFails;
+  final bool delayInitialization;
   final creations = <platform.VideoCreationOptions>[];
   final events = <int, StreamController<platform.VideoEvent>>{};
   final disposals = <int>[];
+  final playbacks = <int>[];
   Completer<void>? disposalGate;
 
   @override
@@ -54,12 +68,24 @@ class _DecoderFailurePlatform extends platform.VideoPlayerPlatform {
   Future<int?> createWithOptions(platform.VideoCreationOptions options) async {
     final id = creations.length;
     creations.add(options);
-    events[id] = StreamController<platform.VideoEvent>(onCancel: () async {})
-      ..addError(PlatformException(
+    events[id] = StreamController<platform.VideoEvent>(onCancel: () async {});
+    if (!delayInitialization) completeInitialization(id);
+    return id;
+  }
+
+  void completeInitialization(int id) {
+    if (decoderFails) {
+      events[id]!.addError(PlatformException(
         code: 'VideoError',
         message: 'MediaCodecVideoRenderer error, format_supported=YES',
       ));
-    return id;
+    } else {
+      events[id]!.add(platform.VideoEvent(
+        eventType: platform.VideoEventType.initialized,
+        duration: const Duration(seconds: 10),
+        size: const Size(160, 90),
+      ));
+    }
   }
 
   @override
@@ -75,6 +101,27 @@ class _DecoderFailurePlatform extends platform.VideoPlayerPlatform {
   @override
   Future<void> setPreventsDisplaySleepDuringVideoPlayback(
       int playerId, bool preventsDisplaySleepDuringVideoPlayback) async {}
+
+  @override
+  Future<void> setLooping(int playerId, bool looping) async {}
+
+  @override
+  Future<void> setVolume(int playerId, double volume) async {}
+
+  @override
+  Future<void> setPlaybackSpeed(int playerId, double speed) async {}
+
+  @override
+  Future<void> play(int playerId) async => playbacks.add(playerId);
+
+  @override
+  Future<void> pause(int playerId) async {}
+
+  @override
+  Future<Duration> getPosition(int playerId) async => Duration.zero;
+
+  @override
+  Widget buildView(int playerId) => const SizedBox.expand();
 }
 
 class _NativeMedia {
@@ -98,8 +145,12 @@ class _NativeMedia {
   }
 }
 
-(_DecoderFailurePlatform, _NativeMedia) _installMedia() {
-  final inline = _DecoderFailurePlatform();
+(_DecoderFailurePlatform, _NativeMedia) _installMedia({
+  bool decoderFails = true,
+  bool delayInitialization = false,
+}) {
+  final inline = _DecoderFailurePlatform(
+      decoderFails: decoderFails, delayInitialization: delayInitialization);
   final previous = platform.VideoPlayerPlatform.instance;
   platform.VideoPlayerPlatform.instance = inline;
   final native = _NativeMedia();
@@ -219,12 +270,51 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues({});
+    final previous = PathProviderPlatform.instance;
+    PathProviderPlatform.instance = _NoMediaCachePath();
+    addTearDown(() => PathProviderPlatform.instance = previous);
   });
 
   for (final group in [false, true]) {
     final scope = group ? 'group' : 'private';
 
-    testWidgets('$scope decoder fallback displays a JPEG and whole-tile play',
+    testWidgets('$scope first play initializes once and starts inline playback',
+        (tester) async {
+      final (inline, native) =
+          _installMedia(decoderFails: false, delayInitialization: true);
+      final url = _url();
+      await http.runWithClient(() async {
+        await _mount(tester, group);
+        await tester.pumpAndSettle();
+        expect(find.byType(VideoThumbnail), findsOneWidget);
+        expect(native.thumbnails, [url]);
+        expect(inline.creations, isEmpty);
+        expect(inline.playbacks, isEmpty);
+        await tester.tap(find.byTooltip('הפעל וידאו'));
+        await tester.pump();
+        expect(inline.creations, hasLength(1));
+        expect(inline.playbacks, isEmpty);
+        expect(find.byType(VideoThumbnail), findsOneWidget);
+        await tester.tap(find.byTooltip('הפעל וידאו'));
+        await tester.pump();
+        expect(inline.creations, hasLength(1));
+        inline.completeInitialization(0);
+        await tester.pump();
+        await tester.pump();
+        expect(inline.playbacks, [0]);
+        expect(find.byType(VideoPlayer), findsOneWidget);
+        expect(native.playbacks, isEmpty);
+        await tester.tap(find.byType(VideoPlayer));
+        await tester.pump();
+        await _unmount(tester);
+        expect(inline.disposals, [0]);
+      },
+          () => MockClient((request) async => _isHistory(request, group)
+              ? _json([_message(url)])
+              : _defaultResponse(request)));
+    });
+
+    testWidgets('$scope JPEG preview waits for whole-tile play before decoding',
         (tester) async {
       final semantics = tester.ensureSemantics();
       final (inline, native) = _installMedia();
@@ -242,8 +332,7 @@ void main() {
           expect(tester.widget<VideoThumbnail>(thumbnail).url, url);
           expect(native.thumbnails, [url]);
           expect(native.playbacks, isEmpty);
-          expect(inline.creations, hasLength(1));
-          expect(inline.creations.single.dataSource.uri, url);
+          expect(inline.creations, isEmpty);
           final image =
               find.descendant(of: thumbnail, matching: find.byType(Image));
           final provider = tester.widget<Image>(image).image as MemoryImage;
@@ -274,6 +363,8 @@ void main() {
           await tester
               .tapAt(tester.getTopLeft(thumbnail) + const Offset(20, 20));
           await tester.pump();
+          expect(inline.creations, hasLength(1));
+          expect(inline.creations.single.dataSource.uri, url);
           final opening = tester.getSemantics(playButton).getSemanticsData();
           expect(opening.flagsCollection.isButton, isTrue);
           expect(opening.flagsCollection.isEnabled, Tristate.isFalse);
@@ -298,6 +389,37 @@ void main() {
       } finally {
         semantics.dispose();
       }
+    });
+
+    testWidgets('$scope filter change cancels a pending compatible opening',
+        (tester) async {
+      final (inline, native) = _installMedia();
+      final url = _url();
+      var hidden = false;
+      inline.disposalGate = Completer<void>();
+      await http.runWithClient(() async {
+        await _mount(tester, group);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('הפעל וידאו'));
+        await tester.pump();
+        expect(inline.creations, hasLength(1));
+        expect(native.playbacks, isEmpty);
+        hidden = true;
+        receivingFilterChanges.add('test-token');
+        await tester.pump();
+        expect(find.byType(VideoThumbnail), findsNothing);
+        inline.disposalGate!.complete();
+        await tester.pumpAndSettle();
+        expect(find.byType(FilterHiddenImage), findsOneWidget);
+        expect(find.byType(CompatibleVideoPlayer), findsNothing);
+        expect(native.playbacks, isEmpty);
+        expect(inline.disposals, [0]);
+        await _unmount(tester);
+      },
+          () => MockClient((request) async => _isHistory(request, group)
+              ? _json(
+                  [_message(url, state: hidden ? 'filter_hidden' : 'approved')])
+              : _defaultResponse(request)));
     });
 
     for (final state in [
@@ -390,7 +512,7 @@ void main() {
           await tester.pump();
           expect(find.byType(VideoThumbnail), findsNothing);
           await tester.pump();
-          expect(inline.disposals, [0]);
+          expect(inline.disposals, isEmpty);
           if (lateFrame) {
             native.thumbnailResult!.complete(_jpeg);
             await tester.pump();
@@ -400,7 +522,7 @@ void main() {
           await tester.pumpAndSettle();
           expect(find.byType(FilterHiddenImage), findsOneWidget);
           expect(find.byType(VideoThumbnail), findsNothing);
-          expect(inline.creations, hasLength(1));
+          expect(inline.creations, isEmpty);
           expect(native.thumbnails, [url]);
           expect(native.playbacks, isEmpty);
           await _unmount(tester);
@@ -417,6 +539,58 @@ void main() {
                 }));
       });
     }
+  }
+
+  for (final replaceUrl in [false, true]) {
+    testWidgets(
+        'late decoder fallback after ${replaceUrl ? 'URL change' : 'disposal'} never opens stale media',
+        (tester) async {
+      final (inline, native) = _installMedia();
+      final oldUrl = _url();
+      final newUrl = _url();
+      late List<Widget> players;
+      await http.runWithClient(() async {
+        await _mount(tester, true);
+        await tester.pumpAndSettle();
+        players = tester
+            .widgetList<Widget>(find.byWidgetPredicate((widget) =>
+                widget.runtimeType.toString() == '_ChatVideoPlayer'))
+            .toList();
+        expect(players, hasLength(2));
+        await _unmount(tester);
+      },
+          () => MockClient((request) async => _isHistory(request, true)
+              ? _json([
+                  {..._message(oldUrl), 'id': 'old-video'},
+                  {..._message(newUrl), 'id': 'new-video'},
+                ])
+              : _defaultResponse(request)));
+      final previousPlayer =
+          players.singleWhere((widget) => (widget as dynamic).url == oldUrl);
+      final nextPlayer =
+          players.singleWhere((widget) => (widget as dynamic).url == newUrl);
+      await tester.pumpWidget(MaterialApp(home: Center(child: previousPlayer)));
+      await tester.pumpAndSettle();
+      inline.disposalGate = Completer<void>();
+      await tester.tap(find.byTooltip('הפעל וידאו'));
+      await tester.pump();
+      expect(inline.creations, hasLength(1));
+      expect(native.playbacks, isEmpty);
+      if (replaceUrl) {
+        await tester.pumpWidget(MaterialApp(home: Center(child: nextPlayer)));
+        await tester.pump();
+        expect(tester.widget<VideoThumbnail>(find.byType(VideoThumbnail)).url,
+            newUrl);
+      } else {
+        await tester.pumpWidget(const SizedBox.shrink());
+      }
+      inline.disposalGate!.complete();
+      await tester.pumpAndSettle();
+      expect(inline.creations, hasLength(1));
+      expect(native.playbacks, isEmpty);
+      expect(find.byType(CompatibleVideoPlayer), findsNothing);
+      await _unmount(tester);
+    });
   }
 
   testWidgets('incoming group video waits for policy-projected history',

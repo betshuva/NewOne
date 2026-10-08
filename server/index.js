@@ -54,10 +54,13 @@ const {
 } = require('./google-vision');
 const { verifyPersonClassification } = require('./person-verification');
 const { videoDetectedCategories } = require('./video-classification');
-const { classifyOpenAIModesty, corroboratedCompliantGeminiFlag } = require('./modesty-verification');
+const { classifyOpenAIModesty, classifyOpenAIModestyUncertaintyReview,
+  corroboratedCompliantGeminiFlag } = require('./modesty-verification');
 const { openAIModerationEnabled, openAIModerationRequired, moderationProviderPolicy,
   disabledModerationProviderResult } = require('./moderation-provider-policy');
-const { classifyGeminiModesty } = require('./gemini-modesty-verification');
+const { classifyGeminiModesty, classifyGeminiModestyUncertaintyReview } = require('./gemini-modesty-verification');
+const { SCHEMA: IMAGE_UNCERTAINTY_REVIEW_SCHEMA, reviewModestyUncertainty,
+  createImageReviewState, stoppedImageResult } = require('./modesty-uncertainty-review');
 const { recordProviderCheck } = require('./provider-usage-log');
 const { ensureVideoScanBudgetSchema } = require('./video-scan-budget');
 const cachedScanPreviews = require('./cached-scan-previews');
@@ -844,6 +847,7 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
         blocked: frameResult.blocked === true,
         pending: frameResult.pending === true,
         scanStopped: frameResult.scanStopped === true,
+        reasonCode: frameResult.reasonCode || null,
         reason: frameResult.reason || null,
         blockedBy: frameResult.blockedBy || null,
         classification: frameResult.classification || null,
@@ -853,6 +857,7 @@ async function scanVideo(buffer, fileName, mimeType, options = {}) {
         personVerification: frameResult.personVerification || null,
         modestyVerification: frameResult.modestyVerification || null,
           geminiModestyVerification: frameResult.geminiModestyVerification || null,
+          modestyUncertaintyReview: frameResult.modestyUncertaintyReview || null,
         };
       }
     };
@@ -2071,6 +2076,10 @@ async function scanStaticImage(buffer, options = {}) {
   if (options.tracking?.videoBudget && videoProviderStop(googleSafeSearch))
     return stoppedVideoResult(videoProviderStop(googleSafeSearch), undefined,
       common(googleSafeSearch));
+  if (googleSafeSearch.blocked) return {
+    ...common(googleSafeSearch), blocked: true, blockedBy: 'googleSafeSearch',
+    reason: 'התמונה נחסמה — Google SafeSearch זיהה תוכן לא ראוי',
+  };
   if (canReuseGoogle) await recordProviderCheck({ provider: 'cache',
     operation: 'safe_search', tracking: options.tracking,
     result: googleSafeSearch, cacheHit: true });
@@ -2165,15 +2174,40 @@ async function scanStaticImage(buffer, options = {}) {
         result: { ...geminiModestyVerification, findings: ['no_person_detected'] } }),
     ]);
   }
+  const modestyUncertaintyReview = await reviewModestyUncertainty(buffer, {
+    verifiedPeople, classification, googleSafeSearch, localSafety,
+    modestyVerification, geminiModestyVerification, useOpenAI, requireOpenAI,
+    tracking: options.tracking, signal: options.signal, reviewVersion: MODERATION_CACHE_VERSION,
+    reviewState: options.reviewState,
+    reviewProvider: (provider, bytes, reviewOptions) => provider === 'openai'
+      ? classifyOpenAIModestyUncertaintyReview(bytes, reviewOptions)
+      : classifyGeminiModestyUncertaintyReview(bytes, reviewOptions),
+  });
+  const effectiveOpenAI = modestyUncertaintyReview?.provider === 'openai' &&
+    modestyUncertaintyReview.resolution === 'approved' ? modestyUncertaintyReview.result : modestyVerification;
+  const effectiveGemini = modestyUncertaintyReview?.provider === 'gemini' &&
+    modestyUncertaintyReview.resolution === 'approved' ? modestyUncertaintyReview.result : geminiModestyVerification;
+  if (modestyUncertaintyReview?.resolution === 'approved')
+    classificationStats.modestyUncertaintyReviewed = true;
   const finalCommon = {
     ...common(googleSafeSearch),
     personVerification,
     classificationStats,
     modestyVerification,
     geminiModestyVerification,
+    ...(modestyUncertaintyReview ? { modestyUncertaintyReview } : {}),
   };
+  if (modestyUncertaintyReview?.resolution === 'blocked') return {
+    ...finalCommon, blocked: true, pending: false, blockedBy: 'modestyUncertaintyReview',
+    reasonCode: 'visible_modesty_violation',
+    reason: 'התמונה נחסמה — בדיקת ההכרעה זיהתה הפרת לבוש נראית',
+  };
+  if (modestyUncertaintyReview?.resolution === 'unresolved')
+    return options.tracking?.videoBudget
+      ? stoppedVideoResult(modestyUncertaintyReview.reasonCode, undefined, finalCommon)
+      : stoppedImageResult(modestyUncertaintyReview.reasonCode, finalCommon);
   const requiredModestyReviews = requireOpenAI
-    ? [modestyVerification, geminiModestyVerification] : [geminiModestyVerification];
+    ? [effectiveOpenAI, effectiveGemini] : [effectiveGemini];
   if (options.tracking?.videoBudget &&
       videoProviderStop(...requiredModestyReviews))
     return stoppedVideoResult(videoProviderStop(...requiredModestyReviews),
@@ -2190,8 +2224,8 @@ async function scanStaticImage(buffer, options = {}) {
   };
 
   // Require actual evidence from every reviewer enabled by this policy.
-  const activeModestyReviews = useOpenAI && (requireOpenAI || modestyVerification.available === true)
-    ? [modestyVerification, geminiModestyVerification] : [geminiModestyVerification];
+  const activeModestyReviews = useOpenAI && (requireOpenAI || effectiveOpenAI.available === true)
+    ? [effectiveOpenAI, effectiveGemini] : [effectiveGemini];
   const enforceableViolation = review => review?.available &&
     review.decision === 'non_modest' &&
     (review.status === 'safety_blocked' ||
@@ -2208,14 +2242,14 @@ async function scanStaticImage(buffer, options = {}) {
     googleSafeSearch.blocked !== true && googleSafeSearch.uncertain !== true &&
     localSafety?.available === true && localSafety.wouldBlock !== true;
   const modestyReviewsDisagree = useOpenAI && verifiedPeople &&
-    (requireOpenAI || modestyVerification.available === true) &&
-    (!modestyVerification.available || !geminiModestyVerification.available ||
-      modestyVerification.decision !== 'modest' ||
-      geminiModestyVerification.decision !== 'modest');
+    (requireOpenAI || effectiveOpenAI.available === true) &&
+    (!effectiveOpenAI.available || !effectiveGemini.available ||
+      effectiveOpenAI.decision !== 'modest' || effectiveGemini.decision !== 'modest');
   const compliantFlagConflict = modestyReviewsDisagree &&
     corroboratedCompliantGeminiFlag(modestyVerification, geminiModestyVerification);
-  if (modestyReviewsDisagree && (requireOpenAI || compliantFlagConflict || geminiModestyVerification.available === true &&
-      geminiModestyVerification.decision === 'modest') && safetyConsensusClean &&
+  if (modestyReviewsDisagree && (compliantFlagConflict || !requireOpenAI && effectiveGemini.available === true &&
+      effectiveGemini.decision === 'modest') && safetyConsensusClean &&
+      !activeModestyReviews.some(enforceableViolation) &&
       classification?.category && classification.uncertain !== true) {
     classificationStats.modestyDisagreement = true;
     return {
@@ -2225,7 +2259,8 @@ async function scanStaticImage(buffer, options = {}) {
       blockedBy: null,
       modestyDisagreement: {
         recorded: true,
-        action: 'approved_by_clean_safety_consensus',
+        action: modestyUncertaintyReview?.resolution === 'approved'
+          ? 'approved_by_bounded_uncertainty_review' : 'approved_by_clean_safety_consensus',
         ...(compliantFlagConflict ? { resolution: 'corroborated_compliant_gemini_flag' } : {}),
         explanation: reviewExplanation(),
       },
@@ -2239,19 +2274,16 @@ async function scanStaticImage(buffer, options = {}) {
     return {
       ...finalCommon,
       pending: true,
-      reason: useOpenAI ? 'אחת מבדיקות הצניעות אינה זמינה כרגע — הסריקה תתבצע שוב'
+      reasonCode: 'provider_unavailable',
+      reason: useOpenAI ? 'אחת מבדיקות הצניעות אינה זמינה כרגע'
         : 'בדיקת הצניעות של Gemini אינה זמינה כרגע',
     };
   }
   if (verifiedPeople && activeModestyReviews
     .some(review => review.decision !== 'modest')) {
-    return {
-      ...finalCommon,
-      pending: true,
-      reason: useOpenAI
-        ? `בדיקות הצניעות אינן מסכימות או שאין ראיה חזותית ברורה — תתבצע בדיקה נוספת · ${reviewExplanation()}`
-        : `בדיקת הצניעות של Gemini אינה ודאית או שאין ראיה חזותית ברורה · ${reviewExplanation()}`,
-    };
+    return options.tracking?.videoBudget
+      ? stoppedVideoResult('modesty_uncertain', undefined, finalCommon)
+      : stoppedImageResult('modesty_uncertain', finalCommon);
   }
 
   if (googleSafeSearch.blocked) {
@@ -2294,17 +2326,23 @@ async function scanStaticImage(buffer, options = {}) {
     };
   }
 
+  if (modestyUncertaintyReview?.resolution === 'approved') {
+    classificationStats.modestyUncertaintyReviewed = true;
+    finalCommon.modestyDisagreement = { recorded: true,
+      action: 'approved_by_bounded_uncertainty_review', provider: modestyUncertaintyReview.provider };
+  }
   return imageClassificationOutcome(finalCommon);
 }
 
 // Increment whenever moderation models, prompts, thresholds or policy meaning
 // change. Exact-file cache entries from older versions are never reused.
-const MODERATION_CACHE_VERSION = `2026-10-07-high-detail-person-21:${moderationProviderPolicy()}`;
+const MODERATION_CACHE_VERSION = `2026-10-08-visible-areas-review-22:${moderationProviderPolicy()}`;
 const VIDEO_SCAN_VERSION = `${MODERATION_CACHE_VERSION}:video20-90min-v1`;
 
 async function scanImage(buffer, options = {}) {
   // Recognize exact library bytes before invoking any content-analysis provider.
   if (await isTrustedBuiltinExpression({ buffer })) return builtinExpressionResult();
+  options = { ...options, reviewState: options.reviewState || createImageReviewState() };
   if (!isPotentiallyAnimatedImage(buffer))
     return scanStaticImage(buffer, options);
 
@@ -2350,14 +2388,18 @@ async function scanImage(buffer, options = {}) {
     }
     const result = await scanStaticImage(frame, options);
     frameResults.push(result);
+    if (result.scanStopped) return { ...result, animated: true, frameResults,
+      frameCount, framesScanned: page + 1 };
     if (result.blocked) return {
       ...result,
+      frameResults,
       reason: `GIF נחסם בפריים ${page + 1}: ${result.reason || 'תוכן לא מאושר'}`,
       frameCount,
       framesScanned: page + 1,
     };
     if (result.pending) return {
       ...result,
+      frameResults,
       reason: `סריקת GIF ממתינה בפריים ${page + 1}: ${result.reason || 'שירות הסריקה אינו זמין'}`,
       frameCount,
       framesScanned: page + 1,
@@ -2368,12 +2410,14 @@ async function scanImage(buffer, options = {}) {
     blocked: false,
     blockedBy: null,
     animated: true,
+    frameResults,
     frameCount,
     framesScanned: frameCount,
   };
 }
 
 async function scanDocument(buffer, mimetype, options = {}) {
+  options = { ...options, reviewState: options.reviewState || createImageReviewState() };
   let result;
   try {
     result = await scanDocumentContent(buffer, mimetype, {
@@ -5835,6 +5879,7 @@ app.get('/api/messages/:userId', auth, async (req, res) => {
         sf.moderation_details->>'destinationFilterRejected'='true'
           AS forward_allowed,
         sf.moderation_details->>'reason' AS scan_reason,
+        sf.moderation_details->>'reasonCode' AS scan_reason_code,
         sf.moderation_details->'classification' AS image_classification,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds,
         sf.moderation_status AS audio_moderation_status,
@@ -6771,7 +6816,8 @@ function mediaLibraryItem(row) {
   return {
     id: row.id, name: row.original_name, url: row.public_url, filterHidden: row.filter_hidden === true,
     hiddenReason: row.hidden_reason || null, scanReason: imageBlockReason(row.scan_reason || row.moderation_details?.reason || null, row.file_type,
-      row.moderation_status === 'rejected' ? row.moderation_details?.blockedBy : null),
+      row.moderation_status === 'rejected' ? row.moderation_details?.blockedBy : null,
+      row.moderation_details?.reasonCode),
     contentPurged: !!row.content_purged_at,
     sourceMessageId: row.filter_source_message_id || null,
     mimeType: row.mime_type, fileType: row.file_type,
@@ -6780,6 +6826,7 @@ function mediaLibraryItem(row) {
     duplicateCount: Number(row.duplicate_count || 1),
     duplicateIds: row.duplicate_ids || [row.id],
     moderationStatus: row.moderation_status,
+    scanReasonCode: row.moderation_details?.reasonCode || null,
     classification: row.moderation_details?.classification || null,
     releasedAt: row.released_at, backupStatus: row.backup_status || null,
     restoreVerified: Boolean(row.restore_verified ?? row.restore_verified_at),
@@ -8954,7 +9001,22 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
       if (listingVideoProof) scanResult.listingVideoProof = listingVideoProof;
       scanResult.moderationVersion = moderationVersion;
       const ss = scanResult.safeSearch || {};
-      console.log(`[Vision] ${file.originalname} | ${scanResult.cacheHit ? '♻️ CACHE' : scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
+      console.log(`[Vision] ${file.originalname} | ${scanResult.cacheHit ? '♻️ CACHE' : scanResult.scanStopped ? '⏹ STOPPED: ' + scanResult.reasonCode : scanResult.blocked ? '⛔ BLOCKED by ' + scanResult.blockedBy : scanResult.pending ? '⏳ PENDING' : '✅ APPROVED'} | faces:${scanResult.faces?.length || 0} | adult:${ss.adult || '—'} | racy:${ss.racy || '—'} | labels:${(scanResult.labels || []).slice(0, 3).map(l => l.name).join(',')}`);
+    }
+
+    // Unresolved content is a terminal scan outcome, not an approval or a
+    // promised retry. Stop before sender/listing/destination delivery paths.
+    if (scanResult?.scanStopped) {
+      await auditedMediaQuery(pool, `UPDATE stored_files SET moderation_status='stopped',
+        moderation_details=$1,blocked_content_expires_at=NULL WHERE id=$2`,
+      [JSON.stringify(scanResult), storedInsert.rows[0].id]);
+      await observeAudit(pool, { kind: 'scan_workflow_finished', status: 'failed',
+        operationStatus: 'failed', reasonCode: scanResult.reasonCode,
+        targetType: 'file', targetId: storedInsert.rows[0].id });
+      return res.json({ url, fileName: file.originalname, fileSize: file.size,
+        fileType: allowed.dbType, status: 'stopped', scanStopped: true,
+        reasonCode: scanResult.reasonCode, reason: scanResult.reason,
+        classification: scanResult.classification || null, handledByScanBot: scanBotUpload });
     }
 
     // Listing videos have their own duration and complete-frame policy below.
@@ -9009,7 +9071,8 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
         toUserId: req.body.toUserId, fileId: storedInsert.rows[0].id,
         kind: 'moderation', reason: scanResult.reason });
       return res.json({ url, fileName: file.originalname, fileSize: file.size,
-        fileType: allowed.dbType, status: 'rejected', reason: imageBlockReason(scanResult.reason, allowed.dbType, scanResult.blockedBy),
+        fileType: allowed.dbType, status: 'rejected', reasonCode: scanResult.reasonCode,
+        reason: imageBlockReason(scanResult.reason, allowed.dbType, scanResult.blockedBy, scanResult.reasonCode),
         blockedPreviewUrl, previewExpiresAt,
         classification: scanResult.classification || null,
         handledByScanBot: scanBotUpload, scanReport });
@@ -9722,6 +9785,7 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
         sf.moderation_details->>'destinationFilterRejected'='true'
           AS forward_allowed,
         sf.moderation_details->>'reason' AS scan_reason,
+        sf.moderation_details->>'reasonCode' AS scan_reason_code,
         sf.moderation_details->'classification' AS image_classification,
         sf.moderation_details->'audio'->>'durationSeconds' AS audio_duration_seconds
         ,sf.moderation_status AS audio_moderation_status
@@ -13696,6 +13760,7 @@ async function retryPendingScans() {
         });
         outcomePersisted = true;
         relay(row.user_id, 'scan:cancelled', { fileName: row.file_name, fileUrl: row.file_url,
+          fileType: row.file_type,
           groupId: row.group_id || null, toUserId: row.to_user_id || null,
           scanStopped: true, reasonCode: result.reasonCode, reason: result.reason,
           budget: result.budget });
@@ -13742,8 +13807,10 @@ async function retryPendingScans() {
         // local media may already be gone; reuse the immutable approved scan
         // and finish delivery instead of trying to read or scan it again.
         if (row.stored_moderation_status === 'stopped' || row.prior_moderation_details?.scanStopped) {
-          scanResult = stoppedVideoResult(row.prior_moderation_details?.reasonCode,
-            row.prior_moderation_details?.budget, row.prior_moderation_details);
+          scanResult = row.file_type === 'video'
+            ? stoppedVideoResult(row.prior_moderation_details?.reasonCode,
+              row.prior_moderation_details?.budget, row.prior_moderation_details)
+            : stoppedImageResult(row.prior_moderation_details?.reasonCode, row.prior_moderation_details);
         } else if (row.file_type === 'video' && row.stored_moderation_status === 'approved' &&
             row.prior_moderation_details?.moderationVersion !== VIDEO_SCAN_VERSION) {
           scanResult = stoppedVideoResult('scan_version_changed', row.prior_moderation_details?.budget);
@@ -13905,7 +13972,8 @@ async function retryPendingScans() {
           if (sid) io.to(sid).emit('scan:rejected', {
             fileName: row.file_name, fileUrl: row.file_url,
             groupId: row.group_id || null, toUserId: row.to_user_id || null,
-            reason: imageBlockReason(scanResult.reason, row.file_type, scanResult.blockedBy),
+            reasonCode: scanResult.reasonCode,
+            reason: imageBlockReason(scanResult.reason, row.file_type, scanResult.blockedBy, scanResult.reasonCode),
             blockedPreviewUrl: row.file_type === 'image' && rejectedFile?.id
               ? `/betshuva-app/api/blocked-media/${rejectedFile.id}` : null,
             previewExpiresAt: rejectedFile?.blocked_content_expires_at || null,
@@ -14717,6 +14785,7 @@ async function startServer() {
     END IF;
   END $$`);
   await ensureVideoScanBudgetSchema(pool);
+  await pool.query(IMAGE_UNCERTAINTY_REVIEW_SCHEMA);
   await pool.query(require('./admin-scans').SCHEMA);
   await ensureSystemAuditSchema(pool);
   await pool.query(MEDIA_PROGRESS_SCHEMA);

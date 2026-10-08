@@ -3,19 +3,60 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:betshuva/media_cache.dart';
 import 'package:betshuva/video_thumbnail.dart';
 import 'package:betshuva/video_thumbnail_native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+// ignore: depend_on_referenced_packages
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
 const _channel = MethodChannel('com.betshuva.app/media');
 final _jpeg = base64Decode(
     '/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzU4LjQyLjEwMAD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABMAAEBAAAAAAAAAAAAAAAAAAAABgEBAQAAAAAAAAAAAAAAAAAABgcQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAACAAIDASIAAhEAAxEA/9oADAMBAAIRAxEAPwCLAFF/f//Z');
 int _nextUrl = 0;
 String _url() => 'https://example.test/thumbnail-${_nextUrl++}.mp4';
+
+class _ThumbnailCachePath extends PathProviderPlatform {
+  String? path;
+
+  @override
+  Future<String?> getApplicationSupportPath() async {
+    if (path == null) throw UnsupportedError('No disk cache in widget tests');
+    return path;
+  }
+}
+
+class _SlowThumbnailCachePath extends PathProviderPlatform {
+  _SlowThumbnailCachePath(this.path);
+  final String path;
+  final writeStarted = Completer<void>();
+  final finishWrite = Completer<String?>();
+  int _requests = 0;
+
+  @override
+  Future<String?> getApplicationSupportPath() async {
+    if (++_requests == 2) {
+      writeStarted.complete();
+      return finishWrite.future;
+    }
+    return path;
+  }
+}
+
+Future<Uint8List?> _waitForPersistedFrame(String key) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  do {
+    final bytes = await readMediaCache(key);
+    if (bytes != null) return bytes;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  } while (DateTime.now().isBefore(deadline));
+  throw TimeoutException('Thumbnail was not persisted');
+}
 
 void _mockThumbnail(FutureOr<Uint8List?> Function(String url) handler) {
   final messenger =
@@ -46,6 +87,77 @@ Uint8List _shownBytes(WidgetTester tester) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  late _ThumbnailCachePath cachePath;
+  setUp(() {
+    final previous = PathProviderPlatform.instance;
+    cachePath = _ThumbnailCachePath();
+    PathProviderPlatform.instance = cachePath;
+    addTearDown(() => PathProviderPlatform.instance = previous);
+  });
+
+  test('persisted still frame is reused without decoding or full media bytes',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('video-thumbnail-');
+    addTearDown(() => directory.delete(recursive: true));
+    cachePath.path = directory.path;
+    final url = _url();
+    final fullMediaBytes = Uint8List.fromList([1, 2, 3]);
+    await writeMediaCache(url, fullMediaBytes);
+    await writeMediaCache('video-thumbnail:v1:$url', _jpeg);
+    var calls = 0;
+    _mockThumbnail((_) {
+      calls++;
+      return null;
+    });
+    final frame = await loadVideoThumbnail(url);
+    expect(frame, _jpeg);
+    expect(await loadVideoThumbnail(url), same(frame));
+    expect(await readMediaCache(url), fullMediaBytes);
+    expect(calls, 0);
+  });
+
+  test('captured frame survives RAM eviction through the media disk cache',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('video-thumbnail-');
+    addTearDown(() => directory.delete(recursive: true));
+    cachePath.path = directory.path;
+    final url = _url();
+    final calls = <String>[];
+    _mockThumbnail((requested) {
+      calls.add(requested);
+      return _jpeg;
+    });
+    expect(await loadVideoThumbnail(url), _jpeg);
+    expect(await _waitForPersistedFrame('video-thumbnail:v1:$url'), _jpeg);
+    cachePath.path = null;
+    for (var i = 0; i < 80; i++) {
+      await loadVideoThumbnail(_url());
+    }
+    cachePath.path = directory.path;
+    expect(await loadVideoThumbnail(url), _jpeg);
+    expect(calls.where((requested) => requested == url), [url]);
+  });
+
+  test('a slow disk write does not delay the captured thumbnail', () async {
+    final directory = await Directory.systemTemp.createTemp('video-thumbnail-');
+    addTearDown(() => directory.delete(recursive: true));
+    final slowPath = _SlowThumbnailCachePath(directory.path);
+    PathProviderPlatform.instance = slowPath;
+    final url = _url();
+    _mockThumbnail((_) => _jpeg);
+    try {
+      final frame =
+          await loadVideoThumbnail(url).timeout(const Duration(seconds: 1));
+      expect(frame, _jpeg);
+      await slowPath.writeStarted.future;
+      expect(slowPath.finishWrite.isCompleted, isFalse);
+      expect(await loadVideoThumbnail(url), same(frame));
+    } finally {
+      slowPath.finishWrite.complete(directory.path);
+      expect(await _waitForPersistedFrame('video-thumbnail:v1:$url'), _jpeg);
+    }
+  });
 
   test('HTTP and HTTPS thumbnails use the native channel and cache success',
       () async {

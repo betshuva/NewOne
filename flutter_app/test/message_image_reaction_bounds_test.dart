@@ -197,8 +197,8 @@ Future<void> _expectCornerAndMenu(WidgetTester tester, _Harness harness,
 
 void main() {
   for (final cap in [
-    (name: 'private', size: const Size(220, 180)),
-    (name: 'group', size: const Size(200, 160)),
+    (name: 'private', size: chatImageMaxSize()),
+    (name: 'group', size: chatImageMaxSize(group: true)),
   ]) {
     for (final shape in [
       (
@@ -214,7 +214,14 @@ void main() {
       (
         name: 'square',
         intrinsic: const Size(200, 200),
-        expected: Size(cap.size.height, cap.size.height)
+        expected: const Size(200, 200)
+      ),
+      (
+        name: 'phonePortrait',
+        intrinsic: const Size(360, 640),
+        expected: cap.name == 'private'
+            ? const Size(213.75, 380)
+            : const Size(200, 200 * 640 / 360)
       ),
     ]) {
       testWidgets(
@@ -233,7 +240,7 @@ void main() {
       'narrow parent constrains photo naturally and keeps lower hit usable',
       (tester) async {
     final harness = _Harness(
-        reactionImageFixtures['landscape']!, const Size(220, 180),
+        reactionImageFixtures['landscape']!, chatImageMaxSize(),
         availableWidth: 150);
     await harness.show(tester);
     await _expectCornerAndMenu(
@@ -245,10 +252,36 @@ void main() {
       'small decoded image remains intrinsic instead of acquiring letterbox',
       (tester) async {
     final harness =
-        _Harness(reactionImageFixtures['small']!, const Size(220, 180));
+        _Harness(reactionImageFixtures['small']!, chatImageMaxSize());
     await harness.show(tester);
     await _expectCornerAndMenu(
         tester, harness, const Size(80, 40), const Size(80, 40));
     await harness.dispose(tester);
   });
+
+  testWidgets('phone portrait fits a narrow chat without crop or empty frame',
+      (tester) async {
+    final harness = _Harness(
+        reactionImageFixtures['phonePortrait']!, chatImageMaxSize(),
+        availableWidth: 150);
+    await harness.show(tester);
+    await _expectCornerAndMenu(tester, harness,
+        const Size(120, 120 * 640 / 360), const Size(360, 640));
+    await harness.dispose(tester);
+  });
+
+  for (final group in [false, true]) {
+    testWidgets(
+        'uploaded sticker remains compact in ${group ? 'group' : 'private'} chat',
+        (tester) async {
+      final cap =
+          chatImageMaxSize(group: group, fileName: 'betshuva-sticker-01.png');
+      final harness = _Harness(reactionImageFixtures['square']!, cap);
+      await harness.show(tester);
+      final side = group ? 160.0 : 180.0;
+      await _expectCornerAndMenu(
+          tester, harness, Size(side, side), const Size(200, 200));
+      await harness.dispose(tester);
+    });
+  }
 }

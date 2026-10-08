@@ -10,6 +10,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+// ignore: depend_on_referenced_packages
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 // ignore: depend_on_referenced_packages
 import 'package:url_launcher_platform_interface/url_launcher_platform_interface.dart'
@@ -26,6 +28,12 @@ final _decoderError = PlatformException(
       'Video player had error androidx.media3.exoplayer.ExoPlaybackException: '
       'MediaCodecVideoRenderer error, index=0, format_supported=YES',
 );
+
+class _NoMediaCachePath extends PathProviderPlatform {
+  @override
+  Future<String?> getApplicationSupportPath() async =>
+      throw UnsupportedError('Disk cache is disabled for this widget test');
+}
 
 class _NativePlayback {
   final calls = <MethodCall>[];
@@ -197,6 +205,11 @@ Future<void> _mountChat(WidgetTester tester) async {
 }
 
 void main() {
+  setUp(() {
+    final previous = PathProviderPlatform.instance;
+    PathProviderPlatform.instance = _NoMediaCachePath();
+    addTearDown(() => PathProviderPlatform.instance = previous);
+  });
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
   test('compatible playback is restricted to native Android decoder failures',
@@ -423,9 +436,7 @@ void main() {
     _installNative(native);
     await http.runWithClient(() async {
       await _mountChat(tester);
-      expect(inline.creations, hasLength(1));
-      expect(
-          inline.creations.single.viewType, platform.VideoViewType.textureView);
+      expect(inline.creations, isEmpty);
       expect(native.calls, isEmpty);
       expect(native.thumbnails.single.arguments, {'url': _videoUrl.toString()});
       expect(find.byType(VideoThumbnail), findsOneWidget);
@@ -437,6 +448,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.byType(CompatibleVideoPlayer), findsOneWidget);
       expect(inline.creations, hasLength(1));
+      expect(
+          inline.creations.single.viewType, platform.VideoViewType.textureView);
       expect(inline.disposals, [0]);
       expect(native.calls.single.arguments, {'url': _videoUrl.toString()});
       closed.complete(true);
@@ -456,12 +469,17 @@ void main() {
     _installNative(native);
     await http.runWithClient(() async {
       await _mountChat(tester);
+      expect(inline.creations, isEmpty);
+      expect(find.byType(VideoThumbnail), findsOneWidget);
+      expect(native.calls, isEmpty);
+      await tester.tap(find.byTooltip('הפעל וידאו'));
+      await tester.pumpAndSettle();
       expect(inline.creations, hasLength(1));
       expect(
           inline.creations.single.viewType, platform.VideoViewType.textureView);
       expect(find.text('נסה שוב'), findsOneWidget);
       expect(find.byTooltip('הפעל וידאו'), findsNothing);
-      expect(native.thumbnails, isEmpty);
+      expect(native.thumbnails, hasLength(1));
       expect(find.byType(CompatibleVideoPlayer), findsNothing);
       expect(native.calls, isEmpty);
       await _unmount(tester);

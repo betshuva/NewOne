@@ -1,7 +1,7 @@
 'use strict';
 
 const CHECK_TYPES = Object.freeze(['safe_search', 'object_localization', 'face_detection',
-  'person_presence', 'modesty', 'modesty_format_repair', 'local_safety', 'local_explicit_content',
+  'person_presence', 'modesty', 'modesty_uncertainty_review', 'modesty_format_repair', 'local_safety', 'local_explicit_content',
   'local_classification', 'video_frames', 'audio_transcription', 'document_content', 'media_moderation']);
 const CHECK_OUTCOMES = Object.freeze(['passed', 'blocked', 'uncertain', 'failed', 'stopped', 'skipped', 'not_recorded']);
 const CATEGORIES = ['adult', 'racy', 'violence', 'medical', 'spoof'];
@@ -16,6 +16,7 @@ const CHECK_FINDINGS = Object.freeze([
   'budget_exhausted', 'deadline_exceeded', 'lease_lost', 'operation_outcome_unknown',
   'non_human', 'speech_detected', 'no_speech_detected', 'harmful_text', 'comparison_only', 'provider_disabled',
   'fallback_review_used', 'out_of_frame_ignored',
+  'modesty_uncertain', 'provider_unavailable', 'provider_error', 'uncertainty_review_limit', 'uncertainty_review_disabled',
 ]);
 
 function outcome(result, provider) {

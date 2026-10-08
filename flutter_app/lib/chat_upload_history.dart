@@ -1,3 +1,62 @@
+String? _uploadKey(Map<String, dynamic> message) {
+  final key = message['clientUploadId']?.toString();
+  return key == null || key.isEmpty ? null : key;
+}
+
+/// Prefer request identity; a shared URL cannot merge distinct uploads.
+/// Legacy records without a request ID can still match an exact nonempty URL.
+int chatUploadIndex(List<Map<String, dynamic>> messages,
+    Map<String, dynamic> upload) {
+  final key = _uploadKey(upload);
+  if (key != null) {
+    final index = messages.indexWhere((message) =>
+        message['isUploadBatchNotice'] != true && _uploadKey(message) == key);
+    if (index >= 0) return index;
+  }
+  final url = upload['fileUrl']?.toString();
+  if (url == null || url.isEmpty) return -1;
+  return messages.indexWhere((message) =>
+      message['isUploadBatchNotice'] != true &&
+      message['fileUrl'] == url &&
+      (key == null || _uploadKey(message) == null));
+}
+
+bool _resolvedUpload(Map<String, dynamic> message) =>
+    message['scanStopped'] == true ||
+    const [
+      'sent', 'received', 'delivered', 'read', 'scan_approved',
+      'rejected_scan', 'stopped_scan', 'awaiting_contact_approval',
+      'rejected_request', 'blocked_content',
+    ].contains(message['status']);
+
+bool hasResolvedChatUpload(List<Map<String, dynamic>> messages,
+    Map<String, dynamic> upload) {
+  final index = chatUploadIndex(messages, upload);
+  return index >= 0 && _resolvedUpload(messages[index]);
+}
+
+/// Unchanged server history still needs to repair stale local upload progress.
+bool chatUploadHistoryNeedsReconciliation(
+    List<Map<String, dynamic>> history, List<Map<String, dynamic>> local) {
+  for (final message in local) {
+    if (!const ['uploading', 'pending_scan'].contains(message['status'])) {
+      continue;
+    }
+    final index = chatUploadIndex(history, message);
+    if (index < 0) continue;
+    final saved = history[index];
+    if (message['status'] == 'uploading') {
+      if (_resolvedUpload(saved)) return true;
+    } else {
+      for (final field in const ['id', 'status', 'fileUrl', 'filterHidden',
+          'moderationStatus', 'scanStopped', 'scanReason']) {
+        if (message[field] != saved[field]) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /// Merge an upload's local progress with its owner-only server scan record.
 /// Use request identity, never filenames: two simultaneous uploads may have
 /// exactly the same name. Hidden media deliberately has no playable URL.
@@ -6,31 +65,28 @@ List<Map<String, dynamic>> mergeChatUploadHistory(
   List<Map<String, dynamic>> local, {
   bool matchLegacyText = false,
 }) {
-  String? uploadKey(Map<String, dynamic> message) =>
-      message['clientUploadId']?.toString();
   final activeKeys = local
-      .where((message) => message['status'] == 'uploading')
-      .map(uploadKey)
+      .where((message) => message['status'] == 'uploading' &&
+          !hasResolvedChatUpload(history, message))
+      .map(_uploadKey)
       .whereType<String>()
       .where((key) => key.isNotEmpty)
       .toSet();
   final merged = history
       .where((message) => message['isUploadBatchNotice'] != true &&
-          !activeKeys.contains(uploadKey(message)))
+          !activeKeys.contains(_uploadKey(message)))
       .toList();
   for (final message in local) {
     if (message['isUploadBatchNotice'] == true) continue;
-    if (message['status'] == 'uploading') {
+    if (message['status'] == 'uploading' &&
+        !hasResolvedChatUpload(history, message)) {
       merged.add(message);
       continue;
     }
-    final key = uploadKey(message);
-    final saved = history.any((entry) =>
-        (key != null && key.isNotEmpty && uploadKey(entry) == key) ||
+    final key = _uploadKey(message);
+    final saved = chatUploadIndex(history, message) >= 0 || history.any((entry) =>
         (message['outboxId'] != null &&
             entry['clientMessageId'] == message['outboxId']) ||
-        (message['fileUrl'] != null &&
-            entry['fileUrl'] == message['fileUrl']) ||
         (matchLegacyText &&
             key == null &&
             message['outboxId'] == null &&
@@ -49,7 +105,7 @@ List<Map<String, dynamic>> mergeChatUploadHistory(
     final (uploadIds, messageIds) = _batchAnchors(notice, notices.values, merged);
     final lastFile = merged.lastIndexWhere((message) =>
         message['isUploadBatchNotice'] != true &&
-        (uploadIds.contains(uploadKey(message)) ||
+        (uploadIds.contains(_uploadKey(message)) ||
             messageIds.contains(message['id']?.toString())));
     final index = lastFile >= 0 ? lastFile + 1 : time == null
         ? -1

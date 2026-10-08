@@ -21,6 +21,7 @@ test('non-library images still reach normal moderation',async()=>{
  let providers=0;
  const scan=vm.runInNewContext(resultSource+scanSource+';scanImage',{
   isTrustedBuiltinExpression:async()=>false,
+  createImageReviewState:require('../server/modesty-uncertainty-review').createImageReviewState,
   isPotentiallyAnimatedImage:()=>false,
   scanStaticImage:async()=>{providers++;return {blocked:true};},
  });

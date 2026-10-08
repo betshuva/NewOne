@@ -1,26 +1,13 @@
 'use strict';
 
 const sharp = require('sharp');
-const { MODESTY_POLICY_PROMPT, parseModestyDecision } = require('./modesty-verification');
+const { MODESTY_POLICY_PROMPT, MODESTY_UNCERTAINTY_REVIEW_PROMPT,
+  MODESTY_RESPONSE_SCHEMA, UNCERTAINTY_REVIEW_TIMEOUT_MS,
+  parseModestyDecision } = require('./modesty-verification');
 const { recordProviderCall } = require('./provider-usage-log');
 const { guardModerationProvider, providerRequestSignal } = require('./moderation-provider-guard');
 
 const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
-const MODESTY_RESPONSE_SCHEMA = {
-  type: 'object',
-  properties: {
-    decision: { type: 'string', enum: ['modest', 'non_modest', 'uncertain'] },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
-    violationClearlyVisible: { type: 'boolean' },
-    visibleEvidence: { type: 'string' },
-    visibleAreasDecision: { type: 'string', enum: ['compliant', 'violation', 'uncertain'] },
-    uncertaintyReason: { type: 'string', enum: ['none', 'out_of_frame_only', 'visible_area_ambiguous'] },
-    reason: { type: 'string' },
-  },
-  required: ['decision', 'confidence', 'violationClearlyVisible',
-    'visibleEvidence', 'visibleAreasDecision', 'uncertaintyReason', 'reason'],
-  additionalProperties: false,
-};
 
 async function prepareGeminiImage(buffer) {
   return sharp(buffer, { failOn: 'error', limitInputPixels: 120_000_000 })
@@ -36,7 +23,21 @@ async function classifyGeminiModesty(buffer, options = {}) {
     apiKey, options, run: () => requestGeminiModesty(buffer, options) });
 }
 
-async function requestGeminiModesty(buffer, options) {
+async function classifyGeminiModestyUncertaintyReview(buffer, options = {}) {
+  const apiKey = String(options.apiKey ?? process.env.GEMINI_API_KEY ?? '').trim();
+  return guardModerationProvider({ provider: 'gemini', operation: 'modesty_uncertainty_review',
+    apiKey, options, run: () => requestGeminiModesty(buffer, options, {
+      operation: 'modesty_uncertainty_review',
+      prompt: MODESTY_UNCERTAINTY_REVIEW_PROMPT,
+      timeoutMs: UNCERTAINTY_REVIEW_TIMEOUT_MS,
+      allowFormatRepair: false,
+    }) });
+}
+
+async function requestGeminiModesty(buffer, options, {
+  operation = 'modesty', prompt = MODESTY_POLICY_PROMPT,
+  timeoutMs = 30000, allowFormatRepair = true,
+} = {}) {
   const startedAt = performance.now();
   const apiKey = String(options.apiKey ?? process.env.GEMINI_API_KEY ?? '').trim();
   if (!apiKey)
@@ -71,7 +72,7 @@ async function requestGeminiModesty(buffer, options) {
           responseJsonSchema: MODESTY_RESPONSE_SCHEMA,
         },
       }),
-      signal: providerRequestSignal(options, 30000),
+      signal: providerRequestSignal(options, timeoutMs),
         });
         const payload = await response.json().catch(() => ({}));
         data = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
@@ -110,12 +111,12 @@ async function requestGeminiModesty(buffer, options) {
       return { result, text };
     };
     let generated = await generate([{ role: 'user', parts: [
-      { text: MODESTY_POLICY_PROMPT },
+      { text: prompt },
       { inlineData: { mimeType: 'image/jpeg', data: prepared.toString('base64') } },
-    ] }], 'modesty');
+    ] }], operation);
     const text = generated.text;
     let formatRepaired = false;
-    if (generated.result.errorCode === 'INVALID_RESPONSE' && text.trim() && !options.tracking?.videoBudget) {
+    if (allowFormatRepair && generated.result.errorCode === 'INVALID_RESPONSE' && text.trim() && !options.tracking?.videoBudget) {
       generated = await generate([{ role: 'user', parts: [{ text:
         `Convert the following attempted classification to the required JSON schema. ` +
         `Preserve its meaning and do not inspect or invent image details:\n${text.slice(0, 2000)}`,
@@ -133,4 +134,5 @@ async function requestGeminiModesty(buffer, options) {
 }
 
 module.exports = { DEFAULT_MODEL, MODESTY_RESPONSE_SCHEMA,
-  classifyGeminiModesty, prepareGeminiImage };
+  MODESTY_UNCERTAINTY_REVIEW_PROMPT, UNCERTAINTY_REVIEW_TIMEOUT_MS,
+  classifyGeminiModesty, classifyGeminiModestyUncertaintyReview, prepareGeminiImage };

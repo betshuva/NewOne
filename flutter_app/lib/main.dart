@@ -77,6 +77,7 @@ import 'file_download.dart';
 import 'pdf_document_actions.dart';
 import 'hebrew_date.dart';
 import 'media_cache.dart';
+import 'persistent_media_loader.dart';
 import 'media_delete_dialog.dart';
 import 'media_rename.dart';
 import 'chat_file_name.dart';
@@ -1977,7 +1978,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.60';
+const kVersion = '1.3.62';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2099,7 +2100,24 @@ bool _isScanStopped(Map data) =>
     data['moderationStatus'] == 'stopped' ||
     data['status'] == 'stopped' || data['status'] == 'stopped_scan';
 
-String _scanStoppedNotice(Map data) => blockedVideoMessage;
+String _scanStoppedNotice(Map data) {
+  if (!kIsWeb) return blockedVideoMessage;
+  // Display only fixed explanations for server result codes. Provider prose
+  // and raw client-supplied reasons must not reach this user notification.
+  const reasons = <String, String>{
+    'modesty_uncertain': 'לא ניתן לאשר את הקובץ: בדיקת הצניעות לא הוכרעה בוודאות',
+    'provider_unavailable': 'הסריקה לא הושלמה: שירות הבדיקה אינו זמין',
+    'provider_error': 'הסריקה לא הושלמה עקב תקלה בשירות הבדיקה',
+    'uncertainty_review_limit': 'הסריקה נעצרה: מכסת בדיקות ההשלמה מוצתה',
+    'uncertainty_review_disabled': 'לא ניתן לאשר את הקובץ: בדיקת הסינון לא הושלמה',
+    'operation_outcome_unknown': 'הסריקה נעצרה: תוצאת בדיקה קודמת אינה ידועה',
+    'budget_exhausted': 'הסריקה נעצרה: מכסת הבדיקות מוצתה',
+    'deadline_exceeded': 'הסריקה נעצרה: זמן הבדיקה המרבי הסתיים',
+  };
+  final code = data['reasonCode'] ?? data['scanReasonCode'] ?? data['scan_reason_code'];
+  return reasons[code] ?? (_isVideoModeration(data)
+      ? blockedVideoMessage : 'הסריקה נעצרה והקובץ לא נשלח');
+}
 
 bool _matchesRecentFailedUpload(
     Map<String, dynamic> message, String fileName, String idPrefix) {
@@ -2455,34 +2473,22 @@ void _showImageBatchSummary(
 String _absoluteMediaUrl(String url) =>
     Uri.parse(url).hasScheme ? url : Uri.parse(kServer).resolve(url).toString();
 
-final Map<String, Future<Uint8List?>> _activeMediaLoads = {};
-
-Future<Uint8List?> _loadPersistentMedia(String url) {
-  final absoluteUrl = _absoluteMediaUrl(url);
-  final existing = _activeMediaLoads[absoluteUrl];
-  if (existing != null) return existing;
-  final future = () async {
-    final cached = await readMediaCache(absoluteUrl);
-    if (cached != null && cached.isNotEmpty) return cached;
+final _mediaLoader = PersistentMediaLoader(
+  read: readMediaCache,
+  write: writeMediaCache,
+  download: (absoluteUrl) async {
     final response = await http
         .get(Uri.parse(absoluteUrl))
         .timeout(const Duration(seconds: 30));
     if (response.statusCode < 200 || response.statusCode >= 300) return null;
     final bytes = response.bodyBytes;
     if (bytes.isEmpty) return null;
-    await writeMediaCache(absoluteUrl, bytes);
     return bytes;
-  }();
-  _activeMediaLoads[absoluteUrl] = future;
-  void removeActiveLoad() {
-    if (identical(_activeMediaLoads[absoluteUrl], future)) {
-      _activeMediaLoads.remove(absoluteUrl);
-    }
-  }
+  },
+);
 
-  future.then((_) => removeActiveLoad(), onError: (_) => removeActiveLoad());
-  return future;
-}
+Future<Uint8List?> _loadPersistentMedia(String url) =>
+    _mediaLoader.load(_absoluteMediaUrl(url));
 
 class _PersistentMediaImage extends StatefulWidget {
   final String url;
@@ -2576,6 +2582,7 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
       // A reused row must not retain the previous URL's image while loading.
       key: ValueKey(widget.url),
       future: _bytes,
+      initialData: _mediaLoader.peek(_absoluteMediaUrl(widget.url)),
       builder: (context, snapshot) {
         final bytes = snapshot.data;
         if (bytes != null && bytes.isNotEmpty) {
@@ -8535,6 +8542,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       _accountId == null ? null : 'cache_users_$_accountId';
 
   Future<void> _clearLocalAccountState() async {
+    await _mediaLoader.clear();
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       try {
         await _shareChannel
@@ -23512,6 +23520,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _serverMessagesFingerprint;
   int _historyGeneration = 0;
   int _historyRequestSerial = 0;
+  Future<void>? _historyLoad;
+  int? _historyLoadGeneration;
   DateTime? _clearedAt;
   late final StreamSubscription<ConversationChange> _cleanupSubscription;
   late final void Function(dynamic) _conversationChangedHandler;
@@ -23777,7 +23787,7 @@ class _ChatScreenState extends State<ChatScreen> {
       const Duration(seconds: 4),
       (_) {
         _reactionReadTracker.flush();
-        _loadMessages(silent: true);
+        _loadMessages(silent: true, poll: true);
       },
     );
   }
@@ -23882,8 +23892,28 @@ class _ChatScreenState extends State<ChatScreen> {
     await Future.wait([_loadOutgoingFilter(), _loadMessages(silent: true)]);
   }
 
-  Future<void> _loadMessages({bool silent = false}) async {
+  Future<void> _loadMessages({bool silent = false, bool poll = false}) {
+    if (!mounted) return Future<void>.value();
     final generation = _historyGeneration;
+    final current = _historyLoad;
+    if (poll && current != null && _historyLoadGeneration == generation) {
+      return current;
+    }
+    // Polls must not invalidate a slow response. Explicit refreshes still
+    // start a fresh request after messages or their visibility change.
+    late final Future<void> load;
+    load = _fetchMessages(silent: silent, generation: generation).whenComplete(() {
+      if (identical(_historyLoad, load)) {
+        _historyLoad = null;
+        _historyLoadGeneration = null;
+      }
+    });
+    _historyLoad = load;
+    _historyLoadGeneration = generation;
+    return load;
+  }
+
+  Future<void> _fetchMessages({required bool silent, required int generation}) async {
     final requestSerial = ++_historyRequestSerial;
     final cacheKey = 'cache_msgs_${widget.me?['id']}_${widget.recipient['id']}';
     final outbox = _useOutbox ? await _outbox.load() : <Map<String, dynamic>>[];
@@ -23928,7 +23958,7 @@ class _ChatScreenState extends State<ChatScreen> {
         Uri.parse('$kApi/messages/${widget.recipient['id']}').replace(
             queryParameters: _scrollCtrl.queryParameters),
         headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
+      ).timeout(const Duration(seconds: 20));
       if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
@@ -23952,7 +23982,10 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         _persistRecentImageUrls(normalized).ignore();
         final fingerprint = jsonEncode(normalized);
-        if (silent && fingerprint == _serverMessagesFingerprint) return;
+        final reconcileUploads =
+            chatUploadHistoryNeedsReconciliation(normalized, _messages);
+        if (silent && fingerprint == _serverMessagesFingerprint &&
+            !reconcileUploads) return;
         _serverMessagesFingerprint = fingerprint;
         final initialHistory = _scrollCtrl.captureInitialHistory(normalized);
         setState(() {
@@ -24020,6 +24053,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       ? 'delivered'
                       : 'sent'),
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
+      if (map['scan_reason_code'] != null || map['reasonCode'] != null)
+        'scanReasonCode': map['scan_reason_code'] ?? map['reasonCode'],
       if (_isScanStopped(map)) 'scanStopped': true,
       if (map['scan_budget'] != null || map['budget'] != null)
         'scanBudget': map['scan_budget'] ?? map['budget'],
@@ -26296,11 +26331,12 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         return false;
       case _FileUploadOutcome.pending:
+        final upload = <String, dynamic>{
+          'clientUploadId': data['clientUploadId'], 'fileUrl': fileUrl,
+        };
+        if (hasResolvedChatUpload(_messages, upload)) return false;
         setState(() {
-          final existingIndex = fileUrl == null
-              ? -1
-              : _messages
-                  .indexWhere((message) => message['fileUrl'] == fileUrl);
+          final existingIndex = chatUploadIndex(_messages, upload);
           if (existingIndex != -1) {
             _messages[existingIndex]['status'] = 'pending_scan';
           } else {
@@ -28547,70 +28583,104 @@ class _ChatVideoPlayer extends StatefulWidget {
 }
 
 class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
-  late VideoPlayerController _controller;
-  late Future<void> _initialization;
+  VideoPlayerController? _controller;
+  Object? _loadError;
   int _generation = 0;
+  bool _startingInline = false;
   bool _openingCompatible = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _createController();
-  }
-
-  void _createController() {
+  Future<void> _startPlayback() async {
+    if (_startingInline || _openingCompatible || _controller != null) return;
     final generation = ++_generation;
-    _openingCompatible = false;
     final controller = VideoPlayerController.networkUrl(
       Uri.parse(_absoluteMediaUrl(widget.url)),
     );
-    _controller = controller;
-    controller.addListener(() {
-      if (mounted && generation == _generation) setState(() {});
+    setState(() {
+      _controller = controller;
+      _loadError = null;
+      _startingInline = true;
     });
-    _initialization = controller.initialize().then((_) async {
+    controller.addListener(() {
+      if (mounted && generation == _generation && _controller == controller) {
+        setState(() {});
+      }
+    });
+    try {
+      await controller.initialize();
       if (!mounted || generation != _generation) return;
       await controller.setLooping(false);
-      if (mounted && generation == _generation) setState(() {});
-    });
+      if (!mounted || generation != _generation) return;
+      await controller.play();
+    } catch (error) {
+      if (!mounted || generation != _generation) return;
+      setState(() {
+        _loadError = error;
+        _startingInline = false;
+      });
+      if (supportsCompatibleVideoPlayback(error)) await _openCompatible();
+    } finally {
+      if (mounted && generation == _generation) {
+        setState(() => _startingInline = false);
+      }
+    }
   }
 
   @override
   void didUpdateWidget(covariant _ChatVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
-      _controller.dispose();
-      _createController();
+      _generation++;
+      final previous = _controller;
+      _controller = null;
+      _loadError = null;
+      _startingInline = false;
+      _openingCompatible = false;
+      previous?.dispose();
     }
   }
 
   Future<void> _toggle() async {
-    if (!_controller.value.isInitialized) return;
-    if (_controller.value.isPlaying) {
-      await _controller.pause();
+    final controller = _controller;
+    final generation = _generation;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (controller.value.isPlaying) {
+      await controller.pause();
     } else {
-      if (_controller.value.position >= _controller.value.duration) {
-        await _controller.seekTo(Duration.zero);
+      if (controller.value.position >= controller.value.duration) {
+        await controller.seekTo(Duration.zero);
       }
-      await _controller.play();
+      if (!mounted || generation != _generation) return;
+      await controller.play();
     }
-    if (mounted) setState(() {});
+    if (mounted && generation == _generation) setState(() {});
   }
 
   Future<void> _retry() async {
     final generation = ++_generation;
-    await _controller.dispose();
+    final previous = _controller;
+    setState(() {
+      _controller = null;
+      _loadError = null;
+      _startingInline = true;
+    });
+    await previous?.dispose();
     if (!mounted || generation != _generation) return;
-    setState(_createController);
+    setState(() => _startingInline = false);
+    await _startPlayback();
   }
 
   Future<void> _openCompatible() async {
     if (_openingCompatible) return;
     final generation = ++_generation;
     final url = Uri.parse(_absoluteMediaUrl(widget.url));
-    setState(() => _openingCompatible = true);
+    final controller = _controller;
+    setState(() {
+      _controller = null;
+      _startingInline = false;
+      _openingCompatible = true;
+    });
     try {
-      await _controller.dispose();
+      await controller?.dispose();
       if (!mounted || generation != _generation) return;
       await Navigator.of(context).push(MaterialPageRoute<void>(
         builder: (_) => CompatibleVideoPlayer(url: url),
@@ -28635,138 +28705,143 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
   @override
   void dispose() {
     _generation++;
-    _controller.dispose();
+    _controller?.dispose();
     super.dispose();
+  }
+
+  Widget _preview({required VoidCallback? onTap}) {
+    return SizedBox(
+      width: 280,
+      height: 150,
+      child: Semantics(
+        container: true,
+        button: true,
+        enabled: onTap != null,
+        label: 'הפעל וידאו',
+        child: Tooltip(
+          message: 'הפעל וידאו',
+          excludeFromSemantics: true,
+          child: Material(
+            color: Colors.black87,
+            child: InkWell(
+              onTap: onTap,
+              child: ExcludeSemantics(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    VideoThumbnail(
+                      key: ValueKey('chat-video-preview-${widget.url}'),
+                      url: _absoluteMediaUrl(widget.url),
+                      fallback: const Center(
+                        child: Icon(Icons.play_circle_fill,
+                            color: Colors.white, size: 56),
+                      ),
+                    ),
+                    if (_startingInline)
+                      const Center(
+                        child: CircularProgressIndicator(color: Colors.white),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<void>(
-      future: _initialization,
-      builder: (context, snapshot) {
-        final error = snapshot.error ??
-            (_controller.value.hasError
-                ? PlatformException(
-                    code: 'VideoError',
-                    message: _controller.value.errorDescription)
-                : null);
-        if (supportsCompatibleVideoPlayback(error)) {
-          return SizedBox(
-            width: 280,
-            height: 150,
-            child: Semantics(
-              container: true,
-              button: true,
-              enabled: !_openingCompatible,
-              label: 'הפעל וידאו',
-              child: Tooltip(
-                message: 'הפעל וידאו',
-                excludeFromSemantics: true,
-                child: Material(
-                  color: Colors.black87,
-                  child: InkWell(
-                    onTap: _openingCompatible ? null : _openCompatible,
-                    child: ExcludeSemantics(
-                      child: VideoThumbnail(
-                        key: ValueKey('chat-video-preview-${widget.url}'),
-                        url: _absoluteMediaUrl(widget.url),
-                        fallback: const Center(
-                          child: Icon(Icons.play_circle_fill,
-                              color: Colors.white, size: 56),
-                        ),
-                      ),
-                    ),
-                  ),
+    final controller = _controller;
+    final error = _loadError ??
+        (controller?.value.hasError == true
+            ? PlatformException(
+                code: 'VideoError',
+                message: controller!.value.errorDescription)
+            : null);
+    if (supportsCompatibleVideoPlayback(error)) {
+      return _preview(onTap: _openingCompatible ? null : _openCompatible);
+    }
+    if (error != null) {
+      return Container(
+        width: 280,
+        constraints: const BoxConstraints(minHeight: 150),
+        padding: const EdgeInsets.all(14),
+        color: Colors.black87,
+        alignment: Alignment.center,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.videocam_off_outlined,
+              color: Colors.white70, size: 34),
+          const SizedBox(height: 8),
+          const Text('הנגן המובנה לא הצליח לטעון את הסרטון',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white)),
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, alignment: WrapAlignment.center, children: [
+            OutlinedButton.icon(
+              onPressed: _retry,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('נסה שוב'),
+              style:
+                  OutlinedButton.styleFrom(foregroundColor: Colors.white),
+            ),
+            FilledButton.icon(
+              onPressed: _openExternally,
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('הפעל בדפדפן'),
+            ),
+          ]),
+        ]),
+      );
+    }
+    if (_startingInline || controller == null ||
+        !controller.value.isInitialized) {
+      return _preview(
+        onTap: _startingInline || _openingCompatible ? null : _startPlayback,
+      );
+    }
+    final ratio = controller.value.aspectRatio > 0
+        ? controller.value.aspectRatio
+        : 16 / 9;
+    return SizedBox(
+      width: 280,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: ColoredBox(
+          color: Colors.black,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            GestureDetector(
+              onTap: _toggle,
+              child: Stack(alignment: Alignment.center, children: [
+                AspectRatio(
+                  aspectRatio: ratio,
+                  child: VideoPlayer(controller),
                 ),
+                if (!controller.value.isPlaying)
+                  Container(
+                    width: 54,
+                    height: 54,
+                    decoration: const BoxDecoration(
+                        color: Colors.black54, shape: BoxShape.circle),
+                    child: const Icon(Icons.play_arrow,
+                        color: Colors.white, size: 38),
+                  ),
+              ]),
+            ),
+            VideoProgressIndicator(
+              controller,
+              allowScrubbing: true,
+              colors: const VideoProgressColors(
+                playedColor: kPrimaryMid,
+                bufferedColor: Colors.white38,
+                backgroundColor: Colors.white12,
               ),
+              padding: const EdgeInsets.symmetric(vertical: 5),
             ),
-          );
-        }
-        if (error != null) {
-          return Container(
-            width: 280,
-            constraints: const BoxConstraints(minHeight: 150),
-            padding: const EdgeInsets.all(14),
-            color: Colors.black87,
-            alignment: Alignment.center,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.videocam_off_outlined,
-                  color: Colors.white70, size: 34),
-              const SizedBox(height: 8),
-              const Text('הנגן המובנה לא הצליח לטעון את הסרטון',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white)),
-              const SizedBox(height: 10),
-              Wrap(spacing: 8, alignment: WrapAlignment.center, children: [
-                OutlinedButton.icon(
-                  onPressed: _retry,
-                  icon: const Icon(Icons.refresh, size: 18),
-                  label: const Text('נסה שוב'),
-                  style:
-                      OutlinedButton.styleFrom(foregroundColor: Colors.white),
-                ),
-                FilledButton.icon(
-                  onPressed: _openExternally,
-                  icon: const Icon(Icons.open_in_new, size: 18),
-                  label: const Text('הפעל בדפדפן'),
-                ),
-              ]),
-            ]),
-          );
-        }
-        if (snapshot.connectionState != ConnectionState.done ||
-            !_controller.value.isInitialized) {
-          return Container(
-            width: 260,
-            height: 150,
-            color: Colors.black87,
-            alignment: Alignment.center,
-            child: const CircularProgressIndicator(color: Colors.white),
-          );
-        }
-        final ratio = _controller.value.aspectRatio > 0
-            ? _controller.value.aspectRatio
-            : 16 / 9;
-        return SizedBox(
-          width: 280,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: ColoredBox(
-              color: Colors.black,
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                GestureDetector(
-                  onTap: _toggle,
-                  child: Stack(alignment: Alignment.center, children: [
-                    AspectRatio(
-                      aspectRatio: ratio,
-                      child: VideoPlayer(_controller),
-                    ),
-                    if (!_controller.value.isPlaying)
-                      Container(
-                        width: 54,
-                        height: 54,
-                        decoration: const BoxDecoration(
-                            color: Colors.black54, shape: BoxShape.circle),
-                        child: const Icon(Icons.play_arrow,
-                            color: Colors.white, size: 38),
-                      ),
-                  ]),
-                ),
-                VideoProgressIndicator(
-                  _controller,
-                  allowScrubbing: true,
-                  colors: const VideoProgressColors(
-                    playedColor: kPrimaryMid,
-                    bufferedColor: Colors.white38,
-                    backgroundColor: Colors.white12,
-                  ),
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                ),
-              ]),
-            ),
-          ),
-        );
-      },
+          ]),
+        ),
+      ),
     );
   }
 }
@@ -30193,16 +30268,38 @@ class _ScanStoppedCard extends StatelessWidget {
   const _ScanStoppedCard({required this.message});
 
   @override
-  Widget build(BuildContext context) => Align(
+  Widget build(BuildContext context) {
+    final notice = _scanStoppedNotice(message);
+    final fileName = (message['scanFileName'] ?? message['fileName'])?.toString();
+    return Align(
         key: ValueKey('scan-stopped-${message['id']}'),
         alignment: Alignment.centerRight,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
-          child: BlockedVideoNotice(
-            fileName: (message['scanFileName'] ?? message['fileName'])?.toString(),
-          ),
+          child: notice == blockedVideoMessage
+              ? BlockedVideoNotice(fileName: fileName)
+              : Container(
+                  constraints: const BoxConstraints(maxWidth: 280),
+                  margin: const EdgeInsets.symmetric(vertical: 5),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0F5F9),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    if (fileName?.trim().isNotEmpty == true) ...[
+                      CopyableFileName(fileName!,
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 6),
+                    ],
+                    const Icon(Icons.stop_circle_outlined),
+                    const SizedBox(height: 6),
+                    Text(notice, textAlign: TextAlign.center),
+                  ]),
+                ),
         ),
       );
+  }
 }
 
 class _MessageBubble extends StatelessWidget {
@@ -30415,6 +30512,7 @@ class _MessageBubble extends StatelessWidget {
       );
     }
     final isImageFile = isFile && fileUrl != null && fileType == 'image';
+    final imageMaxSize = chatImageMaxSize(fileName: fileName);
     final isAudioFile = isFile && fileUrl != null && fileType == 'audio';
     final isVideoFile = isFile && fileUrl != null && fileType == 'video';
     final isPdfFile = isFile &&
@@ -30678,8 +30776,8 @@ class _MessageBubble extends StatelessWidget {
                             onDisplayed: () => reportFilterDisplay(
                               api: kApi, token: token,
                               messageId: message['id']?.toString() ?? '', event: 'displayed'),
-                            width: 220,
-                            height: 180,
+                            width: imageMaxSize.width,
+                            height: imageMaxSize.height,
                             fitNaturalBounds: true,
                             fit: BoxFit.contain,
                             loadingBuilder: (_) => Container(
@@ -32424,6 +32522,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   String? _serverMessagesFingerprint;
   int _historyGeneration = 0;
   int _historyRequestSerial = 0;
+  Future<void>? _historyLoad;
+  int? _historyLoadGeneration;
   DateTime? _clearedAt;
   late final StreamSubscription<ConversationChange> _cleanupSubscription;
   late final void Function(dynamic) _conversationChangedHandler;
@@ -32633,7 +32733,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         const Duration(seconds: 4),
         (_) {
           _reactionReadTracker.flush();
-          _loadMessages(silent: true);
+          _loadMessages(silent: true, poll: true);
           _reconcileGroupMembership();
         },
       );
@@ -32889,6 +32989,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'moderationStatus': map['moderation_status'],
       'status': map['message_status'],
       'scanReason': map['scan_reason'],
+      if (map['scan_reason_code'] != null || map['reasonCode'] != null)
+        'scanReasonCode': map['scan_reason_code'] ?? map['reasonCode'],
       'contentPurged': map['content_purged_at'] != null,
       'filterKept': map['filter_kept'] == true,
       'fileUrl': map['filter_hidden'] == true ? null : map['file_url'],
@@ -33628,8 +33730,28 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     await Future.wait([_loadGroupReceivingFilter(), _loadMessages(silent: true)]);
   }
 
-  Future<void> _loadMessages({bool silent = false}) async {
+  Future<void> _loadMessages({bool silent = false, bool poll = false}) {
+    if (!mounted) return Future<void>.value();
     final generation = _historyGeneration;
+    final current = _historyLoad;
+    if (poll && current != null && _historyLoadGeneration == generation) {
+      return current;
+    }
+    // Polls must not invalidate a slow response. Explicit refreshes still
+    // start a fresh request after messages or their visibility change.
+    late final Future<void> load;
+    load = _fetchMessages(silent: silent, generation: generation).whenComplete(() {
+      if (identical(_historyLoad, load)) {
+        _historyLoad = null;
+        _historyLoadGeneration = null;
+      }
+    });
+    _historyLoad = load;
+    _historyLoadGeneration = generation;
+    return load;
+  }
+
+  Future<void> _fetchMessages({required bool silent, required int generation}) async {
     final requestSerial = ++_historyRequestSerial;
     final cacheKey = _groupMessagesCacheKey(widget.me?['id'], _groupId);
     // Show cache immediately
@@ -33661,7 +33783,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         Uri.parse('$kApi/groups/$_groupId/messages').replace(
             queryParameters: _scrollCtrl.queryParameters),
         headers: {'Authorization': 'Bearer ${widget.token}'},
-      );
+      ).timeout(const Duration(seconds: 20));
       if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
@@ -33671,7 +33793,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             .toList();
         _persistRecentImageUrls(normalized).ignore();
         final fingerprint = jsonEncode(normalized);
-        if (silent && fingerprint == _serverMessagesFingerprint) return;
+        final reconcileUploads =
+            chatUploadHistoryNeedsReconciliation(normalized, _messages);
+        if (silent && fingerprint == _serverMessagesFingerprint &&
+            !reconcileUploads) return;
         _serverMessagesFingerprint = fingerprint;
         final initialHistory = _scrollCtrl.captureInitialHistory(normalized);
         setState(() {
@@ -33732,6 +33857,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isFile': isFile,
       'status': _isScanStopped(map) ? 'stopped_scan' : map['message_status'] ?? 'sent',
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
+      if (map['scan_reason_code'] != null || map['reasonCode'] != null)
+        'scanReasonCode': map['scan_reason_code'] ?? map['reasonCode'],
       if (_isScanStopped(map)) 'scanStopped': true,
       if (map['scan_budget'] != null || map['budget'] != null)
         'scanBudget': map['scan_budget'] ?? map['budget'],
@@ -35113,11 +35240,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
         return;
       case _FileUploadOutcome.pending:
+        final upload = <String, dynamic>{
+          'clientUploadId': data['clientUploadId'], 'fileUrl': fileUrl,
+        };
+        if (hasResolvedChatUpload(_messages, upload)) return;
         setState(() {
-          final existingIndex = fileUrl == null
-              ? -1
-              : _messages
-                  .indexWhere((message) => message['fileUrl'] == fileUrl);
+          final existingIndex = chatUploadIndex(_messages, upload);
           if (existingIndex != -1) {
             _messages[existingIndex]['status'] = 'pending_scan';
           } else {
@@ -36711,6 +36839,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               fileUrl: msg['fileUrl'] as String?,
                               fileName: msg['fileName'] as String?,
                             );
+                            final imageMaxSize = chatImageMaxSize(
+                              group: true,
+                              fileName: msg['fileName'] as String?,
+                            );
                             final avielSticker = _avielStickerById(
                                 msg['stickerId'] ??
                                     (uploadFileType == 'sticker'
@@ -37282,9 +37414,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                                                                 messageId: msg['id']?.toString() ?? '',
                                                                                 event: 'displayed'),
                                                                             width:
-                                                                                200,
+                                                                                imageMaxSize.width,
                                                                             height:
-                                                                                160,
+                                                                                imageMaxSize.height,
                                                                             fitNaturalBounds: true,
                                                                             fit:
                                                                                 BoxFit.contain,

@@ -21,6 +21,8 @@ function providerRequestSignal(options, timeoutMs) {
 
 async function guardModerationProvider({ provider, operation, apiKey, options = {}, run }) {
   const budget = options.tracking?.videoBudget;
+  const uncertaintyReview = operation === 'modesty_uncertainty_review';
+  const signal = options.signal || budget?.signal;
   const dependencies = options.providerGuardDependencies || {};
   const auditResult = async result => {
     try {
@@ -31,6 +33,10 @@ async function guardModerationProvider({ provider, operation, apiKey, options = 
     return result;
   };
   const runOnce = async () => {
+    // A review is one provider attempt, including for images. Never begin it
+    // after cancellation, even if obtaining a video reservation took time.
+    if (uncertaintyReview && signal?.aborted)
+      return auditResult(stoppedResult('deadline_exceeded'));
     let result;
     try { result = await run(); }
     catch (error) { result = { configured: true, available: false, status: 'error',
@@ -38,9 +44,17 @@ async function guardModerationProvider({ provider, operation, apiKey, options = 
     if (!providerResultRecorded(result)) await auditResult(result);
     return result;
   };
+  if (uncertaintyReview) {
+    if (!['gemini', 'openai'].includes(provider))
+      return auditResult(stoppedResult('uncertainty_review_provider_not_allowed'));
+    if (String(process.env.MODERATION_UNCERTAINTY_REVIEW_ENABLED || '').trim().toLowerCase() === 'false')
+      return auditResult(stoppedResult('uncertainty_review_disabled'));
+    if (signal?.aborted) return auditResult(stoppedResult('deadline_exceeded'));
+  }
   if (provider === 'openai' && !openAIModerationEnabled())
     return auditResult(disabledModerationProviderResult());
-  if (!apiKey) return budget ? auditResult(stoppedResult('provider_not_configured')) : runOnce();
+  if (!apiKey) return budget || uncertaintyReview
+    ? auditResult(stoppedResult('provider_not_configured')) : runOnce();
   const databaseConfigured = Boolean(process.env.DATABASE_URL || dependencies.pool ||
     dependencies.getPool);
   if (!budget && (provider !== 'openai' || !databaseConfigured)) return runOnce();

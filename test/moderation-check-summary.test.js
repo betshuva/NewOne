@@ -50,6 +50,42 @@ test('findings are enum-only and metadata counts and timestamps have strict boun
   assert.deepEqual(moderationCheckSummary('provider', 'arbitrary_check', {}), {});
 });
 
+test('uncertainty review has distinct semantic evidence while preserving prior review results', () => {
+  const original = { available: true, decision: 'uncertain', confidence: 0.6,
+    reasonCode: 'modesty_uncertain', reason: 'private provider prose' };
+  const originalBefore = JSON.stringify(original);
+  const first = moderationCheckSummary('gemini', 'modesty', original);
+  const second = moderationCheckSummary('gemini', 'modesty_uncertainty_review', {
+    available: true, decision: 'modest', confidence: 0.96,
+    originalReview: original, reason: 'private second opinion',
+  }, { videoBudget: { frameIndex: 4, timestampSeconds: 12.5 } });
+  assert.equal(first.checkType, 'modesty');
+  assert.equal(first.checkOutcome, 'uncertain');
+  assert.deepEqual(first.checkFindings, ['uncertain', 'modesty_uncertain']);
+  assert.deepEqual(second, { checkType: 'modesty_uncertainty_review', checkOutcome: 'passed',
+    cacheHit: false, checkFindings: ['modest'], checkConfidencePct: 96,
+    frameIndex: 4, frameTimestampMs: 12500 });
+  assert.equal(JSON.stringify(original), originalBefore);
+  assert.equal(JSON.stringify([first, second]).includes('private'), false);
+});
+
+test('uncertainty review distinguishes uncertainty, unavailable provider, error and allowance stop', () => {
+  for (const [review, expected] of [
+    [{ available: true, decision: 'uncertain', reasonCode: 'modesty_uncertain' }, 'uncertain'],
+    [{ available: false, reasonCode: 'provider_unavailable' }, 'failed'],
+    [{ available: false, status: 'error', reasonCode: 'provider_error' }, 'failed'],
+    [{ available: false, scanStopped: true, reasonCode: 'uncertainty_review_limit' }, 'stopped'],
+    [{ available: false, status: 'disabled', reasonCode: 'uncertainty_review_disabled' }, 'skipped'],
+    [{ available: false, scanStopped: true, reasonCode: 'operation_outcome_unknown' }, 'stopped'],
+  ]) {
+    const summary = moderationCheckSummary('gemini', 'modesty_uncertainty_review', review);
+    assert.equal(summary.checkType, 'modesty_uncertainty_review');
+    assert.equal(summary.checkOutcome, expected);
+    assert.ok(summary.checkFindings.includes(review.reasonCode));
+    assert.equal(summary.checkFindings.includes('non_modest'), false);
+  }
+});
+
 function providerFixture({ usageFailure = false } = {}) {
   const events = [], queries = [], cache = new Map();
   const pool = { query: async (sql, values) => {

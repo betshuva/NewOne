@@ -11,12 +11,20 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+// ignore: depend_on_referenced_packages
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _token = 'personal-media-user-a';
 const _friendId = '11111111-1111-4111-8111-111111111111';
 const _groupId = '22222222-2222-4222-8222-222222222222';
 const _sourceMessageId = '33333333-3333-4333-8333-333333333333';
+
+class _NoMediaCachePath extends PathProviderPlatform {
+  @override
+  Future<String?> getApplicationSupportPath() async =>
+      throw UnsupportedError('Disk cache is disabled for this widget test');
+}
 
 http.Response _json(Object data, [int status = 200]) => http.Response(
       jsonEncode(data),
@@ -305,6 +313,11 @@ Future<void> _search(WidgetTester tester, String value,
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() {
+    final previous = PathProviderPlatform.instance;
+    PathProviderPlatform.instance = _NoMediaCachePath();
+    addTearDown(() => PathProviderPlatform.instance = previous);
+  });
   setUpAll(() async {
     if (kIsWeb) return;
     final font = FontLoader('NotoSansHebrew')
@@ -366,7 +379,9 @@ void main() {
         native.playback.last.complete(true);
         await tester.pumpAndSettle();
       }, backend: backend);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.android), skip: kIsWeb);
+    },
+        variant: TargetPlatformVariant.only(TargetPlatform.android),
+        skip: kIsWeb);
   }
 
   testWidgets('video selection never starts playback', (tester) async {
@@ -399,12 +414,14 @@ void main() {
         await _withLibrary(tester, (backend, _) async {
           expect(find.byType(VideoThumbnail), findsNothing);
           // Restricted media remains selectable but cannot reach the native API.
-          await _tapVisible(tester,
-              _key('media-select-restricted-$status-$hidden'));
+          await _tapVisible(
+              tester, _key('media-select-restricted-$status-$hidden'));
           expect(native.calls, isEmpty);
           expect(find.byType(CompatibleVideoPlayer), findsNothing);
         }, backend: backend);
-      }, variant: TargetPlatformVariant.only(TargetPlatform.android), skip: kIsWeb);
+      },
+          variant: TargetPlatformVariant.only(TargetPlatform.android),
+          skip: kIsWeb);
     }
   }
 
@@ -619,22 +636,26 @@ void main() {
     });
   });
 
-  testWidgets('filename search stays visible while scrolling and Enter queries the entire library', (tester) async {
+  testWidgets(
+      'filename search stays visible while scrolling and Enter queries the entire library',
+      (tester) async {
     await _withLibrary(tester, (backend, _) async {
-      final field=_key('media-search');
-      expect(field.hitTestable(),findsOneWidget);
-      final before=tester.getTopLeft(field);
-      await tester.drag(_key('media-scroll'),const Offset(0,-500));
+      final field = _key('media-search');
+      expect(field.hitTestable(), findsOneWidget);
+      final before = tester.getTopLeft(field);
+      await tester.drag(_key('media-scroll'), const Offset(0, -500));
       await tester.pumpAndSettle();
-      expect(tester.getTopLeft(field),before);
-      await tester.enterText(field,'report.xlsx');
+      expect(tester.getTopLeft(field), before);
+      await tester.enterText(field, 'report.xlsx');
       await tester.testTextInput.receiveAction(TextInputAction.search);
       await tester.pumpAndSettle();
-      expect(backend.listings.last.url.queryParameters['search'],'report.xlsx');
-      expect(backend.listings.last.url.queryParameters['offset'],'0');
+      expect(
+          backend.listings.last.url.queryParameters['search'], 'report.xlsx');
+      expect(backend.listings.last.url.queryParameters['offset'], '0');
       await tester.tap(find.byTooltip('נקה חיפוש'));
       await tester.pumpAndSettle();
-      expect(backend.listings.last.url.queryParameters.containsKey('search'),isFalse);
+      expect(backend.listings.last.url.queryParameters.containsKey('search'),
+          isFalse);
     });
   });
 
@@ -854,16 +875,22 @@ void main() {
     });
   });
 
-  testWidgets('support issue warning names the issue and requires explicit confirmation',
+  testWidgets(
+      'support issue warning names the issue and requires explicit confirmation',
       (tester) async {
     final backend = _MediaBackend();
     backend.previewing = (request) async => _json(backend.deletePreview(
           jsonDecode(request.body)['ids'] as List<dynamic>,
-          supportIssues: [{'id': 'support-issue-123'}],
+          supportIssues: [
+            {'id': 'support-issue-123'}
+          ],
         ));
     await _withLibrary(tester, (backend, _) async {
       await _tapVisible(tester, _key('media-delete-first'));
-      expect(find.text('מחיקת הקובץ תמחק לצמיתות גם את פניית התמיכה שאליה הוא מצורף.'), findsOneWidget);
+      expect(
+          find.text(
+              'מחיקת הקובץ תמחק לצמיתות גם את פניית התמיכה שאליה הוא מצורף.'),
+          findsOneWidget);
       expect(find.text('מספר פנייה: support-issue-123'), findsOneWidget);
       expect(find.text('מחק קבצים ופניות לצמיתות'), findsOneWidget);
       expect(backend.deletes, isEmpty);
@@ -874,7 +901,9 @@ void main() {
       await _tapVisible(tester, _key('media-delete-first'));
       await _tapVisible(tester, _key('media-delete-confirm'));
       expect(backend.deletes, hasLength(1));
-      expect(jsonDecode(backend.deletes.single.body)['confirmedSupportIssueIds'], ['support-issue-123']);
+      expect(
+          jsonDecode(backend.deletes.single.body)['confirmedSupportIssueIds'],
+          ['support-issue-123']);
       expect(_key('media-file-first'), findsNothing);
     }, backend: backend);
   });

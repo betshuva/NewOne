@@ -60,6 +60,7 @@ function visualFailure({ blockedBy, reason, location, scanned, total, results })
     blockedBy,
     reason,
     documentVisualScan: { scanned, total, failedAt: location },
+    documentVisualResults: results,
     classification: mergedClassification(results),
   };
 }
@@ -70,6 +71,19 @@ async function scanVisuals(visuals, scanImage, kind) {
     const location = `${kind} ${index + 1}`;
     const result = await scanImage(visuals[index]);
     results.push(result);
+    if (result?.scanStopped) return {
+      ...result,
+      blocked: false,
+      pending: false,
+      stopped: true,
+      scanStopped: true,
+      retryable: false,
+      reason: `סריקת המסמך נעצרה — ${location}: ${result.reason || 'בדיקה נדרשת לא הושלמה'}`,
+      documentVisualScan: { scanned: index + 1, total: visuals.length,
+        stoppedAt: location },
+      documentVisualResults: results,
+      classification: mergedClassification(results),
+    };
     if (result?.blocked) return visualFailure({
       blockedBy: result.blockedBy || 'documentEmbeddedImage',
       reason: `המסמך נחסם — ${location} מכיל תוכן שלא אושר: ${result.reason || 'תוכן לא מאושר'}`,
@@ -85,12 +99,14 @@ async function scanVisuals(visuals, scanImage, kind) {
       reason: `סריקת המסמך ממתינה — לא ניתן להשלים את בדיקת ${location}`,
       documentVisualScan: { scanned: index + 1, total: visuals.length,
         pendingAt: location },
+      documentVisualResults: results,
       classification: mergedClassification(results),
     };
   }
   return {
     blocked: false,
     documentVisualScan: { scanned: visuals.length, total: visuals.length },
+    documentVisualResults: results,
     classification: mergedClassification(results),
   };
 }

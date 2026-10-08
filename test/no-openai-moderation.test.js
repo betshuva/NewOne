@@ -10,6 +10,7 @@ const { imageClassificationOutcome } = require('../server/image-classification-o
 const { stoppedVideoResult, videoProviderStop } = require('../server/video-scan-controller');
 const { moderationCheckSummary } = require('../server/moderation-check-summary');
 const { corroboratedCompliantGeminiFlag } = require('../server/modesty-verification');
+const { reviewModestyUncertainty, stoppedImageResult } = require('../server/modesty-uncertainty-review');
 
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 const start = source.indexOf('async function scanStaticImage(');
@@ -27,7 +28,9 @@ async function scanFixture({ gemini = cleanGemini, google = cleanGoogle,
   localSafety = { available: true, wouldBlock: false },
   classification = person, verification = { decision: 'person_confirmed_by_gemini',
     providers: { gemini: { available: true, decision: 'person' } } }, video = false,
-  enabled = false, required = false, openai = cleanGemini } = {}) {
+  enabled = false, required = false, openai = cleanGemini,
+  uncertaintyReview = { available: true, status: 'completed', decision: 'uncertain',
+    confidence: 0.5, violationClearlyVisible: false } } = {}) {
   const calls = [], checks = [];
   const scan = vm.runInNewContext(`${source.slice(start, end)};scanStaticImage`, {
     process: { env: {} }, console,
@@ -37,6 +40,7 @@ async function scanFixture({ gemini = cleanGemini, google = cleanGoogle,
     moderationProviderPolicy: () => 'google_gemini',
     disabledModerationProviderResult: disabled,
     stoppedVideoResult, videoProviderStop, imageClassificationOutcome, corroboratedCompliantGeminiFlag,
+    reviewModestyUncertainty, stoppedImageResult,
     recordProviderCheck: async event => checks.push(event),
     classifyClip: async () => ({}),
     classifyImageContent: async () => classification,
@@ -52,6 +56,8 @@ async function scanFixture({ gemini = cleanGemini, google = cleanGoogle,
       calls.push('openai'); return openai;
     },
     classifyGeminiModesty: async () => { calls.push('gemini'); return gemini; },
+    classifyGeminiModestyUncertaintyReview: async () => { calls.push('gemini_review'); return uncertaintyReview; },
+    classifyOpenAIModestyUncertaintyReview: async () => { calls.push('openai_review'); return uncertaintyReview; },
   });
   const result = await scan(Buffer.from('synthetic frame'), video
     ? { tracking: { videoBudget: { frameIndex: 0, timestampSeconds: 0 } } } : {});
@@ -96,7 +102,11 @@ for (const [name, gemini] of [
     violationClearlyVisible: true }],
 ]) test(`clean safety cannot approve Gemini modesty result: ${name}, without OpenAI`, async () => {
   const { result } = await scanFixture({ gemini });
-  assert.equal(result.pending, true);
+  if (gemini.available === true) {
+    assert.equal(result.scanStopped, true);
+    assert.equal(result.pending, false);
+    assert.equal(result.reasonCode, 'modesty_uncertain');
+  } else assert.equal(result.pending, true);
   assert.notEqual(result.blocked, true);
   assert.equal(result.modestyDisagreement, undefined);
 });
@@ -119,6 +129,96 @@ test('a budget-stopped Gemini check remains terminal even with clean Google and 
   assert.equal(result.pending, false);
   assert.equal(result.reasonCode, 'budget_exhausted');
   assert.equal(result.classification.uncertain, true);
+});
+
+const ambiguousCovered = { available: true, status: 'completed', decision: 'uncertain',
+  confidence: 0.5, visibleAreasDecision: 'uncertain', uncertaintyReason: 'visible_area_ambiguous',
+  violationClearlyVisible: false, visibleEvidence: 'ראש וכתפיים בחולצה, אזור החזה חלקי בקצה הפריים' };
+const reviewedCovered = { available: true, status: 'completed', decision: 'modest', confidence: 0.99,
+  visibleAreasDecision: 'compliant', uncertaintyReason: 'out_of_frame_only',
+  violationClearlyVisible: false, visibleEvidence: 'הכתפיים והחזה הנראים מכוסים בחולצה' };
+for (const video of [false, true]) test(`bounded review resolves only the uncertain required check (${video ? 'video' : 'image'})`, async () => {
+  const { result, calls } = await scanFixture({ video, enabled: true, openai: reviewedCovered,
+    gemini: ambiguousCovered, uncertaintyReview: reviewedCovered,
+    verification: { decision: 'person_confirmed', providers: {} } });
+  assert.equal(result.blocked, false);
+  assert.notEqual(result.pending, true);
+  assert.notEqual(result.scanStopped, true);
+  assert.equal(result.geminiModestyVerification, ambiguousCovered, 'original finding is retained');
+  assert.equal(result.modestyUncertaintyReview.resolution, 'approved');
+  assert.equal(result.modestyUncertaintyReview.result, reviewedCovered);
+  assert.equal(calls.filter(c => c === 'gemini_review').length, 1);
+});
+
+test('review that stays uncertain ends scanning instead of promising another retry', async () => {
+  const { result, calls } = await scanFixture({ gemini: ambiguousCovered, uncertaintyReview: ambiguousCovered });
+  assert.equal(result.scanStopped, true);
+  assert.equal(result.pending, false);
+  assert.equal(result.blocked, false);
+  assert.equal(result.reasonCode, 'modesty_uncertain');
+  assert.doesNotMatch(result.reason, /תתבצע.*שוב|תתבצע בדיקה נוספת/);
+  assert.equal(calls.filter(c => c === 'gemini_review').length, 1);
+});
+
+test('dual-required policy reviews uncertain OpenAI and cannot use clean safety alone', async () => {
+  const { result, calls } = await scanFixture({ enabled: true, required: true,
+    openai: ambiguousCovered, gemini: reviewedCovered, uncertaintyReview: reviewedCovered,
+    verification: { decision: 'person_confirmed', providers: {} } });
+  assert.equal(result.modestyUncertaintyReview.provider, 'openai');
+  assert.equal(result.modestyUncertaintyReview.resolution, 'approved');
+  assert.equal(calls.filter(c => c === 'openai_review').length, 1);
+  const unresolved = await scanFixture({ enabled: true, required: true,
+    openai: ambiguousCovered, gemini: reviewedCovered, uncertaintyReview: ambiguousCovered,
+    verification: { decision: 'person_confirmed', providers: {} } });
+  assert.equal(unresolved.result.scanStopped, true);
+  assert.equal(unresolved.result.blocked, false);
+});
+
+test('review cannot bypass Google safety or a definite visible violation', async () => {
+  for (const changes of [
+    { google: { ...cleanGoogle, blocked: true } },
+    { localSafety: { available: true, wouldBlock: true } },
+    { classification: { ...person, uncertain: true } },
+    { enabled: true, openai: { ...reviewedCovered, decision: 'non_modest', violationClearlyVisible: true } },
+  ]) {
+    const { result, calls } = await scanFixture({ gemini: ambiguousCovered,
+      uncertaintyReview: reviewedCovered, verification: { decision: 'person_confirmed', providers: {} }, ...changes });
+    assert.ok(result.blocked || result.pending || result.scanStopped);
+    assert.equal(calls.includes('gemini_review'), false);
+  }
+});
+
+test('resolved first frame preserves original uncertainty and completes every video frame', async () => {
+  const scanSource = source.slice(source.indexOf('async function scanVideo('),
+    source.indexOf('function normalizeUploadFileName('));
+  const checked = [], reviews = [];
+  const scan = vm.runInNewContext(`${scanSource};scanVideo`, {
+    Buffer, Blob, FormData, AbortSignal, console, process: { env: {} },
+    sourceBlob: require('../server/upload-file-source').sourceBlob,
+    VIDEO_MODERATION_URL: 'https://mock-video.test', MAX_VIDEO_SECONDS: 5400, stoppedVideoResult,
+    videoDetectedCategories: require('../server/video-classification').videoDetectedCategories,
+    fetch: async () => ({ ok: true, json: async () => ({ duration_seconds: 7.1,
+      sampled_frames: 19, decision: 'allowed', frame_samples: Array.from({ length: 19 }, (_, i) => ({
+        timestamp_seconds: i * 0.37, jpeg_base64: Buffer.alloc(40, i).toString('base64'),
+      })) }) }),
+    scanStaticImage: async bytes => {
+      checked.push(bytes[0]);
+      const { result, calls } = await scanFixture({ video: true, enabled: true,
+        openai: reviewedCovered, gemini: bytes[0] === 0 ? ambiguousCovered : reviewedCovered,
+        uncertaintyReview: reviewedCovered, verification: { decision: 'person_confirmed', providers: {} } });
+      reviews.push(...calls.filter(c => c === 'gemini_review'));
+      return result;
+    },
+  });
+  const result = await scan(Buffer.from('video'), 'crop.webm', 'video/webm', { tracking: { videoBudget: {} } });
+  assert.equal(result.blocked, false);
+  assert.equal(result.pending, false);
+  assert.notEqual(result.scanStopped, true);
+  assert.equal(new Set(checked).size, 19, 'every selected frame must finish before delivery');
+  assert.equal(result.classification.fullyScannedFrames, 19);
+  assert.equal(reviews.length, 1);
+  assert.equal(result.frameResults[0].geminiModestyVerification.decision, 'uncertain');
+  assert.equal(result.frameResults[0].modestyUncertaintyReview.resolution, 'approved');
 });
 
 for (const decision of ['person_confirmed_by_gemini', 'demographics_reviewed_by_gemini'])
@@ -208,7 +308,7 @@ test('optional OpenAI outage cannot approve missing or uncertain Gemini evidence
     const { result } = await scanFixture({ enabled: true, required: false, gemini,
       openai: { available: false, status: 'error' },
       verification: { decision: 'person_confirmed', providers: {} } });
-    assert.equal(result.pending, true);
+    assert.ok(result.pending === true || result.scanStopped === true);
   }
 });
 

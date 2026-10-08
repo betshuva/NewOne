@@ -22,6 +22,7 @@ test('local image stages share the exact scanned preview and video frame context
   let saves = 0;
   const tracking = { storedFileId: fileId, videoBudget: { frameIndex: 2, timestampSeconds: 1.25 } };
   const scan = load('scanStaticImage', '// Increment whenever moderation models', {
+    reviewModestyUncertainty: require('../server/modesty-uncertainty-review').reviewModestyUncertainty,
     process: { env: {} }, MODERATION_CACHE_VERSION: 'test',
     cachedScanPreviews: require('../server/cached-scan-previews'),
     openAIModerationEnabled: () => true,
@@ -70,8 +71,9 @@ test('local image stages share the exact scanned preview and video frame context
 test('animated image frames retain source tracking for their individual previews', async () => {
   const frames = [Buffer.from('frame one'), Buffer.from('frame two')];
   const options = { tracking: { storedFileId: fileId, userId: 'user' } };
-  const seen = [];
+  const seen = [], reviewStates = [];
   const scan = load('scanImage', 'async function scanDocument', {
+    createImageReviewState: require('../server/modesty-uncertainty-review').createImageReviewState,
     isTrustedBuiltinExpression: async () => false,
     isPotentiallyAnimatedImage: () => true,
     sharp: (_bytes, args) => args.pages ? {
@@ -79,7 +81,8 @@ test('animated image frames retain source tracking for their individual previews
     } : { metadata: async () => ({ pages: frames.length }) },
     scanStaticImage: async (bytes, context) => {
       seen.push(bytes);
-      assert.equal(context, options);
+      assert.equal(context.tracking, options.tracking);
+      reviewStates.push(context.reviewState);
       assert.equal(context.tracking.scanPreviewId, undefined);
       return { blocked: false };
     },
@@ -88,11 +91,14 @@ test('animated image frames retain source tracking for their individual previews
   assert.equal(result.blocked, false);
   assert.equal(result.framesScanned, 2);
   assert.deepEqual(seen, frames);
+  assert.equal(new Set(reviewStates).size, 1, 'all frames share one review limit');
+  assert.equal(options.reviewState, undefined, 'caller options remain unchanged');
 });
 
 test('unavailable document scans record failure without changing the original outcome', async () => {
   const events = [];
   const scanDocument = load('scanDocument', 'const mailer =', {
+    createImageReviewState: require('../server/modesty-uncertainty-review').createImageReviewState,
     BLOCKED_WORDS: [], scanImage() {},
     scanDocumentContent: async () => { throw new Error('decode failed'); },
     recordProviderCheck: async event => events.push(event),

@@ -8,6 +8,11 @@ const { moderationProviderPolicy } = require('./moderation-provider-policy');
 
 function stoppedVideoResult(reasonCode = 'scan_incomplete', budget, previous = {}) {
   const reasons = {
+    modesty_uncertain: 'לא ניתן להכריע אם הלבוש הנראה עומד בכללים',
+    provider_unavailable: 'שירות בדיקה נדרש אינו זמין כרגע',
+    provider_error: 'בדיקת הסינון לא הושלמה בגלל תקלה בשירות הבדיקה',
+    uncertainty_review_limit: 'מכסת בדיקות ההכרעה לסרטון מוצתה',
+    uncertainty_review_disabled: 'לא התקבל אישור ברור בבדיקת הסינון',
     budget_exhausted: 'מכסת הבדיקות לסרטון מוצתה',
     deadline_exceeded: 'הסריקה חרגה מחמש דקות',
     credit_balance_exhausted: 'אין יתרת קרדיט אצל ספק הבדיקה',

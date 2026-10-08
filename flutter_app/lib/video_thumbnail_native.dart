@@ -4,6 +4,8 @@ import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'media_cache.dart';
+
 const _channel = MethodChannel('com.betshuva.app/media');
 const _maxCachedFrames = 80;
 const _maxCachedBytes = 8 * 1024 * 1024;
@@ -60,8 +62,22 @@ void _drain() {
 Future<void> _capture(_ThumbnailRequest request) async {
   Uint8List? bytes;
   try {
-    bytes = await _channel.invokeMethod<Uint8List>(
-        'videoThumbnail', {'url': request.url}).timeout(_requestTimeout);
+    // Keep still frames separate from full media cached under the same URL.
+    final cacheKey = 'video-thumbnail:v1:${request.url}';
+    bytes = await readMediaCache(cacheKey);
+    if (bytes != null &&
+        (bytes.isEmpty || bytes.lengthInBytes > _maxCachedBytes)) {
+      bytes = null;
+    }
+    if (bytes == null) {
+      bytes = await _channel.invokeMethod<Uint8List>(
+          'videoThumbnail', {'url': request.url}).timeout(_requestTimeout);
+      if (bytes != null &&
+          bytes.isNotEmpty &&
+          bytes.lengthInBytes <= _maxCachedBytes) {
+        writeMediaCache(cacheKey, bytes).ignore();
+      }
+    }
     if (bytes != null && bytes.isEmpty) bytes = null;
     if (bytes != null && bytes.lengthInBytes <= _maxCachedBytes) {
       _frames[request.url] = bytes;

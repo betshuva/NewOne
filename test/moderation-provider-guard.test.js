@@ -267,3 +267,125 @@ test('budgeted requests require a database even when a mock provider could succe
   assert.equal(result.reasonCode, 'provider_guard_unavailable');
   assert.equal(requests, 0);
 });
+
+test('uncertainty review has its own video reservation and never reuses modesty cache', async () => {
+  const state = memoryLedger();
+  const audits = [];
+  state.dependencies.recordProviderCheck = async event => audits.push(event);
+  const options = { tracking: { videoBudget }, providerGuardDependencies: state.dependencies };
+  let requests = 0;
+  const modesty = { available: true, decision: 'uncertain', model: 'base-model' };
+  await guardModerationProvider({ provider: 'gemini', operation: 'modesty', apiKey: 'test-key',
+    options, run: async () => { requests++; return modesty; } });
+  const review = { available: true, decision: 'modest', model: 'review-model' };
+  const call = () => guardModerationProvider({ provider: 'gemini',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key', options,
+    run: async () => { requests++; return review; } });
+  assert.deepEqual(await call(), review);
+  assert.deepEqual(await call(), { ...review, cacheHit: true });
+  assert.equal(requests, 2);
+  assert.deepEqual(state.reservations.map(item => item.operation),
+    ['modesty', 'modesty_uncertainty_review']);
+  const reviewAudits = audits.filter(event => event.operation === 'modesty_uncertainty_review');
+  assert.equal(reviewAudits.length, 2);
+  assert.ok(reviewAudits.every(event => event.model === 'review-model'));
+  assert.equal(reviewAudits[1].cacheHit, true);
+});
+
+test('concurrent uncertainty reviews for one frame cannot issue duplicate requests', async () => {
+  const state = memoryLedger();
+  let requests = 0, resolveRequest;
+  const request = new Promise(resolve => { resolveRequest = resolve; });
+  const call = () => guardModerationProvider({ provider: 'gemini',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key',
+    options: { tracking: { videoBudget }, providerGuardDependencies: state.dependencies },
+    run: async () => { requests++; return request; } });
+  const first = call();
+  const duplicate = await call();
+  assert.equal(duplicate.status, 'stopped');
+  assert.equal(duplicate.reasonCode, 'operation_in_progress');
+  resolveRequest({ available: true, decision: 'modest' });
+  assert.equal((await first).available, true);
+  assert.equal(requests, 1);
+  assert.equal(state.reservations.length, 1);
+});
+
+test('uncertainty review configuration and cancellation deny image calls before network', async t => {
+  const prior = process.env.MODERATION_UNCERTAINTY_REVIEW_ENABLED;
+  t.after(() => {
+    if (prior === undefined) delete process.env.MODERATION_UNCERTAINTY_REVIEW_ENABLED;
+    else process.env.MODERATION_UNCERTAINTY_REVIEW_ENABLED = prior;
+  });
+  let requests = 0;
+  const run = async () => { requests++; return { available: true }; };
+  process.env.MODERATION_UNCERTAINTY_REVIEW_ENABLED = 'false';
+  const disabled = await guardModerationProvider({ provider: 'gemini',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key', run });
+  assert.equal(disabled.reasonCode, 'uncertainty_review_disabled');
+  process.env.MODERATION_UNCERTAINTY_REVIEW_ENABLED = 'true';
+  const missing = await guardModerationProvider({ provider: 'gemini',
+    operation: 'modesty_uncertainty_review', run });
+  assert.equal(missing.reasonCode, 'provider_not_configured');
+  const unsupported = await guardModerationProvider({ provider: 'google_vision',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key', run });
+  assert.equal(unsupported.reasonCode, 'uncertainty_review_provider_not_allowed');
+  const controller = new AbortController();
+  controller.abort();
+  const aborted = await guardModerationProvider({ provider: 'gemini',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key',
+    options: { signal: controller.signal }, run });
+  assert.equal(aborted.reasonCode, 'deadline_exceeded');
+  assert.equal(requests, 0);
+});
+
+test('a video review denied by the shared cap never starts its provider call', async () => {
+  let requests = 0;
+  const audits = [];
+  const result = await guardModerationProvider({ provider: 'gemini',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key',
+    options: { tracking: { videoBudget }, providerGuardDependencies: {
+      pool: {}, recordProviderCheck: async event => audits.push(event),
+      ledger: { reserveVideoScanOperation: async () =>
+        ({ status: 'stopped', reason: 'uncertainty_review_limit' }) },
+    } }, run: async () => { requests++; return { available: true }; } });
+  assert.equal(result.reasonCode, 'uncertainty_review_limit');
+  assert.equal(result.retryable, false);
+  assert.equal(requests, 0);
+  assert.equal(audits[0].operation, 'modesty_uncertainty_review');
+});
+
+test('cancellation during reservation prevents a review from starting afterwards', async () => {
+  const controller = new AbortController();
+  const state = memoryLedger();
+  const reserve = state.dependencies.ledger.reserveVideoScanOperation;
+  state.dependencies.ledger.reserveVideoScanOperation = async (...args) => {
+    const result = await reserve(...args);
+    controller.abort();
+    return result;
+  };
+  let requests = 0;
+  const result = await guardModerationProvider({ provider: 'gemini',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key',
+    options: { tracking: { videoBudget: { ...videoBudget, signal: controller.signal } },
+      providerGuardDependencies: state.dependencies },
+    run: async () => { requests++; return { available: true }; } });
+  assert.equal(result.reasonCode, 'provider_failed');
+  assert.equal(requests, 0);
+  assert.equal(state.reservations.length, 1);
+  assert.equal([...state.results.values()][0].reasonCode, 'deadline_exceeded');
+});
+
+test('OpenAI reviews retain suspension checks and use a separate operation key', async () => {
+  const state = memoryLedger();
+  let requests = 0;
+  const call = () => guardModerationProvider({ provider: 'openai',
+    operation: 'modesty_uncertainty_review', apiKey: 'test-key',
+    options: { tracking: { videoBudget }, providerGuardDependencies: state.dependencies },
+    run: async () => { requests++; return { available: true, model: 'openai-review' }; } });
+  assert.equal((await call()).available, true);
+  assert.equal(state.reservations[0].operation, 'modesty_uncertainty_review');
+  await state.dependencies.ledger.suspendProvider({}, { provider: 'openai',
+    credentialHash: credentialHash('test-key'), reason: 'credit_balance_exhausted' });
+  assert.equal((await call()).reasonCode, 'credit_balance_exhausted');
+  assert.equal(requests, 1);
+});
