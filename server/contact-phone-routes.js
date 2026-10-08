@@ -57,7 +57,8 @@ function registerContactPhoneRoutes(app, { auth, rateLimit, getPool, notify = ()
       const projected = await projectContactPhones(pool, req.user.id,
         result.rows.map(row => ({ id: row.user_id })));
       const allowed = new Set(projected.filter(status =>
-        state === 'pending' ? status.incoming_request : status.share_my_phone).map(status => status.id));
+        state === 'pending' ? status.incoming_request :
+          status.share_my_phone && !status.is_friend && !status.group_phone_shared).map(status => status.id));
       res.set('Cache-Control', 'no-store');
       res.json(await projectProfileImages(pool, req.user.id,
         result.rows.filter(row => allowed.has(row.user_id))));

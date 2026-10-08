@@ -47,7 +47,7 @@ test('PostgreSQL separates explicit phone access from existing city visibility',
         gender text,birth_date date,email_verified boolean,phone_verified boolean);
       CREATE TEMP TABLE user_contacts(owner_id uuid,contact_id uuid);
       CREATE TEMP TABLE blocked_users(blocker_id uuid,blocked_id uuid);
-      CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,status text);
+      CREATE TEMP TABLE group_members(group_id uuid,user_id uuid,status text,share_phone boolean DEFAULT FALSE);
       CREATE TEMP TABLE messages(id uuid,sender_id uuid,recipient_id uuid,group_id uuid,
         deleted_for_everyone boolean DEFAULT FALSE,deleted_for_sender boolean DEFAULT FALSE);
       CREATE TEMP TABLE message_user_deletions(message_id uuid,user_id uuid);`);
@@ -60,13 +60,13 @@ test('PostgreSQL separates explicit phone access from existing city visibility',
       await reset();
       assert.equal(await queryPhone(me, me), '0500000501');
       assert.equal(await queryPhone(), null);
-      await db.query("INSERT INTO group_members VALUES($1,$2,'member'),($1,$3,'member')", [groupId, me, other]);
+      await db.query("INSERT INTO group_members(group_id,user_id,status) VALUES($1,$2,'member'),($1,$3,'member')", [groupId, me, other]);
       assert.equal(await queryPhone(), null);
     });
 
     await t.test('saved contacts and source labels alone never reveal another phone', async () => {
       await reset();
-      await db.query('INSERT INTO user_contacts(owner_id,contact_id) VALUES($1,$2),($2,$1),($3,$2),($1,$3)', [me, other, teen]);
+      await db.query('INSERT INTO user_contacts(owner_id,contact_id) VALUES($1,$2),($3,$2),($1,$3)', [me, other, teen]);
       for (const source of ['unknown','in_app','email_import','phone_import','phone_manual']) {
         await db.query('UPDATE user_contacts SET contact_source=$1', [source]);
         assert.equal(await queryPhone(), null);
@@ -191,7 +191,7 @@ test('PostgreSQL separates explicit phone access from existing city visibility',
       await reset();
       assert.equal(await queryCity(me, me), city);
       assert.equal(await queryCity(), null);
-      await db.query("INSERT INTO group_members VALUES($1,$2,'member'),($1,$3,'member')", [groupId, me, other]);
+      await db.query("INSERT INTO group_members(group_id,user_id,status) VALUES($1,$2,'member'),($1,$3,'member')", [groupId, me, other]);
       await db.query('INSERT INTO user_contacts VALUES($1,$2)', [other, me]);
       assert.equal(await queryCity(), null, 'another person saving the requester does not grant city access');
       await db.query('INSERT INTO user_contacts VALUES($1,$2),($3,$2),($1,$3),($1,$4)', [me, other, teen, noBirthDate]);

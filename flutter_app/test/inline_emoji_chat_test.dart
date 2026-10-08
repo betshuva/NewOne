@@ -427,8 +427,13 @@ void _expectSmallEmoji(WidgetTester tester, Finder scope, int id) {
   );
   expect(image, findsOneWidget);
   final size = tester.getSize(image);
-  expect(size.width, inInclusiveRange(18.0, 24.0));
-  expect(size.height, inInclusiveRange(18.0, 24.0));
+  expect(size.width, inInclusiveRange(19.8, 26.5));
+  expect(size.height, inInclusiveRange(19.8, 26.5));
+}
+
+TextSelection _logicalSelection(TextEditingController controller) {
+  int offset(int index) => index < 0 ? index : inlineEmojiPlainText(controller.text.substring(0, index)).length;
+  return TextSelection(baseOffset: offset(controller.selection.baseOffset), extentOffset: offset(controller.selection.extentOffset));
 }
 
 void main() {
@@ -472,6 +477,41 @@ void main() {
   for (final isGroup in [false, true]) {
     final chatKind = isGroup ? 'group' : 'private';
 
+    testWidgets('$chatKind emoji-only draft adds each choice on the left before and after send', (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await _openShortcut(tester, stickers: false);
+        double? firstChoiceX;
+        for (final id in [1,2,3]) {
+          await tester.tap(_imageTile(id));
+          await tester.pumpAndSettle();
+          final x = tester.getCenter(find.byKey(const ValueKey('inline-custom-emoji-1'))).dx;
+          firstChoiceX ??= x;
+          expect(x, closeTo(firstChoiceX, 0.01));
+        }
+        await tester.tap(_done);
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextField>(app.composer).textDirection, TextDirection.rtl);
+        final positions = [for (final id in [1,2,3]) tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx];
+        expect(positions[0], greaterThan(positions[1]));
+        expect(positions[1], greaterThan(positions[2]));
+        final editable = tester.state<EditableTextState>(find.descendant(of:app.composer,matching:find.byType(EditableText)));
+        final controller = app.controller(tester);
+        final caret = editable.renderEditable.getLocalRectForCaret(TextPosition(offset: controller.selection.extentOffset)).left;
+        expect(caret, lessThan(positions.last));
+        app.expectNothingSent();
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage('[[bt-emoji:003]][[bt-emoji:002]][[bt-emoji:001]]');
+        final sentPositions = [for (final id in [1,2,3]) tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx];
+        expect(sentPositions[0], greaterThan(sentPositions[1]));
+        expect(sentPositions[1], greaterThan(sentPositions[2]));
+        expect(tester.widget<TextField>(app.composer).textDirection, TextDirection.rtl);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
     testWidgets('$chatKind repeated emoji selections keep the picker open and append in order', (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
@@ -488,8 +528,17 @@ void main() {
         await tester.pumpAndSettle();
         expect(_picker, findsOneWidget);
         expect(tester.widget<EditableText>(find.descendant(of: _search, matching: find.byType(EditableText))).controller.text, 'אימוג׳י לבדיקה');
-        final text = '${_draft.substring(0, 3)}${inlineEmojiCharacter(1)}${inlineEmojiCharacter(2)}${inlineEmojiCharacter(3)}${_draft.substring(3)}';
-        expect(controller.text, text);
+        final text = '${_draft.substring(0, 3)}${inlineEmojiCharacter(3)}${inlineEmojiCharacter(2)}${inlineEmojiCharacter(1)}${_draft.substring(3)}';
+        expect(inlineEmojiPlainText(controller.text), text);
+        expect(tester.widget<TextField>(app.composer).textDirection, TextDirection.rtl);
+        final positions = [for (final id in [1,2,3]) tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx];
+        expect(positions[0], greaterThan(positions[1]));
+        expect(positions[1], greaterThan(positions[2]));
+        final editable = tester.state<EditableTextState>(find.descendant(of: app.composer, matching: find.byType(EditableText))).renderEditable;
+        final runStart = controller.text.indexOf('\u2066') + 1;
+        final caret = [for (var i = 0; i <= 3; i++) editable.getLocalRectForCaret(TextPosition(offset: runStart + i,
+          affinity: i == 3 ? TextAffinity.upstream : TextAffinity.downstream)).left];
+        for (var i = 0; i < 3; i++) expect(caret[i], lessThan(caret[i + 1]));
         app.expectNothingSent();
         await tester.tap(_done);
         await tester.pumpAndSettle();
@@ -554,8 +603,8 @@ void main() {
         await _selectEmoji(tester, 2);
         final text =
             '${_draft.substring(0, 3)}${inlineEmojiCharacter(2)}${_draft.substring(3)}';
-        expect(controller.text, text);
-        expect(controller.selection, const TextSelection.collapsed(offset: 4));
+        expect(inlineEmojiPlainText(controller.text), text);
+        expect(_logicalSelection(controller), const TextSelection.collapsed(offset: 4));
         app.expectNothingSent();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
@@ -684,7 +733,7 @@ void main() {
         expect(_imageTile(1, colored: true), findsOneWidget);
         await _selectEmoji(tester, 1, colored: true);
 
-        expect(controller.text, 'שלום ${inlineEmojiCharacter(1)}😀 סוף');
+        expect(inlineEmojiPlainText(controller.text), 'שלום ${inlineEmojiCharacter(1)}😀 סוף');
         app.expectNothingSent();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
@@ -758,7 +807,12 @@ void main() {
         final inlineTile = _imageTile(1);
         final picture =
             find.descendant(of: inlineTile, matching: find.byType(Image));
-        expect(tester.getSize(picture), const Size(24, 24));
+        expect(tester.widget<Image>(picture).width, closeTo(26.4, 0.001));
+        expect(tester.widget<Image>(picture).height, closeTo(26.4, 0.001));
+        if (kIsWeb) {
+          expect(tester.getSize(picture).width, closeTo(26.4, 0.001));
+          expect(tester.getSize(picture).height, closeTo(26.4, 0.001));
+        }
         final hitSize = tester.getSize(inlineTile);
         expect(hitSize.width, greaterThanOrEqualTo(44));
         expect(hitSize.height, greaterThanOrEqualTo(44));
@@ -769,8 +823,8 @@ void main() {
             hasLength(1));
         await _selectEmoji(tester, 1);
         final raw = 'שלום ${inlineEmojiCharacter(1)}abc עולם';
-        expect(controller.text, raw);
-        expect(controller.selection, const TextSelection.collapsed(offset: 6));
+        expect(inlineEmojiPlainText(controller.text), raw);
+        expect(_logicalSelection(controller), const TextSelection.collapsed(offset: 6));
         app.expectNothingSent();
         _expectSmallEmoji(tester, app.composer, 1);
         expect(encodeInlineEmojiText(raw), 'שלום [[bt-emoji:001]]abc עולם');
@@ -778,7 +832,7 @@ void main() {
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage('שלום [[bt-emoji:001]]abc עולם');
-        expect(controller.text, isEmpty);
+        expect(inlineEmojiPlainText(controller.text), isEmpty);
         _expectSmallEmoji(tester, find.byType(InlineEmojiText), 1);
         await app.dispose(tester);
       }, () => app.client);
@@ -829,9 +883,9 @@ void main() {
         app.expectNothingSent();
         await _selectEmoji(tester, 3);
 
-        expect(controller.text,
+        expect(inlineEmojiPlainText(controller.text),
             'שלום ${inlineEmojiCharacter(3)}abc ${inlineEmojiCharacter(1)} סוף');
-        expect(controller.selection, const TextSelection.collapsed(offset: 6));
+        expect(_logicalSelection(controller), const TextSelection.collapsed(offset: 6));
         _expectSmallEmoji(tester, app.composer, 1);
         app.expectNothingSent();
 
@@ -839,7 +893,7 @@ void main() {
         await tester.pumpAndSettle();
         app.expectOneTextMessage(
             'שלום [[bt-emoji:003]]abc [[bt-emoji:001]] סוף');
-        expect(controller.text, isEmpty);
+        expect(inlineEmojiPlainText(controller.text), isEmpty);
         _expectSmallEmoji(tester, find.byType(InlineEmojiText), 1);
         await app.dispose(tester);
       }, () => app.client);
@@ -857,7 +911,8 @@ void main() {
         await tester.enterText(app.composer, draft);
         final controller = app.controller(tester);
         controller.selection =
-            TextSelection(baseOffset: end, extentOffset: start);
+            // The existing emoji has a pair of editor-only bidi isolates.
+            TextSelection(baseOffset: end + 2, extentOffset: start + 2);
 
         await _openPicker(tester);
         await _openInlineTab(tester);
@@ -878,17 +933,17 @@ void main() {
         app.expectNothingSent();
         await _selectEmoji(tester, 3);
 
-        expect(controller.text,
+        expect(inlineEmojiPlainText(controller.text),
             '${draft.substring(0, start)}${inlineEmojiCharacter(3)}${draft.substring(end)}');
         expect(
-            controller.selection, TextSelection.collapsed(offset: start + 1));
+            _logicalSelection(controller), TextSelection.collapsed(offset: start + 1));
         _expectSmallEmoji(tester, app.composer, 2);
         app.expectNothingSent();
 
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage('לפני [[bt-emoji:002]] [[bt-emoji:003]] אחרי');
-        expect(controller.text, isEmpty);
+        expect(inlineEmojiPlainText(controller.text), isEmpty);
         await app.dispose(tester);
       }, () => app.client);
     });
@@ -910,9 +965,9 @@ void main() {
         await _selectEmoji(tester, 2);
         final first =
             '${draft.substring(0, start)}${inlineEmojiCharacter(2)}${draft.substring(end)}';
-        expect(controller.text, first);
+        expect(inlineEmojiPlainText(controller.text), first);
         expect(
-            controller.selection, TextSelection.collapsed(offset: start + 1));
+            _logicalSelection(controller), TextSelection.collapsed(offset: start + 1));
         app.expectNothingSent();
 
         await _openPicker(tester);
@@ -920,10 +975,10 @@ void main() {
         await tester.pumpAndSettle();
         await _selectEmoji(tester, 150);
         final expected =
-            '${draft.substring(0, start)}${inlineEmojiCharacter(2)}${inlineEmojiCharacter(150)}${draft.substring(end)}';
-        expect(controller.text, expected);
+            '${draft.substring(0, start)}${inlineEmojiCharacter(150)}${inlineEmojiCharacter(2)}${draft.substring(end)}';
+        expect(inlineEmojiPlainText(controller.text), expected);
         expect(
-            controller.selection, TextSelection.collapsed(offset: start + 2));
+            _logicalSelection(controller), TextSelection.collapsed(offset: start + 2));
         _expectSmallEmoji(tester, app.composer, 2);
         _expectSmallEmoji(tester, app.composer, 150);
         app.expectNothingSent();
@@ -959,11 +1014,11 @@ void main() {
             reason: 'Loading the existing emoji into the editor must fit');
         final controller = app.controller(tester);
         final raw = 'עריכה ${inlineEmojiCharacter(1)} המשך';
-        expect(controller.text, raw);
-        controller.selection = TextSelection.collapsed(offset: raw.length);
+        expect(inlineEmojiPlainText(controller.text), raw);
+        controller.selection = TextSelection.collapsed(offset: controller.text.length);
         await _openPicker(tester);
         await _selectEmoji(tester, 2);
-        expect(controller.text, '$raw${inlineEmojiCharacter(2)}');
+        expect(inlineEmojiPlainText(controller.text), '$raw${inlineEmojiCharacter(2)}');
         app.expectNothingSent();
         expect(app.requests.where((request) => request.method == 'PATCH'),
             isEmpty);
@@ -978,7 +1033,7 @@ void main() {
         expect(jsonDecode(patches.single.body),
             {'body': '$original[[bt-emoji:002]]'});
         app.expectNothingSent();
-        expect(controller.text, isEmpty);
+        expect(inlineEmojiPlainText(controller.text), isEmpty);
         _expectSmallEmoji(tester, find.byType(InlineEmojiText), 1);
         _expectSmallEmoji(tester, find.byType(InlineEmojiText), 2);
         await app.dispose(tester);
@@ -1005,7 +1060,7 @@ void main() {
         expect(app.uploads, isEmpty);
         final emoji = find.byKey(const ValueKey('message-unicode-emoji-1f600'));
         expect(emoji, findsOneWidget);
-        expect(tester.getSize(emoji), const Size(40, 40));
+        expect(tester.getSize(emoji), const Size(44, 44));
         await app.dispose(tester);
       }, () => app.client);
     });
@@ -1025,7 +1080,7 @@ void main() {
       await tester.enterText(_search, _labels.last);
       await tester.pumpAndSettle();
       await _selectEmoji(tester, 150, colored: true);
-      expect(app.controller(tester).text, inlineEmojiCharacter(150));
+      expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(150));
       app.expectNothingSent();
       await app.dispose(tester);
     }, () => app.client);
@@ -1083,12 +1138,12 @@ void main() {
             if (policy.allowText) {
               await _openInlineTab(tester);
               await _selectEmoji(tester, 1);
-              expect(app.controller(tester).text, inlineEmojiCharacter(1));
+              expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(1));
               app.expectNothingSent();
             } else {
               await _selectEmoji(tester, 1);
               app.expectOneSticker();
-              expect(app.controller(tester).text, isEmpty);
+              expect(inlineEmojiPlainText(app.controller(tester).text), isEmpty);
             }
           }
           await app.dispose(tester);
@@ -1111,7 +1166,7 @@ void main() {
         await tester.enterText(_search, _labels.last);
         await tester.pumpAndSettle();
         await _selectEmoji(tester, 150);
-        expect(app.controller(tester).text, inlineEmojiCharacter(150));
+        expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(150));
         app.expectNothingSent();
         _expectSmallEmoji(tester, app.composer, 150);
         await tester.tap(find.byIcon(Icons.send));
@@ -1178,7 +1233,7 @@ void main() {
         await tester.tap(_done);
         await tester.pumpAndSettle();
         expect(_picker, findsNothing);
-        expect(app.controller(tester).text, inlineEmojiCharacter(1));
+        expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(1));
         app.expectNothingSent();
         await app.dispose(tester);
       }, () => app.client);

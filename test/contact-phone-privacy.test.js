@@ -70,6 +70,7 @@ test('PostgreSQL contact phone access follows exact knowledge and directed owner
         name TEXT,gender TEXT,email_verified BOOLEAN DEFAULT TRUE,phone_verified BOOLEAN DEFAULT FALSE);
       CREATE TEMP TABLE user_contacts(owner_id UUID,contact_id UUID,PRIMARY KEY(owner_id,contact_id));
       CREATE TEMP TABLE blocked_users(blocker_id UUID,blocked_id UUID);
+      CREATE TEMP TABLE group_members(group_id UUID,user_id UUID,status TEXT,share_phone BOOLEAN DEFAULT FALSE);
       CREATE TEMP TABLE contact_phone_permissions(
         phone_owner_id UUID REFERENCES users(id),viewer_id UUID REFERENCES users(id),
         state TEXT NOT NULL CHECK(state IN ('pending','approved','declined','revoked')),
@@ -83,7 +84,7 @@ test('PostgreSQL contact phone access follows exact knowledge and directed owner
 
     await t.test('legacy, app and email-only contacts never imply knowledge of a phone', async () => {
       await reset();
-      await db.query('INSERT INTO user_contacts(owner_id,contact_id) VALUES($1,$2),($2,$1)', [me, other]);
+      await db.query('INSERT INTO user_contacts(owner_id,contact_id) VALUES($1,$2)', [me, other]);
       assert.equal((await status()).contact_source, 'unknown');
       await assertVisibility(null);
       await saveContactWithPhone(db, me, other, { source: 'in_app' });

@@ -106,7 +106,7 @@ class _PhoneSharingPrivacyScreenState extends State<PhoneSharingPrivacyScreen> {
                 padding: const EdgeInsets.all(16),
                 children: [
                   const Text(
-                      'כאן ניתן לראות למי אישרת לצפות במספר הטלפון שלך ולבטל הרשאה. מספר שכבר שמור בטלפון של החבר יישאר אצלו.'),
+                      'בין חברים המספרים גלויים אוטומטית. בקבוצות ניתן לבחור אם לחשוף את המספר למשתתפים. כאן מנוהלות הרשאות אישיות נוספות; מספר שכבר הועתק נשאר אצל מי שקיבל אותו.'),
                   if (_error != null)
                     TextButton(
                         onPressed: _load, child: Text('$_error — נסה שוב')),

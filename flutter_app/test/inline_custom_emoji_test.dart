@@ -6,6 +6,69 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:betshuva/inline_custom_emoji.dart';
 
 void main() {
+  testWidgets('Hebrew composer isolates Unicode emoji in selection order', (tester) async {
+    final controller = InlineEmojiController(isolateEmojiRuns: true, text: 'שלום 😀👍❤️');
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: TextField(
+      controller: controller, textDirection: TextDirection.rtl,
+    ))));
+    final editable = tester.state<EditableTextState>(find.byType(EditableText)).renderEditable;
+    final positions = [
+      for (final range in [(6, 8), (8, 10), (10, 12)])
+        editable.getBoxesForSelection(TextSelection(baseOffset: range.$1, extentOffset: range.$2)).single.left,
+    ];
+    expect(positions[0], lessThan(positions[1]));
+    expect(positions[1], lessThan(positions[2]));
+    expect(encodeInlineEmojiText(controller.text), 'שלום 😀👍❤️');
+    controller.selection = TextSelection.collapsed(offset: controller.text.length);
+    expect(controller.selection.extentOffset, 13); // Outside the run, on its visual left.
+    final caret = [for (final offset in [6, 8, 10, 12])
+      editable.getLocalRectForCaret(TextPosition(offset: offset,
+        affinity: offset == 12 ? TextAffinity.upstream : TextAffinity.downstream)).left];
+    for (var i = 0; i < 3; i++) expect(caret[i], lessThan(caret[i + 1]));
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
+  });
+
+  test('editor isolates are idempotent and omitted from persisted messages', () {
+    final controller = InlineEmojiController(isolateEmojiRuns: true);
+    final raw = 'שלום ${inlineEmojiCharacter(1)}${inlineEmojiCharacter(2)} עולם';
+    controller.value = TextEditingValue(text: raw, selection: const TextSelection.collapsed(offset: 7));
+    final first = controller.value;
+    controller.value = first;
+    expect(controller.value, first);
+    expect(inlineEmojiPlainText(controller.text), raw);
+    expect(encodeInlineEmojiText(controller.text), 'שלום [[bt-emoji:001]][[bt-emoji:002]] עולם');
+    // Simulate backspace at the end of the run, then type another emoji.
+    final cursor = controller.selection.extentOffset;
+    controller.value = controller.value.copyWith(
+      text: controller.text.replaceRange(cursor - 1, cursor, ''),
+      selection: TextSelection.collapsed(offset: cursor - 1));
+    expect(inlineEmojiPlainText(controller.text), 'שלום ${inlineEmojiCharacter(2)} עולם');
+    final next = controller.selection.extentOffset;
+    controller.value = controller.value.copyWith(
+      text: controller.text.replaceRange(next, next, inlineEmojiCharacter(3)),
+      selection: TextSelection.collapsed(offset: next + 1));
+    expect(encodeInlineEmojiText(controller.text), 'שלום [[bt-emoji:003]][[bt-emoji:002]] עולם');
+    controller.dispose();
+  });
+
+  testWidgets('consecutive custom emoji read LTR without changing Hebrew or stored text', (tester) async {
+    const source = 'שלום [[bt-emoji:001]][[bt-emoji:002]][[bt-emoji:003]] עולם';
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: InlineEmojiText(source,
+      textDirection: TextDirection.rtl, textAlign: TextAlign.right))));
+    final positions = [for (final id in [1,2,3]) tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx];
+    expect(positions[0], lessThan(positions[1]));
+    expect(positions[1], lessThan(positions[2]));
+    expect(encodeInlineEmojiText(decodeInlineEmojiText(source)), source);
+  });
+  test('draft direction starts on the right for text and emoji', () {
+    expect(inlineEmojiDraftDirection(''), TextDirection.rtl);
+    expect(inlineEmojiDraftDirection('שלום'), TextDirection.rtl);
+    expect(inlineEmojiDraftDirection('שלום ${inlineEmojiCharacter(1)}'), TextDirection.rtl);
+    expect(inlineEmojiDraftDirection(inlineEmojiCharacter(1)), TextDirection.rtl);
+    expect(inlineEmojiDraftDirection('😀❤️'), TextDirection.rtl);
+  });
+
   test('all 150 custom images round-trip without changing ordinary Unicode',
       () {
     final images =
@@ -183,8 +246,8 @@ void main() {
     expect((image.image as NetworkImage).url,
         'https://betshuva.com/betshuva-app/expression-library/user-20261008-color/sticker-01.png');
     final size = tester.getSize(imageFinder);
-    expect(size.width, closeTo(21.6, 0.1));
-    expect(size.height, closeTo(21.6, 0.1));
+    expect(size.width, closeTo(23.76, 0.1));
+    expect(size.height, closeTo(23.76, 0.1));
     final before = editable.renderEditable
         .getLocalRectForCaret(const TextPosition(offset: 2));
     final after = editable.renderEditable
@@ -252,12 +315,12 @@ void main() {
         tester
             .getSize(find.byKey(const ValueKey('inline-custom-emoji-1')))
             .width,
-        18);
+        closeTo(19.8, 0.001));
     expect(
         tester
             .getSize(find.byKey(const ValueKey('inline-custom-emoji-150')))
             .width,
-        24);
+        closeTo(26.4, 0.001));
     expect(find.bySemanticsLabel(RegExp('שמחה')), findsOneWidget);
     expect(find.textContaining('[[bt-emoji:'), findsNothing);
     semantics.dispose();

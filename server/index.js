@@ -45,6 +45,12 @@ const { googleRegistrationRequired } = require('./registration-policy');
 const { SCHEMA: GEOCODING_BUDGET_SCHEMA } = require('./geocoding-budget');
 const { REQUEST_SCHEMA, lockContactRequests, queueContactRequest, settleContactRequests } = require('./contact-message-requests');
 const calendarService = require('./calendar');
+const { initializeFriendshipPolicy, marketplaceConversation, registerListingInquiry,
+  disconnectFriendship, writeFriendshipMessage, transaction: friendshipTransaction } = require('./friendship-policy');
+function notifyFriendshipChange(a,b) {
+  relay(a,'contact:phone-sharing',{userId:b});
+  relay(b,'contact:phone-sharing',{userId:a});
+}
 const {
   googleSafeSearchConfigured,
   normalizeBlockThreshold,
@@ -1230,7 +1236,8 @@ async function getEffectiveRecipientFilter(pool, recipientId, senderId) {
   return {
     isContact: String(recipientId) === String(senderId) || !!result.rows[0].filter_override || (await pool.query(
       'SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
-      [recipientId, senderId])).rows.length > 0,
+      [recipientId, senderId])).rows.length > 0 ||
+      await marketplaceConversation(pool, senderId, recipientId),
     filter: resolveScopedContentFilter(
       result.rows[0].content_filter, result.rows[0].filter_override),
   };
@@ -4611,7 +4618,7 @@ io.on('connection', async (socket) => {
     action: 'send_message', onError: code => socket.emit('message:rejected', { code }),
     accept: payload => payload?.toUserId && (payload.text || payload.fileUrl || payload.stickerId) &&
       allowSocketEvent(socket, 'message', 120, 60 * 1000) },
-  async ({ toUserId, text, replyToId, fileUrl, fileName, fileType, stickerId }) => {
+  async ({ toUserId, text, replyToId, fileUrl, fileName, fileType, stickerId, listingId }) => {
     const requestedSticker = stickerId != null;
     const normalizedStickerId = normalizeBuiltinStickerId(stickerId);
     if (requestedSticker && !normalizedStickerId) {
@@ -4688,6 +4695,7 @@ io.on('connection', async (socket) => {
       })();
       const classification = fileUrl
         ? await getStoredImageClassification(pool, fileUrl) : null;
+      if (listingId) await registerListingInquiry(pool,socket.user.id,toUserId,listingId);
       let recipientPolicy = await getEffectiveRecipientFilter(
         pool, toUserId, socket.user.id);
       if (recipientPolicy?.isContact && !contentAllowedByFilter(
@@ -4738,12 +4746,14 @@ io.on('connection', async (socket) => {
         }
       }
       const saved = await writeSenderFilteredMedia(pool, { userId: socket.user.id, fileUrl,
-      contextType: 'chat', contextId: toUserId }, client => client.query(
+      contextType: 'chat', contextId: toUserId }, client => writeFriendshipMessage(
+        client, socket.user.id, toUserId, db => db.query(
         `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id, created_at`,
-        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds()]));
+        [socket.user.id, toUserId, text || null, msgType, fileUrl || null, fileName || null, replyToId || null, ...auditIds()])));
       const row = saved.rows[0];
+      if (saved.friendshipChanged) notifyFriendshipChange(socket.user.id,toUserId);
       await pool.query(
         `INSERT INTO message_status (message_id, user_id, status)
          VALUES ($1, $2, 'sent')
@@ -6065,6 +6075,7 @@ async function sendPrivateHttpMessage(req, res) {
     })();
     const classification = fileUrl
       ? await getStoredImageClassification(pool, fileUrl) : null;
+    if (listingId) await registerListingInquiry(pool,senderId,toUserId,listingId);
     let recipientPolicy = await getEffectiveRecipientFilter(
       pool, toUserId, senderId);
     if (recipientPolicy?.isContact && !contentAllowedByFilter(recipientPolicy?.filter,
@@ -6108,12 +6119,14 @@ async function sendPrivateHttpMessage(req, res) {
     }
 
     const saved = await writeSenderFilteredMedia(pool, { userId: senderId, fileUrl,
-      contextType: 'chat', contextId: toUserId }, client => client.query(
+      contextType: 'chat', contextId: toUserId }, client => writeFriendshipMessage(
+      client, senderId, toUserId, db => db.query(
       `INSERT INTO messages (sender_id, recipient_id, body, type, file_url, file_name, reply_to_id, audit_operation_id, audit_parent_event_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id, created_at`,
-      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null, ...auditIds()]));
+      [senderId, toUserId, text || null, type, fileUrl || null, fileName || null, replyToId || null, ...auditIds()])));
     const row = saved.rows[0];
+    if (saved.friendshipChanged) effect(() => notifyFriendshipChange(senderId,toUserId));
 
     // Keep a durable acknowledgement while the recipient is offline. Later
     // connection/read handlers promote this to "delivered" and "read".
@@ -6257,7 +6270,7 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
       validateFile: validateApprovedFile, audit: recordContactRequestOutcome, auditIds,
     });
     await client.query('COMMIT');
-    notifyPhoneSharingChange(io, onlineUsers, req.user.id, request.sender_id, phoneSharing);
+    notifyFriendshipChange(req.user.id, request.sender_id);
     const recipientSid = onlineUsers.get(req.user.id);
     if (recipientSid) {
       for (const row of sent) io.to(recipientSid).emit('chat:message',
@@ -6429,6 +6442,15 @@ app.patch('/api/messages/:id', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.delete('/api/contacts/:userId/friendship', authWithDbCheck, async (req,res) => {
+  try {
+    const pool=await getPool();
+    await friendshipTransaction(pool, db => disconnectFriendship(db,req.user.id,req.params.userId));
+    notifyFriendshipChange(req.user.id,req.params.userId);
+    res.set('Cache-Control','no-store').json({ok:true});
+  } catch(e) { res.status(e.status || 500).json({error:e.message}); }
+});
+
 // ── Block: block user ─────────────────────────────────────────────
 app.post('/api/block/:userId', auth, async (req, res) => {
   if (req.params.userId === req.user.id) return res.status(400).json({ error: 'לא ניתן לחסום את עצמך' });
@@ -6506,7 +6528,8 @@ app.post('/api/reports', auth, reportRateLimit, async (req, res) => {
          )`, [targetId, req.user.id])).rows.length;
     }
     if (!visible) return res.status(404).json({ error: 'התוכן לא נמצא או אינו נגיש' });
-    const inserted = await pool.query(
+    const inserted = await friendshipTransaction(pool, async db => {
+      const result = await db.query(
       `INSERT INTO user_reports(reporter_id,target_type,target_id,reason,details)
        VALUES($1,$2,$3,$4,$5)
        ON CONFLICT(reporter_id,target_type,target_id) DO UPDATE SET
@@ -6516,6 +6539,10 @@ app.post('/api/reports', auth, reportRateLimit, async (req, res) => {
          notification_attempts=0,notification_next_at=now(),notification_error=NULL
        RETURNING id,status`,
       [req.user.id, targetType, targetId, reason, details]);
+      if (targetType === 'user') await disconnectFriendship(db,req.user.id,targetId);
+      return result;
+    });
+    if (targetType === 'user') notifyFriendshipChange(req.user.id,targetId);
     logActivity(req.user.id, 'submit_report',
       { reportId: inserted.rows[0].id, targetType, targetId }, clientIp(req));
     res.status(201).json({ ok: true, ...inserted.rows[0] });
@@ -8839,6 +8866,8 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
   let unregisteredBlob;
   try {
     const pool = await getPool();
+    if (req.body.listingInquiryId && req.body.toUserId)
+      await registerListingInquiry(pool,req.user.id,req.body.toUserId,req.body.listingInquiryId);
     file.originalname = await shortenCapturedFileName(pool, req.user.id, file.originalname);
     const contentSha256 = await sourceHash(file.buffer || file);
     releaseUploadLock = await acquireUploadLock(req.user.id, contentSha256, allowed.dbType);
@@ -9401,6 +9430,8 @@ app.post('/api/groups', auth, async (req, res) => {
       !Object.keys(DEFAULT_CONTENT_FILTER)
         .every(key => typeof content_filter[key] === 'boolean'))
     return res.status(400).json({ error: 'יש להגדיר ולאשר סינון לפני יצירת הקבוצה' });
+  if (req.body.share_phone !== undefined && typeof req.body.share_phone !== 'boolean')
+    return res.status(400).json({error:'בחירת שיתוף המספר אינה תקינה'});
   const contentFilter = normalizeContentFilter(content_filter);
   try {
     const pool = await getPool();
@@ -9414,8 +9445,8 @@ app.post('/api/groups', auth, async (req, res) => {
        isSelf, JSON.stringify(contentFilter)]);
     const group = result.rows[0];
     await pool.query(
-      `INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'admin')`,
-      [group.id, req.user.id]);
+      `INSERT INTO group_members (group_id, user_id, role, share_phone) VALUES ($1, $2, 'admin', $3)`,
+      [group.id, req.user.id, req.body.share_phone !== false]);
     logActivity(req.user.id, 'create_group', { groupId: group.id, name: cleanName }, req.ip);
     res.json({
       ...group,
@@ -9436,7 +9467,7 @@ app.get('/api/groups/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const mem = await pool.query(
-      `SELECT role FROM group_members
+      `SELECT role,share_phone FROM group_members
        WHERE group_id=$1 AND user_id=$2 AND status='member'`,
       [req.params.id, req.user.id]);
     if (!mem.rows.length)
@@ -9453,8 +9484,23 @@ app.get('/api/groups/:id', auth, async (req, res) => {
     const [group, ...visibleMembers] = await projectProfileImages(pool, req.user.id,
       [grp.rows[0], ...members.rows]);
     res.set('Cache-Control', 'no-store');
-    res.json({ ...group, members: visibleMembers, myRole: mem.rows[0].role });
+    res.json({ ...group, members: await projectContactPhones(pool,req.user.id,visibleMembers),
+      myRole: mem.rows[0].role, share_phone: mem.rows[0].share_phone });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/groups/:id/phone-sharing', authWithDbCheck, async (req,res) => {
+  if (typeof req.body?.share_phone !== 'boolean')
+    return res.status(400).json({error:'בחירת שיתוף המספר אינה תקינה'});
+  try {
+    const pool=await getPool();
+    const changed=await pool.query(`UPDATE group_members SET share_phone=$3
+      WHERE group_id=$1 AND user_id=$2 AND status='member' RETURNING user_id`,
+      [req.params.id,req.user.id,req.body.share_phone]);
+    if (!changed.rowCount) return res.status(403).json({error:'לא חבר פעיל בקבוצה'});
+    io.to(`group:${req.params.id}`).emit('contact:phone-sharing',{userId:req.user.id});
+    res.set('Cache-Control','no-store').json({share_phone:req.body.share_phone});
+  } catch(e) { res.status(500).json({error:e.message}); }
 });
 
 app.get('/api/groups/:id/filter-settings', auth, async (req, res) => {
@@ -10510,6 +10556,8 @@ app.get('/api/groups/:id/invitation-filter', auth, async (req, res) => {
 });
 
 app.post('/api/groups/:id/join', auth, async (req, res) => {
+  if (req.body?.share_phone !== undefined && typeof req.body.share_phone !== 'boolean')
+    return res.status(400).json({error:'בחירת שיתוף המספר אינה תקינה'});
   if (req.user.isTeen)
     return res.status(403).json({ error: 'קבוצות אינן זמינות בחשבון נוער', code: 'TEEN_GROUPS_DISABLED' });
   try {
@@ -10534,9 +10582,10 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
       pendingRow.rows[0].content_filter, req.body?.filter);
     // Only an existing invitation can become an active membership.
     await pool.query(
-      `UPDATE group_members SET status='member', filter_override=$3
+      `UPDATE group_members SET status='member', filter_override=$3, share_phone=$4
        WHERE group_id=$1 AND user_id=$2 AND status='pending'`,
-      [req.params.id, req.user.id, JSON.stringify(personalFilter)]);
+      [req.params.id, req.user.id, JSON.stringify(personalFilter), req.body.share_phone !== false]);
+    req.app.get('io').to(`group:${req.params.id}`).emit('contact:phone-sharing',{userId:req.user.id});
 
     // Fetch missed messages since pending_since
     let missedMessages = [];
@@ -13499,6 +13548,7 @@ async function initPendingTable() {
         UNIQUE (pending_scan_id, retry_attempt)
       )
     `);
+    await initializeFriendshipPolicy(pool);
     console.log('tables ready');
 }
 
@@ -14177,14 +14227,15 @@ async function retryPendingScans() {
               [JSON.stringify(scanResult), row.file_url]);
             await client.query('SELECT id FROM users WHERE id=$1 FOR SHARE', [row.user_id]);
             await assertSenderFileAllowed(client, row.user_id, row.file_url, 'chat', row.to_user_id, 'sender_delayed_persist');
-            const saved = await client.query(
+            const saved = await writeFriendshipMessage(client,row.user_id,row.to_user_id, db => db.query(
               `INSERT INTO messages (sender_id, recipient_id, type, body, file_url, file_name, audit_operation_id, audit_parent_event_id)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                RETURNING id, created_at`,
-              [row.user_id, row.to_user_id, row.file_type, row.file_name, row.file_url, row.file_name, ...auditIds()]);
-            return saved.rows[0];
+              [row.user_id, row.to_user_id, row.file_type, row.file_name, row.file_url, row.file_name, ...auditIds()]));
+            return { ...saved.rows[0], friendshipChanged: saved.friendshipChanged };
           });
           outcomePersisted = true;
+          if (msg.friendshipChanged) notifyFriendshipChange(row.user_id,row.to_user_id);
           const payload = {
             id: msg.id, fromUserId: row.user_id, toUserId: row.to_user_id, createdAt: msg.created_at,
             fileUrl: row.file_url, fileName: row.file_name, fileType: row.file_type,

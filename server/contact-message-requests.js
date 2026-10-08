@@ -1,4 +1,5 @@
 'use strict';
+const { marketplaceConversation } = require('./friendship-policy');
 
 const { contentAllowedByFilter } = require('./content-filter-policy');
 const { shortFilterReason } = require('./guide-filter-notice');
@@ -21,7 +22,7 @@ async function lockContactRequests(db, senderId, recipientId) {
 // attachment when an upload retry races with the ordinary send path.
 async function queueContactRequest(db, { senderId, recipientId, body, type,
   fileUrl, fileName, operationId = null, parentEventId = null }) {
-  const ownTransaction = typeof db.connect === 'function';
+  const ownTransaction = typeof db.connect === 'function' && !(db instanceof require('pg').Client);
   const client = ownTransaction ? await db.connect() : db;
   try {
     if (ownTransaction) await client.query('BEGIN');
@@ -33,7 +34,8 @@ async function queueContactRequest(db, { senderId, recipientId, body, type,
     const contact = await client.query('SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
       [recipientId, senderId]);
     let request = null;
-    if (String(senderId) !== String(recipientId) && !contact.rows.length) {
+    if (String(senderId) !== String(recipientId) && !contact.rows.length &&
+        !await marketplaceConversation(client,senderId,recipientId)) {
       if (fileUrl) request = (await client.query(`SELECT id,created_at FROM message_requests
         WHERE sender_id=$1 AND recipient_id=$2 AND file_url=$3 AND status='pending'
         ORDER BY created_at LIMIT 1`, [senderId, recipientId, fileUrl])).rows[0];

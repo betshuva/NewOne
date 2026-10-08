@@ -195,6 +195,8 @@ Future<void> _withGroup(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
+    // The browser loads application fonts through Flutter web assets.
+    if (kIsWeb) return;
     final font = FontLoader('NotoSansHebrew')
       ..addFont(rootBundle.load('assets/fonts/NotoSansHebrew.ttf'));
     await font.load();

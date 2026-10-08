@@ -110,6 +110,7 @@ test('registered phone routes enforce directed consent against isolated PostgreS
         phone TEXT,birth_date DATE,gender TEXT,email_verified BOOLEAN,phone_verified BOOLEAN);
       CREATE TEMP TABLE user_contacts(owner_id UUID,contact_id UUID,PRIMARY KEY(owner_id,contact_id));
       CREATE TEMP TABLE blocked_users(blocker_id UUID,blocked_id UUID);
+      CREATE TEMP TABLE group_members(group_id UUID,user_id UUID,status TEXT,share_phone BOOLEAN DEFAULT FALSE);
       SET LOCAL search_path=pg_temp,public;`);
     await initializePhonePrivacy(db);
     await db.query(`INSERT INTO users(id,name,phone,birth_date,gender,email_verified,phone_verified)

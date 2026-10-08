@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:betshuva/main.dart' as app;
 import 'package:betshuva/phone_sharing.dart';
 import 'package:betshuva/phone_sharing_privacy.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -88,6 +89,7 @@ Future<void> _withPanel(
   _Server server,
   Future<void> Function(PhoneSharingController controller) check, {
   bool initialChoice = false,
+  bool friendshipConfirmation = false,
   bool settle = true,
   bool compact = false,
   double width = 900,
@@ -113,6 +115,7 @@ Future<void> _withPanel(
                 contactName: contactName,
                 controller: controller,
                 initialChoice: initialChoice,
+                friendshipConfirmation: friendshipConfirmation,
                 compact: compact,
               ),
             ),
@@ -139,6 +142,8 @@ CheckboxListTile _checkbox(WidgetTester tester, String label) => tester
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
+    // The browser loads application fonts through Flutter web assets.
+    if (kIsWeb) return;
     final font = FontLoader('NotoSansHebrew')
       ..addFont(rootBundle.load('assets/fonts/NotoSansHebrew.ttf'));
     await font.load();
@@ -217,6 +222,29 @@ void main() {
       expect(find.text('בקש מספר טלפון'), findsOneWidget);
       expect(server.writes, isEmpty);
     });
+  });
+
+  testWidgets('mutual friends expose phones without approval or revoke controls', (tester) async {
+    final server = _Server({'is_friend': true, 'phone': _phone, 'phone_visibility': 'shared',
+      'share_my_phone': true, 'can_share_my_phone': false, 'can_request_phone': false});
+    await _withPanel(tester, server, (controller) async {
+      expect(find.text(_phone), findsOneWidget);
+      expect(find.byType(CheckboxListTile), findsNothing);
+      expect(find.text('בקש מספר טלפון'), findsNothing);
+      expect(find.text('בטל שיתוף של הטלפון שלי'), findsNothing);
+      expect(controller.confirmationPayload, isEmpty);
+      expect(server.writes, isEmpty);
+    });
+  });
+
+  testWidgets('friendship approval explains automatic sharing without a separate phone choice', (tester) async {
+    final server = _Server();
+    await _withPanel(tester, server, (controller) async {
+      expect(find.text('באישור החברות מספרי הטלפון יהיו גלויים לשניכם באופן אוטומטי.'), findsOneWidget);
+      expect(find.byType(CheckboxListTile), findsNothing);
+      expect(find.text('בקש מספר טלפון'), findsNothing);
+      expect(controller.confirmationPayload, isEmpty);
+    }, initialChoice: true, friendshipConfirmation: true);
   });
 
   testWidgets('hidden and legacy raw numbers never appear in the panel',

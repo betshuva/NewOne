@@ -16,6 +16,28 @@ const _coloredEmojiPath =
     '/betshuva-app/expression-library/user-20261008-color';
 final _wireEmoji = RegExp(r'\[\[bt-emoji:([0-9]{3})\]\]');
 final _editorEmoji = RegExp('[\uE000-\uE095]');
+const inlineEmojiScale = 1.1;
+
+/// Composers start on the right, including emoji-only drafts.
+TextDirection inlineEmojiDraftDirection(String text) => TextDirection.rtl;
+
+bool _isDraftEmoji(String character) => _editorEmoji.hasMatch(character) ||
+    RegExp(r'[\u{1f000}-\u{1faff}\u2600-\u27bf]', unicode: true)
+        .hasMatch(character);
+
+int? _precedingEmojiRunStart(String prefix) {
+  int? start;
+  var offset = 0;
+  for (final character in prefix.characters) {
+    if (_isDraftEmoji(character)) {
+      start ??= offset;
+    } else if (character != ' ' && character != '\t') {
+      start = null;
+    }
+    offset += character.length;
+  }
+  return start;
+}
 
 typedef _MessageEmojiArtwork = ({String code, String label});
 final _messageEmojiCatalogs =
@@ -123,7 +145,7 @@ TextSpan _messageEmojiSpans(BuildContext context, String text,
               : 32.0)
       : ((effectiveStyle.fontSize ?? 14) * 1.35).clamp(18.0, 24.0).toDouble();
   // Text.rich scales WidgetSpan children with the surrounding text.
-  final size = baseSize;
+  final size = baseSize * inlineEmojiScale;
   final spans = <InlineSpan>[];
   final plain = StringBuffer();
   void flushPlain() {
@@ -267,6 +289,21 @@ class _MessageEmojiParagraph extends RenderParagraph {
           TextSelection(baseOffset: offset, extentOffset: offset + 1));
       return boxes.length == 1 ? boxes.single.left : null;
     }).toList();
+    // Reverse only the artwork identities within each consecutive run. Keep
+    // its original bidi slots, so nearby Hebrew/Latin words and isolated
+    // emoji never exchange positions when a run is displayed LTR.
+    for (final run in RegExp('\uFFFC(?:[ \t]*\uFFFC)+').allMatches(plain)) {
+      final indices = [
+        for (var i = 0; i < offsets.length; i++)
+          if (offsets[i] >= run.start && offsets[i] < run.end) i
+      ];
+      if (indices.any((i) => _visualPositions[i] == null)) continue;
+      final positions = indices.map((i) => _visualPositions[i]!).toList()
+        ..sort();
+      for (var i = 0; i < indices.length; i++) {
+        _visualPositions[indices[i]] = positions[i];
+      }
+    }
   }
 
   @override
@@ -357,7 +394,11 @@ int? inlineEmojiIdFromUrl(String value) {
   return id;
 }
 
-String encodeInlineEmojiText(String text) => text.replaceAllMapped(
+// These isolates belong to the editor's bidi layout, not the message payload.
+String inlineEmojiPlainText(String text) =>
+    text.replaceAll(RegExp('[\u2066\u2069]'), '');
+
+String encodeInlineEmojiText(String text) => inlineEmojiPlainText(text).replaceAllMapped(
       _editorEmoji,
       (match) =>
           '[[bt-emoji:${(_emojiIdAt(match[0]!, 0)!).toString().padLeft(3, '0')}]]',
@@ -426,13 +467,135 @@ TextEditingValue _decodeEditingValue(TextEditingValue incoming) {
   );
 }
 
+TextEditingValue _isolateEmojiEditingValue(TextEditingValue incoming) {
+  // Leave active IME composition untouched until it commits.
+  if (incoming.isComposingRangeValid && !incoming.composing.isCollapsed) {
+    return incoming;
+  }
+  final plain = inlineEmojiPlainText(incoming.text);
+  int logicalOffset(int offset) => offset < 0
+      ? offset
+      : inlineEmojiPlainText(incoming.text.substring(0, offset)).length;
+  final runs = <TextRange>[];
+  if (inlineEmojiDraftDirection(plain) == TextDirection.rtl) {
+    int? start;
+    var end = 0;
+    var offset = 0;
+    for (final character in plain.characters) {
+      final emoji = _isDraftEmoji(character);
+      if (emoji) {
+        start ??= offset;
+        end = offset + character.length;
+      } else if (character != ' ' && character != '\t') {
+        if (start != null) runs.add(TextRange(start: start, end: end));
+        start = null;
+      }
+      offset += character.length;
+    }
+    if (start != null) runs.add(TextRange(start: start, end: end));
+  }
+  final display = StringBuffer();
+  var previousEnd = 0;
+  for (final run in runs) {
+    display
+      ..write(plain.substring(previousEnd, run.start))
+      ..write('\u2066') // LTR isolate: only this emoji run changes direction.
+      ..write(plain.substring(run.start, run.end))
+      ..write('\u2069');
+    previousEnd = run.end;
+  }
+  display.write(plain.substring(previousEnd));
+  int displayOffset(int offset) {
+    if (offset < 0) return offset;
+    var extra = 0;
+    for (final run in runs) {
+      if (offset < run.start) break;
+      extra++;
+      if (offset < run.end) break;
+      extra++;
+    }
+    return offset + extra;
+  }
+  return incoming.copyWith(
+    text: display.toString(),
+    selection: TextSelection(
+      baseOffset: displayOffset(logicalOffset(incoming.selection.baseOffset)),
+      extentOffset: displayOffset(logicalOffset(incoming.selection.extentOffset)),
+      affinity: incoming.selection.affinity,
+      isDirectional: incoming.selection.isDirectional,
+    ),
+    composing: TextRange.empty,
+  );
+}
+
 class InlineEmojiController extends TextEditingController {
-  InlineEmojiController({String? text})
-      : super(text: decodeInlineEmojiText(text ?? ''));
+  InlineEmojiController({String? text, this.isolateEmojiRuns = false})
+      : super.fromValue(isolateEmojiRuns
+            ? _isolateEmojiEditingValue(
+                TextEditingValue(text: decodeInlineEmojiText(text ?? '')))
+            : TextEditingValue(text: decodeInlineEmojiText(text ?? '')));
+
+  final bool isolateEmojiRuns;
+  bool _disposed = false;
+  bool _layoutCheckScheduled = false;
+
+  TextEditingValue _insertEmojisOnTheLeft(TextEditingValue incoming) {
+    if (!incoming.selection.isValid || !incoming.selection.isCollapsed ||
+        (incoming.isComposingRangeValid && !incoming.composing.isCollapsed)) {
+      return incoming;
+    }
+    final oldText = inlineEmojiPlainText(value.text);
+    final newText = inlineEmojiPlainText(incoming.text);
+    // Backspace at the visual left edge first reaches the invisible closing
+    // isolate. Remove the leftmost artwork instead of restoring that marker.
+    final cursor = value.selection.extentOffset;
+    if (newText == oldText && incoming.text.length == value.text.length - 1 &&
+        value.selection.isCollapsed && cursor > 0 &&
+        value.text[cursor - 1] == '\u2069' &&
+        incoming.selection.extentOffset == cursor - 1) {
+      final end = inlineEmojiPlainText(value.text.substring(0, cursor)).length;
+      final start = _precedingEmojiRunStart(oldText.substring(0, end));
+      if (start != null) {
+        final length = oldText.substring(start).characters.first.length;
+        return incoming.copyWith(
+          text: oldText.replaceRange(start, start + length, ''),
+          selection: TextSelection.collapsed(offset: end - length),
+          composing: TextRange.empty,
+        );
+      }
+    }
+    if (newText.length <= oldText.length) return incoming;
+    var start = 0;
+    while (start < oldText.length && oldText.codeUnitAt(start) == newText.codeUnitAt(start)) {
+      start++;
+    }
+    final insertedLength = newText.length - oldText.length;
+    if (newText.substring(start + insertedLength) != oldText.substring(start)) return incoming;
+    final inserted = newText.substring(start, start + insertedLength);
+    if (!inserted.characters.every(_isDraftEmoji)) return incoming;
+    // A skin tone extends the preceding grapheme; it is not a new reaction.
+    final firstRune = inserted.runes.first;
+    if (firstRune >= 0x1f3fb && firstRune <= 0x1f3ff) return incoming;
+    final extent = inlineEmojiPlainText(incoming.text.substring(0, incoming.selection.extentOffset)).length;
+    if (extent != start + insertedLength) return incoming;
+    // Artwork runs have an LTR layout. Insert each new choice at their left
+    // edge, keeping previous choices on the right and the caret after the run.
+    final runStart = _precedingEmojiRunStart(oldText.substring(0, start));
+    final target = runStart ?? start;
+    return incoming.copyWith(
+      text: oldText.substring(0, target) + inserted.characters.toList().reversed.join() +
+          oldText.substring(target),
+      selection: TextSelection.collapsed(offset: extent),
+      composing: TextRange.empty,
+    );
+  }
 
   @override
   set value(TextEditingValue newValue) {
-    super.value = _decodeEditingValue(newValue);
+    final decoded = _decodeEditingValue(newValue);
+    super.value = isolateEmojiRuns
+        ? _isolateEmojiEditingValue(_insertEmojisOnTheLeft(decoded))
+        : decoded;
   }
 
   @override
@@ -440,15 +603,105 @@ class InlineEmojiController extends TextEditingController {
     required BuildContext context,
     TextStyle? style,
     required bool withComposing,
-  }) =>
-      _emojiSpans(
-        context,
-        text,
-        style: style,
-        composing: withComposing && value.isComposingRangeValid
-            ? value.composing
-            : TextRange.empty,
-      );
+  }) {
+    final spans = _emojiSpans(context, text, style: style,
+      composing: withComposing && value.isComposingRangeValid
+          ? value.composing : TextRange.empty);
+    if (!isolateEmojiRuns) return spans;
+    final width = _draftEmojiWidth(_draftEditable(context));
+    if (!_layoutCheckScheduled && _editorEmoji.allMatches(text).length > 1) {
+      _layoutCheckScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _layoutCheckScheduled = false;
+        if (!_disposed && context.mounted &&
+            width != _draftEmojiWidth(_draftEditable(context))) {
+          // Initial drafts and browser resizing must use the field's final
+          // layout width, which is only available after the first frame.
+          notifyListeners();
+        }
+      });
+    }
+    return _draftEmojiSpans(context, spans);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+}
+
+RenderEditable? _draftEditable(BuildContext context) {
+  RenderEditable? editable;
+  void visit(RenderObject object) {
+    if (object is RenderEditable) { editable = object; return; }
+    object.visitChildren((child) { if (editable == null) visit(child); });
+  }
+  final object = context.findRenderObject();
+  if (object != null) visit(object);
+  return editable;
+}
+
+double _draftEmojiWidth(RenderEditable? render) =>
+    render != null && render.hasSize && render.maxLines != 1
+        ? (render.constraints.maxWidth - render.cursorWidth - 1).clamp(0.0, double.infinity)
+        : double.infinity;
+
+// RenderEditable uses SkParagraph's placeholder ordering, which can exchange
+// images across separate bidi runs. Correct only the artwork assigned to its
+// slots; editing offsets, composing ranges and the transmitted text stay intact.
+TextSpan _draftEmojiSpans(BuildContext context, TextSpan spans) {
+  final children = spans.children!;
+  final indices = <int>[];
+  final offsets = <int>[];
+  var offset = 0;
+  for (var i = 0; i < children.length; i++) {
+    final span = children[i];
+    if (span is WidgetSpan) {
+      indices.add(i); offsets.add(offset++);
+    } else {
+      offset += span.toPlainText(includeSemanticsLabels: false).length;
+    }
+  }
+  if (indices.length < 2) return spans;
+  final style = DefaultTextStyle.of(context).style.merge(spans.style);
+  final size = ((style.fontSize ?? 14) * 1.35).clamp(18.0, 24.0).toDouble() * inlineEmojiScale;
+  final render = _draftEditable(context);
+  final width = _draftEmojiWidth(render);
+  final scaler = render?.textScaler ?? MediaQuery.textScalerOf(context);
+  final actual = TextPainter(text: TextSpan(style: style, children: children),
+    textDirection: TextDirection.rtl, textScaler: scaler);
+  final reference = TextPainter(text: TextSpan(style: style,
+    text: spans.toPlainText(includeSemanticsLabels: false)),
+    textDirection: TextDirection.rtl, textScaler: scaler);
+  try {
+    actual.setPlaceholderDimensions([for (final _ in indices)
+      PlaceholderDimensions(size: Size.square(size), alignment: PlaceholderAlignment.middle)]);
+    actual.layout(maxWidth: width); reference.layout();
+    final boxes = actual.inlinePlaceholderBoxes;
+    if (boxes == null || boxes.length != indices.length) return spans;
+    final positions = [for (final at in offsets)
+      reference.getBoxesForSelection(TextSelection(baseOffset: at, extentOffset: at + 1))];
+    if (positions.any((boxes) => boxes.length != 1)) return spans;
+    final reordered = List<InlineSpan>.of(children);
+    final lines = <double, List<int>>{};
+    for (var i=0; i<indices.length; i++) {
+      (lines[boxes[i].top] ??= <int>[]).add(i);
+    }
+    for (final line in lines.values) {
+      final slots = List<int>.of(line)..sort((a,b)=>boxes[a].left.compareTo(boxes[b].left));
+      final artwork = List<int>.of(line)..sort((a,b)=>positions[a].single.left.compareTo(positions[b].single.left));
+      for (var i=0; i<slots.length; i++) {
+        final slot=children[indices[slots[i]]] as WidgetSpan;
+        final image=children[indices[artwork[i]]] as WidgetSpan;
+        reordered[indices[slots[i]]] = WidgetSpan(alignment: slot.alignment,
+          baseline: slot.baseline, style: slot.style, child: image.child);
+      }
+    }
+    return TextSpan(style: spans.style, children: reordered);
+  } finally {
+    actual.dispose(); reference.dispose();
+  }
 }
 
 TextSpan _emojiSpans(
@@ -459,7 +712,8 @@ TextSpan _emojiSpans(
 }) {
   final effectiveStyle = DefaultTextStyle.of(context).style.merge(style);
   final size =
-      ((effectiveStyle.fontSize ?? 14) * 1.35).clamp(18.0, 24.0).toDouble();
+      ((effectiveStyle.fontSize ?? 14) * 1.35).clamp(18.0, 24.0).toDouble() *
+          inlineEmojiScale;
   final spans = <InlineSpan>[];
   var offset = 0;
   while (offset < text.length) {
@@ -574,7 +828,7 @@ class InlineEmojiText extends StatelessWidget {
         overflow: overflow,
       );
     }
-    return Text.rich(
+    return _MessageEmojiText.rich(
       _emojiSpans(context, decoded, style: style),
       style: style,
       textAlign: textAlign,

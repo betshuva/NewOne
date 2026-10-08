@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { mutualFriendSql, groupPhoneSql } = require('./friendship-policy');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCES = new Set(['unknown', 'in_app', 'phone_import', 'phone_manual', 'email_import']);
@@ -59,7 +60,9 @@ function phoneSelect(viewerSql = '$1', userAlias = 'u') {
     NOT EXISTS (SELECT 1 FROM blocked_users phone_block
       WHERE (phone_block.blocker_id=${viewerSql} AND phone_block.blocked_id=${target}.id)
          OR (phone_block.blocker_id=${target}.id AND phone_block.blocked_id=${viewerSql}))
-    AND (EXISTS (SELECT 1 FROM user_contacts phone_contact
+    AND (${mutualFriendSql(viewerSql, `${target}.id`)}
+      OR ${groupPhoneSql(viewerSql, `${target}.id`)}
+      OR EXISTS (SELECT 1 FROM user_contacts phone_contact
       WHERE phone_contact.owner_id=${viewerSql} AND phone_contact.contact_id=${target}.id
         AND phone_contact.known_phone_hash=${hash})
       OR (${target}.birth_date<=CURRENT_DATE-INTERVAL '18 years'
@@ -110,6 +113,9 @@ async function loadRows(pool, viewerId, ids) {
       viewer.phone AS viewer_phone,
       viewer.birth_date<=CURRENT_DATE-INTERVAL '18 years' AS viewer_adult,
       c.contact_source,c.known_phone_hash,
+      ${mutualFriendSql('$1','u.id')} AS is_friend,
+      ${groupPhoneSql('$1','u.id')} AS group_phone_shared,
+      ${groupPhoneSql('u.id','$1')} AS own_group_phone_shared,
       outgoing.state AS request_state,outgoing.phone_hash AS requested_phone_hash,
       incoming.state AS incoming_state,incoming.phone_hash AS shared_phone_hash,
       EXISTS (SELECT 1 FROM blocked_users b
@@ -132,8 +138,10 @@ function sharingStatus(row, viewerId, suppliedPhones = new Set()) {
   const ownHash = phoneFingerprint(row.viewer_phone);
   const adults = row.target_adult === true && row.viewer_adult === true;
   const known = targetHash && (row.known_phone_hash === targetHash || suppliedPhones.has(normalized));
-  const shared = adults && targetHash && row.request_state === 'approved' && row.requested_phone_hash === targetHash;
-  const ownShared = adults && ownHash && row.incoming_state === 'approved' && row.shared_phone_hash === ownHash;
+  const automatic = row.is_friend === true || row.group_phone_shared === true;
+  const ownAutomatic = row.is_friend === true || row.own_group_phone_shared === true;
+  const shared = automatic || adults && targetHash && row.request_state === 'approved' && row.requested_phone_hash === targetHash;
+  const ownShared = ownAutomatic || adults && ownHash && row.incoming_state === 'approved' && row.shared_phone_hash === ownHash;
   const visibility = row.blocked && !self ? 'hidden' : !normalized ? 'unavailable'
     : self ? 'self' : known ? 'known' : shared ? 'shared' : 'hidden';
   // A grant never follows a user to a new number. A request/denial is also for
@@ -143,14 +151,16 @@ function sharingStatus(row, viewerId, suppliedPhones = new Set()) {
   return {
     phone: ['self', 'known', 'shared'].includes(visibility) ? row.phone : null,
     phone_visibility: visibility,
+    is_friend: !row.blocked && row.is_friend === true,
+    group_phone_shared: !row.blocked && row.group_phone_shared === true,
     contact_source: SOURCES.has(row.contact_source) ? row.contact_source : 'unknown',
-    request_state: row.blocked ? 'none' : requestState,
-    incoming_request: !row.blocked && adults && Boolean(ownHash) && incomingRequest,
+    request_state: row.blocked || automatic ? 'none' : requestState,
+    incoming_request: !row.blocked && !ownAutomatic && adults && Boolean(ownHash) && incomingRequest,
     share_my_phone: !row.blocked && Boolean(ownShared),
     my_phone_available: Boolean(ownHash),
     share_unavailable_reason: row.blocked ? 'blocked' : !adults ? 'age_restricted'
       : !ownHash ? 'missing_phone' : null,
-    can_share_my_phone: !self && !row.blocked && adults && Boolean(ownHash),
+    can_share_my_phone: !self && !row.blocked && !ownAutomatic && adults && Boolean(ownHash),
     can_request_phone: !self && !row.blocked && adults && Boolean(targetHash) && !known && !shared,
   };
 }

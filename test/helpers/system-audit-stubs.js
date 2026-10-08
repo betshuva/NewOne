@@ -5,6 +5,10 @@
 module.exports = {
   emitDispatchRejection: async (_getPool,socket,payload) => socket.emit('message:rejected',payload),
   auditIds: () => [null, null],
+  // Handler fixtures isolate friendship plumbing; its real transactions are
+  // exercised by friendship-policy and contact-request-delivery DB suites.
+  writeFriendshipMessage: async (db, _sender, _recipient, write) => write(db),
+  notifyFriendshipChange() {},
   getAuditContext: () => null,
   runWithAuditContext: (_context, callback) => callback(),
   withPendingAudit: async (_db, _row, callback) => callback(),

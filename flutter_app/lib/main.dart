@@ -258,6 +258,14 @@ KeyEventResult _handleMessageInputNavigation(TextEditingController controller,
   final isRight = key == LogicalKeyboardKey.arrowRight;
   if (!isLeft && !isRight) return KeyEventResult.ignored;
 
+  // EditableText understands the LTR isolates and grapheme boundaries. The
+  // legacy Hebrew-only shortcut must not reverse navigation inside emoji.
+  if (controller is InlineEmojiController &&
+      (controller.text.contains('\u2066') ||
+          inlineEmojiDraftDirection(controller.text) == TextDirection.ltr)) {
+    return KeyEventResult.ignored;
+  }
+
   final selection = controller.selection;
   if (!selection.isValid) return KeyEventResult.ignored;
 
@@ -1803,8 +1811,10 @@ Future<void> _showReportDialog({
                 border: OutlineInputBorder(),
               ),
             ),
-            const Text(
-              'הדיווח יועבר למנהלי בתשובה לבדיקה. המשתמש שעליו דווח לא יקבל את פרטיך.',
+            Text(
+              targetType == 'user'
+                ? 'הדיווח ינתק את החברות משני הצדדים ויועבר למנהלים לבדיקה. המשתמש לא יקבל את פרטי הדיווח שלך.'
+                : 'הדיווח יועבר למנהלי בתשובה לבדיקה. המשתמש שעליו דווח לא יקבל את פרטיך.',
               style: TextStyle(fontSize: 12, color: kSubtext),
               textDirection: TextDirection.rtl,
             ),
@@ -1844,6 +1854,7 @@ Future<void> _showReportDialog({
     );
     if (!context.mounted) return;
     if (response.statusCode == 201) {
+      if (targetType == 'user') phoneSharingChanges.add(targetId);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('הדיווח התקבל ויועבר לבדיקה'),
         backgroundColor: kPrimary,
@@ -1978,7 +1989,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.63';
+const kVersion = '1.3.64';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -8862,7 +8873,7 @@ class _MainShellContentState extends State<_MainShellContent> {
                       PhoneSharingPanel(
                         api: kApi, token: widget.token, contactId: senderId!,
                         contactName: senderName.toString(), compact: true,
-                        controller: phoneChoice, initialChoice: true,
+                        controller: phoneChoice, initialChoice: true, friendshipConfirmation: true,
                         onChanged: () => setDialogState(() {}),
                       ),
                   ],
@@ -9405,7 +9416,16 @@ class _MainShellContentState extends State<_MainShellContent> {
     _socket!.on('contact:phone-sharing', (data) {
       if (!mounted) return;
       final id = data is Map ? data['userId']?.toString() : null;
-      if (id != null) phoneSharingChanges.add(id);
+      if (id != null) {
+        phoneSharingChanges.add(id);
+        setState(() {
+          for (final user in _users.where((u) => u['id'] == id)) {
+            user['phone'] = null; user['phone_visibility'] = 'hidden';
+          }
+          if (_desktopRecipient?['id'] == id) _desktopRecipient = {..._desktopRecipient!, 'phone': null, 'phone_visibility': 'hidden'};
+        });
+      }
+      _usersLoadGeneration++;
       _loadUsers();
       _loadPhoneRequests();
     });
@@ -20421,6 +20441,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
   bool _loadingUsers = true;
   bool _saving = false;
   bool _announcementsOnly = false;
+  bool _shareGroupPhone = true;
   bool _filterConfirmed = false;
   bool _loadingGeneralFilter = true;
   Map<String, dynamic> _generalFilter = {};
@@ -20552,6 +20573,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
             'is_broadcast': _announcementsOnly,
             'is_self': _selectedIds.isEmpty,
             'content_filter': _contentFilter,
+            'share_phone': _shareGroupPhone,
           }));
       final decoded = jsonDecode(response.body);
       if (response.statusCode != 200 || decoded is! Map) {
@@ -20624,7 +20646,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
               color: Color(0x10000000), blurRadius: 14, offset: Offset(0, 4))
         ],
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      child: Material(color: Colors.transparent, child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(children: [
           Container(
               padding: const EdgeInsets.all(9),
@@ -20646,7 +20668,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
         ]),
         const SizedBox(height: 16),
         child,
-      ]),
+      ])),
     );
   }
 
@@ -20730,6 +20752,13 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: _shareGroupPhone,
+                      title: const Text('הצג את מספר הטלפון שלי למשתתפי הקבוצה'),
+                      subtitle: const Text('אפשר לבטל את השיתוף. המספר נשאר גלוי לחברים.'),
+                      onChanged: _saving ? null : (value) => setState(() => _shareGroupPhone = value == true),
+                    ),
                     const Text('סוג הקבוצה',
                         style: TextStyle(fontWeight: FontWeight.w700)),
                     const SizedBox(height: 8),
@@ -23083,6 +23112,23 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
   }
 }
 
+Future<bool?> _chooseGroupPhoneSharing(BuildContext context, {bool initial = true}) {
+  var share = initial;
+  return showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
+    builder: (_, update) => AlertDialog(
+      title: const Text('שיתוף טלפון בקבוצה'),
+      content: CheckboxListTile(value: share,
+        title: const Text('הצג את מספר הטלפון שלי לכל משתתפי הקבוצה'),
+        subtitle: const Text('ביטול השיתוף אינו מסתיר את המספר מחברים.'),
+        onChanged: (value) => update(() => share = value == true)),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('ביטול')),
+        FilledButton(onPressed: () => Navigator.pop(dialogContext, share), child: const Text('אישור')),
+      ],
+    ),
+  ));
+}
+
 Future<Map<String, bool>?> _chooseGroupInvitationFilter(
   BuildContext context, {
   required Map<String, bool> groupFilter,
@@ -23494,7 +23540,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _ChatUploadDestination(widget.token, widget.recipient['id'].toString());
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
-  final _msgCtrl = InlineEmojiController();
+  final _msgCtrl = InlineEmojiController(isolateEmojiRuns: true);
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
@@ -25444,6 +25490,8 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             const Divider(),
+            ListTile(leading: const Icon(Icons.person_remove_outlined),
+              title: const Text('ניתוק חברות'), onTap: () { Navigator.pop(context); _disconnectFriend(); }),
             ListTile(
               leading: const Icon(Icons.thumb_down_alt_outlined,
                   color: Colors.orange),
@@ -25508,6 +25556,9 @@ class _ChatScreenState extends State<ChatScreen> {
             targetLabel: 'המשתמש ${widget.recipient['name'] as String? ?? ''}',
           );
         }
+        break;
+      case 'unfriend':
+        await _disconnectFriend();
         break;
       case 'block':
         _blockUser();
@@ -25575,6 +25626,26 @@ class _ChatScreenState extends State<ChatScreen> {
         },
       ),
     );
+  }
+
+  Future<void> _disconnectFriend() async {
+    final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
+      title: const Text('ניתוק חברות'),
+      content: const Text('לנתק את החברות משני הצדדים? היסטוריית השיחה תישאר. שיתוף מספר דרך קבוצה משותפת יישאר לפי הבחירה בקבוצה.'),
+      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext,false), child: const Text('ביטול')),
+        FilledButton(onPressed: () => Navigator.pop(dialogContext,true), child: const Text('נתק חברות'))],
+    ));
+    if (confirmed != true) return;
+    try {
+      final response = await http.delete(Uri.parse('$kApi/contacts/${widget.recipient['id']}/friendship'),
+        headers: {'Authorization': 'Bearer ${widget.token}'}).timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200) throw StateError('disconnect failed');
+      phoneSharingChanges.add(widget.recipient['id'].toString());
+      widget.onBlocked?.call();
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('החברות נותקה')));
+    } catch (_) {
+      if (mounted) _showError('לא ניתן לנתק את החברות כרגע. נסה שוב.');
+    }
   }
 
   Future<void> _blockUser() async {
@@ -26023,6 +26094,7 @@ class _ChatScreenState extends State<ChatScreen> {
         token: destination.token,
         fields: {
           'toUserId': destination.targetId,
+          if (widget.listingId != null) 'listingInquiryId': widget.listingId!,
           'clientUploadId': uploadMessageIds[files.indexOf(file)],
           'scanReport': 'true',
         },
@@ -26292,6 +26364,7 @@ class _ChatScreenState extends State<ChatScreen> {
       token: destination.token,
       fields: {
         'toUserId': destination.targetId,
+          if (widget.listingId != null) 'listingInquiryId': widget.listingId!,
         if (!isLibrarySticker) 'scanReport': 'true',
         ...extraFields,
         'clientUploadId': uploadMessageId,
@@ -26441,6 +26514,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
                 body: jsonEncode({
                   'toUserId': uploadDestination.targetId,
+                  if (widget.listingId != null) 'listingId': widget.listingId!,
                   'fileUrl': fileUrl,
                   'fileName': fileName,
                   'fileType': fileType,
@@ -26960,6 +27034,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         color: Colors.red)),
                 PopupMenuDivider(height: 8),
                 PopupMenuItem(
+                    value: 'unfriend', height: 40,
+                    child: _CompactMenuItem(Icons.person_remove_outlined, 'ניתוק חברות')),
+                PopupMenuItem(
                     value: 'report',
                     height: 40,
                     child: _CompactMenuItem(
@@ -27464,32 +27541,36 @@ class _ChatScreenState extends State<ChatScreen> {
                                     _handleMessageInputNavigation(
                                         _msgCtrl, _msgHistory, event,
                                         onWebEnter: _send),
-                                child: TextField(
-                                  controller: _msgCtrl,
-                                  focusNode: _msgFocusNode,
-                                  contextMenuBuilder: (context, state) => buildImagePasteMenu(
-                                      context, state, _clipboardImagePasteListener.pasteImage),
-                                  enabled: _recipientAllowsText,
-                                  textDirection: TextDirection.rtl,
-                                  maxLines: 4,
-                                  minLines: 1,
-                                  textInputAction: TextInputAction.newline,
-                                  onChanged: (_) => _onTyping(),
-                                  decoration: InputDecoration(
-                                    hintText: _recipientAllowsText
-                                        ? 'כתוב הודעה...'
-                                        : 'הנמען אינו מקבל תוכן טקסטואלי',
-                                    hintTextDirection: TextDirection.rtl,
-                                    hintStyle: const TextStyle(
-                                        fontSize: 13, color: kSubtext),
-                                    contentPadding: const EdgeInsets.symmetric(
-                                        horizontal: 4, vertical: 9),
-                                    border: InputBorder.none,
-                                    isDense: true,
+                                child: ValueListenableBuilder<TextEditingValue>(
+                                  valueListenable: _msgCtrl,
+                                  builder: (context, value, _) => TextField(
+                                    controller: _msgCtrl,
+                                    focusNode: _msgFocusNode,
+                                    contextMenuBuilder: (context, state) => buildImagePasteMenu(
+                                        context, state, _clipboardImagePasteListener.pasteImage),
+                                    enabled: _recipientAllowsText,
+                                    textDirection: inlineEmojiDraftDirection(value.text),
+                                    textAlign: TextAlign.right,
+                                    maxLines: 4,
+                                    minLines: 1,
+                                    textInputAction: TextInputAction.newline,
+                                    onChanged: (_) => _onTyping(),
+                                    decoration: InputDecoration(
+                                      hintText: _recipientAllowsText
+                                          ? 'כתוב הודעה...'
+                                          : 'הנמען אינו מקבל תוכן טקסטואלי',
+                                      hintTextDirection: TextDirection.rtl,
+                                      hintStyle: const TextStyle(
+                                          fontSize: 13, color: kSubtext),
+                                      contentPadding: const EdgeInsets.symmetric(
+                                          horizontal: 4, vertical: 9),
+                                      border: InputBorder.none,
+                                      isDense: true,
+                                    ),
+                                    style: const TextStyle(
+                                        fontSize: 13, color: kTextDark),
+                                    onSubmitted: (_) => _send(),
                                   ),
-                                  style: const TextStyle(
-                                      fontSize: 13, color: kTextDark),
-                                  onSubmitted: (_) => _send(),
                                 ),
                               ),
                             ),
@@ -27706,6 +27787,8 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
         groupName: _meta['groupName']?.toString(),
       );
       if (selected == null || !mounted) return;
+      final sharePhone = await _chooseGroupPhoneSharing(context);
+      if (sharePhone == null || !mounted) return;
       setState(() => _loading = true);
       final res = await http.post(
         Uri.parse('$kApi/groups/$groupId/join'),
@@ -27713,7 +27796,7 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'filter': selected}),
+        body: jsonEncode({'filter': selected, 'share_phone': sharePhone}),
       );
       if (res.statusCode == 200 && mounted) {
         setState(() {
@@ -31980,8 +32063,8 @@ class _RemoteExpressionGrid extends StatelessWidget {
               : _remoteStickerPrefix;
           final image = Image.network(
             url,
-            width: inlineEmoji ? 24 : null,
-            height: inlineEmoji ? 24 : null,
+            width: inlineEmoji ? 24 * inlineEmojiScale : null,
+            height: inlineEmoji ? 24 * inlineEmojiScale : null,
             fit: BoxFit.contain,
             filterQuality: FilterQuality.medium,
             errorBuilder: (_, __, ___) =>
@@ -32523,7 +32606,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _ChatUploadDestination(widget.token, _groupId);
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _selectedMessageKeys = {};
-  final _msgCtrl = InlineEmojiController();
+  final _msgCtrl = InlineEmojiController(isolateEmojiRuns: true);
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
@@ -32544,6 +32627,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   late final void Function(dynamic) _messageReactionHandler;
   late final MessageReactionReadTracker _reactionReadTracker;
   late final void Function(dynamic) _groupMemberJoinedSocketHandler;
+  late final void Function(dynamic) _groupPhoneSharingSocketHandler;
   late final void Function(dynamic) _messageEditedSocketHandler;
   late final void Function(dynamic) _messageDeletedSocketHandler;
   final List<Map<String, dynamic>> _members = [];
@@ -33006,6 +33090,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             ..clear()
             ..addAll(members);
           _membersLoaded = true;
+          widget.group['share_phone'] = data['share_phone'];
           widget.group['member_count'] = members.length;
           widget.group['profile_pic_url'] = data['profile_pic_url'];
         });
@@ -33101,6 +33186,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             groupName: widget.group['name']?.toString(),
           );
     if (selectedFilter == null || !mounted) return;
+    final sharePhone = await _chooseGroupPhoneSharing(context);
+    if (sharePhone == null || !mounted) return;
     setState(() => _processingInvite = true);
     try {
       final res = await http.post(
@@ -33109,7 +33196,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'filter': selectedFilter}),
+        body: jsonEncode({'filter': selectedFilter, 'share_phone': sharePhone}),
       );
       if (res.statusCode == 200 && mounted) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -33700,7 +33787,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 ? saveError!
                                 : isSelected && saving
                                     ? 'מוסיף לחברים...'
-                                    : '${isAdminMember ? 'מנהל · ' : ''}${_lastViewedLabel(m['last_viewed_at'])}',
+                                    : '${isAdminMember ? 'מנהל · ' : ''}${visibleContactPhone(m).isEmpty ? '' : '${visibleContactPhone(m)} · '}${_lastViewedLabel(m['last_viewed_at'])}',
                             style: TextStyle(
                               color: isSelected && saveError != null
                                   ? Colors.red
@@ -34018,6 +34105,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _handleDeletedGroupEvent();
     };
     widget.socket?.on('group:deleted', _groupDeletedSocketHandler);
+    _groupPhoneSharingSocketHandler = (_) {
+      if (!mounted) return;
+      setState(() { for (final member in _members) {member['phone']=null;member['phone_visibility']='hidden';} });
+      _loadMembers();
+    };
+    widget.socket?.on('contact:phone-sharing', _groupPhoneSharingSocketHandler);
 
     _groupMessageSocketHandler = (data) {
       if (data['groupId'] != _groupId || !mounted) return;
@@ -34282,6 +34375,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.off('group:typing', _typingSocketHandler);
     widget.socket?.off('group:viewed', _groupViewedSocketHandler);
     widget.socket?.off('group:member_joined', _groupMemberJoinedSocketHandler);
+    widget.socket?.off('contact:phone-sharing', _groupPhoneSharingSocketHandler);
     widget.socket?.off('message:edited', _messageEditedSocketHandler);
     widget.socket?.off('message:deleted', _messageDeletedSocketHandler);
     widget.socket?.off('group:deleted', _groupDeletedSocketHandler);
@@ -36048,6 +36142,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (mounted) await _loadGroupReceivingFilter();
   }
 
+  Future<void> _changeGroupPhoneSharing() async {
+    await _loadMembers();
+    if (!mounted) return;
+    final share = await _chooseGroupPhoneSharing(context, initial: widget.group['share_phone'] == true);
+    if (share == null || !mounted) return;
+    try {
+      final response = await http.put(Uri.parse('$kApi/groups/$_groupId/phone-sharing'),
+        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+        body: jsonEncode({'share_phone': share})).timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200) throw StateError('group sharing failed');
+      if (!mounted) return;
+      setState(() => widget.group['share_phone'] = share);
+      await _loadMembers();
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('עדכון שיתוף המספר נכשל. נסה שוב.')));
+    }
+  }
+
   Future<void> _handleGroupMenuAction(String action) async {
     switch (action) {
       case 'clear_conversation':
@@ -36058,6 +36170,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         break;
       case 'info':
         await _showGroupDetailsPanel();
+        break;
+      case 'group_phone':
+        await _changeGroupPhoneSharing();
         break;
       case 'members':
         _showMembersDialog();
@@ -36649,6 +36764,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       height: 40,
                       child: _CompactMenuItem(
                           Icons.add_a_photo_outlined, 'תמונת הקבוצה')),
+                const PopupMenuItem(value: 'group_phone', height: 40,
+                  child: _CompactMenuItem(Icons.phone_outlined, 'שיתוף המספר שלי')),
                 if (_isAdmin)
                   const PopupMenuItem(
                       value: 'add',
@@ -38026,30 +38143,34 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               _handleMessageInputNavigation(
                                   _msgCtrl, _msgHistory, event,
                                   onWebEnter: _send),
-                          child: TextField(
-                            controller: _msgCtrl,
-                            focusNode: _msgFocusNode,
-                            contextMenuBuilder: (context, state) => buildImagePasteMenu(
-                                context, state, _clipboardImagePasteListener.pasteImage),
-                            textDirection: TextDirection.rtl,
-                            minLines: 1,
-                            maxLines: 4,
-                            textInputAction: TextInputAction.newline,
-                            decoration: InputDecoration(
-                              hintText: 'הודעה לקבוצה...',
-                              hintTextDirection: TextDirection.rtl,
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 10),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(24),
-                                borderSide: BorderSide.none,
+                          child: ValueListenableBuilder<TextEditingValue>(
+                            valueListenable: _msgCtrl,
+                            builder: (context, value, _) => TextField(
+                              controller: _msgCtrl,
+                              focusNode: _msgFocusNode,
+                              contextMenuBuilder: (context, state) => buildImagePasteMenu(
+                                  context, state, _clipboardImagePasteListener.pasteImage),
+                              textDirection: inlineEmojiDraftDirection(value.text),
+                              textAlign: TextAlign.right,
+                              minLines: 1,
+                              maxLines: 4,
+                              textInputAction: TextInputAction.newline,
+                              decoration: InputDecoration(
+                                hintText: 'הודעה לקבוצה...',
+                                hintTextDirection: TextDirection.rtl,
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 10),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(24),
+                                  borderSide: BorderSide.none,
+                                ),
+                                filled: true,
+                                fillColor: kBg,
                               ),
-                              filled: true,
-                              fillColor: kBg,
+                              onChanged: (_) => widget.socket
+                                  ?.emit('group:typing', {'groupId': _groupId}),
+                              onSubmitted: (_) => _send(),
                             ),
-                            onChanged: (_) => widget.socket
-                                ?.emit('group:typing', {'groupId': _groupId}),
-                            onSubmitted: (_) => _send(),
                           ),
                         ),
                       ),

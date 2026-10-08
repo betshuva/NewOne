@@ -35,6 +35,7 @@ async function retry({ cached = false, result = approved, stopped = false,
   let queued = true;
   const pool = { async query(sql, values) {
     const q = sql.trim();
+    if (q.includes('FROM listing_conversations')) return {rows: []};
     if (q.startsWith('SELECT ps.*')) return { rows: queued ? [row] : [] };
     if (q.startsWith('SELECT EXISTS')) return { rows: [{ waiting: false }] };
     if (q.startsWith('UPDATE pending_scans')) return { rows: [{ retry_count: 1 }] };

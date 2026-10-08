@@ -2,8 +2,11 @@
 
 HTTP and Socket private sends use the same contact request queue for text,
 stickers, images (including GIFs), video, audio, and documents. Shared contacts,
-locations, and links use the normal text path. Earlier message history and a
-marketplace inquiry do not bypass the recipient's current contact approval.
+locations, and links use the normal text path. Earlier message history alone
+does not bypass current contact approval. An authenticated marketplace inquiry
+registered against its real advertiser does bypass approval, while all current
+recipient filters and media checks remain enforced. Only an approved persisted
+advertiser reply creates mutual friendship (see contact-phone-privacy.md).
 Official assistants and self-conversations retain their existing behavior.
 
 Safety/moderation, source-file access, account blocks and teen restrictions

@@ -111,11 +111,37 @@ Finder _artwork(String code) =>
     find.byKey(ValueKey('message-unicode-emoji-$code'));
 
 void main() {
+  testWidgets('LTR emoji run keeps an isolated emoji beside its Latin words', (tester) async {
+    await _show(tester, '😀❤️ hello 👍 world');
+    final hello = _wordRect(tester, 'hello');
+    final world = _wordRect(tester, 'world');
+    final smile = tester.getRect(_artwork('1f600'));
+    final heart = tester.getRect(_artwork('2764'));
+    final thumb = tester.getRect(_artwork('1f44d'));
+    expect(smile.left, lessThan(heart.left));
+    expect(hello.right, lessThan(thumb.left));
+    expect(thumb.right, lessThan(world.left));
+    expect(world.right, lessThan(smile.left));
+  });
+
+  testWidgets('consecutive Unicode emoji are LTR beside RTL Hebrew words', (tester) async {
+    await _show(tester, 'שלום 😀❤️👍 עולם');
+    final hello = _wordRect(tester, 'שלום');
+    final world = _wordRect(tester, 'עולם');
+    final smile = tester.getRect(_artwork('1f600'));
+    final heart = tester.getRect(_artwork('2764'));
+    final thumb = tester.getRect(_artwork('1f44d'));
+    expect(smile.left, lessThan(heart.left));
+    expect(heart.left, lessThan(thumb.left));
+    expect(hello.left, greaterThan(thumb.right));
+    expect(world.right, lessThan(smile.left));
+  });
+
   for (final scenario in [
-    (text: '😀', size: 40.0, count: 1),
-    (text: '😀❤️', size: 36.0, count: 2),
-    (text: '😀 ❤️ 👍', size: 32.0, count: 3),
-    (text: '😀❤️👍😀', size: 18.9, count: 4),
+    (text: '😀', size: 44.0, count: 1),
+    (text: '😀❤️', size: 39.6, count: 2),
+    (text: '😀 ❤️ 👍', size: 35.2, count: 3),
+    (text: '😀❤️👍😀', size: 20.79, count: 4),
   ]) {
     testWidgets('enlarges only 1–3 emoji: ${scenario.text}', (tester) async {
       await _show(tester, scenario.text);
@@ -135,7 +161,7 @@ void main() {
     final semantics = tester.ensureSemantics();
     await _show(tester, 'שלום 😀 עולם');
     expect(tester.widget<SvgPicture>(find.byType(SvgPicture)).width,
-        closeTo(18.9, 0.001));
+        closeTo(20.79, 0.001));
     final text = tester.widget<Text>(_messageText.last);
     expect(text.style?.fontSize, 14);
     expect(text.textDirection, TextDirection.rtl);
@@ -204,21 +230,25 @@ void main() {
     Finder inMessage(String message, String code) => find.descendant(
         of: find.byKey(ValueKey(message)), matching: _artwork(code));
     expect(
-        _paintedSize(tester, inMessage('single', '1f600')), const Size(40, 40));
+        _paintedSize(tester, inMessage('single', '1f600')), const Size(44, 44));
     final pairSmile = tester.getRect(inMessage('wrapped-pair', '1f600'));
     final pairHeart = tester.getRect(inMessage('wrapped-pair', '2764'));
-    expect(pairSmile.size, const Size(36, 36));
-    expect(pairHeart.size, const Size(36, 36));
+    expect(pairSmile.width, closeTo(39.6, 0.001));
+    expect(pairSmile.height, closeTo(39.6, 0.001));
+    expect(pairHeart.width, closeTo(39.6, 0.001));
+    expect(pairHeart.height, closeTo(39.6, 0.001));
     expect(pairSmile.bottom, lessThanOrEqualTo(pairHeart.top));
     final tripleSmile = tester.getRect(inMessage('multiline-triple', '1f600'));
     final tripleHeart = tester.getRect(inMessage('multiline-triple', '2764'));
     final tripleThumb = tester.getRect(inMessage('multiline-triple', '1f44d'));
     for (final rect in [tripleSmile, tripleHeart, tripleThumb]) {
-      expect(rect.size, const Size(32, 32));
+      expect(rect.width, closeTo(35.2, 0.001));
+      expect(rect.height, closeTo(35.2, 0.001));
     }
-    expect(tripleSmile.left, greaterThan(tripleHeart.right));
-    expect(tripleSmile.bottom, lessThanOrEqualTo(tripleThumb.top));
-    expect(tripleHeart.bottom, lessThanOrEqualTo(tripleThumb.top));
+    expect(tripleSmile.right, lessThanOrEqualTo(tripleHeart.left));
+    // SkParagraph rounds fractional line metrics to physical pixels.
+    expect(tripleSmile.bottom, lessThanOrEqualTo(tripleThumb.top + 0.25));
+    expect(tripleHeart.bottom, lessThanOrEqualTo(tripleThumb.top + 0.25));
     expect(tester.takeException(), isNull);
   });
 
@@ -323,7 +353,7 @@ void main() {
     expect(find.byKey(const ValueKey('message-unicode-emoji-2764')),
         findsNWidgets(2));
     for (final svg in tester.widgetList<SvgPicture>(find.byType(SvgPicture))) {
-      expect(svg.width, 36);
+      expect(svg.width, closeTo(39.6, 0.001));
     }
   });
 
@@ -370,8 +400,8 @@ void main() {
     for (final code in ['1f600', '2764', '1f44d']) {
       final image = find.byKey(ValueKey('message-unicode-emoji-$code'));
       final size = _paintedSize(tester, image);
-      expect(size.width, closeTo(80, 0.001));
-      expect(size.height, closeTo(80, 0.001));
+      expect(size.width, closeTo(88, 0.001));
+      expect(size.height, closeTo(88, 0.001));
     }
     expect(tester.takeException(), isNull);
     expect(tester.getSize(_messageText.last).width, lessThanOrEqualTo(220));
@@ -382,8 +412,8 @@ void main() {
         bundle: _EmojiBundle(failImages: true), scale: 2.5, width: 220);
     final image = find.byKey(const ValueKey('message-unicode-emoji-1f600'));
     final size = _paintedSize(tester, image);
-    expect(size.width, closeTo(100, 0.001));
-    expect(size.height, closeTo(100, 0.001));
+    expect(size.width, closeTo(110, 0.001));
+    expect(size.height, closeTo(110, 0.001));
     expect(
         tester.widget<Text>(find.text('😀')).textScaler, TextScaler.noScaling);
     expect(tester.widget<Text>(find.text('😀')).style?.height, 1);

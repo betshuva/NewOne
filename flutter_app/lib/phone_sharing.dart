@@ -71,9 +71,10 @@ Future<Map<String, dynamic>> updatePhoneSharing(String api, String token,
 class PhoneSharingController extends ChangeNotifier {
   Map<String, dynamic>? data;
   bool selectedShare = false;
+  bool friendshipConfirmation = false;
 
   bool get loaded => data != null;
-  bool get canShare => data?['can_share_my_phone'] == true;
+  bool get canShare => !friendshipConfirmation && data?['is_friend'] != true && data?['can_share_my_phone'] == true;
 
   void apply(Map<String, dynamic> value, {bool initialChoice = false}) {
     final firstLoad = !loaded;
@@ -111,6 +112,7 @@ class PhoneSharingPanel extends StatefulWidget {
   final String contactName;
   final PhoneSharingController controller;
   final bool initialChoice;
+  final bool friendshipConfirmation;
   final bool compact;
   final VoidCallback? onChanged;
 
@@ -122,6 +124,7 @@ class PhoneSharingPanel extends StatefulWidget {
     required this.contactName,
     required this.controller,
     this.initialChoice = false,
+    this.friendshipConfirmation = false,
     this.compact = false,
     this.onChanged,
   });
@@ -138,6 +141,7 @@ class _PhoneSharingPanelState extends State<PhoneSharingPanel> {
   @override
   void initState() {
     super.initState();
+    widget.controller.friendshipConfirmation = widget.friendshipConfirmation;
     _load();
     _changes = phoneSharingChanges.stream.listen((id) {
       if (id == widget.contactId && !_busy) _load();
@@ -233,6 +237,10 @@ class _PhoneSharingPanelState extends State<PhoneSharingPanel> {
                 textDirection:
                     phone.isNotEmpty ? TextDirection.ltr : TextDirection.rtl),
           ],
+          if (data['is_friend'] == true || widget.friendshipConfirmation)
+            Text(widget.friendshipConfirmation
+              ? 'באישור החברות מספרי הטלפון יהיו גלויים לשניכם באופן אוטומטי.'
+              : 'מספרי הטלפון גלויים בין חברים באופן אוטומטי.'),
           if (controller.canShare)
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
@@ -253,7 +261,7 @@ class _PhoneSharingPanelState extends State<PhoneSharingPanel> {
           if (data['share_unavailable_reason'] == 'missing_phone')
             const Text(
                 'להוספת מספר טלפון יש לעדכן את הפרופיל. ניתן לאשר את הסינון ללא שיתוף טלפון.'),
-          if (phone.isEmpty &&
+          if (!widget.friendshipConfirmation && phone.isEmpty &&
               (data['can_request_phone'] == true || pending) &&
               (!widget.initialChoice || pending))
             OutlinedButton.icon(
@@ -265,7 +273,7 @@ class _PhoneSharingPanelState extends State<PhoneSharingPanel> {
                   ? 'הבקשה למספר טלפון ממתינה לאישור'
                   : 'בקש מספר טלפון'),
             ),
-          if (data['incoming_request'] == true) ...[
+          if (!widget.friendshipConfirmation && data['is_friend'] != true && data['incoming_request'] == true) ...[
             Text('בקשה לקבלת מספר הטלפון שלך מאת $name'),
             Wrap(spacing: 8, children: [
               FilledButton(
@@ -280,7 +288,7 @@ class _PhoneSharingPanelState extends State<PhoneSharingPanel> {
                   child: const Text('דחה בקשת טלפון')),
             ]),
           ],
-          if (data['share_my_phone'] == true)
+          if (data['share_my_phone'] == true && data['is_friend'] != true && data['group_phone_shared'] != true)
             TextButton(
                 onPressed:
                     _busy ? null : () => _update({'share_my_phone': false}),

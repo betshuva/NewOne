@@ -172,7 +172,8 @@ test('accepting a group invitation retains only missed messages permitted by the
   ]);
   assert.deepEqual(fixture.res.body.missedMessages.map(row => row.id), ['allowed']);
   assert.equal(fixture.res.body.missedMessages[0].file_url, '/personal/me/allowed');
-  assert.equal(notifications.length, 1);
+  assert.equal(notifications.length, 2);
+  assert.equal(notifications[0][0], 'contact:phone-sharing');
 });
 
 

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { Pool } = require('pg');
 const requests = require('../server/contact-message-requests');
+const friendship = require('../server/friendship-policy');
 const policy = require('../server/content-filter-policy');
 const { encryptedQueryValues, decryptMessageRows } = require('../server/message-at-rest');
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
@@ -25,24 +26,27 @@ async function fixture(t) {
     const client = await raw.connect(); return { query: secured(client.query.bind(client)), release: () => client.release() };
   } };
   t.after(async () => { await raw.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); });
-  await db.query(`CREATE TABLE users(id uuid PRIMARY KEY,name text,content_filter jsonb);
+  await db.query(`CREATE TABLE users(id uuid PRIMARY KEY,name text,content_filter jsonb,birth_date date DEFAULT '1990-01-01');
+    CREATE TABLE listings(id uuid PRIMARY KEY,user_id uuid,status text,contact_count integer DEFAULT 0,expires_at timestamptz,contact_preferences jsonb);
+    CREATE TABLE group_members(user_id uuid,group_id uuid,status text);
     CREATE TABLE user_contacts(owner_id uuid,contact_id uuid,filter_override jsonb,contact_source text DEFAULT 'unknown',filter_choice_confirmed boolean DEFAULT false,PRIMARY KEY(owner_id,contact_id));
     CREATE TABLE blocked_users(blocker_id uuid,blocked_id uuid);
     CREATE TABLE stored_files(id uuid DEFAULT gen_random_uuid(),public_url text UNIQUE,user_id uuid,file_type text,moderation_status text,moderation_details jsonb,content_purged_at timestamptz);
     CREATE TABLE message_requests(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),sender_id uuid REFERENCES users,recipient_id uuid REFERENCES users,body text,type text,file_url text,file_name text,created_at timestamptz DEFAULT now(),audit_operation_id uuid,audit_parent_event_id bigint);
-    CREATE TABLE messages(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),sender_id uuid,recipient_id uuid,body text,type text,file_url text,file_name text,created_at timestamptz DEFAULT now(),audit_operation_id uuid,audit_parent_event_id bigint);
+    CREATE TABLE messages(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),sender_id uuid,recipient_id uuid,reply_to_id uuid,body text,type text,file_url text,file_name text,created_at timestamptz DEFAULT now(),audit_operation_id uuid,audit_parent_event_id bigint);
     CREATE TABLE message_status(message_id uuid,user_id uuid,status text,updated_at timestamptz,PRIMARY KEY(message_id,user_id));
     CREATE TABLE private_message_sends(user_id uuid,client_message_id text,request_hash text,result jsonb,PRIMARY KEY(user_id,client_message_id));`);
   await db.query(requests.REQUEST_SCHEMA);
+  await friendship.initializeFriendshipPolicy(db);
   const sender = randomUUID(), recipient = randomUUID();
-  await db.query('INSERT INTO users VALUES($1,$2,$3),($4,$5,$6)', [sender,'sender',all,recipient,'recipient',none]);
+  await db.query('INSERT INTO users(id,name,content_filter) VALUES($1,$2,$3),($4,$5,$6)', [sender,'sender',all,recipient,'recipient',none]);
   const notices = [], audits = [], errors = [];
-  const getEffectiveRecipientFilter = vm.runInNewContext(source.slice(source.indexOf('async function getEffectiveRecipientFilter('), source.indexOf('async function buildGroupDeliveryPlan(')) + ';getEffectiveRecipientFilter', policy);
+  const getEffectiveRecipientFilter = vm.runInNewContext(source.slice(source.indexOf('async function getEffectiveRecipientFilter('), source.indexOf('async function buildGroupDeliveryPlan(')) + ';getEffectiveRecipientFilter', {...policy,...friendship});
   async function validateFile(db, senderId, url) {
     return (await db.query("SELECT 1 FROM stored_files WHERE user_id=$1 AND public_url=$2 AND moderation_status='approved' AND content_purged_at IS NULL", [senderId,url])).rows.length > 0;
   }
   const scope = {
-    ...require('./helpers/system-audit-stubs'), ...requests, ...policy,
+    ...require('./helpers/system-audit-stubs'), ...requests, ...policy, ...friendship, notifyFriendshipChange() {},
     getPool: async () => db, authWithDbCheck() {}, auth() {}, messageRateLimit() {},
     SYSTEM_USER_ID: 'guide', SAFE_INFORMATION_USER_ID: 'info', SCAN_BOT_ID: 'scan',
     normalizeBuiltinStickerId: id => id === 'sticker' ? id : null,
@@ -51,7 +55,7 @@ async function fixture(t) {
     getStoredImageClassification: async (client,url) => (await client.query('SELECT moderation_details FROM stored_files WHERE public_url=$1',[url])).rows[0]?.moderation_details?.classification,
     validateApprovedFile: validateFile, shortFilterReason: require('../server/guide-filter-notice').shortFilterReason,
     withPrivateMessageReceipt: require('../server/private-message-receipts').withPrivateMessageReceipt,
-    registerGuideMessageSend() {}, phoneSharingChoices: () => ({}), applyPhoneSharingChoices: async () => ({}), notifyPhoneSharingChange() {},
+    registerGuideMessageSend() {}, sendGroupHttpMessage() {}, phoneSharingChoices: () => ({}), applyPhoneSharingChoices: async () => ({}), notifyPhoneSharingChange() {},
     recordAuditEvent: async (_db,event) => audits.push(event), onlineUsers: new Map([[recipient,'recipient-socket']]),
     io: { to: user => ({ emit: (event,payload) => notices.push({user,event,payload}) }) },
     relay: (user,event,payload) => notices.push({user,event,payload}), sendPush: (...data) => notices.push({event:'push',data}),
@@ -185,4 +189,27 @@ test('failed settlement rolls back both delivery and request resolution',opts,as
  }finally{client.release()}
  assert.equal((await f.db.query('SELECT * FROM messages')).rows.length,0);
  assert.equal((await f.db.query("SELECT * FROM message_requests WHERE status='pending'")).rows.length,2);
+});
+
+test('marketplace HTTP inquiry is delivered without friendship; filtered reply cannot create friendship', opts, async t => {
+  const f=await fixture(t);
+  const listing=randomUUID();
+  await f.db.query("INSERT INTO listings(id,user_id,status) VALUES($1,$2,'active')",[listing,f.recipient]);
+  await f.db.query('UPDATE users SET content_filter=$1 WHERE id=$2',[all,f.recipient]);
+  const inquiry=await f.call('/api/messages',{toUserId:f.recipient,text:'שלום, האם זמין?',listingId:listing});
+  assert.equal(inquiry.code,200,JSON.stringify(f.errors));
+  assert.equal(inquiry.body.requestPending,undefined);
+  assert.equal((await f.db.query('SELECT * FROM messages')).rows.length,1);
+  assert.equal((await f.db.query('SELECT * FROM user_contacts')).rows.length,0);
+  await f.db.query('UPDATE users SET content_filter=$1 WHERE id=$2',[none,f.sender]);
+  await f.db.query("INSERT INTO stored_files(public_url,user_id,file_type,moderation_status,moderation_details) VALUES('/test/seller-video',$1,'video','approved',$2)",
+    [f.recipient,{classification:{detectedCategories:['nonHumanImages'],category:'nonHumanImages'}}]);
+  const refused=await f.call('/api/messages',{toUserId:f.sender,fileUrl:'/test/seller-video',fileType:'video',fileName:'reply.mp4'},null,f.recipient);
+  assert.equal(refused.code,403);
+  assert.equal((await f.db.query('SELECT * FROM user_contacts')).rows.length,0);
+  await f.db.query('UPDATE users SET content_filter=$1 WHERE id=$2',[all,f.sender]);
+  const reply=await f.call('/api/messages',{toUserId:f.sender,text:'כן, זמין'},null,f.recipient);
+  assert.equal(reply.code,200,JSON.stringify(f.errors));
+  assert.equal((await f.db.query('SELECT * FROM user_contacts')).rows.length,2);
+  assert.equal((await f.db.query('SELECT * FROM message_requests')).rows.length,0);
 });

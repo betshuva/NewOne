@@ -29,3 +29,34 @@ Release validation:
 - 44 Flutter tests passed, including 21 phone-sharing tests and 23 group/friend/lifecycle regressions. Targeted Dart analysis reported no issues, and the release web build succeeded.
 - The full Node run passed 531 tests, skipped 14 optional tests and reported six existing source-layout assertion failures. Running the relevant tests with the pre-change Flutter source reproduced all six failures; they concern blocked-image artwork/layout, scroll image heights, desktop document routing and the empty-group form.
 - The schema migration marked existing contact origins unknown and granted no new phone access. Backend restart and public HTTP checks succeeded. Published web release `1b5589c88f33c172` matches the local compiled JavaScript hash; all three new phone-reading route checks reject anonymous access with HTTP 401.
+
+## Friendship and group policy (2026-10-08)
+
+Mutual `user_contacts` rows now constitute friendship and automatically expose
+both numbers, without a separate approval. One-way saves/imports do not grant
+this access. `phoneSelect` and `projectContactPhones` apply the same policy,
+including both block directions. Existing known-number evidence and directed
+nonfriend grants remain independent access paths.
+
+`group_members.share_phone` belongs to its authenticated member. Existing rows
+migrate to false; future memberships default to true. Creation and invitation
+acceptance accept an explicit boolean choice. Only two active members of the
+same group can use this grant, and only the number owner's choice matters.
+`PUT /api/groups/:id/phone-sharing` changes only the caller's active membership.
+Leaving a group removes its grant; friendship or another sharing group can
+still independently grant access. Group member responses are viewer projected.
+
+`DELETE /api/contacts/:userId/friendship` removes both contact rows, pair phone
+permissions and marketplace channels transactionally. Reporting a user performs
+the same removal in the report transaction. Existing messages are retained and
+numbers that were already copied cannot be withdrawn. Socket refresh events
+contain identifiers only and clear displayed phone values before reloading.
+
+Marketplace channels are registered against an active, unexpired listing's
+real owner and the authenticated adult buyer. They bypass friendship acceptance
+while retaining the recipient's current filter and all existing media scans.
+The first delivered inquiry enables a reply; only persisting an allowed seller
+reply establishes mutual contacts in that same transaction. Opening a listing,
+failed sends, blocked/filtered files and pending scans never establish friends.
+HTTP, Socket and delayed scan persistence use the same channel policy. Pair
+advisory locks serialize marketplace completion with friendship removal.
