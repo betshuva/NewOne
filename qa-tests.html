@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#196ba8">
+  <title>בדיקות תפעוליות · בתשובה</title>
+  <link rel="stylesheet" href="assets/qa-tests/qa-tests.css?v=qa-20261008">
+  <script src="assets/qa-tests/qa-tests.js?v=qa-20261008" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#test-list">מעבר לרשימת הבדיקות</a>
+  <header class="page-header">
+    <div class="header-inner">
+      <div>
+        <p class="brand">בתשובה · איכות ובדיקות</p>
+        <h1>בדיקות תפעוליות</h1>
+        <p class="header-description">כל הפעולות, הצעדים והתוצאות הצפויות במקום אחד.</p>
+      </div>
+      <nav aria-label="קישורים"><a href="admin.html">ניהול המערכת</a><a href="./">פתיחת האפליקציה</a></nav>
+    </div>
+  </header>
+  <main>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <div id="storage-notice" class="notice warning" role="status" hidden></div>
+    <section class="panel run-panel" aria-labelledby="run-heading">
+      <div class="panel-title">
+        <div><h2 id="run-heading">ריצת הבדיקה</h2><p>הסימון וההערות נשמרים בדפדפן הזה. ייצוא מאפשר לשמור עותק או להעביר תוצאות למכשיר אחר.</p></div>
+        <span id="save-status" class="save-status" role="status">טוען קטלוג…</span>
+      </div>
+      <div class="run-fields">
+        <label for="tested-version">הגרסה שנבדקת<input id="tested-version" maxlength="100" placeholder="לדוגמה: 1.3.62+283"></label>
+        <label for="run-date">תאריך הבדיקה<input id="run-date" type="date"></label>
+        <label for="tester">שם הבודק/ת<input id="tester" maxlength="120" autocomplete="off" placeholder="שם או כינוי"></label>
+      </div>
+      <div class="run-footer"><p id="catalog-baseline" class="muted">קטלוג הבדיקות נטען…</p><div class="actions">
+        <button id="export-json" type="button" disabled>ייצוא JSON</button><button id="export-csv" type="button" disabled>ייצוא Excel / CSV</button>
+        <button id="import-button" type="button" disabled>ייבוא תוצאות</button><input id="import-file" type="file" accept=".json,application/json" hidden>
+        <button id="reset-run" class="quiet danger" type="button" disabled>איפוס הריצה</button>
+      </div></div>
+    </section>
+    <section class="progress-panel" aria-label="התקדמות הבדיקות">
+      <div class="progress-heading"><h2>התקדמות</h2><p id="progress-description" aria-live="polite">טרם נטענו בדיקות</p></div>
+      <progress id="progress" value="0" max="1" aria-label="בדיקות שסומנו"></progress>
+      <div id="status-counts" class="status-counts"></div>
+    </section>
+    <section class="panel filters-panel" aria-labelledby="filters-heading">
+      <div class="filter-heading"><h2 id="filters-heading">איתור בדיקות</h2><button id="clear-filters" class="quiet" type="button">ניקוי מסננים</button></div>
+      <div class="filters">
+        <label class="search-field" for="search">חיפוש<input id="search" type="search" placeholder="למשל: סרטון, PDF, סינון, CHAT-001" autocomplete="off"></label>
+        <label for="category-filter">תחום<select id="category-filter"><option value="">כל התחומים</option></select></label>
+        <label for="platform-filter">מכשיר<select id="platform-filter"><option value="">כל המכשירים</option><option value="web">דפדפן</option><option value="android">Android</option></select></label>
+        <label for="role-filter">הרשאה<select id="role-filter"><option value="">כל ההרשאות</option></select></label>
+        <label for="status-filter">תוצאה<select id="status-filter"><option value="">כל התוצאות</option></select></label>
+        <label for="kind-filter">סוג בדיקה<select id="kind-filter"><option value="">כל הבדיקות</option><option value="operation">פעולה</option><option value="workflow">תרחיש משולב</option></select></label>
+      </div>
+    </section>
+    <div class="list-heading"><p id="visible-count" role="status" aria-live="polite">טוען את רשימת הבדיקות…</p><p class="muted">פתחו בדיקה להצגת הצעדים ולרישום התוצאה.</p></div>
+    <div id="test-list" class="test-list" aria-busy="true" tabindex="-1"></div>
+    <div id="empty-results" class="empty-results" hidden><h2>לא נמצאו בדיקות</h2><p>נסו ביטוי אחר או נקו את המסננים.</p></div>
+    <div id="load-error" class="panel error" hidden><h2>הקטלוג לא נטען</h2><p id="load-error-text"></p><button id="retry-load" type="button">טעינה מחדש</button></div>
+    <details id="catalog-guidance" class="panel guidance" hidden>
+      <summary>תנאי הבדיקה, היקף הקטלוג ומגבלות</summary>
+      <div class="guidance-body"><p>הדף הוא רשימת בדיקות ידניות. סימון תוצאה אינו מפעיל פעולה במערכת ואינו מעיד שבדיקה אוטומטית הורצה.</p>
+        <h3>חשבונות להכנת סביבת הבדיקה</h3><ul id="test-accounts"></ul>
+        <h3>בדיקות שחוזרות בין הפעולות</h3><ul id="cross-checks"></ul>
+        <h3>הערות למיפוי</h3><ul id="catalog-notes"></ul>
+        <h3>יכולות שלא נכללות כפעולה זמינה</h3><ul id="catalog-excluded"></ul>
+      </div>
+    </details>
+    <noscript><p class="panel error">יש להפעיל JavaScript כדי להציג את הקטלוג ולשמור תוצאות.</p></noscript>
+  </main>
+  <footer>בתשובה · סט בדיקות ידניות · התוצאות נשמרות במכשיר הנוכחי</footer>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+    <h2 id="confirm-title"></h2><p id="confirm-description"></p>
+    <div class="actions"><button id="confirm-action" class="primary" type="button">אישור</button><button id="cancel-action" type="button">ביטול</button></div>
+  </dialog>
+</body>
+</html>

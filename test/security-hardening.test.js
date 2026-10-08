@@ -18,8 +18,8 @@ test('public HTTP files use an allowlist, including encoded paths and active upl
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const name of ['index.html', 'firebase-service-account.json', 'server.log',
     'deploy-web-local.sh', 'package.json', 'main.dart.js', 'version.json',
-    'betshuva-1.3.37.apk', 'server/index.js', 'backups/secret.json',
-    'assets/font.ttf', 'uploads/example.html', 'uploads/audio.mp3', 'uploads/.guide-files/private.pdf']) {
+    'betshuva-1.3.37.apk', 'server/index.js', 'backups/secret.json', 'qa-tests.html',
+    'assets/qa-tests/catalog.json', 'assets/font.ttf', 'uploads/example.html', 'uploads/audio.mp3', 'uploads/.guide-files/private.pdf']) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await fs.writeFile(path.join(root, name), 'isolated fixture');
   }
@@ -40,7 +40,7 @@ test('public HTTP files use an allowlist, including encoded paths and active upl
     assert.equal((await request(target)).statusCode, 404, target);
   }
   for (const target of ['/', '/main.dart.js', '/version.json', '/betshuva-1.3.37.apk',
-    '/assets/font.ttf', '/uploads/audio.mp3']) {
+    '/assets/font.ttf', '/assets/qa-tests/catalog.json', '/qa-tests.html', '/uploads/audio.mp3']) {
     const res = await request(target);
     assert.equal(res.statusCode, 200, target);
     assert.equal(res.headers['x-frame-options'], 'SAMEORIGIN');

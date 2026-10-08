@@ -1978,7 +1978,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.62';
+const kVersion = '1.3.63';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -25711,8 +25711,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _showExpressions({bool? inlineEmoji}) async {
     final destination = _uploadDestination;
     final accountId = widget.me?['id'];
-    bool currentDestination() => mounted &&
-        widget.token == destination.token && widget.me?['id'] == accountId &&
+    bool currentDestination() =>
+        mounted &&
+        widget.token == destination.token &&
+        widget.me?['id'] == accountId &&
         widget.recipient['id'].toString() == destination.targetId;
     await _loadRecipientReceivingFilter();
     if (!mounted || !currentDestination()) return;
@@ -25728,127 +25730,181 @@ class _ChatScreenState extends State<ChatScreen> {
       _showRecipientFilterNotice('מדבקות ואימוג׳י');
       return;
     }
-    final beforePicker = _msgCtrl.value;
-    final choice = await _showExpressionPicker(context, widget.token,
-        initialInlineEmoji: inlineEmoji,
-        stickersAllowed: _recipientAllowsImages,
-        inlineEmojiAllowed: _recipientAllowsText,
-        blockedLabel: 'חסום בסינון הנמען');
-    if (choice == null || !mounted || !currentDestination()) return;
-    if (choice.startsWith(_remoteStickerPrefix)) {
+    var beforePicker = _msgCtrl.value;
+    Future<void> selections = Future<void>.value();
+    Future<void> applyChoice(String choice) async {
+      if (!currentDestination()) return;
+      if (choice.startsWith(_remoteStickerPrefix)) {
+        _restoreExpressionSelection(_msgCtrl, beforePicker);
+        try {
+          if (!await _preparePrivateUpload('image') || !currentDestination())
+            return;
+          final sticker = await _loadRemoteLibrarySticker(
+            choice.substring(_remoteStickerPrefix.length),
+          );
+          if (!mounted || !currentDestination()) return;
+          await _uploadAndSend(
+            sticker.file,
+            sticker.fileName,
+            'image',
+            preparedDestination: destination,
+            extraFields: const {'builtinExpression': 'true'},
+          );
+        } catch (_) {
+          if (currentDestination())
+            _showError('לא ניתן לשלוח את המדבקה כרגע. נסה שוב');
+        }
+        return;
+      }
+      if (choice.startsWith(_remoteExpressionPrefix)) {
+        await _loadRecipientReceivingFilter();
+        if (!mounted || !currentDestination()) return;
+        if (!_recipientAllowsText) {
+          _showRecipientFilterNotice('אימוג׳י בתוך הטקסט');
+          return;
+        }
+        final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
+        final emojiId = inlineEmojiIdFromUrl(remoteUrl);
+        if (emojiId == null) {
+          _showError('האימוג׳י אינו זמין כרגע');
+          return;
+        }
+        _insertExpressionText(
+          _msgCtrl,
+          inlineEmojiCharacter(emojiId),
+          beforePicker,
+        );
+        beforePicker = _msgCtrl.value;
+        return;
+      }
+      if (choice.startsWith(_originalExpressionPrefix)) {
+        final assetPath = choice.substring(_originalExpressionPrefix.length);
+        final data = await rootBundle.load(assetPath);
+        final bytes = data.buffer.asUint8List();
+        final extension = assetPath.endsWith('.gif') ? 'gif' : 'png';
+        final fileName =
+            'betshuva_${assetPath.split('/').last.replaceAll('.$extension', '')}.$extension';
+        final file = XFile.fromData(
+          bytes,
+          name: fileName,
+          mimeType: 'image/$extension',
+        );
+        await _uploadAndSend(
+          file,
+          fileName,
+          'image',
+          extraFields: const {'builtinExpression': 'true'},
+        );
+        return;
+      }
+      if (choice == _gifPickerAction) {
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: const ['gif'],
+          withData: kIsWeb,
+        );
+        if (result == null || result.files.isEmpty) return;
+        final file = result.files.single;
+        await _uploadAndSend(file.xFile, file.name, 'image');
+        return;
+      }
+      if (choice == _sharedGifUploadAction) {
+        final details = await _requestSharedGifDetails(context);
+        if (details == null || !mounted) return;
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: const ['gif'],
+          withData: kIsWeb,
+        );
+        if (result == null || result.files.isEmpty) return;
+        final file = result.files.single;
+        await _uploadAndSend(
+          file.xFile,
+          file.name,
+          'image',
+          extraFields: {
+            'sharedGif': 'true',
+            'rightsConfirmed': 'true',
+            'sharedGifTitle': details['title']!,
+            'sharedGifTags': details['tags']!,
+          },
+        );
+        return;
+      }
+      if (choice == _personalStickerAction) {
+        final picked = await ImagePicker().pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 1024,
+          maxHeight: 1024,
+          imageQuality: 90,
+        );
+        if (picked != null) {
+          await _uploadAndSend(picked, 'sticker_${picked.name}', 'image');
+        }
+        return;
+      }
+      if (choice.startsWith(_sharedGifPrefix)) {
+        final gif = jsonDecode(
+          utf8.decode(
+            base64Url.decode(
+              base64Url.normalize(choice.substring(_sharedGifPrefix.length)),
+            ),
+          ),
+        ) as Map<String, dynamic>;
+        await _applyPrivateUploadResult(
+          _FileUploadResult(
+            _FileUploadOutcome.approved,
+            data: {'url': gif['preview_url']},
+          ),
+          gif['file_name'] as String? ?? '${gif['title']}.gif',
+          'image',
+        );
+        http
+            .post(
+              Uri.parse('$kApi/gifs/${gif['id']}/use'),
+              headers: {'Authorization': 'Bearer ${widget.token}'},
+            )
+            .ignore();
+        return;
+      }
+      if (choice.startsWith(_stickerPrefix)) {
+        _msgCtrl.text = choice.substring(_stickerPrefix.length);
+        await _send();
+        return;
+      }
+      if (choice.startsWith(_avielStickerPrefix)) {
+        await _send(stickerId: choice.substring(_avielStickerPrefix.length));
+        return;
+      }
+      _insertExpressionText(_msgCtrl, choice, beforePicker);
+      beforePicker = _msgCtrl.value;
+    }
+
+    await _showExpressionPicker(
+      context,
+      widget.token,
+      initialInlineEmoji: inlineEmoji,
+      stickersAllowed: _recipientAllowsImages,
+      inlineEmojiAllowed: _recipientAllowsText,
+      blockedLabel: 'חסום בסינון הנמען',
+      onSelected: (choice) {
+        selections = selections.then((_) => applyChoice(choice)).catchError((
+          Object error,
+        ) {
+          if (!mounted || !currentDestination()) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('לא ניתן להשלים את הבחירה כרגע. נסה שוב'),
+            ),
+          );
+        });
+        return selections;
+      },
+    );
+    if (currentDestination()) {
       _restoreExpressionSelection(_msgCtrl, beforePicker);
       _msgFocusNode.requestFocus();
-      try {
-        if (!await _preparePrivateUpload('image') || !currentDestination()) return;
-        final sticker = await _loadRemoteLibrarySticker(
-            choice.substring(_remoteStickerPrefix.length));
-        if (!mounted || !currentDestination()) return;
-        await _uploadAndSend(sticker.file, sticker.fileName, 'image',
-            preparedDestination: destination,
-            extraFields: const {'builtinExpression': 'true'});
-      } catch (_) {
-        if (currentDestination()) _showError('לא ניתן לשלוח את המדבקה כרגע. נסה שוב');
-      }
-      return;
     }
-    if (choice.startsWith(_remoteExpressionPrefix)) {
-      await _loadRecipientReceivingFilter();
-      if (!mounted || !currentDestination()) return;
-      if (!_recipientAllowsText) {
-        _showRecipientFilterNotice('אימוג׳י בתוך הטקסט');
-        return;
-      }
-      final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
-      final emojiId = inlineEmojiIdFromUrl(remoteUrl);
-      if (emojiId == null) {
-        _showError('האימוג׳י אינו זמין כרגע');
-        return;
-      }
-      _insertExpressionText(
-          _msgCtrl, inlineEmojiCharacter(emojiId), beforePicker);
-      _msgFocusNode.requestFocus();
-      return;
-    }
-    if (choice.startsWith(_originalExpressionPrefix)) {
-      final assetPath = choice.substring(_originalExpressionPrefix.length);
-      final data = await rootBundle.load(assetPath);
-      final bytes = data.buffer.asUint8List();
-      final extension = assetPath.endsWith('.gif') ? 'gif' : 'png';
-      final fileName =
-          'betshuva_${assetPath.split('/').last.replaceAll('.$extension', '')}.$extension';
-      final file =
-          XFile.fromData(bytes, name: fileName, mimeType: 'image/$extension');
-      await _uploadAndSend(file, fileName, 'image', extraFields: const {
-        'builtinExpression': 'true',
-      });
-      return;
-    }
-    if (choice == _gifPickerAction) {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['gif'],
-        withData: kIsWeb,
-      );
-      if (result == null || result.files.isEmpty) return;
-      final file = result.files.single;
-      await _uploadAndSend(file.xFile, file.name, 'image');
-      return;
-    }
-    if (choice == _sharedGifUploadAction) {
-      final details = await _requestSharedGifDetails(context);
-      if (details == null || !mounted) return;
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['gif'],
-        withData: kIsWeb,
-      );
-      if (result == null || result.files.isEmpty) return;
-      final file = result.files.single;
-      await _uploadAndSend(file.xFile, file.name, 'image', extraFields: {
-        'sharedGif': 'true',
-        'rightsConfirmed': 'true',
-        'sharedGifTitle': details['title']!,
-        'sharedGifTags': details['tags']!,
-      });
-      return;
-    }
-    if (choice == _personalStickerAction) {
-      final picked = await ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 1024,
-        maxHeight: 1024,
-        imageQuality: 90,
-      );
-      if (picked != null) {
-        await _uploadAndSend(picked, 'sticker_${picked.name}', 'image');
-      }
-      return;
-    }
-    if (choice.startsWith(_sharedGifPrefix)) {
-      final gif = jsonDecode(utf8.decode(base64Url.decode(
-              base64Url.normalize(choice.substring(_sharedGifPrefix.length)))))
-          as Map<String, dynamic>;
-      await _applyPrivateUploadResult(
-        _FileUploadResult(_FileUploadOutcome.approved,
-            data: {'url': gif['preview_url']}),
-        gif['file_name'] as String? ?? '${gif['title']}.gif',
-        'image',
-      );
-      http.post(Uri.parse('$kApi/gifs/${gif['id']}/use'),
-          headers: {'Authorization': 'Bearer ${widget.token}'}).ignore();
-      return;
-    }
-    if (choice.startsWith(_stickerPrefix)) {
-      _msgCtrl.text = choice.substring(_stickerPrefix.length);
-      await _send();
-      return;
-    }
-    if (choice.startsWith(_avielStickerPrefix)) {
-      await _send(stickerId: choice.substring(_avielStickerPrefix.length));
-      return;
-    }
-    _insertExpressionText(_msgCtrl, choice, beforePicker);
-    _msgFocusNode.requestFocus();
   }
 
   Future<void> _captureCamera() async {
@@ -31533,13 +31589,16 @@ const _emojiCategories = <String, List<String>>{
     '🇮🇱'
   ],
 };
-Future<String?> _showExpressionPicker(BuildContext context, String token, {
+Future<void> _showExpressionPicker(
+  BuildContext context,
+  String token, {
   bool? initialInlineEmoji,
   required bool stickersAllowed,
   required bool inlineEmojiAllowed,
   required String blockedLabel,
+  required Future<void> Function(String) onSelected,
 }) {
-  return showModalBottomSheet<String>(
+  return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     shape: const RoundedRectangleBorder(
@@ -31555,6 +31614,7 @@ Future<String?> _showExpressionPicker(BuildContext context, String token, {
         stickersAllowed: stickersAllowed,
         inlineEmojiAllowed: inlineEmojiAllowed,
         blockedLabel: blockedLabel,
+        onSelected: onSelected,
       ),
     ),
   );
@@ -31618,12 +31678,14 @@ class _ExpressionPickerSheet extends StatefulWidget {
   final bool? initialInlineEmoji;
   final bool stickersAllowed, inlineEmojiAllowed;
   final String blockedLabel;
+  final Future<void> Function(String) onSelected;
   const _ExpressionPickerSheet({
     required this.token,
     this.initialInlineEmoji,
     required this.stickersAllowed,
     required this.inlineEmojiAllowed,
     required this.blockedLabel,
+    required this.onSelected,
   });
 
   @override
@@ -31636,11 +31698,15 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   String _query = '';
   String? _error;
   bool _showInlineEmoji = false;
+  int _selectionCount = 0;
+  Future<void> _pendingSelection = Future<void>.value();
+  bool _finishing = false;
 
   @override
   void initState() {
     super.initState();
-    _showInlineEmoji = widget.inlineEmojiAllowed &&
+    _showInlineEmoji =
+        widget.inlineEmojiAllowed &&
         (widget.initialInlineEmoji == true || !widget.stickersAllowed);
     _loadExpressionCatalog();
   }
@@ -31655,10 +31721,12 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     try {
       Map<String, dynamic> payload;
       try {
-        final response = await http.get(
-          Uri.parse('$kApi/expressions/catalog'),
-          headers: {'Authorization': 'Bearer ${widget.token}'},
-        ).timeout(const Duration(seconds: 12));
+        final response = await http
+            .get(
+              Uri.parse('$kApi/expressions/catalog'),
+              headers: {'Authorization': 'Bearer ${widget.token}'},
+            )
+            .timeout(const Duration(seconds: 12));
         if (response.statusCode != 200) throw Exception('catalog unavailable');
         payload = jsonDecode(response.body) as Map<String, dynamic>;
         if ((payload['version'] as num? ?? 0) < 3) {
@@ -31718,85 +31786,41 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   }
 
   Widget _buildHeader() => Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'מדבקות ואימוג׳י',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: kPrimary,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'סגירה',
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close, size: 20, color: kSubtext),
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
-            child: Text(
-              _showInlineEmoji
-                  ? 'בחירת אימוג׳י מוסיפה אותו ליד הטקסט במיקום הסמן'
-                  : 'בחירת מדבקה שולחת אותה מיד כהודעה נפרדת',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 12, color: kSubtext),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 8,
-              children: [
-                ChoiceChip(
-                  key: const ValueKey('expression-custom-tab'),
-                  label: const Text('מדבקות'),
-                  selected: !_showInlineEmoji,
-                  showCheckmark: false,
-                  onSelected: !widget.stickersAllowed ? null : (_) {
-                    if (!_showInlineEmoji) return;
-                    setState(() {
-                      _showInlineEmoji = false;
-                      _query = '';
-                    });
-                  },
-                ),
-                ChoiceChip(
-                  key: const ValueKey('expression-standard-tab'),
-                  label: const Text('אימוג׳י'),
-                  selected: _showInlineEmoji,
-                  showCheckmark: false,
-                  onSelected: !widget.inlineEmojiAllowed ? null : (_) {
-                    if (_showInlineEmoji) return;
-                    setState(() {
-                      _showInlineEmoji = true;
-                      _query = '';
-                    });
-                  },
-                ),
-              ],
-            ),
-          ),
-          if (!widget.stickersAllowed || !widget.inlineEmojiAllowed)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+        child: Row(
+          children: [
+            Expanded(
               child: Text(
-                '${!widget.stickersAllowed ? 'מדבקות' : 'אימוג׳י בתוך הטקסט'} — ${widget.blockedLabel}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 12, color: kSubtext),
+                _showInlineEmoji ? 'אימוג׳י' : 'מדבקות',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: kPrimary,
+                ),
               ),
             ),
-        ],
-      );
+            IconButton(
+              tooltip: 'סגירה',
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close, size: 20, color: kSubtext),
+            ),
+          ],
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
+        child: Text(
+          _showInlineEmoji
+              ? 'בחירת אימוג׳י מוסיפה אותו ליד הטקסט במיקום הסמן'
+              : 'בחירת מדבקה שולחת אותה מיד כהודעה נפרדת',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12, color: kSubtext),
+        ),
+      ),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -31813,7 +31837,10 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
         textDirection: TextDirection.rtl,
         child: SizedBox(
           height: math.min(560.0, math.max(0.0, availableHeight - 32)),
-          child: CustomScrollView(
+          child: Column(
+            children: [
+              Expanded(
+                child: CustomScrollView(
                   slivers: [
                     SliverToBoxAdapter(
                       child: Column(
@@ -31825,11 +31852,15 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                               vertical: 6,
                             ),
                             child: TextField(
-                              key: ValueKey('expression-search-${_showInlineEmoji ? 'emoji' : 'stickers'}'),
+                              key: ValueKey(
+                                'expression-search-${_showInlineEmoji ? 'emoji' : 'stickers'}',
+                              ),
                               onChanged: (value) =>
                                   setState(() => _query = value),
                               decoration: InputDecoration(
-                                hintText: _showInlineEmoji ? 'חיפוש אימוג׳י…' : 'חיפוש מדבקות…',
+                                hintText: _showInlineEmoji
+                                    ? 'חיפוש אימוג׳י…'
+                                    : 'חיפוש מדבקות…',
                                 prefixIcon: const Icon(Icons.search),
                               ),
                             ),
@@ -31863,9 +31894,45 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                       _RemoteExpressionGrid(
                         items: visible,
                         inlineEmoji: _showInlineEmoji,
+                        onSelected: (choice) {
+                          if (_finishing) return;
+                          _pendingSelection = widget.onSelected(choice);
+                          setState(() => _selectionCount++);
+                        },
                       ),
                   ],
                 ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 4,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'נבחרו $_selectionCount',
+                        style: const TextStyle(color: kSubtext, fontSize: 12),
+                      ),
+                    ),
+                    TextButton(
+                      key: const ValueKey('expression-done'),
+                      onPressed: _finishing ? null : () async {
+                        if (_showInlineEmoji) {
+                          setState(() => _finishing = true);
+                          await _pendingSelection;
+                        }
+                        if (!mounted || !context.mounted) return;
+                        Navigator.pop(context);
+                      },
+                      child: const Text('סיום'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -31875,8 +31942,13 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
 class _RemoteExpressionGrid extends StatelessWidget {
   final List<Map<String, dynamic>> items;
   final bool inlineEmoji;
+  final ValueChanged<String> onSelected;
 
-  const _RemoteExpressionGrid({required this.items, required this.inlineEmoji});
+  const _RemoteExpressionGrid({
+    required this.items,
+    required this.inlineEmoji,
+    required this.onSelected,
+  });
 
   String _absoluteUrl(String value) => Uri.parse(value).hasScheme
       ? value
@@ -31884,98 +31956,100 @@ class _RemoteExpressionGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SliverLayoutBuilder(
-        builder: (context, constraints) => SliverPadding(
-          padding: const EdgeInsets.all(12),
-          sliver: SliverGrid(
-            key: const ValueKey('expression-image-grid'),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: inlineEmoji
-                  ? math.max(1, ((constraints.crossAxisExtent - 20) / 48).floor())
-                  : constraints.crossAxisExtent < 500 ? 3 : 4,
-              mainAxisSpacing: inlineEmoji ? 4 : 8,
-              crossAxisSpacing: inlineEmoji ? 4 : 8,
-              childAspectRatio: inlineEmoji ? 1 : 0.9,
-            ),
-            delegate: SliverChildBuilderDelegate(
-              (_, index) {
-                final item = items[index];
-                final rawUrl = item['url']?.toString() ?? '';
-                final url = rawUrl.isEmpty ? '' : _absoluteUrl(rawUrl);
-                final label = item['label']?.toString() ?? '';
-                final choicePrefix = inlineEmoji
-                    ? _remoteExpressionPrefix : _remoteStickerPrefix;
-                final image = Image.network(
-                  url,
-                  width: inlineEmoji ? 24 : null,
-                  height: inlineEmoji ? 24 : null,
-                  fit: BoxFit.contain,
-                  filterQuality: FilterQuality.medium,
-                  errorBuilder: (_, __, ___) => const Icon(
-                      Icons.broken_image_outlined, color: kSubtext),
-                );
-                if (inlineEmoji) {
-                  return Tooltip(
-                    message: label,
-                    child: Semantics(
-                      label: label,
-                      button: true,
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          key: ValueKey('expression-image-$url'),
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: url.isEmpty ? null
-                              : () => Navigator.pop(context, '$choicePrefix$url'),
-                          child: Center(child: ExcludeSemantics(child: image)),
+    builder: (context, constraints) => SliverPadding(
+      padding: const EdgeInsets.all(12),
+      sliver: SliverGrid(
+        key: const ValueKey('expression-image-grid'),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: inlineEmoji
+              ? math.max(1, ((constraints.crossAxisExtent - 20) / 48).floor())
+              : constraints.crossAxisExtent < 500
+              ? 3
+              : 4,
+          mainAxisSpacing: inlineEmoji ? 4 : 8,
+          crossAxisSpacing: inlineEmoji ? 4 : 8,
+          childAspectRatio: inlineEmoji ? 1 : 0.9,
+        ),
+        delegate: SliverChildBuilderDelegate((_, index) {
+          final item = items[index];
+          final rawUrl = item['url']?.toString() ?? '';
+          final url = rawUrl.isEmpty ? '' : _absoluteUrl(rawUrl);
+          final label = item['label']?.toString() ?? '';
+          final choicePrefix = inlineEmoji
+              ? _remoteExpressionPrefix
+              : _remoteStickerPrefix;
+          final image = Image.network(
+            url,
+            width: inlineEmoji ? 24 : null,
+            height: inlineEmoji ? 24 : null,
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.medium,
+            errorBuilder: (_, __, ___) =>
+                const Icon(Icons.broken_image_outlined, color: kSubtext),
+          );
+          if (inlineEmoji) {
+            return Tooltip(
+              message: label,
+              child: Semantics(
+                label: label,
+                button: true,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: ValueKey('expression-image-$url'),
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: url.isEmpty
+                        ? null
+                        : () => onSelected('$choicePrefix$url'),
+                    child: Center(child: ExcludeSemantics(child: image)),
+                  ),
+                ),
+              ),
+            );
+          }
+          return Material(
+            color: const Color(0xFFF0F6FC),
+            borderRadius: BorderRadius.circular(15),
+            child: InkWell(
+              key: ValueKey('expression-image-$url'),
+              borderRadius: BorderRadius.circular(15),
+              onTap: url.isEmpty ? null : () => onSelected('$choicePrefix$url'),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(5, 7, 5, 5),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: 150,
+                            maxHeight: 150,
+                          ),
+                          child: image,
                         ),
                       ),
                     ),
-                  );
-                }
-                return Material(
-                  color: const Color(0xFFF0F6FC),
-                  borderRadius: BorderRadius.circular(15),
-                  child: InkWell(
-                    key: ValueKey('expression-image-$url'),
-                    borderRadius: BorderRadius.circular(15),
-                    onTap: url.isEmpty
-                        ? null
-                        : () => Navigator.pop(
-                            context, '$choicePrefix$url'),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(5, 7, 5, 5),
-                      child: Column(children: [
-                        Expanded(
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                  maxWidth: 150, maxHeight: 150),
-                              child: image,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: kPrimary,
-                            fontSize: 9.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ]),
+                    const SizedBox(height: 3),
+                    Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: kPrimary,
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                );
-              },
-              childCount: items.length,
+                  ],
+                ),
+              ),
             ),
-          ),
-        ),
-      );
+          );
+        }, childCount: items.length),
+      ),
+    ),
+  );
 }
 
 // Legacy expression picker retained for messages created before the catalog API.
@@ -34589,10 +34663,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _showGroupExpressions({bool? inlineEmoji}) async {
     final destination = _uploadDestination;
     final accountId = widget.me?['id'];
-    bool currentDestination() => mounted &&
-        widget.token == destination.token && widget.me?['id'] == accountId &&
+    bool currentDestination() =>
+        mounted &&
+        widget.token == destination.token &&
+        widget.me?['id'] == accountId &&
         _groupId == destination.targetId;
-    if (!await _ensureCanSendToGroup() || !mounted || !currentDestination()) return;
+    if (!await _ensureCanSendToGroup() || !mounted || !currentDestination())
+      return;
     await _loadGroupReceivingFilter();
     if (!mounted || !currentDestination()) return;
     if (inlineEmoji == true && !_groupAllowsText) {
@@ -34607,134 +34684,190 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _showGroupFilterNotice('מדבקות ואימוג׳י');
       return;
     }
-    final beforePicker = _msgCtrl.value;
-    final choice = await _showExpressionPicker(context, widget.token,
-        initialInlineEmoji: inlineEmoji,
-        stickersAllowed: _groupAllowsImages,
-        inlineEmojiAllowed: _groupAllowsText,
-        blockedLabel: 'חסום בסינון הקבוצה');
-    if (choice == null || !mounted || !currentDestination()) return;
-    if (choice.startsWith(_remoteStickerPrefix)) {
+    var beforePicker = _msgCtrl.value;
+    Future<void> selections = Future<void>.value();
+    Future<void> applyChoice(String choice) async {
+      if (!currentDestination()) return;
+      if (choice.startsWith(_remoteStickerPrefix)) {
+        _restoreExpressionSelection(_msgCtrl, beforePicker);
+        try {
+          if (!await _prepareGroupUpload('image') || !currentDestination())
+            return;
+          final sticker = await _loadRemoteLibrarySticker(
+            choice.substring(_remoteStickerPrefix.length),
+          );
+          if (!mounted || !currentDestination()) return;
+          await _uploadGroupFile(
+            sticker.file,
+            sticker.fileName,
+            'image',
+            preparedDestination: destination,
+            extraFields: const {'builtinExpression': 'true'},
+          );
+        } catch (_) {
+          if (mounted && currentDestination()) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('לא ניתן לשלוח את המדבקה כרגע. נסה שוב'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+        return;
+      }
+      if (choice.startsWith(_remoteExpressionPrefix)) {
+        await _loadGroupReceivingFilter();
+        if (!mounted || !currentDestination()) return;
+        if (!_groupAllowsText) {
+          _showGroupFilterNotice('אימוג׳י בתוך הטקסט');
+          return;
+        }
+        final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
+        final emojiId = inlineEmojiIdFromUrl(remoteUrl);
+        if (emojiId == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('האימוג׳י אינו זמין כרגע')),
+          );
+          return;
+        }
+        _insertExpressionText(
+          _msgCtrl,
+          inlineEmojiCharacter(emojiId),
+          beforePicker,
+        );
+        beforePicker = _msgCtrl.value;
+        return;
+      }
+      if (choice.startsWith(_originalExpressionPrefix)) {
+        final assetPath = choice.substring(_originalExpressionPrefix.length);
+        final data = await rootBundle.load(assetPath);
+        final bytes = data.buffer.asUint8List();
+        final extension = assetPath.endsWith('.gif') ? 'gif' : 'png';
+        final fileName =
+            'betshuva_${assetPath.split('/').last.replaceAll('.$extension', '')}.$extension';
+        final file = XFile.fromData(
+          bytes,
+          name: fileName,
+          mimeType: 'image/$extension',
+        );
+        await _uploadGroupFile(
+          file,
+          fileName,
+          'image',
+          extraFields: const {'builtinExpression': 'true'},
+        );
+        return;
+      }
+      if (choice == _gifPickerAction) {
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: const ['gif'],
+          withData: kIsWeb,
+        );
+        if (result == null || result.files.isEmpty) return;
+        final file = result.files.single;
+        await _uploadGroupFile(file.xFile, file.name, 'image');
+        return;
+      }
+      if (choice == _sharedGifUploadAction) {
+        final details = await _requestSharedGifDetails(context);
+        if (details == null || !mounted) return;
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: const ['gif'],
+          withData: kIsWeb,
+        );
+        if (result == null || result.files.isEmpty) return;
+        final file = result.files.single;
+        await _uploadGroupFile(
+          file.xFile,
+          file.name,
+          'image',
+          extraFields: {
+            'sharedGif': 'true',
+            'rightsConfirmed': 'true',
+            'sharedGifTitle': details['title']!,
+            'sharedGifTags': details['tags']!,
+          },
+        );
+        return;
+      }
+      if (choice == _personalStickerAction) {
+        final picked = await ImagePicker().pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 1024,
+          maxHeight: 1024,
+          imageQuality: 90,
+        );
+        if (picked != null) {
+          await _uploadGroupFile(picked, 'sticker_${picked.name}', 'image');
+        }
+        return;
+      }
+      if (choice.startsWith(_sharedGifPrefix)) {
+        final gif = jsonDecode(
+          utf8.decode(
+            base64Url.decode(
+              base64Url.normalize(choice.substring(_sharedGifPrefix.length)),
+            ),
+          ),
+        ) as Map<String, dynamic>;
+        await _applyGroupUploadResult(
+          _FileUploadResult(
+            _FileUploadOutcome.approved,
+            data: {'url': gif['preview_url']},
+          ),
+          gif['file_name'] as String? ?? '${gif['title']}.gif',
+          'image',
+          true,
+        );
+        http
+            .post(
+              Uri.parse('$kApi/gifs/${gif['id']}/use'),
+              headers: {'Authorization': 'Bearer ${widget.token}'},
+            )
+            .ignore();
+        return;
+      }
+      if (choice.startsWith(_stickerPrefix)) {
+        _msgCtrl.text = choice.substring(_stickerPrefix.length);
+        await _send();
+        return;
+      }
+      if (choice.startsWith(_avielStickerPrefix)) {
+        await _send(stickerId: choice.substring(_avielStickerPrefix.length));
+        return;
+      }
+      _insertExpressionText(_msgCtrl, choice, beforePicker);
+      beforePicker = _msgCtrl.value;
+    }
+
+    await _showExpressionPicker(
+      context,
+      widget.token,
+      initialInlineEmoji: inlineEmoji,
+      stickersAllowed: _groupAllowsImages,
+      inlineEmojiAllowed: _groupAllowsText,
+      blockedLabel: 'חסום בסינון הקבוצה',
+      onSelected: (choice) {
+        selections = selections.then((_) => applyChoice(choice)).catchError((
+          Object error,
+        ) {
+          if (!mounted || !currentDestination()) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('לא ניתן להשלים את הבחירה כרגע. נסה שוב'),
+            ),
+          );
+        });
+        return selections;
+      },
+    );
+    if (currentDestination()) {
       _restoreExpressionSelection(_msgCtrl, beforePicker);
       _msgFocusNode.requestFocus();
-      try {
-        if (!await _prepareGroupUpload('image') || !currentDestination()) return;
-        final sticker = await _loadRemoteLibrarySticker(
-            choice.substring(_remoteStickerPrefix.length));
-        if (!mounted || !currentDestination()) return;
-        await _uploadGroupFile(sticker.file, sticker.fileName, 'image',
-            preparedDestination: destination,
-            extraFields: const {'builtinExpression': 'true'});
-      } catch (_) {
-        if (mounted && currentDestination()) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('לא ניתן לשלוח את המדבקה כרגע. נסה שוב'),
-            backgroundColor: Colors.red,
-          ));
-        }
-      }
-      return;
     }
-    if (choice.startsWith(_remoteExpressionPrefix)) {
-      await _loadGroupReceivingFilter();
-      if (!mounted || !currentDestination()) return;
-      if (!_groupAllowsText) {
-        _showGroupFilterNotice('אימוג׳י בתוך הטקסט');
-        return;
-      }
-      final remoteUrl = choice.substring(_remoteExpressionPrefix.length);
-      final emojiId = inlineEmojiIdFromUrl(remoteUrl);
-      if (emojiId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('האימוג׳י אינו זמין כרגע')));
-        return;
-      }
-      _insertExpressionText(
-          _msgCtrl, inlineEmojiCharacter(emojiId), beforePicker);
-      _msgFocusNode.requestFocus();
-      return;
-    }
-    if (choice.startsWith(_originalExpressionPrefix)) {
-      final assetPath = choice.substring(_originalExpressionPrefix.length);
-      final data = await rootBundle.load(assetPath);
-      final bytes = data.buffer.asUint8List();
-      final extension = assetPath.endsWith('.gif') ? 'gif' : 'png';
-      final fileName =
-          'betshuva_${assetPath.split('/').last.replaceAll('.$extension', '')}.$extension';
-      final file =
-          XFile.fromData(bytes, name: fileName, mimeType: 'image/$extension');
-      await _uploadGroupFile(file, fileName, 'image', extraFields: const {
-        'builtinExpression': 'true',
-      });
-      return;
-    }
-    if (choice == _gifPickerAction) {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['gif'],
-        withData: kIsWeb,
-      );
-      if (result == null || result.files.isEmpty) return;
-      final file = result.files.single;
-      await _uploadGroupFile(file.xFile, file.name, 'image');
-      return;
-    }
-    if (choice == _sharedGifUploadAction) {
-      final details = await _requestSharedGifDetails(context);
-      if (details == null || !mounted) return;
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['gif'],
-        withData: kIsWeb,
-      );
-      if (result == null || result.files.isEmpty) return;
-      final file = result.files.single;
-      await _uploadGroupFile(file.xFile, file.name, 'image', extraFields: {
-        'sharedGif': 'true',
-        'rightsConfirmed': 'true',
-        'sharedGifTitle': details['title']!,
-        'sharedGifTags': details['tags']!,
-      });
-      return;
-    }
-    if (choice == _personalStickerAction) {
-      final picked = await ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 1024,
-        maxHeight: 1024,
-        imageQuality: 90,
-      );
-      if (picked != null) {
-        await _uploadGroupFile(picked, 'sticker_${picked.name}', 'image');
-      }
-      return;
-    }
-    if (choice.startsWith(_sharedGifPrefix)) {
-      final gif = jsonDecode(utf8.decode(base64Url.decode(
-              base64Url.normalize(choice.substring(_sharedGifPrefix.length)))))
-          as Map<String, dynamic>;
-      await _applyGroupUploadResult(
-        _FileUploadResult(_FileUploadOutcome.approved,
-            data: {'url': gif['preview_url']}),
-        gif['file_name'] as String? ?? '${gif['title']}.gif',
-        'image',
-        true,
-      );
-      http.post(Uri.parse('$kApi/gifs/${gif['id']}/use'),
-          headers: {'Authorization': 'Bearer ${widget.token}'}).ignore();
-      return;
-    }
-    if (choice.startsWith(_stickerPrefix)) {
-      _msgCtrl.text = choice.substring(_stickerPrefix.length);
-      await _send();
-      return;
-    }
-    if (choice.startsWith(_avielStickerPrefix)) {
-      await _send(stickerId: choice.substring(_avielStickerPrefix.length));
-      return;
-    }
-    _insertExpressionText(_msgCtrl, choice, beforePicker);
-    _msgFocusNode.requestFocus();
   }
 
   Future<void> _showAttachMenu() async {

@@ -321,9 +321,7 @@ Finder get _grid =>
     find.descendant(of: _picker, matching: find.byType(SliverGrid));
 Finder get _search =>
     find.descendant(of: _picker, matching: find.byType(TextField));
-Finder get _customTab => find.byKey(const ValueKey('expression-custom-tab'));
-Finder get _standardTab =>
-    find.byKey(const ValueKey('expression-standard-tab'));
+Finder get _done => find.byKey(const ValueKey('expression-done'));
 Finder get _stickerShortcut =>
     find.byKey(const ValueKey('chat-stickers-shortcut'));
 Finder get _inlineEmojiShortcut =>
@@ -333,14 +331,9 @@ void _expectFlatImages(WidgetTester tester,
     {int count = 150, bool stickers = false}) {
   expect(find.descendant(of: _picker, matching: find.byType(TabBar)),
       findsNothing);
-  expect(find.descendant(of: _picker, matching: find.byType(ChoiceChip)),
-      findsNWidgets(2));
-  expect(tester.widget<ChoiceChip>(_customTab).selected, stickers);
-  expect(tester.widget<ChoiceChip>(_standardTab).selected, !stickers);
-  expect(find.descendant(of: _picker, matching: find.text('מדבקות')),
-      findsOneWidget);
-  expect(find.descendant(of: _picker, matching: find.text('אימוג׳י')),
-      findsWidgets);
+  expect(find.descendant(of: _picker, matching: find.byType(ChoiceChip)), findsNothing);
+  expect(find.descendant(of: _picker, matching: find.text(stickers ? 'מדבקות' : 'אימוג׳י')), findsOneWidget);
+  expect(find.descendant(of: _picker, matching: find.text(stickers ? 'אימוג׳י' : 'מדבקות')), findsNothing);
   expect(find.descendant(of: _picker, matching: find.text('של בתשובה')),
       findsNothing);
   expect(find.descendant(of: _picker, matching: find.text('רגילים')),
@@ -354,13 +347,7 @@ void _expectFlatImages(WidgetTester tester,
 
 Future<void> _openPicker(WidgetTester tester,
     {bool stickers = false, bool defaultStickers = true}) async {
-  await _openShortcut(tester, stickers: defaultStickers);
-  if (stickers != defaultStickers) {
-    await tester.ensureVisible(stickers ? _customTab : _standardTab);
-    await tester.tap(stickers ? _customTab : _standardTab);
-    await tester.pumpAndSettle();
-  }
-  _expectFlatImages(tester, stickers: stickers);
+  await _openShortcut(tester, stickers: stickers);
 }
 
 Future<void> _openShortcut(WidgetTester tester,
@@ -369,6 +356,10 @@ Future<void> _openShortcut(WidgetTester tester,
   await tester
       .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
   await tester.pumpAndSettle();
+  if (_grid.evaluate().isEmpty) {
+    await tester.drag(find.descendant(of: _picker, matching: find.byType(CustomScrollView)), const Offset(0, -150));
+    await tester.pumpAndSettle();
+  }
   _expectFlatImages(tester, stickers: stickers);
 }
 
@@ -397,7 +388,7 @@ Finder _imageTile(int id, {bool colored = false}) => find.byKey(ValueKey(
 
 Future<void> _selectEmoji(WidgetTester tester, int id,
     {bool colored = false}) async {
-  final sendsSticker = tester.widget<ChoiceChip>(_customTab).selected;
+  final sendsSticker = find.descendant(of: _picker, matching: find.text('מדבקות')).evaluate().isNotEmpty;
   await tester.ensureVisible(_imageTile(id, colored: colored));
   await tester.pumpAndSettle();
   await tester.tap(_imageTile(id, colored: colored));
@@ -414,14 +405,18 @@ Future<void> _selectEmoji(WidgetTester tester, int id,
   } else {
     await tester.pumpAndSettle();
   }
+  expect(_picker, findsOneWidget);
+  await tester.tap(_done);
+  await tester.pumpAndSettle();
   expect(_picker, findsNothing);
 }
 
 Future<void> _openInlineTab(WidgetTester tester, {int count = 150}) async {
-  await tester.ensureVisible(_standardTab);
-  await tester.pumpAndSettle();
-  await tester.tap(_standardTab);
-  await tester.pumpAndSettle();
+  if (find.descendant(of: _picker, matching: find.text('אימוג׳י')).evaluate().isEmpty) {
+    await tester.tap(_done);
+    await tester.pumpAndSettle();
+    await _openShortcut(tester, stickers: false);
+  }
   _expectFlatImages(tester, count: count);
 }
 
@@ -476,6 +471,62 @@ void main() {
 
   for (final isGroup in [false, true]) {
     final chatKind = isGroup ? 'group' : 'private';
+
+    testWidgets('$chatKind repeated emoji selections keep the picker open and append in order', (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer, _draft);
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection.collapsed(offset: 3);
+        await _openShortcut(tester, stickers: false);
+        await tester.enterText(_search, 'אימוג׳י לבדיקה');
+        await tester.pumpAndSettle();
+        for (final id in [1, 2, 3]) {
+          await tester.tap(_imageTile(id));
+        }
+        await tester.pumpAndSettle();
+        expect(_picker, findsOneWidget);
+        expect(tester.widget<EditableText>(find.descendant(of: _search, matching: find.byType(EditableText))).controller.text, 'אימוג׳י לבדיקה');
+        final text = '${_draft.substring(0, 3)}${inlineEmojiCharacter(1)}${inlineEmojiCharacter(2)}${inlineEmojiCharacter(3)}${_draft.substring(3)}';
+        expect(controller.text, text);
+        app.expectNothingSent();
+        await tester.tap(_done);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage(encodeInlineEmojiText(text));
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
+    testWidgets('$chatKind repeated stickers send separately in order and preserve the draft', (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer, _draft);
+        final controller = app.controller(tester);
+        controller.selection = const TextSelection(baseOffset: 5, extentOffset: 2);
+        final before = controller.value;
+        await _openShortcut(tester, stickers: true);
+        for (final id in [1, 2, 3]) {
+          await tester.tap(_imageTile(id));
+        }
+        expect(_picker, findsOneWidget);
+        await tester.tap(_done);
+        for (var i = 0; i < 30; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        }
+        expect(app.uploads, hasLength(3));
+        expect(app.sentHttpMessages, hasLength(3));
+        final files = app.sentHttpMessages.map((request) => jsonDecode(request.body)['fileName']).toList();
+        expect(files, ['betshuva-sticker-01.png', 'betshuva-sticker-02.png', 'betshuva-sticker-03.png']);
+        expect(controller.value, before);
+        expect(_picker, findsNothing);
+        await app.dispose(tester);
+      }, () => app.client);
+    }, skip: kIsWeb);
 
     testWidgets(
         '$chatKind composer shortcuts open the requested mode and retain the caret',
@@ -810,8 +861,9 @@ void main() {
 
         await _openPicker(tester);
         await _openInlineTab(tester);
-        await tester.tap(_customTab);
+        await tester.tap(_done);
         await tester.pumpAndSettle();
+        await _openShortcut(tester, stickers: true);
         _expectFlatImages(tester, stickers: true);
         await tester.enterText(_search, _labels.last);
         await tester.pumpAndSettle();
@@ -1027,10 +1079,7 @@ void main() {
             await _openPicker(tester,
                 stickers: policy.allowImages,
                 defaultStickers: policy.allowImages);
-            expect(tester.widget<ChoiceChip>(_customTab).onSelected,
-                policy.allowImages ? isNotNull : isNull);
-            expect(tester.widget<ChoiceChip>(_standardTab).onSelected,
-                policy.allowText ? isNotNull : isNull);
+            expect(find.byType(ChoiceChip), findsNothing);
             if (policy.allowText) {
               await _openInlineTab(tester);
               await _selectEmoji(tester, 1);
@@ -1100,11 +1149,7 @@ void main() {
                     of: _picker, matching: find.byType(CustomScrollView)))
                 .bottom,
             lessThanOrEqualTo(viewport.size.height - viewport.keyboard));
-        await tester.ensureVisible(_standardTab);
-        await tester.pumpAndSettle();
-        await tester.tap(_standardTab);
-        await tester.pumpAndSettle();
-        expect(tester.widget<ChoiceChip>(_standardTab).selected, isTrue);
+        await _openInlineTab(tester);
         final standardScroll = find
             .descendant(of: _picker, matching: find.byType(Scrollable))
             .first;
@@ -1128,6 +1173,9 @@ void main() {
         await tester.scrollUntilVisible(smile, 60, scrollable: standardScroll);
         await tester.pumpAndSettle();
         await tester.tap(smile);
+        await tester.pumpAndSettle();
+        expect(_picker, findsOneWidget);
+        await tester.tap(_done);
         await tester.pumpAndSettle();
         expect(_picker, findsNothing);
         expect(app.controller(tester).text, inlineEmojiCharacter(1));

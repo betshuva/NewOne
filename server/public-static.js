@@ -11,7 +11,7 @@ const publicFiles = new Set([
   '/open-source-licenses.html', '/admin.html', '/admin-audit.html', '/admin-gmail.html', '/admin-storage.html',
   '/admin-members.html', '/admin-reports.html', '/admin-scans.html', '/groups.html', '/invite-v2.html', '/public-users.html',
   '/play-store-description.html', '/image-links.html', '/logo.html',
-  '/demo-conversations.html', '/favicon.png', '/manifest.json', '/version.json',
+  '/demo-conversations.html', '/qa-tests.html', '/favicon.png', '/manifest.json', '/version.json',
   '/flutter.js', '/flutter_bootstrap.js', '/flutter_service_worker.js',
   '/firebase-messaging-sw.js', '/main.dart.js', '/whatsapp-card-v2.jpg',
 ]);
