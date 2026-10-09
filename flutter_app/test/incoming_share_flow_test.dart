@@ -274,6 +274,12 @@ void main() {
   testWidgets(
       'only messages accepted by every selected recipient are completed',
       (tester) async {
+    tester.view.physicalSize = const Size(900, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    var allowRetry = false;
+    var userDeliveries = 0;
     final client = MockClient((request) async {
       if (request.method == 'GET') {
         return http.Response(
@@ -289,7 +295,10 @@ void main() {
             200);
       }
       final body = jsonDecode(request.body);
-      final rejected = request.url.path.contains('/groups/') &&
+      if (request.url.path.endsWith('/messages') &&
+          !request.url.path.contains('/groups/')) userDeliveries++;
+      final rejected = !allowRetry &&
+          request.url.path.contains('/groups/') &&
           body['text'] == 'partially sent';
       return http.Response(
           rejected ? '{"error":"Group filter rejected"}' : '{}',
@@ -329,6 +338,35 @@ void main() {
     expect(outcome.sentCount, 3);
     expect(outcome.totalDeliveries, 4);
     expect(find.textContaining('Group filter rejected'), findsOneWidget);
+    expect(outcome.completedTargetsByMessage[1], {'user:bob'});
+    expect(userDeliveries, 2);
+    allowRetry = true;
+    final retry = forwardChatMessages(
+        screen,
+        'test-token',
+        null,
+        [
+          {'text': 'partially sent'}
+        ],
+        client: client,
+        previousDeliveries: {0: outcome.completedTargetsByMessage[1]!});
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('forward-target-user:bob')));
+    await tester.scrollUntilVisible(
+        find.byKey(const ValueKey('forward-target-group:study')), 100,
+        scrollable: find.byWidgetPredicate((widget) =>
+            widget is Scrollable &&
+            widget.axisDirection == AxisDirection.down));
+    await tester.tap(find.byKey(const ValueKey('forward-target-group:study')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'העבר ל־2 יעדים'));
+    await tester.pumpAndSettle();
+    final replay = await retry;
+    expect(replay.completedMessageIndexes, {0});
+    expect(replay.completedTargetsByMessage[0], {'user:bob', 'group:study'});
+    expect(userDeliveries, 2,
+        reason:
+            'a recipient who already accepted must not receive a duplicate');
   });
 
   testWidgets(

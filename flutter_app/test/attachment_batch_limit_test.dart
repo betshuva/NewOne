@@ -31,6 +31,7 @@ void main() {
           var peak = 0;
           var sent = 0;
           final names = <String>[];
+          final history = <Map<String, dynamic>>[];
           await http.runWithClient(() async {
             await tester.pumpWidget(fixtures.chat(group));
             await tester.pumpAndSettle();
@@ -63,26 +64,49 @@ void main() {
             expect(uploads, images ? 2 : 1);
             if (!images) expect(find.text('מעלה 100 קבצים'), findsOneWidget);
             expect(find.text('סוף העלאת 100 קבצים'), findsNothing);
+            expect(find.text('סיכום: נשלחו 100 · נחסמו 0'), findsNothing);
             gate.complete();
-            for (var i = 0; i < 500 && sent < 100; i++) {
+            final prefs = await SharedPreferences.getInstance();
+            final noticeKey = group
+                ? 'upload_notices_v1_viewer_group_group'
+                : 'upload_notices_v1_viewer_personal_friend';
+            List<Map<String, dynamic>> savedCompletions() =>
+                (jsonDecode(prefs.getString(noticeKey) ?? '[]') as List)
+                    .cast<Map<String, dynamic>>()
+                    .where((notice) => notice['text'] == 'סוף העלאת 100 קבצים')
+                    .toList();
+            final summary = find.text('סיכום: נשלחו 100 · נחסמו 0');
+            // The last send resolves before the batch persists its boundary.
+            // Wait for the user-visible result and its durable upload identities.
+            for (var i = 0;
+                i < 500 &&
+                    (sent < 100 ||
+                        summary.evaluate().isEmpty ||
+                        savedCompletions().isEmpty);
+                i++) {
               await tester.pump(const Duration(milliseconds: 50));
-            }
-            for (var i = 0; i < 10; i++) {
-              await tester.pump(const Duration(milliseconds: 100));
             }
             expect(uploads, 100);
             expect(sent, 100);
             expect(peak, images ? 2 : 1);
             expect(
                 names, isNot(contains('file-100.${images ? 'png' : 'pdf'}')));
-            expect(find.text('סוף העלאת 100 קבצים'), findsOneWidget);
+            expect(find.text('סוף העלאת 100 קבצים'), findsNothing);
+            expect(summary, findsOneWidget);
+            final completions = savedCompletions();
+            expect(completions, hasLength(1));
+            expect((completions.single['uploadIds'] as List).toSet(),
+                hasLength(100));
+            expect((completions.single['messageIds'] as List).toSet(),
+                hasLength(100));
             expect(tester.takeException(), isNull);
             await tester.pumpWidget(const SizedBox.shrink());
             await tester.pumpAndSettle();
           },
               () => MockClient((request) async {
-                    if (fixtures.isHistory(request, group))
-                      return fixtures.json([]);
+                    if (fixtures.isHistory(request, group)) {
+                      return fixtures.json(history);
+                    }
                     if (request.url.path.endsWith('/upload')) {
                       final number = ++uploads;
                       active++;
@@ -98,6 +122,21 @@ void main() {
                     if (request.method == 'POST' &&
                         request.url.path.endsWith('/messages')) {
                       sent++;
+                      final body = jsonDecode(request.body) as Map;
+                      // The group image batch refreshes server history before
+                      // reporting its outcome. Successful sends must be visible
+                      // there, as they are on the real server.
+                      history.add({
+                        'id': 'message-$sent',
+                        'sender_id': 'viewer',
+                        'sender_name': 'אני',
+                        'body': body['fileName'],
+                        'type': body['fileType'],
+                        'file_url': body['fileUrl'],
+                        'file_name': body['fileName'],
+                        'message_status': 'sent',
+                        'created_at': DateTime.now().toUtc().toIso8601String(),
+                      });
                       return fixtures
                           .json({'id': 'message-$sent', 'status': 'sent'});
                     }

@@ -284,6 +284,49 @@ void _installVideoProbe(_VideoProbe probe) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets(
+      'shared gallery photos seed a draft and retain their sources through early publication',
+      (tester) async {
+    final names = [for (var i = 0; i < 8; i++) 'shared-$i.png'];
+    final server = _Server('listing-created', names);
+    final picker = _Picker([]);
+    _prepare(tester, picker);
+    server.browser.install();
+    addTearDown(server.browser.dispose);
+    addTearDown(server.completeUploads);
+    var processed = false;
+    await http.runWithClient(() async {
+      await tester.pumpWidget(_app(PostListingScreen(
+          token: 'original-token',
+          me: const {'city': 'רחובות'},
+          initialImages: [for (final name in names) _ImageFile(name)],
+          onInitialImagesProcessed: () => processed = true)));
+      await tester.tap(find.text('פתיחת מודעה'));
+      await _until(tester, () => server.uploads.length == 2);
+      await tester.pump(const Duration(seconds: 1));
+      await _until(tester, () => _field('כותרת המודעה *').evaluate().isNotEmpty);
+      await tester.enterText(_field('כותרת המודעה *'), 'רכב למכירה');
+      await tester.enterText(
+          _field('תיאור מפורט *'), 'תמונות ששותפו מהגלריה ונשמרות ברקע');
+      await _tapVisible(tester, find.text('פרסם'));
+      await _until(tester, () => server.listingWrites.length == 1);
+      await _until(
+          tester, () => find.byType(PostListingScreen).evaluate().isEmpty);
+      expect(processed, isFalse,
+          reason:
+              'The native source queue cannot be acknowledged before all uploads read the photos');
+      expect(picker.selections, 0);
+      server.completeUploads();
+      await _until(tester, () => processed && server.imageWrites.isNotEmpty);
+      expect(server.uploads.length, 8);
+      expect(jsonDecode(server.imageWrites.single.body)['image_urls'],
+          [for (final name in names) 'https://example.test/$name']);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    }, () => MockClient(server.respond));
+  });
+
   for (final editing in [false, true]) {
     testWidgets(
         'saving ${editing ? 'existing' : 'new'} listing retains eight photo slots and one scanned video after navigation',

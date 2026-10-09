@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_new_chat">שיחה חדשה</string>
+    <string name="shortcut_capture_send">צילום ושליחה</string>
+    <string name="shortcut_new_listing">מודעה חדשה</string>
+</resources>

@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'calendar_hebrew_date.dart';
 import 'calendar_event_widgets.dart';
+import 'calendar_import.dart';
 import 'main_navigation_tab.dart';
 import 'hebrew_date_picker.dart';
 import 'location_autocomplete.dart';
@@ -76,6 +77,31 @@ class CalendarApi {
   }
 }
 
+/// A shared event is a new personal draft, never an edit of its external ID.
+/// The caller has already shown import warnings and any single-occurrence choice.
+Future<bool> openCalendarImportEditor(BuildContext context,
+    {required CalendarApi api,
+    required Map<String, dynamic> initialDraft,
+    bool Function()? canImport}) async {
+  if (!context.mounted || canImport?.call() == false) return false;
+  final settingsResponse = await api.call('settings');
+  if (!context.mounted || canImport?.call() == false) return false;
+  final settings =
+      Map<String, dynamic>.from(settingsResponse['settings'] as Map);
+  return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => _EventEditor(
+              api: api,
+              settings: settings,
+              contacts: const [],
+              attendees: const [],
+              initialDraft: initialDraft,
+              canImport: canImport,
+              at: _wall(initialDraft['start'] as String))) ??
+      false;
+}
+
 class CalendarNavigationButton extends StatefulWidget {
   final String api, token;
   final bool selected;
@@ -87,7 +113,8 @@ class CalendarNavigationButton extends StatefulWidget {
       required this.onTap,
       this.selected = false});
   @override
-  State<CalendarNavigationButton> createState() => _CalendarNavigationButtonState();
+  State<CalendarNavigationButton> createState() =>
+      _CalendarNavigationButtonState();
 }
 
 class _CalendarNavigationButtonState extends State<CalendarNavigationButton>
@@ -158,13 +185,16 @@ class _CalendarNavigationButtonState extends State<CalendarNavigationButton>
         key: const ValueKey('calendar-shortcut'),
         selected: widget.selected,
         child: Tooltip(
-          message: 'לוח שנה\n$_label${_pending > 0 ? '\n$_pending הזמנות ממתינות' : ''}',
-          child: MainNavigationTab(label: 'יומן', selected: widget.selected,
-          onTap: () async {
-            await widget.onTap();
-            if (mounted) _load();
-          },
-        )),
+            message:
+                'לוח שנה\n$_label${_pending > 0 ? '\n$_pending הזמנות ממתינות' : ''}',
+            child: MainNavigationTab(
+              label: 'יומן',
+              selected: widget.selected,
+              onTap: () async {
+                await widget.onTap();
+                if (mounted) _load();
+              },
+            )),
       );
 }
 
@@ -983,6 +1013,24 @@ class _CalendarScreenState extends State<CalendarScreen>
                           onPressed: _settings == null ? null : () => _edit(),
                           icon: const Icon(Icons.add),
                           label: const Text('אירוע חדש')),
+                      OutlinedButton.icon(
+                          onPressed: _settings == null
+                              ? null
+                              : () async {
+                                  final token = widget.token;
+                                  if (await openCalendarImportInput(context,
+                                          api: widget.api,
+                                          token: token,
+                                          canImport: () =>
+                                              mounted &&
+                                              widget.token == token) &&
+                                      mounted &&
+                                      widget.token == token) {
+                                    await _load();
+                                  }
+                                },
+                          icon: const Icon(Icons.event_available_outlined),
+                          label: const Text('ייבוא אירוע')),
                       SegmentedButton<String>(
                           segments: const [
                             ButtonSegment(value: 'day', label: Text('יום')),
@@ -1394,6 +1442,8 @@ class _EventEditor extends StatefulWidget {
   final Map<String, dynamic> settings;
   final List<Map<String, dynamic>> contacts, attendees;
   final Map<String, dynamic>? event;
+  final Map<String, dynamic>? initialDraft;
+  final bool Function()? canImport;
   final DateTime at;
   const _EventEditor(
       {required this.api,
@@ -1401,6 +1451,8 @@ class _EventEditor extends StatefulWidget {
       required this.contacts,
       required this.attendees,
       this.event,
+      this.initialDraft,
+      this.canImport,
       required this.at});
   @override
   State<_EventEditor> createState() => _EventEditorState();
@@ -1424,16 +1476,29 @@ class _EventEditorState extends State<_EventEditor> {
   @override
   void initState() {
     super.initState();
-    final e = widget.event;
+    final e = widget.event ?? widget.initialDraft;
     title = TextEditingController(text: e?['title'] ?? '');
     notes = TextEditingController(text: e?['notes'] ?? '');
     location = TextEditingController(text: e?['location'] ?? '');
-    count = TextEditingController(text: '4');
-    start = e == null ? widget.at : _wall(e['event_start_local']);
+    count =
+        TextEditingController(text: '${widget.initialDraft?['count'] ?? 4}');
+    start = e == null ? widget.at : _wall(e['event_start_local'] ?? e['start']);
     end = e == null
         ? start.add(const Duration(hours: 1))
-        : _wall(e['event_end_local']);
+        : _wall(e['event_end_local'] ?? e['end']);
     repeatWeekdays.add(start.weekday);
+    if (widget.initialDraft != null) {
+      repeat = widget.initialDraft!['repeat'] ?? 'none';
+      repeatInterval = widget.initialDraft!['interval'] ?? 1;
+      repeatEnd = widget.initialDraft!['end_type'] ?? 'count';
+      final days = widget.initialDraft!['weekdays'];
+      if (days is List) {
+        repeatWeekdays
+          ..clear()
+          ..addAll(days.whereType<int>());
+        weekdaysChanged = true;
+      }
+    }
     repeatUntil = _day(start).add(const Duration(days: 28));
     allDay = e?['all_day'] == true;
     color = e?['color'] ?? 'blue';
@@ -1534,6 +1599,10 @@ class _EventEditorState extends State<_EventEditor> {
 
   Future<void> save() async {
     if (saving) return;
+    if (widget.canImport?.call() == false) {
+      Navigator.pop(context, false);
+      return;
+    }
     if (title.text.trim().isEmpty || !end.isAfter(start)) {
       setState(() => error = 'יש להזין כותרת ושעת סיום אחרי ההתחלה');
       return;
@@ -1562,7 +1631,7 @@ class _EventEditorState extends State<_EventEditor> {
       error = null;
     });
     try {
-      await widget.api.call(
+      final result = await widget.api.call(
           widget.event == null ? 'events' : 'events/${widget.event!['id']}',
           method: widget.event == null ? 'POST' : 'PUT',
           body: {
@@ -1585,6 +1654,11 @@ class _EventEditorState extends State<_EventEditor> {
               if (repeatEnd == 'until') 'until': _date(repeatUntil),
             },
             'invitees': invitees.toList(),
+            if (widget.initialDraft?['_import_key'] != null) ...{
+              'import_key': widget.initialDraft!['_import_key'],
+              if (widget.initialDraft!['_import_single_occurrence'] == true)
+                'import_single_occurrence': true,
+            },
             if (widget.event != null) ...{
               'version': widget.event!['version'],
               'scope': editScope,
@@ -1592,6 +1666,10 @@ class _EventEditorState extends State<_EventEditor> {
                 'series_revision': widget.event!['series_revision'],
             }
           });
+      if (mounted && result is Map && result['already_imported'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('האירוע כבר נמצא ביומן שלך; לא נוצר עותק נוסף.')));
+      }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       if (mounted) {
@@ -1711,7 +1789,9 @@ class _EventEditorState extends State<_EventEditor> {
                           'התזכורת תופיע בעדכוני היומן; התראת מכשיר דורשת הרשאת התראות.',
                           style:
                               TextStyle(fontSize: 11, color: Colors.blueGrey)),
-                      if (widget.event == null) ...[
+                      if (widget.event == null &&
+                          widget.initialDraft?['_import_single_occurrence'] !=
+                              true) ...[
                         DropdownButtonFormField<String>(
                             key: const ValueKey('calendar-repeat'),
                             initialValue: repeat,
@@ -1854,11 +1934,17 @@ class _EventEditorState extends State<_EventEditor> {
                                 ? 'השינויים יישמרו במופע זה בלבד.'
                                 : 'פרטי האירוע, השעות, התזכורת והמוזמנים יעודכנו בכל המופעים שלא בוטלו. שינוי תאריך מזיז את כל הסדרה באותו מספר ימים; תדירות החזרה נשארת כפי שנקבעה.'))
                       ],
-                      const Padding(
-                          padding: EdgeInsets.only(top: 16),
-                          child: Text('הזמנת חברים',
-                              style: TextStyle(fontWeight: FontWeight.bold))),
-                      if (contacts.isEmpty)
+                      if (widget.initialDraft != null)
+                        const Padding(
+                            padding: EdgeInsets.only(top: 16),
+                            child: Text(
+                                'האירוע יתווסף ליומן האישי שלך. אפשר להזמין חברים לאחר השמירה.')),
+                      if (widget.initialDraft == null)
+                        const Padding(
+                            padding: EdgeInsets.only(top: 16),
+                            child: Text('הזמנת חברים',
+                                style: TextStyle(fontWeight: FontWeight.bold))),
+                      if (contacts.isEmpty && widget.initialDraft == null)
                         const Text(
                             'אין עדיין חברים זמינים להזמנה. אפשר לשמור אירוע אישי.'),
                       for (final c in contacts.entries)

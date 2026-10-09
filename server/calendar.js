@@ -3,6 +3,7 @@ const { DateTime, IANAZone } = require("luxon");
 const crypto = require("node:crypto");
 const { createLocationResolver, timezoneList } = require("./calendar-location");
 const { CANDLE_LIGHTING_MINUTES } = require("./calendar-policy");
+const calendarImport = require("./calendar-import");
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS calendar_settings (
  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -43,7 +44,7 @@ CREATE TABLE IF NOT EXISTS calendar_reminders (
  event_id UUID REFERENCES calendar_events(id) ON DELETE CASCADE,
  user_id UUID REFERENCES users(id) ON DELETE CASCADE, version INTEGER NOT NULL,
  PRIMARY KEY(event_id,user_id,version)
-);`;
+);${calendarImport.SCHEMA}`;
 const CITIES = [
   ["ירושלים", 31.778, 35.235, "Asia/Jerusalem", true],
   ["תל אביב", 32.0853, 34.7818, "Asia/Jerusalem", true],
@@ -344,6 +345,7 @@ function registerCalendar(
     validateShared = async () => {},
     resolveLocation = defaultLocationResolver,
     fetchHolidays = holidays,
+    importSecret = process.env.JWT_SECRET || crypto.randomBytes(32),
   },
 ) {
   const wrap = (fn) => async (req, res) => {
@@ -746,11 +748,37 @@ function registerCalendar(
     }),
   );
   app.post(
+    "/api/calendar/import/preview",
+    auth,
+    wrap(async (req, res) => {
+      const body = req.body || {};
+      if ((typeof body.ics === "string") === Boolean(body.event))
+        throw fail(400, "יש לשתף קובץ אירוע או פרטי אירוע");
+      const db = await getPool();
+      const zone = body.timezone || (await getSettings(db, req.user.id)).timezone;
+      const result = body.event
+        ? calendarImport.parseCalendarDraft(body.event, zone)
+        : calendarImport.parseCalendarShare(body.ics, zone);
+      for (const entry of result.drafts) {
+        validateEvent(entry.draft);
+        entry.import_key = calendarImport.signImportToken(entry, req.user.id, importSecret);
+        delete entry.source_key;
+        delete entry.fingerprint;
+      }
+      res.json(result);
+    }),
+  );
+  app.post(
     "/api/calendar/events",
     auth,
     wrap(async (req, res) => {
       const e = validateEvent(req.body);
-      if (e.invitees.length)
+      const imported = Object.hasOwn(req.body, "import_key")
+        ? calendarImport.verifyImportToken(req.body.import_key, req.user.id, importSecret) : null;
+      if (imported && (e.invitees.length ||
+          (imported.single && (req.body.import_single_occurrence !== true || e.repeat !== "none"))))
+        throw fail(400, "ייבוא אירוע נשמר ביומן האישי בלבד. יש לאשר במפורש ייבוא של מופע יחיד");
+      if (e.invitees.length || imported)
         await validateShared([e.title, e.notes, e.location].join("\n"));
       const times = occurrences(e),
         db = await getPool(),
@@ -758,6 +786,29 @@ function registerCalendar(
       const ids = [];
       try {
         await c.query("BEGIN");
+        if (imported) {
+          await c.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`calendar-import:${req.user.id}:${imported.key}`]);
+          const existing = (await c.query(
+            "SELECT event_ids,fingerprint FROM calendar_event_imports WHERE owner_id=$1 AND source_key=$2 FOR UPDATE",
+            [req.user.id, imported.key])).rows[0];
+          if (existing) {
+            if (existing.fingerprint !== imported.fingerprint)
+              throw fail(409, "אירוע זה כבר יובא עם פרטים אחרים. יש לפתוח אותו ביומן ולבדוק את העדכון");
+            const saved = (await c.query(
+              "SELECT title,notes,location,starts_at,ends_at,timezone,all_day,color,reminder_minutes,cancelled FROM calendar_events WHERE owner_id=$1 AND id=ANY($2::uuid[]) ORDER BY starts_at,id FOR SHARE",
+              [req.user.id, existing.event_ids])).rows;
+            const unchanged = saved.length === times.length && saved.every((row, index) =>
+              row.cancelled === false && row.title === e.title && row.notes === e.notes &&
+              row.location === e.location && row.timezone === e.timezone && row.all_day === e.all_day &&
+              row.color === e.color && row.reminder_minutes === e.reminder_minutes &&
+              new Date(row.starts_at).getTime() === Date.parse(times[index].start) &&
+              new Date(row.ends_at).getTime() === Date.parse(times[index].end));
+            if (!unchanged)
+              throw fail(409, "אירוע זה כבר נמצא ביומן עם פרטים שונים. השינויים מהייבוא לא נשמרו; יש לפתוח את האירוע הקיים ביומן ולערוך אותו");
+            await c.query("COMMIT");
+            return res.json({ ids: existing.event_ids, already_imported: true });
+          }
+        }
         await assertInvitees(c, req.user.id, e.invitees);
         const series = times.length > 1 ? crypto.randomUUID() : null;
         for (const t of times) {
@@ -786,6 +837,9 @@ function registerCalendar(
               [row.id, uid],
             );
         }
+        if (imported) await c.query(
+          "INSERT INTO calendar_event_imports(owner_id,source_key,event_id,event_ids,fingerprint) VALUES($1,$2,$3,$4,$5)",
+          [req.user.id, imported.key, ids[0], ids, imported.fingerprint]);
         for (const uid of e.invitees)
           await notice(
             c,

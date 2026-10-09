@@ -11,6 +11,7 @@ enum ChatAttachmentAction {
   scan,
   contact,
   myContact,
+  location,
   paste
 }
 
@@ -203,6 +204,10 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                     _item('שיתוף איש קשר', Icons.contact_phone_outlined,
                         Colors.teal,
                         section: 'contact'),
+                    _item('שיתוף מיקום או מקום', Icons.location_on_outlined,
+                        Colors.deepOrange,
+                        action: ChatAttachmentAction.location,
+                        allowed: widget.textAllowed),
                     if (widget.allowPaste)
                       _item('הדבק תמונה', Icons.paste, Colors.blue,
                           action: ChatAttachmentAction.paste,

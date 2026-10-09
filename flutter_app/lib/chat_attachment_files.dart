@@ -21,6 +21,9 @@ const _types = <String, String>{
   'mp4': 'video',
   'webm': 'video',
   'mov': 'video',
+  // These are imported locally through dedicated previews, never uploaded as media.
+  'ics': 'calendar',
+  'vcf': 'contact',
 };
 
 final chatAttachmentExtensions = _types.keys.toList(growable: false);

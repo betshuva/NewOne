@@ -40,6 +40,8 @@ import 'filter_audit_screen.dart';
 import 'system_audit_screen.dart';
 import 'guide_message_draft.dart';
 import 'inline_custom_emoji.dart';
+import 'keyboard_click_sound.dart';
+import 'shared_composer_send.dart';
 import 'guide_file.dart';
 import 'guide_table_text.dart';
 import 'safe_information_text.dart';
@@ -94,6 +96,10 @@ import 'web_capture_picker.dart';
 import 'clipboard_image_paste.dart';
 import 'web_otp.dart';
 import 'incoming_share.dart';
+import 'incoming_share_actions.dart';
+import 'shared_content.dart';
+import 'location_share.dart';
+import 'calendar_import.dart';
 import 'read_notifications.dart';
 import 'private_message_outbox.dart';
 import 'foreground_notifications.dart';
@@ -326,8 +332,18 @@ Future<Map<String, String>?> _manualSharedContact(BuildContext context) async {
   );
 }
 
-Future<Map<String, String>?> _pickPhoneContact(BuildContext context) async {
-  if (kIsWeb) return _manualSharedContact(context);
+Future<Map<String, String>?> _pickPhoneContact(BuildContext context, {bool isGroup = false}) async {
+  if (kIsWeb) {
+    final manual = await _manualSharedContact(context);
+    if (manual == null || !context.mounted) return null;
+    final encoded = await selectContactDetails(context, SharedContactDetails(
+      name: manual['name'] ?? '',
+      phones: [if (manual['phone']?.isNotEmpty == true) manual['phone']!],
+      emails: [if (manual['email']?.isNotEmpty == true) manual['email']!],
+    ), isGroup: isGroup);
+    final decoded = encoded == null ? null : _sharedContactFromText(encoded);
+    return decoded?.map((key, value) => MapEntry(key, value.toString()));
+  }
   final granted = await FlutterContacts.requestPermission(readonly: true);
   if (!granted) {
     if (context.mounted) {
@@ -408,11 +424,35 @@ Future<Map<String, String>?> _pickPhoneContact(BuildContext context) async {
     ),
   );
   if (selected == null) return null;
-  return {
-    'name': selected.displayName,
-    'phone': selected.phones.isNotEmpty ? selected.phones.first.number : '',
-    'email': selected.emails.isNotEmpty ? selected.emails.first.address : '',
-  };
+  if (!context.mounted) return null;
+  final encoded = await selectContactDetails(context, SharedContactDetails(
+    name: selected.displayName,
+    phones: selected.phones.map((p) => p.number).toList(),
+    emails: selected.emails.map((e) => e.address).toList(),
+  ), isGroup: isGroup);
+  final decoded = encoded == null ? null : _sharedContactFromText(encoded);
+  return decoded?.map((key, value) => MapEntry(key, value.toString()));
+}
+
+Future<bool> _handleSharedDataAttachment(BuildContext context, String token,
+    PlatformFile file, Future<void> Function(String) send, {bool isGroup = false}) async {
+  final metadata = {'name': file.name};
+  if (!isSharedCalendarFile(metadata) && !isSharedContactFile(metadata)) return false;
+  final raw = await readIncomingText(file.xFile);
+  if (!context.mounted) return true;
+  if (isSharedCalendarFile(metadata)) {
+    await openCalendarImport(context, api: kApi, token: token, rawText: raw);
+  } else {
+    final contacts = parseSharedVCard(raw);
+    if (contacts.isEmpty) throw const FormatException('לא נמצאו פרטי איש קשר בקובץ');
+    for (final contact in contacts) {
+      if (!context.mounted) break;
+      final encoded = await selectContactDetails(context, contact, isGroup: isGroup);
+      if (encoded == null || !context.mounted) break;
+      await send(encoded);
+    }
+  }
+  return true;
 }
 
 Future<Map<String, String>?> _pickAppFriend(
@@ -928,7 +968,7 @@ Future<Map<String, String>?> _pickGroupSharedContact(BuildContext context,
   );
   if (source == null || !context.mounted) return null;
   if (source == 'app') return _pickAppFriend(context, token);
-  if (source == 'phone') return _pickPhoneContact(context);
+  if (source == 'phone') return _pickPhoneContact(context, isGroup: true);
   final member = await showModalBottomSheet<Map<String, dynamic>>(
     context: context,
     builder: (sheetContext) => SafeArea(
@@ -1991,7 +2031,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.66';
+const kVersion = '1.3.67';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2055,11 +2095,12 @@ void _insertExpressionText(
   TextEditingValue beforePicker,
 ) {
   final current = controller.value;
-  // Opening a modal moves focus away from the composer. Keep its original
-  // cursor unless the draft itself changed while the picker was open.
-  final selection = current.text == beforePicker.text
-      ? beforePicker.selection
-      : current.selection;
+  // Keep a live caret move; use the saved selection only if focus cleared it.
+  final selection = current.selection.isValid
+      ? current.selection
+      : current.text == beforePicker.text
+          ? beforePicker.selection
+          : current.selection;
   final valid = selection.isValid && selection.end <= current.text.length;
   final start = valid ? selection.start : current.text.length;
   final end = valid ? selection.end : start;
@@ -2074,7 +2115,8 @@ void _restoreExpressionSelection(
   TextEditingController controller,
   TextEditingValue beforePicker,
 ) {
-  if (controller.text != beforePicker.text ||
+  if (controller.selection.isValid ||
+      controller.text != beforePicker.text ||
       !beforePicker.selection.isValid ||
       beforePicker.selection.end > controller.text.length) {
     return;
@@ -2832,6 +2874,7 @@ class ForwardChatResult {
   final int pendingCount;
   final int totalDeliveries;
   final bool cancelled;
+  final Map<int, Set<String>> completedTargetsByMessage;
 
   const ForwardChatResult({
     this.completedMessageIndexes = const <int>{},
@@ -2839,6 +2882,7 @@ class ForwardChatResult {
     this.pendingCount = 0,
     this.totalDeliveries = 0,
     this.cancelled = false,
+    this.completedTargetsByMessage = const {},
   });
 }
 
@@ -2851,6 +2895,7 @@ Future<ForwardChatResult> forwardChatMessages(
   http.Client? client,
   bool Function()? canForward,
   Map<String, dynamic>? me,
+  Map<int, Set<String>> previousDeliveries = const {},
 }) async {
   if (messages.isEmpty) return const ForwardChatResult();
   if (messages.any((message) {
@@ -2970,7 +3015,7 @@ Future<ForwardChatResult> forwardChatMessages(
     }
 
     final targetData = await loadTargetLists();
-    if (!context.mounted) return const ForwardChatResult(cancelled: true);
+    if (!context.mounted || canForward?.call() == false) return const ForwardChatResult(cancelled: true);
     final users = targetData.users ?? <Map<String, dynamic>>[];
     final groups = targetData.groups ?? <Map<String, dynamic>>[];
     final usersById = {for (final user in users) user['id'].toString(): user};
@@ -3044,6 +3089,9 @@ Future<ForwardChatResult> forwardChatMessages(
     var pendingCount = 0;
     var contactPendingCount = 0;
     final acceptedByMessage = List<int>.filled(messages.length, 0);
+    final acceptedTargets = <int, Set<String>>{
+      for (var i = 0; i < messages.length; i++) i: {...?previousDeliveries[i]},
+    };
     final forwardingErrors = <String>[];
     String responseError(http.Response response) {
       try {
@@ -3063,6 +3111,12 @@ Future<ForwardChatResult> forwardChatMessages(
         messageIndex++
       ) {
         if (canForward?.call() == false) break deliveries;
+        final targetKey = '${target['kind']}:${target['id']}';
+        if (acceptedTargets[messageIndex]!.contains(targetKey)) {
+          acceptedByMessage[messageIndex]++;
+          sentCount++;
+          continue;
+        }
         final message = messages[messageIndex];
         try {
           var fileUrl = message['fileUrl'] as String?;
@@ -3100,6 +3154,7 @@ Future<ForwardChatResult> forwardChatMessages(
                 ),
               );
             }
+            if (!context.mounted || canForward?.call() == false) break deliveries;
             final upload = await _sendMediaUpload(request, client: transport);
             final uploadBody = await upload.stream.bytesToString();
             if (upload.statusCode != 200) {
@@ -3118,12 +3173,14 @@ Future<ForwardChatResult> forwardChatMessages(
             if (uploaded['status'] == 'pending') {
               pendingCount++;
               acceptedByMessage[messageIndex]++;
+              acceptedTargets[messageIndex]!.add(targetKey);
               continue;
             }
             fileUrl = uploaded['url'] as String?;
             fileName = uploaded['fileName'] as String? ?? fileName;
             fileType = uploaded['fileType'] as String? ?? fileType ?? 'file';
           }
+          if (!context.mounted || canForward?.call() == false) break deliveries;
           final payload = <String, dynamic>{
             'text': fileUrl == null ? (message['text'] as String? ?? '') : null,
             if (fileUrl != null) 'fileUrl': fileUrl,
@@ -3145,6 +3202,7 @@ Future<ForwardChatResult> forwardChatMessages(
               pendingCount++;
               contactPendingCount++;
               acceptedByMessage[messageIndex]++;
+              acceptedTargets[messageIndex]!.add(targetKey);
               continue;
             }
             if (!sent) forwardingErrors.add(responseError(response));
@@ -3163,6 +3221,7 @@ Future<ForwardChatResult> forwardChatMessages(
           if (sent) {
             sentCount++;
             acceptedByMessage[messageIndex]++;
+            acceptedTargets[messageIndex]!.add(targetKey);
           }
         } catch (error) {
           debugPrint('Forward item failed: $error');
@@ -3205,6 +3264,7 @@ Future<ForwardChatResult> forwardChatMessages(
       sentCount: sentCount,
       pendingCount: pendingCount,
       totalDeliveries: messages.length * targets.length,
+      completedTargetsByMessage: acceptedTargets,
     );
   } catch (error) {
     debugPrint('Forward message failed: $error');
@@ -3449,6 +3509,12 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                         '${widget.messages.length} פריטים • ${_selected.length} יעדים',
                         style: const TextStyle(color: kSubtext),
                       ),
+                      if (_selected.values.any((target) => target['kind'] == 'group') &&
+                          widget.messages.any((message) => _sharedContactFromText(message['text']?.toString() ?? '') != null))
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                          child: Text('פרטי אנשי הקשר שבחרת לשתף יהיו גלויים לכל משתתפי הקבוצות שנבחרו.'),
+                        ),
                       if (widget.showListings)
                         ListTile(
                           key: const ValueKey('forward-listings-target'),
@@ -8625,6 +8691,9 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   Future<void> _initAndroidSharing() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    final account = _accountId;
+    await _shareChannel.invokeMethod('resetInflight', {'accountId': account});
+    if (!mounted || _accountId != account) return;
     _shareChannel.setMethodCallHandler((call) async {
       if (call.method == 'sharesAvailable') await _drainAndroidShares();
     });
@@ -8638,55 +8707,101 @@ class _MainShellContentState extends State<_MainShellContent> {
     try {
       do {
         _shareDrainRequested = false;
-        while (mounted) {
-          final shared = await _shareChannel
-              .invokeMapMethod<String, dynamic>('takePendingShare');
+        while (mounted && _accountId != null) {
+          final account = _accountId!;
+          final token = widget.token;
+          final shared = await _shareChannel.invokeMapMethod<String, dynamic>(
+              'takePendingShare', {'accountId': account});
           if (shared == null || !mounted) break;
-          final messages = incomingShareMessages(shared);
+          bool currentAccount() => mounted && _accountId == account && widget.token == token;
+          var result = const IncomingActionResult('retry');
           try {
             final errors = shared['errors'];
             if (errors is List && errors.isNotEmpty) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(errors.join('\n'))),
-              );
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errors.join('\n'))));
             }
-            final shortcut = shared['targetShortcutId'];
-            final recipient = incomingShareRecipient(shortcut, _accountId);
-            if (shortcut != null && recipient == null) {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content:
-                    Text('יעד השיתוף שייך לחשבון אחר. שתף מחדש ובחר בתשובה.'),
-              ));
-              continue;
-            }
-            if (messages.isNotEmpty) {
-              await forwardChatMessages(
-                  context, widget.token, _socket, messages,
-                  initialRecipientId: recipient, me: _me);
-            } else if (recipient != null) {
-              final response = await http.get(Uri.parse('$kApi/users'),
-                  headers: {'Authorization': 'Bearer ${widget.token}'});
-              if (!mounted || response.statusCode != 200) continue;
-              final users =
-                  (jsonDecode(response.body) as List).whereType<Map>();
-              final matches = users.where((u) => u['id'] == recipient);
-              if (matches.isNotEmpty) {
-                await Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => ChatScreen(
-                      token: widget.token,
-                      me: _me,
-                      recipient: Map<String, dynamic>.from(matches.first),
-                      socket: _socket),
+            result = await processIncomingShare(context,
+              share: shared, api: kApi, token: token, accountId: account,
+              canAct: currentAccount,
+              deliver: (messages, recipient) async {
+                if (!currentAccount()) return const IncomingDeliveryResult({});
+                var initialRecipient = recipient;
+                if (recipient != null) {
+                  final latest = await http.get(Uri.parse('$kApi/users'),
+                      headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
+                  if (latest.statusCode != 200 || !currentAccount()) return const IncomingDeliveryResult({});
+                  final contacts = (jsonDecode(latest.body) as List).whereType<Map>();
+                  if (!contacts.any((u) => u['id'] == recipient && u['is_friend'] == true)) {
+                    initialRecipient = null;
+                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text('החבר שבקיצור הדרך אינו זמין עוד. בחר נמען לשיתוף')));
+                  }
+                }
+                final prior = shared['deliveredTargets'] as Map? ?? const {};
+                final keys = [for (final message in messages) incomingDeliveryKey(message)];
+                final response = await forwardChatMessages(context, token, _socket, messages,
+                    initialRecipientId: initialRecipient, me: _me, canForward: currentAccount,
+                    previousDeliveries: {for (var i = 0; i < keys.length; i++)
+                      i: ((prior[keys[i]] as List?) ?? const []).whereType<String>().toSet()});
+                return IncomingDeliveryResult(response.completedMessageIndexes, cancelled: response.cancelled,
+                  deliveredTargets: {for (final entry in response.completedTargetsByMessage.entries)
+                    keys[entry.key]: entry.value.toList()});
+              },
+              createListing: (images) async {
+                if (!currentAccount()) return false;
+                final processed = Completer<void>();
+                if (images.isEmpty) processed.complete();
+                final saved = await Navigator.of(context).push<bool>(MaterialPageRoute(
+                  builder: (_) => PostListingScreen(token: token, me: _me,
+                    initialImages: images,
+                    onInitialImagesProcessed: () { if (!processed.isCompleted) processed.complete(); }),
                 ));
-              }
-            }
+                // An early publish transfers uploads to the background worker.
+                // Keep Android's source files until every transfer has read them.
+                await processed.future;
+                return saved == true && currentAccount();
+              },
+              openChat: (recipient) async {
+                final target = recipient == null ? await _pickAppFriend(context, token) :
+                    _users.where((u) => u['id'] == recipient && u['is_friend'] == true).firstOrNull;
+                if (target == null || !currentAccount()) return;
+                await Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(
+                  token: token, me: _me, recipient: Map<String, dynamic>.from(target), socket: _socket)));
+              },
+              capture: () async {
+                if (!currentAccount()) return null;
+                final creator = _captureCreatorId(context, _me);
+                if (creator == null) return null;
+                final photo = await captureNativePhoto(context);
+                if (photo == null || !currentAccount()) return null;
+                final name = await capturedPhotoFileName(photo, creatorId: creator);
+                if (!currentAccount()) return null;
+                final cached = await _shareChannel.invokeMapMethod<String,dynamic>('attachCapturedShareFile', {
+                  'id': shared['id'], 'leaseId': shared['leaseId'], 'accountId': account,
+                  'path': photo.path, 'name': name, 'mime': photo.mimeType ?? 'image/jpeg',
+                });
+                return cached;
+              },
+              prepareMessages: (messages) async {
+                if (!currentAccount()) throw const FormatException('החשבון השתנה במהלך השיתוף');
+                await _shareChannel.invokeMethod('prepareShareMessages', {
+                  'id': shared['id'], 'leaseId': shared['leaseId'], 'accountId': account,
+                  'messages': messages,
+                });
+              },
+            );
+          } catch (error) {
+            if (currentAccount()) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('השיתוף נשמר לניסיון נוסף: ${error.toString().replaceFirst('FormatException: ', '')}')));
           } finally {
-            await _shareChannel.invokeMethod(
-                'releaseShare',
-                messages
-                    .map((m) => m['localPath'])
-                    .whereType<String>()
-                    .toList());
+            await _shareChannel.invokeMethod('finishShare', {
+              'id': shared['id'], 'leaseId': shared['leaseId'], 'accountId': account,
+              'outcome': currentAccount() ? result.outcome : 'retry',
+              'completedPaths': currentAccount() ? result.completedPaths : <String>[],
+              'clearText': currentAccount() && result.clearText,
+              'clearCalendar': currentAccount() && result.clearCalendar,
+              'deliveredTargets': currentAccount() ? result.deliveredTargets : const <String,List<String>>{},
+            });
           }
         }
       } while (_shareDrainRequested && mounted);
@@ -8694,7 +8809,22 @@ class _MainShellContentState extends State<_MainShellContent> {
       debugPrint('Incoming share failed: $error');
     } finally {
       _drainingShares = false;
+      await _showPendingAndroidShares();
     }
+  }
+
+  Future<void> _showPendingAndroidShares() async {
+    if (!mounted || _accountId == null) return;
+    final account = _accountId;
+    final count = await _shareChannel.invokeMethod<int>('pendingShareCount', {'accountId': account}) ?? 0;
+    if (!mounted || _accountId != account || count == 0) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      duration: const Duration(seconds: 30),
+      content: Text('$count שיתופים ממתינים להשלמה'),
+      action: SnackBarAction(label: 'נסה שוב', onPressed: () {
+        if (_accountId == account) _shareChannel.invokeMethod('retryPendingShares', {'accountId': account});
+      }),
+    ));
   }
 
   Future<void> _updateAndroidShareTargets() async {
@@ -8706,7 +8836,9 @@ class _MainShellContentState extends State<_MainShellContent> {
         .where((user) {
           final last =
               DateTime.tryParse(user['last_message_at']?.toString() ?? '');
-          return user['id'] != kSystemGuideId &&
+          return user['is_friend'] == true &&
+              user['conversation_hidden'] != true &&
+              user['id'] != kSystemGuideId &&
               user['id'] != kScanBotId &&
               last != null &&
               last.isAfter(cutoff);
@@ -16220,6 +16352,8 @@ class PostListingScreen extends StatefulWidget {
   final VoidCallback? onClose;
   final Future<void> Function()? onPublished;
   final String? initialMessageId;
+  final List<XFile> initialImages;
+  final VoidCallback? onInitialImagesProcessed;
   const PostListingScreen({
     super.key,
     required this.token,
@@ -16228,6 +16362,8 @@ class PostListingScreen extends StatefulWidget {
     this.onClose,
     this.onPublished,
     this.initialMessageId,
+    this.initialImages = const [],
+    this.onInitialImagesProcessed,
   });
   @override
   State<PostListingScreen> createState() => _PostListingScreenState();
@@ -16511,6 +16647,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
     if (widget.initialMessageId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _addInitialMessageImage());
     }
+    if (widget.initialImages.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        try {
+          if (mounted) await _pickImage(0, initialImages: widget.initialImages);
+        } finally {
+          widget.onInitialImagesProcessed?.call();
+        }
+      });
+    }
     if (_cityCtrl.text.trim().isEmpty) _loadCityFromProfile();
     _refreshListingCatalog().then((changed) {
       if (changed && mounted) setState(() {});
@@ -16722,12 +16867,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
     });
   }
 
-  Future<void> _pickImage(int slot, {bool camera = false}) async {
+  Future<void> _pickImage(int slot, {bool camera = false, List<XFile>? initialImages}) async {
     if (_saving || _uploadingSlot[slot]) return;
     final token = widget.token;
     final free = _imageUrls.asMap().entries.where((entry) =>
         entry.value == null && !_uploadingSlot[entry.key]).length;
     List<XFile> picked;
+    if (initialImages != null) {
+      picked = initialImages.take(8).toList();
+    } else
     try {
       picked = camera
           ? await captureListingPhotos(context, maxPhotos: free,
@@ -23557,6 +23705,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final _msgCtrl = InlineEmojiController(isolateEmojiRuns: true);
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
+  final _expressionPanel = _ExpressionPanelController();
+  final _keyboardClick = KeyboardClickSound();
+  void _refreshExpressionPanel() {
+    if (mounted) setState(() {});
+  }
+
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
   final _scrollCtrl = ChatHistoryController();
   Map<String, dynamic>? _replyTo;
@@ -23778,6 +23932,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    _expressionPanel.addListener(_refreshExpressionPanel);
     _scrollCtrl.openSearchMessage(widget.searchMessageId, widget.searchMessageAt);
     _loadUploadBatchNotices();
     _uploadNoticesSubscription = _uploadNotices.changes.listen((_) {
@@ -24489,6 +24644,9 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.off('message:delivered', _messageDeliveredHandler);
     widget.socket?.off('message:deleted', _messageDeletedHandler);
     widget.socket?.off('message:edited', _messageEditedHandler);
+    _expressionPanel.removeListener(_refreshExpressionPanel);
+    _expressionPanel.dispose();
+    _keyboardClick.dispose();
     _msgCtrl.dispose();
     _msgFocusNode.dispose();
     _scrollCtrl.dispose();
@@ -25726,8 +25884,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final contact = await _pickSharedContact(context, widget.token);
     if (contact == null || !mounted) return;
-    _msgCtrl.text = _sharedContactText(contact);
-    await _send();
+    await _sendSeparateSharedText(_sharedContactText(contact));
   }
 
   Future<void> _shareMyContact() async {
@@ -25739,8 +25896,20 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final contact = await _confirmMyContactShare(context, widget.token);
     if (contact == null || !mounted) return;
-    _msgCtrl.text = _sharedContactText(contact);
-    await _send();
+    await _sendSeparateSharedText(_sharedContactText(contact));
+  }
+
+  Future<void> _sendSeparateSharedText(String text) async {
+    if (_sendingText) return;
+    final token = widget.token;
+    final account = widget.me?['id'];
+    final editing = _editingMsg;
+    final reply = _replyTo;
+    await sendSeparateComposerText(_msgCtrl, text,
+      canRestore: () => mounted && widget.token == token && widget.me?['id'] == account,
+      isolateContext: () => setState(() { _editingMsg = null; _replyTo = null; }),
+      restoreContext: () => setState(() { _editingMsg ??= editing; _replyTo ??= reply; }),
+      send: () => _send());
   }
 
   Future<void> _showAttachMenu() async {
@@ -25784,6 +25953,9 @@ class _ChatScreenState extends State<ChatScreen> {
           await _scanDocument();
         case ChatAttachmentAction.contact:
           await _sharePhoneContact();
+        case ChatAttachmentAction.location:
+          final location = await showLocationShareDialog(context, api: kApi);
+          if (location != null && mounted) await _sendSeparateSharedText(location);
         case ChatAttachmentAction.myContact:
           await _shareMyContact();
         case ChatAttachmentAction.paste:
@@ -25795,6 +25967,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _showExpressions({bool? inlineEmoji}) async {
+    if (_expressionPanel.isOpen) {
+      _expressionPanel.close();
+      return;
+    }
     final destination = _uploadDestination;
     final accountId = widget.me?['id'];
     bool currentDestination() =>
@@ -25966,14 +26142,17 @@ class _ChatScreenState extends State<ChatScreen> {
       beforePicker = _msgCtrl.value;
     }
 
+    _msgFocusNode.unfocus();
     await _showExpressionPicker(
       context,
       widget.token,
+      controller: _expressionPanel,
       initialInlineEmoji: inlineEmoji,
       stickersAllowed: _recipientAllowsImages,
       inlineEmojiAllowed: _recipientAllowsText,
       blockedLabel: 'חסום בסינון הנמען',
       onSelected: (choice) {
+        _keyboardClick.click();
         selections = selections.then((_) => applyChoice(choice)).catchError((
           Object error,
         ) {
@@ -26223,6 +26402,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final prepared = <(PlatformFile, String)>[];
       final permissions = <String, bool>{};
       for (final file in files) {
+        if (await _handleSharedDataAttachment(context, widget.token, file, _sendSeparateSharedText)) continue;
+        if (!mounted) return;
         final type = chatAttachmentType(file.name,
             bytes: file.name.toLowerCase().endsWith('.webm')
                 ? await _attachmentHeader(file) : null);
@@ -26923,7 +27104,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final recipientName = widget.recipient['name'] as String? ?? '';
     return Scaffold(
       backgroundColor: kChatBg,
-      appBar: AppBar(
+      appBar: _expressionPanel.isOpen &&
+              MediaQuery.viewInsetsOf(context).bottom > 0 &&
+              MediaQuery.sizeOf(context).height - MediaQuery.viewInsetsOf(context).bottom < 250
+          ? null
+          : AppBar(
         backgroundColor: kPrimary,
         leading: _selectedMessageKeys.isNotEmpty
             ? IconButton(
@@ -27068,7 +27253,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ],
       ),
-      body: Column(
+      body: LayoutBuilder(builder: (context, constraints) => Column(
         children: [
           // Reply preview bar
           if (_replyTo != null)
@@ -27571,7 +27756,11 @@ class _ChatScreenState extends State<ChatScreen> {
                                     maxLines: 4,
                                     minLines: 1,
                                     textInputAction: TextInputAction.newline,
-                                    onChanged: (_) => _onTyping(),
+                                    onTap: _expressionPanel.close,
+                                    onChanged: (_) {
+                                      _keyboardClick.click();
+                                      _onTyping();
+                                    },
                                     decoration: InputDecoration(
                                       hintText: _recipientAllowsText
                                           ? 'כתוב הודעה...'
@@ -27614,8 +27803,12 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           ),
+          _ExpressionPanel(
+            controller: _expressionPanel,
+            maxHeight: math.max(0.0, math.min(constraints.maxHeight * 0.6, constraints.maxHeight - 100)),
+          ),
         ],
-      ),
+      )),
     );
   }
 }
@@ -31354,14 +31547,21 @@ class _AvielEmptyChat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+    child: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
           Image.asset(asset, width: 132, height: 132, fit: BoxFit.contain),
           const SizedBox(height: 8),
-          Text(text,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: kSubtext)),
-        ]),
-      );
+          Text(
+            text,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: kSubtext),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 // Legacy expression catalog retained for migration of saved messages.
@@ -31690,46 +31890,89 @@ const _emojiCategories = <String, List<String>>{
     '🇮🇱'
   ],
 };
+class _ExpressionPanelController extends ChangeNotifier {
+  Widget? panel;
+  Completer<void>? _closed;
+  bool get isOpen => panel != null;
+
+  Future<void> open(Widget Function(VoidCallback) builder) {
+    if (isOpen) return _closed!.future;
+    _closed = Completer<void>();
+    panel = builder(close);
+    notifyListeners();
+    return _closed!.future;
+  }
+
+  void close() {
+    if (!isOpen) return;
+    panel = null;
+    _closed?.complete();
+    _closed = null;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    close();
+    super.dispose();
+  }
+}
+
+class _ExpressionPanel extends StatelessWidget {
+  final _ExpressionPanelController controller;
+  final double maxHeight;
+  const _ExpressionPanel({required this.controller, required this.maxHeight});
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: controller,
+    builder: (context, _) {
+      if (!controller.isOpen) return const SizedBox.shrink();
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) controller.close();
+        },
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight, maxWidth: 900),
+            child: BottomSheet(
+              onClosing: controller.close,
+              enableDrag: false,
+              constraints: const BoxConstraints(maxWidth: 900),
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+              ),
+              builder: (_) => controller.panel!,
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
 Future<void> _showExpressionPicker(
   BuildContext context,
   String token, {
+  required _ExpressionPanelController controller,
   bool? initialInlineEmoji,
   required bool stickersAllowed,
   required bool inlineEmojiAllowed,
   required String blockedLabel,
   required Future<void> Function(String) onSelected,
-}) {
-  return showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    constraints: kIsWeb
-        ? BoxConstraints(
-            maxWidth: math.min(
-                  MediaQuery.sizeOf(context).width,
-                  Theme.of(context).bottomSheetTheme.constraints?.maxWidth ??
-                      640.0,
-                ) /
-                2,
-          )
-        : null,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-    ),
-    builder: (sheetContext) => Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
-      ),
-      child: _ExpressionPickerSheet(
-        token: token,
-        initialInlineEmoji: initialInlineEmoji,
-        stickersAllowed: stickersAllowed,
-        inlineEmojiAllowed: inlineEmojiAllowed,
-        blockedLabel: blockedLabel,
-        onSelected: onSelected,
-      ),
-    ),
-  );
-}
+}) => controller.open(
+  (close) => _ExpressionPickerSheet(
+    token: token,
+    initialInlineEmoji: initialInlineEmoji,
+    stickersAllowed: stickersAllowed,
+    inlineEmojiAllowed: inlineEmojiAllowed,
+    blockedLabel: blockedLabel,
+    onSelected: onSelected,
+    onClose: close,
+  ),
+);
 
 Future<Map<String, String>?> _requestSharedGifDetails(
     BuildContext context) async {
@@ -31786,12 +32029,14 @@ Future<Map<String, String>?> _requestSharedGifDetails(
 
 class _ExpressionPickerSheet extends StatefulWidget {
   final String token;
+  final VoidCallback onClose;
   final bool? initialInlineEmoji;
   final bool stickersAllowed, inlineEmojiAllowed;
   final String blockedLabel;
   final Future<void> Function(String) onSelected;
   const _ExpressionPickerSheet({
     required this.token,
+    required this.onClose,
     this.initialInlineEmoji,
     required this.stickersAllowed,
     required this.inlineEmojiAllowed,
@@ -31809,7 +32054,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   String _query = '';
   String? _error;
   bool _showInlineEmoji = false;
-  int _selectionCount = 0;
+  bool _searchOpen = false;
   Future<void> _pendingSelection = Future<void>.value();
   bool _finishing = false;
 
@@ -31851,17 +32096,19 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
           'categories': (bundled['categories'] as List).map((raw) {
             final category = raw as Map;
             final labels = category['labels'] as List;
-            final removedIds =
-                (category['removedIds'] as List? ?? const []).toSet();
+            final removedIds = (category['removedIds'] as List? ?? const [])
+                .toSet();
             return {
               'id': category['id'],
               'items': List.generate(labels.length, (index) => index)
                   .where((index) => !removedIds.contains(index + 1))
-                  .map((index) => {
-                        'label': labels[index],
-                        'url':
-                            '/betshuva-app/expression-library/${category['coloredPath'] ?? category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
-                      })
+                  .map(
+                    (index) => {
+                      'label': labels[index],
+                      'url':
+                          '/betshuva-app/expression-library/${category['coloredPath'] ?? category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
+                    },
+                  )
                   .toList(),
             };
           }).toList(),
@@ -31898,158 +32145,190 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     }
   }
 
-  Widget _buildHeader() => Column(
-    children: [
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                _showInlineEmoji ? 'אימוג׳י' : 'מדבקות',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: kPrimary,
-                ),
-              ),
-            ),
-            IconButton(
-              tooltip: 'סגירה',
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.close, size: 20, color: kSubtext),
-            ),
-          ],
-        ),
-      ),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
-        child: Text(
-          _showInlineEmoji
-              ? 'בחירת אימוג׳י מוסיפה אותו ליד הטקסט במיקום הסמן'
-              : 'בחירת מדבקה שולחת אותה מיד כהודעה נפרדת',
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 12, color: kSubtext),
-        ),
-      ),
-    ],
-  );
+  Future<void> _finish() async {
+    if (_finishing) return;
+    if (_showInlineEmoji) {
+      setState(() => _finishing = true);
+      await _pendingSelection;
+    }
+    if (mounted) widget.onClose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final availableHeight =
-        MediaQuery.sizeOf(context).height -
-        MediaQuery.viewInsetsOf(context).bottom;
     final visible = _items
         .where(
           (item) => (item['label']?.toString() ?? '').contains(_query.trim()),
         )
         .toList();
     return SafeArea(
+      top: false,
       child: Directionality(
         textDirection: TextDirection.rtl,
-        child: SizedBox(
-          key: const ValueKey('expression-picker-panel'),
-          height: math.min(
-            kIsWeb ? 280.0 : 560.0,
-            math.max(0.0, availableHeight - 32),
-          ),
-          child: Column(
-            children: [
-              Expanded(
-                child: CustomScrollView(
-                  slivers: [
-                    SliverToBoxAdapter(
-                      child: Column(
-                        children: [
-                          _buildHeader(),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final tileExtent = _showInlineEmoji ? (kIsWeb ? 36.0 : 44.0) : 80.0;
+            final columns = math.max(
+              1,
+              ((constraints.maxWidth - 44) / (tileExtent + 2)).floor(),
+            );
+            final rows = math.min(3, (visible.length / columns).ceil());
+            final height = math.min(
+              constraints.maxHeight,
+              math.max(72.0, rows * (tileExtent + 2) + 8) +
+                  (_searchOpen ? 36 : 0),
+            );
+            final controlHeight = math.min(
+              36.0,
+              height - (_searchOpen ? math.min(36, height / 2) : 0),
+            );
+            return SizedBox(
+              key: const ValueKey('expression-picker-panel'),
+              width: double.infinity,
+              height: height,
+              child: Column(
+                children: [
+                  if (_searchOpen)
+                    SizedBox(
+                      height: math.min(36, height / 2),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        child: Semantics(
+                          label: 'חיפוש',
+                          child: TextField(
+                            key: ValueKey(
+                              'expression-search-${_showInlineEmoji ? 'emoji' : 'stickers'}',
                             ),
-                            child: TextField(
-                              key: ValueKey(
-                                'expression-search-${_showInlineEmoji ? 'emoji' : 'stickers'}',
-                              ),
-                              onChanged: (value) =>
-                                  setState(() => _query = value),
-                              decoration: InputDecoration(
-                                hintText: _showInlineEmoji
-                                    ? 'חיפוש אימוג׳י…'
-                                    : 'חיפוש מדבקות…',
-                                prefixIcon: const Icon(Icons.search),
+                            onChanged: (value) =>
+                                setState(() => _query = value),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 6,
                               ),
                             ),
                           ),
-                        ],
+                        ),
                       ),
                     ),
-                    if (_loading)
-                      const SliverFillRemaining(
-                        hasScrollBody: false,
-                        child: Center(
-                          child: CircularProgressIndicator(color: kPrimary),
-                        ),
-                      )
-                    else if (_error != null)
-                      SliverFillRemaining(
-                        hasScrollBody: false,
-                        child: Center(
-                          child: TextButton(
-                            onPressed: _loadExpressionCatalog,
-                            child: Text('$_error — נסו שוב'),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: CustomScrollView(
+                            slivers: [
+                              if (_loading)
+                                const SliverFillRemaining(
+                                  hasScrollBody: false,
+                                  child: Center(
+                                    child: SizedBox.square(
+                                      dimension: 20,
+                                      child: CircularProgressIndicator(
+                                        color: kPrimary,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              else if (_error != null)
+                                SliverFillRemaining(
+                                  hasScrollBody: false,
+                                  child: Center(
+                                    child: IconButton(
+                                      tooltip: 'טעינה מחדש',
+                                      onPressed: _loadExpressionCatalog,
+                                      icon: const Icon(Icons.refresh),
+                                    ),
+                                  ),
+                                )
+                              else if (visible.isEmpty)
+                                const SliverFillRemaining(
+                                  hasScrollBody: false,
+                                  child: Center(
+                                    child: Tooltip(
+                                      message: 'לא נמצאו תמונות מתאימות',
+                                      child: Icon(
+                                        Icons.search_off,
+                                        color: kSubtext,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              else
+                                _RemoteExpressionGrid(
+                                  items: visible,
+                                  inlineEmoji: _showInlineEmoji,
+                                  maxTileHeight:
+                                      height -
+                                      (_searchOpen
+                                          ? math.min(36, height / 2)
+                                          : 0),
+                                  onSelected: (choice) {
+                                    if (_finishing) return;
+                                    _pendingSelection = widget.onSelected(
+                                      choice,
+                                    );
+                                  },
+                                ),
+                            ],
                           ),
                         ),
-                      )
-                    else if (visible.isEmpty)
-                      const SliverFillRemaining(
-                        hasScrollBody: false,
-                        child: Center(child: Text('לא נמצאו תמונות מתאימות')),
-                      )
-                    else
-                      _RemoteExpressionGrid(
-                        items: visible,
-                        inlineEmoji: _showInlineEmoji,
-                        onSelected: (choice) {
-                          if (_finishing) return;
-                          _pendingSelection = widget.onSelected(choice);
-                          setState(() => _selectionCount++);
-                        },
-                      ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 4,
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'נבחרו $_selectionCount',
-                        style: const TextStyle(color: kSubtext, fontSize: 12),
-                      ),
+                        SizedBox(
+                          width: 36,
+                          child: SingleChildScrollView(
+                            child: Column(
+                              children: [
+                                IconButton(
+                                  key: const ValueKey('expression-done'),
+                                  tooltip: 'סגירה',
+                                  style: IconButton.styleFrom(
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                    minimumSize: Size.zero,
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  padding: EdgeInsets.zero,
+                                  constraints: BoxConstraints.tightFor(
+                                    width: 36,
+                                    height: controlHeight,
+                                  ),
+                                  onPressed: _finishing ? null : _finish,
+                                  icon: const Icon(Icons.close, size: 18),
+                                ),
+                                IconButton(
+                                  key: const ValueKey(
+                                    'expression-search-toggle',
+                                  ),
+                                  tooltip: 'חיפוש',
+                                  style: IconButton.styleFrom(
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                    minimumSize: Size.zero,
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  padding: EdgeInsets.zero,
+                                  constraints: BoxConstraints.tightFor(
+                                    width: 36,
+                                    height: controlHeight,
+                                  ),
+                                  onPressed: () => setState(() {
+                                    _searchOpen = !_searchOpen;
+                                    _query = '';
+                                  }),
+                                  icon: const Icon(Icons.search, size: 18),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    TextButton(
-                      key: const ValueKey('expression-done'),
-                      onPressed: _finishing ? null : () async {
-                        if (_showInlineEmoji) {
-                          setState(() => _finishing = true);
-                          await _pendingSelection;
-                        }
-                        if (!mounted || !context.mounted) return;
-                        Navigator.pop(context);
-                      },
-                      child: const Text('סיום'),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
@@ -32059,11 +32338,13 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
 class _RemoteExpressionGrid extends StatelessWidget {
   final List<Map<String, dynamic>> items;
   final bool inlineEmoji;
+  final double maxTileHeight;
   final ValueChanged<String> onSelected;
 
   const _RemoteExpressionGrid({
     required this.items,
     required this.inlineEmoji,
+    required this.maxTileHeight,
     required this.onSelected,
   });
 
@@ -32074,19 +32355,22 @@ class _RemoteExpressionGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) => SliverLayoutBuilder(
     builder: (context, constraints) => SliverPadding(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(4),
       sliver: SliverGrid(
         key: const ValueKey('expression-image-grid'),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: inlineEmoji
-              ? ((constraints.crossAxisExtent - 20) / 48)
-                  .floor()
-                  .clamp(1, 5)
-              : 2,
-          mainAxisExtent: inlineEmoji ? 48 : null,
-          mainAxisSpacing: inlineEmoji ? 4 : 8,
-          crossAxisSpacing: inlineEmoji ? 4 : 8,
-          childAspectRatio: inlineEmoji ? 1 : 0.9,
+          crossAxisCount: math.max(
+            1,
+            ((constraints.crossAxisExtent - 8) /
+                    ((inlineEmoji ? (kIsWeb ? 36 : 44) : 80) + 2))
+                .floor(),
+          ),
+          mainAxisExtent: math.min(
+            inlineEmoji ? (kIsWeb ? 36.0 : 44.0) : 80.0,
+            math.max(0.0, maxTileHeight - 8),
+          ),
+          mainAxisSpacing: 2,
+          crossAxisSpacing: 2,
         ),
         delegate: SliverChildBuilderDelegate((_, index) {
           final item = items[index];
@@ -32112,60 +32396,44 @@ class _RemoteExpressionGrid extends StatelessWidget {
             ),
           );
           if (inlineEmoji) {
-            return Tooltip(
-              message: label,
-              child: Semantics(
-                label: label,
-                button: true,
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    key: ValueKey('expression-image-$url'),
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: url.isEmpty
-                        ? null
-                        : () => onSelected('$choicePrefix$url'),
-                    child: Center(child: ExcludeSemantics(child: image)),
-                  ),
+            return Semantics(
+              label: label,
+              button: true,
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: ValueKey('expression-image-$url'),
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: url.isEmpty
+                      ? null
+                      : () => onSelected('$choicePrefix$url'),
+                  child: Center(child: ExcludeSemantics(child: image)),
                 ),
               ),
             );
           }
-          return Material(
-            color: const Color(0xFFF0F6FC),
-            borderRadius: BorderRadius.circular(15),
-            child: InkWell(
-              key: ValueKey('expression-image-$url'),
-              borderRadius: BorderRadius.circular(15),
-              onTap: url.isEmpty ? null : () => onSelected('$choicePrefix$url'),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(5, 7, 5, 5),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(
-                            maxWidth: kIsWeb ? 75 : 150,
-                            maxHeight: kIsWeb ? 75 : 150,
-                          ),
-                          child: image,
-                        ),
+          return Semantics(
+            label: label,
+            button: true,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                key: ValueKey('expression-image-$url'),
+                borderRadius: BorderRadius.circular(12),
+                onTap: url.isEmpty
+                    ? null
+                    : () => onSelected('$choicePrefix$url'),
+                child: Padding(
+                  padding: const EdgeInsets.all(2),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: kIsWeb ? 75 : 150,
+                        maxHeight: kIsWeb ? 75 : 150,
                       ),
+                      child: ExcludeSemantics(child: image),
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: kPrimary,
-                        fontSize: 9.5,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -32650,6 +32918,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   final _msgCtrl = InlineEmojiController(isolateEmojiRuns: true);
   final _msgHistory = _MessageInputHistory();
   final _msgFocusNode = FocusNode();
+  final _expressionPanel = _ExpressionPanelController();
+  final _keyboardClick = KeyboardClickSound();
+  void _refreshExpressionPanel() {
+    if (mounted) setState(() {});
+  }
+
   late final ClipboardImagePasteListener _clipboardImagePasteListener;
   final _scrollCtrl = ChatHistoryController();
   bool _loading = true;
@@ -32880,6 +33154,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
+    _expressionPanel.addListener(_refreshExpressionPanel);
     _scrollCtrl.openSearchMessage(widget.searchMessageId, widget.searchMessageAt);
     _loadUploadBatchNotices();
     _uploadNoticesSubscription = _uploadNotices.changes.listen((_) {
@@ -34423,6 +34698,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.off('message:deleted', _messageDeletedSocketHandler);
     widget.socket?.off('group:deleted', _groupDeletedSocketHandler);
     _membersChanged.dispose();
+    _expressionPanel.removeListener(_refreshExpressionPanel);
+    _expressionPanel.dispose();
+    _keyboardClick.dispose();
     _msgCtrl.dispose();
     _msgFocusNode.dispose();
     _scrollCtrl.dispose();
@@ -34798,6 +35076,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _showGroupExpressions({bool? inlineEmoji}) async {
+    if (_expressionPanel.isOpen) {
+      _expressionPanel.close();
+      return;
+    }
     final destination = _uploadDestination;
     final accountId = widget.me?['id'];
     bool currentDestination() =>
@@ -34980,14 +35262,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       beforePicker = _msgCtrl.value;
     }
 
+    _msgFocusNode.unfocus();
     await _showExpressionPicker(
       context,
       widget.token,
+      controller: _expressionPanel,
       initialInlineEmoji: inlineEmoji,
       stickersAllowed: _groupAllowsImages,
       inlineEmojiAllowed: _groupAllowsText,
       blockedLabel: 'חסום בסינון הקבוצה',
       onSelected: (choice) {
+        _keyboardClick.click();
         selections = selections.then((_) => applyChoice(choice)).catchError((
           Object error,
         ) {
@@ -35005,6 +35290,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _restoreExpressionSelection(_msgCtrl, beforePicker);
       _msgFocusNode.requestFocus();
     }
+  }
+
+  bool _sendingSeparateSharedText = false;
+  Future<void> _sendSeparateSharedText(String text) async {
+    if (_sendingSeparateSharedText) return;
+    _sendingSeparateSharedText = true;
+    final token = widget.token;
+    final account = widget.me?['id'];
+    final group = _groupId;
+    final editing = _editingMsg;
+    try {
+      await sendSeparateComposerText(_msgCtrl, text,
+        canRestore: () => mounted && widget.token == token && widget.me?['id'] == account && _groupId == group,
+        isolateContext: () => setState(() { _editingMsg = null; }),
+        restoreContext: () => setState(() { _editingMsg ??= editing; }),
+        send: () => _send());
+    } finally { _sendingSeparateSharedText = false; }
   }
 
   Future<void> _showAttachMenu() async {
@@ -35050,13 +35352,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         case ChatAttachmentAction.contact:
           final contact = await _pickGroupSharedContact(context, widget.token, _members);
           if (contact == null || !mounted) return;
-          _msgCtrl.text = _sharedContactText(contact);
-          await _send();
+          await _sendSeparateSharedText(_sharedContactText(contact));
+        case ChatAttachmentAction.location:
+          final location = await showLocationShareDialog(context, api: kApi, isGroup: true);
+          if (location != null && mounted) await _sendSeparateSharedText(location);
         case ChatAttachmentAction.myContact:
           final contact = await _confirmMyContactShare(context, widget.token, isGroup: true);
           if (contact == null || !mounted) return;
-          _msgCtrl.text = _sharedContactText(contact);
-          await _send();
+          await _sendSeparateSharedText(_sharedContactText(contact));
         case ChatAttachmentAction.paste:
           await pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
       }
@@ -35278,6 +35581,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final prepared = <(PlatformFile, String)>[];
       final permissions = <String, bool>{};
       for (final file in files) {
+        if (await _handleSharedDataAttachment(context, widget.token, file, _sendSeparateSharedText, isGroup: true)) continue;
+        if (!mounted) return;
         final type = chatAttachmentType(file.name,
             bytes: file.name.toLowerCase().endsWith('.webm')
                 ? await _attachmentHeader(file) : null);
@@ -36707,7 +37012,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         widget.group['description']?.toString().trim() ?? '';
     final chat = Scaffold(
       backgroundColor: kChatBg,
-      appBar: AppBar(
+      appBar: _expressionPanel.isOpen &&
+              MediaQuery.viewInsetsOf(context).bottom > 0 &&
+              MediaQuery.sizeOf(context).height - MediaQuery.viewInsetsOf(context).bottom < 250
+          ? null
+          : AppBar(
         backgroundColor: kPrimary,
         leading: _selectedMessageKeys.isNotEmpty
             ? IconButton(
@@ -36863,7 +37172,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             ),
         ],
       ),
-      body: Column(
+      body: LayoutBuilder(builder: (context, constraints) => Column(
         children: [
           // ── Pending banner ──────────────────────────────────────────
           if (_myStatus == 'pending')
@@ -38213,8 +38522,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 filled: true,
                                 fillColor: kBg,
                               ),
-                              onChanged: (_) => widget.socket
-                                  ?.emit('group:typing', {'groupId': _groupId}),
+                              onTap: _expressionPanel.close,
+                              onChanged: (_) {
+                                _keyboardClick.click();
+                                widget.socket?.emit('group:typing', {'groupId': _groupId});
+                              },
                               onSubmitted: (_) => _send(),
                             ),
                           ),
@@ -38245,8 +38557,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
               ),
             ),
+          _ExpressionPanel(
+            controller: _expressionPanel,
+            maxHeight: math.max(0.0, math.min(constraints.maxHeight * 0.6, constraints.maxHeight - 100)),
+          ),
         ],
-      ),
+      )),
     );
     final width = MediaQuery.sizeOf(context).width;
     if (width >= 900 && !widget.embedded) {
