@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -17,6 +18,21 @@ const _coloredEmojiPath =
 final _wireEmoji = RegExp(r'\[\[bt-emoji:([0-9]{3})\]\]');
 final _editorEmoji = RegExp('[\uE000-\uE095]');
 const inlineEmojiScale = 1.1;
+
+/// The pale greeting illustrations need more contrast at inline sizes.
+/// Keep the saturated icons, portraits, alpha and artwork dimensions intact.
+Widget vividInlineEmojiArtwork(int? id, Widget child) {
+  if (!kIsWeb || id == null || id < 49 || id > 148) return child;
+  return ColorFiltered(
+    colorFilter: const ColorFilter.matrix([
+      1.3845664, -0.2403072, -0.0242592, 0, -30.6,
+      -0.0714336, 1.2156928, -0.0242592, 0, -30.6,
+      -0.0714336, -0.2403072, 1.4317408, 0, -30.6,
+      0, 0, 0, 1, 0,
+    ]),
+    child: child,
+  );
+}
 
 /// Composers start on the right, including emoji-only drafts.
 TextDirection inlineEmojiDraftDirection(String text) => TextDirection.rtl;
@@ -734,16 +750,19 @@ TextSpan _emojiSpans(
           child: ExcludeSemantics(
             child: SizedBox.square(
               dimension: size,
-              child: Image.network(
-                '$_emojiOrigin${_imagePath(id)}',
-                key: ValueKey<String>('inline-custom-emoji-$id'),
-                width: size,
-                height: size,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => Icon(
-                  Icons.broken_image_outlined,
-                  size: size,
-                  color: effectiveStyle.color,
+              child: vividInlineEmojiArtwork(
+                id,
+                Image.network(
+                  '$_emojiOrigin${_imagePath(id)}',
+                  key: ValueKey<String>('inline-custom-emoji-$id'),
+                  width: size,
+                  height: size,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => Icon(
+                    Icons.broken_image_outlined,
+                    size: size,
+                    color: effectiveStyle.color,
+                  ),
                 ),
               ),
             ),

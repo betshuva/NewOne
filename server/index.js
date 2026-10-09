@@ -1,3 +1,4 @@
+const { SCHEMA: FILTER_PIN_SCHEMA, registerFilterPin, requireFilterPin, filterPinQuery, resolveFriendAcceptanceFilter } = require('./filter-pin');
 const { attachmentUpload, cleanAttachment, resumableAttachments } = require('./attachment-upload');
 const storageQuota = require('./storage-quota');
 const { ARCHIVABLE_SQL } = require('./media-storage-policy');
@@ -595,7 +596,9 @@ async function getExpressionCatalog() {
     if (!/^[a-z0-9-]+$/i.test(folder) || !/^[a-z0-9-]+$/i.test(prefix) ||
         !['png', 'gif', 'webp'].includes(extension)) continue;
     const items = [];
+    const removedIds = new Set(category.removedIds || []);
     for (let index = 0; index < (category.labels || []).length; index++) {
+      if (removedIds.has(index + 1)) continue;
       const fileName = `${prefix}-${String(index + 1).padStart(2, '0')}.${extension}`;
       try {
         await fs.access(path.join(BUILTIN_EXPRESSION_ROOT, folder, fileName));
@@ -3417,6 +3420,7 @@ async function migrateDatabase() {
 
     await migrateReceivedMedia(pool);
     await pool.query(FILTER_MEDIA_SCHEMA);
+    await pool.query(FILTER_PIN_SCHEMA);
     await initializeFilterAudit(pool);
     console.log('Migration: all tables ready');
 
@@ -5437,6 +5441,18 @@ app.put('/api/pins/:type/:targetId', authWithDbCheck, async (req, res) => {
 });
 
 // ── Per-user and per-contact content filters ─────────────────────
+registerFilterPin(app, {auth: authWithDbCheck, getPool, sendEmail, secret: JWT_SECRET, resetLimit: authRateLimit});
+app.use('/api', (req, res, next) => {
+  const protectedWrite = (req.method === 'PUT' &&
+    /^\/(filter-settings|contacts\/[^/]+\/filter-settings|groups\/[^/]+\/(filter-settings|personal-filter))$/.test(req.path)) ||
+    (req.method === 'POST' && /^\/(groups|groups\/[^/]+\/join)$/.test(req.path));
+  if (!protectedWrite) return next();
+  return authWithDbCheck(req, res, async () => {
+    try { await requireFilterPin(await getPool(), req); next(); }
+    catch (e) { res.status(e.status || 503).json({error:e.status?e.message:'לא ניתן לבדוק את נעילת הסינון כעת',code:e.code || 'FILTER_PIN_UNAVAILABLE'}); }
+  });
+});
+
 app.get('/api/filter-settings', authWithDbCheck, async (req, res) => {
   try {
     const pool = await getPool();
@@ -5456,6 +5472,7 @@ app.put('/api/filter-settings', authWithDbCheck, async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
     const previous = await lockFilterOwner(client, req.user.id);
+    await requireFilterPin(client, req);
     const next = { ...filter, enforceGeneralFilter: req.body.enforceGeneralFilter ?? (previous?.enforceGeneralFilter === true) };
     const history = await prepareFilterHistoryChange(client, req.user.id,
       { kind: 'general' }, next, req.body.existingMediaAction);
@@ -5577,6 +5594,7 @@ app.put('/api/contacts/:userId/filter-settings', authWithDbCheck, async (req, re
     client = await pool.connect();
     await client.query('BEGIN');
     await lockFilterOwner(client, req.user.id);
+    await requireFilterPin(client, req);
     const exists = await client.query('SELECT 1 FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',
       [req.user.id, req.params.userId]);
     if (!exists.rows.length) throw Object.assign(new Error('איש הקשר לא נמצא'), { status: 404 });
@@ -6196,13 +6214,16 @@ app.get('/api/message-requests', authWithDbCheck, async (req, res) => {
       `SELECT mr.id, mr.sender_id, u.name AS sender_name,
               u.profile_pic_url, mr.created_at,
               betshuva_effective_filter(u.content_filter, sender_contact.filter_override) AS expected_filter,
-              recipient.content_filter AS my_filter
+              betshuva_effective_filter(recipient.content_filter, recipient_contact.filter_override) AS my_filter
        FROM message_requests mr
        JOIN users u ON u.id=mr.sender_id
        JOIN users recipient ON recipient.id=mr.recipient_id
        LEFT JOIN user_contacts sender_contact
          ON sender_contact.owner_id=mr.sender_id
         AND sender_contact.contact_id=mr.recipient_id
+       LEFT JOIN user_contacts recipient_contact
+         ON recipient_contact.owner_id=mr.recipient_id
+        AND recipient_contact.contact_id=mr.sender_id
        WHERE mr.recipient_id=$1 AND mr.status='pending'
          AND mr.sender_id<>mr.recipient_id
        ORDER BY mr.created_at`, [req.user.id]);
@@ -6234,6 +6255,7 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', ['personal-media-owner:'+req.user.id]);
     const found = await client.query(
       `SELECT * FROM message_requests WHERE id=$1 AND recipient_id=$2 AND status='pending'`,
       [req.params.id, req.user.id]);
@@ -6251,7 +6273,8 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
     }
     // Keep changes to the general filter out of this acceptance transaction.
     const general = await client.query('SELECT content_filter FROM users WHERE id=$1 FOR SHARE', [req.user.id]);
-    const filter = resolveScopedContentFilter(general.rows[0]?.content_filter, req.body?.filter);
+    const contact = await client.query('SELECT filter_override FROM user_contacts WHERE owner_id=$1 AND contact_id=$2 FOR UPDATE', [req.user.id,request.sender_id]);
+    const {filter,changed}=await resolveFriendAcceptanceFilter(client,req,general.rows[0]?.content_filter,contact.rows[0]?.filter_override,req.body?.filter);
     await client.query(
       `INSERT INTO user_contacts(owner_id, contact_id, contact_source)
        VALUES($1,$2,'in_app'),($2,$1,'in_app')
@@ -6259,10 +6282,11 @@ app.post('/api/message-requests/:id/accept', authWithDbCheck, async (req, res) =
          contact_source=CASE WHEN user_contacts.contact_source='unknown'
            THEN EXCLUDED.contact_source ELSE user_contacts.contact_source END`,
       [req.user.id, request.sender_id]);
-    await client.query(
+    if(changed)await client.query(
       `UPDATE user_contacts SET filter_override=$1, filter_choice_confirmed=TRUE
        WHERE owner_id=$2 AND contact_id=$3`,
       [JSON.stringify(filter), req.user.id, request.sender_id]);
+    else await client.query(`UPDATE user_contacts SET filter_choice_confirmed=TRUE WHERE owner_id=$1 AND contact_id=$2`,[req.user.id,request.sender_id]);
     const phoneSharing = await applyPhoneSharingChoices(client, req.user.id,
       request.sender_id, phoneSharingChoices(req.body));
     const { sent, rejected } = await settleContactRequests(client, {
@@ -9435,7 +9459,7 @@ app.post('/api/groups', auth, async (req, res) => {
   const contentFilter = normalizeContentFilter(content_filter);
   try {
     const pool = await getPool();
-    const result = await pool.query(
+    const result = await filterPinQuery(pool, req, 
       `INSERT INTO groups
        (name, description, creator_id, send_permission, filter_level, is_broadcast, is_self, content_filter)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -9457,7 +9481,7 @@ app.post('/api/groups', auth, async (req, res) => {
       is_broadcast: group.is_broadcast,
       send_permission: group.send_permission,
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code }); }
 });
 
 // ── Groups: details + members ─────────────────────────────────────
@@ -9537,6 +9561,7 @@ app.put('/api/groups/:id/filter-settings', auth, async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
     await lockFilterOwner(client, req.user.id);
+    await requireFilterPin(client, req);
     const access = await client.query(`SELECT 1 FROM group_members
       WHERE group_id=$1 AND user_id=$2 AND role='admin' AND status='member'`,
       [req.params.id, req.user.id]);
@@ -9609,6 +9634,7 @@ app.put('/api/groups/:id/personal-filter', auth, async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
     const general = await lockFilterOwner(client, req.user.id);
+    await requireFilterPin(client, req);
     const access = await client.query(`SELECT 1 FROM group_members
       WHERE group_id=$1 AND user_id=$2 AND status='member'`, [req.params.id, req.user.id]);
     if (!access.rows.length) throw Object.assign(new Error('לא חבר פעיל בקבוצה'), { status: 403 });
@@ -10581,7 +10607,7 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
     const personalFilter = resolveScopedContentFilter(
       pendingRow.rows[0].content_filter, req.body?.filter);
     // Only an existing invitation can become an active membership.
-    await pool.query(
+    await filterPinQuery(pool, req, 
       `UPDATE group_members SET status='member', filter_override=$3, share_phone=$4
        WHERE group_id=$1 AND user_id=$2 AND status='pending'`,
       [req.params.id, req.user.id, JSON.stringify(personalFilter), req.body.share_phone !== false]);
@@ -10619,7 +10645,7 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
     });
 
     res.json({ ok: true, missedMessages });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code }); }
 });
 
 // ── Groups: decline pending invite ───────────────────────────────

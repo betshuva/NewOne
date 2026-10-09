@@ -156,6 +156,28 @@ void _expectNoSessionOrProtectedScreens() {
   expect(find.byType(GoogleDriveBackupOfferScreen), findsNothing);
 }
 
+Future<void> _selectBirth(WidgetTester tester, String value) async {
+  final parts = value.split('/').map(int.parse).toList();
+  for (final pair in [
+    ('שנה', parts[2]),
+    ('חודש', parts[1]),
+    ('יום', parts[0])
+  ]) {
+    tester
+        .widget<DropdownButtonFormField<int>>(
+            find.widgetWithText(DropdownButtonFormField<int>, pair.$1))
+        .onChanged!(pair.$2);
+    await tester.pumpAndSettle();
+  }
+}
+
+List<int?> _birthSelection(WidgetTester tester) => ['יום', 'חודש', 'שנה']
+    .map((label) => tester
+        .widget<DropdownButtonFormField<int>>(
+            find.widgetWithText(DropdownButtonFormField<int>, label))
+        .initialValue)
+    .toList();
+
 Future<String> _fillDetails(WidgetTester tester) async {
   await _tap(tester, find.text('המשך'));
   expect(find.text('השלמת פרטים'), findsOneWidget);
@@ -165,8 +187,7 @@ Future<String> _fillDetails(WidgetTester tester) async {
           .controller!
           .text,
       _verified['name']);
-  await tester.enterText(
-      find.widgetWithText(TextField, 'תאריך לידה'), '15/06/1985');
+  await _selectBirth(tester, '15/06/1985');
   await tester.pumpAndSettle();
   const birthDate = '1985-06-15';
   await _tap(tester, find.byType(DropdownButtonFormField<String>));
@@ -360,30 +381,36 @@ void main() {
   });
 
   testWidgets(
-      'Google signup requires an adult typed date and clears a previously '
-      'valid date when edited to an impossible value', (tester) async {
+      'Google signup requires an adult selected date and clears a previously '
+      'valid date when edited to an month without the selected day',
+      (tester) async {
     final server = _Server();
     await _withFixture(tester, server, (google) async {
       await _choose(tester, google);
       await _tap(tester, find.text('המשך'));
       expect(find.text('השלמת פרטים'), findsOneWidget);
-      final birth = find.widgetWithText(TextField, 'תאריך לידה');
-      await tester.enterText(birth, '15/06/1985');
+
+      await _selectBirth(tester, '15/06/1985');
       await tester.pumpAndSettle();
       await _tap(tester, find.byType(DropdownButtonFormField<String>));
       await _tap(tester, find.text('זכר').last);
-      await tester.enterText(birth, '31/02/1985');
+      await _selectBirth(tester, '31/01/1985');
+      tester
+          .widget<DropdownButtonFormField<int>>(
+              find.widgetWithText(DropdownButtonFormField<int>, 'חודש'))
+          .onChanged!(2);
+      await tester.pumpAndSettle();
       await _tap(tester, find.text('המשך'));
       expect(find.text('השלמת פרטים'), findsOneWidget);
       expect(find.text('אישור וסיום'), findsNothing);
       expect(server.auth, hasLength(1));
       final now = DateTime.now();
-      await tester.enterText(birth, '01/01/${now.year - 17}');
+      await _selectBirth(tester, '31/12/${now.year - 18}');
       await _tap(tester, find.text('המשך'));
       expect(find.text('השלמת פרטים'), findsOneWidget);
       expect(find.text('אישור וסיום'), findsNothing);
       expect(server.auth, hasLength(1));
-      await tester.enterText(birth, '15/06/1985');
+      await _selectBirth(tester, '15/06/1985');
       await _tap(tester, find.text('המשך'));
       expect(find.text('אישור וסיום'), findsOneWidget);
       expect(server.auth, hasLength(1));
@@ -731,12 +758,7 @@ void main() {
               .controller!
               .text,
           'חשבון שני מאומת');
-      expect(
-          tester
-              .widget<TextField>(find.widgetWithText(TextField, 'תאריך לידה'))
-              .controller!
-              .text,
-          isEmpty);
+      expect(_birthSelection(tester), [null, null, null]);
       expect(
           tester
               .widget<DropdownButtonFormField<String>>(
@@ -772,12 +794,7 @@ void main() {
       }
       await _tap(tester, find.text('חזרה'));
       expect(find.text('השלמת פרטים'), findsOneWidget);
-      expect(
-          tester
-              .widget<TextField>(find.widgetWithText(TextField, 'תאריך לידה'))
-              .controller!
-              .text,
-          '15/06/1985');
+      expect(_birthSelection(tester), [15, 6, 1985]);
       expect(
           tester
               .widget<DropdownButtonFormField<String>>(

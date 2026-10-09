@@ -25,6 +25,7 @@ final _pngBytes = base64Decode(
 final _labels = List.generate(150, (index) => 'אימוג׳י לבדיקה ${index + 1}');
 var _bundledCatalogReads = 0;
 var _bundledColoredArtwork = false;
+var _bundledRemovedArtwork = false;
 const _standardCatalog = [
   {
     'emoji': '😀',
@@ -76,6 +77,8 @@ Map<String, dynamic> get _bundledCatalog => {
           'prefix': 'sticker',
           'extension': 'png',
           'labels': _labels,
+          if (_bundledRemovedArtwork)
+            'removedIds': List.generate(102, (index) => index + 49),
         },
       ],
     };
@@ -105,6 +108,7 @@ class _ChatHarness {
   final bool withHistory;
   final int uploadStatus;
   final bool coloredArtwork;
+  final bool removedArtwork;
   final List<Map<String, dynamic>>? history;
   final requests = <http.Request>[];
   final messageEmojiBundle = _MessageEmojiBundle();
@@ -121,6 +125,7 @@ class _ChatHarness {
       this.withHistory = false,
       this.uploadStatus = 200,
       this.coloredArtwork = false,
+      this.removedArtwork = false,
       this.history});
 
   late final client = MockClient((request) async {
@@ -141,6 +146,14 @@ class _ChatHarness {
       body = {'id': 'emoji-sent-message', 'status': 'sent'};
     } else if (path.endsWith('/expressions/catalog')) {
       final catalog = _catalog;
+      if (removedArtwork) {
+        for (final category in catalog['categories'] as List) {
+          (category['items'] as List).removeWhere((item) {
+            final id = inlineEmojiIdFromUrl(item['url'] as String)!;
+            return id >= 49 && id <= 150;
+          });
+        }
+      }
       if (coloredArtwork) {
         for (final category in catalog['categories'] as List) {
           for (final item in category['items'] as List) {
@@ -274,6 +287,7 @@ class _ChatHarness {
 
   Future<void> mount(WidgetTester tester) async {
     _bundledColoredArtwork = coloredArtwork;
+    _bundledRemovedArtwork = removedArtwork;
     addTearDown(() {
       socket.dispose();
       client.close();
@@ -343,15 +357,19 @@ void _expectFlatImages(WidgetTester tester,
   expect(find.byKey(const ValueKey('inline-emoji-1f600')), findsNothing);
   expect(_grid, findsOneWidget);
   expect(tester.widget<SliverGrid>(_grid).delegate.estimatedChildCount, count);
+  final layout = tester.widget<SliverGrid>(_grid).gridDelegate
+      as SliverGridDelegateWithFixedCrossAxisCount;
+  expect(layout.crossAxisCount,
+      stickers ? equals(2) : inInclusiveRange(1, 5));
 }
 
 Future<void> _openPicker(WidgetTester tester,
-    {bool stickers = false, bool defaultStickers = true}) async {
-  await _openShortcut(tester, stickers: stickers);
+    {bool stickers = false, bool defaultStickers = true, int count = 150}) async {
+  await _openShortcut(tester, stickers: stickers, count: count);
 }
 
 Future<void> _openShortcut(WidgetTester tester,
-    {required bool stickers}) async {
+    {required bool stickers, int count = 150}) async {
   await tester.tap(stickers ? _stickerShortcut : _inlineEmojiShortcut);
   await tester
       .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
@@ -360,7 +378,7 @@ Future<void> _openShortcut(WidgetTester tester,
     await tester.drag(find.descendant(of: _picker, matching: find.byType(CustomScrollView)), const Offset(0, -150));
     await tester.pumpAndSettle();
   }
-  _expectFlatImages(tester, stickers: stickers);
+  _expectFlatImages(tester, stickers: stickers, count: count);
 }
 
 void _expectComposerShortcuts(WidgetTester tester) {
@@ -415,7 +433,7 @@ Future<void> _openInlineTab(WidgetTester tester, {int count = 150}) async {
   if (find.descendant(of: _picker, matching: find.text('אימוג׳י')).evaluate().isEmpty) {
     await tester.tap(_done);
     await tester.pumpAndSettle();
-    await _openShortcut(tester, stickers: false);
+    await _openShortcut(tester, stickers: false, count: count);
   }
   _expectFlatImages(tester, count: count);
 }
@@ -474,8 +492,57 @@ void main() {
         .setMockMessageHandler('flutter/assets', null);
   });
 
+  testWidgets('web expression picker halves the sheet and sticker preview sizes',
+      (tester) async {
+    final app = _ChatHarness(isGroup: false);
+    await http.runWithClient(() async {
+      await app.mount(tester);
+      await _openPicker(tester, stickers: true);
+      final panel = find.byKey(const ValueKey('expression-picker-panel'));
+      expect(tester.getSize(panel), const Size(320, 280));
+      final preview = find.descendant(
+        of: _imageTile(1),
+        matching: find.byType(Image),
+      );
+      expect(tester.getSize(preview).width, lessThanOrEqualTo(75));
+      expect(tester.getSize(preview).height, lessThanOrEqualTo(75));
+      await _openInlineTab(tester);
+      expect(tester.getSize(panel), const Size(320, 280));
+      app.expectNothingSent();
+      await app.dispose(tester);
+    }, () => app.client);
+  }, skip: !kIsWeb);
+
   for (final isGroup in [false, true]) {
     final chatKind = isGroup ? 'group' : 'private';
+
+    for (final catalogStatus in [200, 503]) {
+      testWidgets('$chatKind removed choices retain original IDs with catalog $catalogStatus',
+          (tester) async {
+        final app = _ChatHarness(
+          isGroup: isGroup, catalogStatus: catalogStatus, removedArtwork: true,
+        );
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          await _openPicker(tester, stickers: true, count: 48);
+          await _openInlineTab(tester, count: 48);
+          for (final id in [49, 84, 85, 150]) {
+            await tester.enterText(_search, _labels[id - 1]);
+            await tester.pumpAndSettle();
+            expect(_grid, findsNothing);
+            expect(find.text('לא נמצאו תמונות מתאימות'), findsOneWidget);
+          }
+          await tester.enterText(_search, _labels[47]);
+          await tester.pumpAndSettle();
+          expect(_imageTile(48), findsOneWidget);
+          await _selectEmoji(tester, 48);
+          expect(inlineEmojiPlainText(app.controller(tester).text),
+              inlineEmojiCharacter(48));
+          app.expectNothingSent();
+          await app.dispose(tester);
+        }, () => app.client);
+      });
+    }
 
     testWidgets('$chatKind emoji-only draft adds each choice on the left before and after send', (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
@@ -559,6 +626,9 @@ void main() {
         final before = controller.value;
         await _openShortcut(tester, stickers: true);
         for (final id in [1, 2, 3]) {
+          // Scroll the next row into view without waiting for queued uploads.
+          await tester.ensureVisible(_imageTile(id));
+          await tester.pump();
           await tester.tap(_imageTile(id));
         }
         expect(_picker, findsOneWidget);
@@ -653,6 +723,15 @@ void main() {
           final rect = tester.getRect(tool);
           expect(rect.left, greaterThanOrEqualTo(0));
           expect(rect.right, lessThanOrEqualTo(320));
+        }
+        await _openPicker(tester);
+        final tile = _imageTile(1);
+        final image = find.descendant(of: tile, matching: find.byType(Image));
+        expect(tester.getSize(tile).width, greaterThanOrEqualTo(44));
+        expect(tester.getSize(tile).height, greaterThanOrEqualTo(44));
+        if (kIsWeb) {
+          expect(tester.getSize(image).width, closeTo(26.4, 0.001));
+          expect(tester.getSize(image).height, closeTo(26.4, 0.001));
         }
         app.expectNothingSent();
         await app.dispose(tester);

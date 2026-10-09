@@ -37,6 +37,9 @@ Future<http.Response?> saveReceivingFilter({
         builder: (dialogContext) => Directionality(
           textDirection: TextDirection.rtl,
           child: AlertDialog(
+            constraints: const BoxConstraints(maxWidth: 420),
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
             title: const Text('מה לעשות עם התמונות הקיימות?'),
             content: SingleChildScrollView(
               child: Column(

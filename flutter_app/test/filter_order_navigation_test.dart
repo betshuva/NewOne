@@ -74,6 +74,7 @@ Future<void> _withNewRegistration(
       expect(tester.takeException(), isNull);
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               requests.add(request);
               if (request.url.path.endsWith('/registration/verify-google')) {
                 return _json({
@@ -140,6 +141,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               if (request.url.path.endsWith('/filter-settings'))
                 return _json(_filter);
               if (request.url.path.endsWith('/profile')) {
@@ -185,6 +187,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               if (request.method == 'PUT') {
                 updates.add(request);
                 return _json({'ok': true});
@@ -222,8 +225,13 @@ void main() {
       await tester.enterText(name, 'משתמש חדש');
       await _tap(tester, find.text('המשך'));
       expect(find.text('יש להזין תאריך לידה תקין'), findsOneWidget);
-      await tester.enterText(
-          find.widgetWithText(TextField, 'תאריך לידה'), '15/06/1985');
+      for (final pair in [('שנה', 1985), ('חודש', 6), ('יום', 15)]) {
+        tester
+            .widget<DropdownButtonFormField<int>>(
+                find.widgetWithText(DropdownButtonFormField<int>, pair.$1))
+            .onChanged!(pair.$2);
+        await tester.pumpAndSettle();
+      }
       await tester.pumpAndSettle();
       const birthDate = '1985-06-15';
       await _tap(tester, find.text('המשך'));
@@ -240,11 +248,13 @@ void main() {
       await _tap(tester, find.text('המשך'));
       expect(tester.widget<TextField>(name).controller!.text, 'משתמש חדש');
       expect(
-          tester
-              .widget<TextField>(find.widgetWithText(TextField, 'תאריך לידה'))
-              .controller!
-              .text,
-          '15/06/1985');
+          ['יום', 'חודש', 'שנה']
+              .map((label) => tester
+                  .widget<DropdownButtonFormField<int>>(
+                      find.widgetWithText(DropdownButtonFormField<int>, label))
+                  .initialValue)
+              .toList(),
+          [15, 6, 1985]);
       expect(
           tester
               .widget<DropdownButtonFormField<String>>(

@@ -23,6 +23,16 @@ class ChatFileName extends StatefulWidget {
 
 class _ChatFileNameState extends State<ChatFileName> {
   OwnedMediaName? _owned;
+  bool get _isSticker {
+    final name = widget.filename ?? '';
+    final path = Uri.tryParse(widget.url)?.path ?? '';
+    return RegExp(r'^betshuva-sticker-[0-9]+\.png$', caseSensitive: false)
+            .hasMatch(name) ||
+        path.contains('/expression-library/') ||
+        RegExp(r'(^|/)betshuva-sticker-[0-9]+\.png$', caseSensitive: false)
+            .hasMatch(path);
+  }
+
   bool _saving = false;
   int _generation = 0;
 
@@ -54,7 +64,7 @@ class _ChatFileNameState extends State<ChatFileName> {
 
   Future<void> _load() async {
     final generation = ++_generation;
-    if (!widget.editable) return;
+    if (!widget.editable || _isSticker) return;
     try {
       final owned = await resolveMediaName(
           api: widget.api, token: widget.token, url: widget.url);
@@ -65,7 +75,7 @@ class _ChatFileNameState extends State<ChatFileName> {
   }
 
   Future<void> _rename() async {
-    if (_saving) return;
+    if (_saving || _isSticker) return;
     final generation = _generation;
     setState(() => _saving = true);
     try {
@@ -92,31 +102,33 @@ class _ChatFileNameState extends State<ChatFileName> {
   }
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: 285,
-        child: Tooltip(
-          message: widget.editable ? '$_name — לחצו לשינוי שם' : _name,
-          child: InkWell(
-            onTap: widget.editable && !_saving ? _rename : null,
-            borderRadius: BorderRadius.circular(6),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
-              child: Row(textDirection: TextDirection.rtl, children: [
-                Expanded(
-                    child: Text(_name,
-                        textAlign: TextAlign.right,
-                        softWrap: true,
-                        style: const TextStyle(fontSize: 12))),
-                if (widget.editable) ...[
-                  const SizedBox(width: 6),
-                  if (_saving)
-                    const Icon(Icons.hourglass_empty, size: 15)
-                  else
-                    const Icon(Icons.edit_outlined, size: 15),
-                ],
-              ]),
+  Widget build(BuildContext context) => _isSticker
+      ? const SizedBox.shrink()
+      : SizedBox(
+          width: 285,
+          child: Tooltip(
+            message: widget.editable ? '$_name — לחצו לשינוי שם' : _name,
+            child: InkWell(
+              onTap: widget.editable && !_saving ? _rename : null,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+                child: Row(textDirection: TextDirection.rtl, children: [
+                  Expanded(
+                      child: Text(_name,
+                          textAlign: TextAlign.right,
+                          softWrap: true,
+                          style: const TextStyle(fontSize: 12))),
+                  if (widget.editable) ...[
+                    const SizedBox(width: 6),
+                    if (_saving)
+                      const Icon(Icons.hourglass_empty, size: 15)
+                    else
+                      const Icon(Icons.edit_outlined, size: 15),
+                  ],
+                ]),
+              ),
             ),
           ),
-        ),
-      );
+        );
 }

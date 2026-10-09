@@ -8,6 +8,7 @@ const { Pool } = require('pg');
 const requests = require('../server/contact-message-requests');
 const friendship = require('../server/friendship-policy');
 const policy = require('../server/content-filter-policy');
+const filterPin = require('../server/filter-pin');
 const { encryptedQueryValues, decryptMessageRows } = require('../server/message-at-rest');
 const source = fs.readFileSync(require.resolve('../server/index.js'), 'utf8');
 const opts = { skip: process.env.RUN_DB_TESTS !== '1' };
@@ -37,6 +38,7 @@ async function fixture(t) {
     CREATE TABLE message_status(message_id uuid,user_id uuid,status text,updated_at timestamptz,PRIMARY KEY(message_id,user_id));
     CREATE TABLE private_message_sends(user_id uuid,client_message_id text,request_hash text,result jsonb,PRIMARY KEY(user_id,client_message_id));`);
   await db.query(requests.REQUEST_SCHEMA);
+  await db.query(filterPin.SCHEMA);
   await friendship.initializeFriendshipPolicy(db);
   const sender = randomUUID(), recipient = randomUUID();
   await db.query('INSERT INTO users(id,name,content_filter) VALUES($1,$2,$3),($4,$5,$6)', [sender,'sender',all,recipient,'recipient',none]);
@@ -46,7 +48,7 @@ async function fixture(t) {
     return (await db.query("SELECT 1 FROM stored_files WHERE user_id=$1 AND public_url=$2 AND moderation_status='approved' AND content_purged_at IS NULL", [senderId,url])).rows.length > 0;
   }
   const scope = {
-    ...require('./helpers/system-audit-stubs'), ...requests, ...policy, ...friendship, notifyFriendshipChange() {},
+    ...require('./helpers/system-audit-stubs'), ...requests, ...policy, ...friendship, ...filterPin, notifyFriendshipChange() {},
     getPool: async () => db, authWithDbCheck() {}, auth() {}, messageRateLimit() {},
     SYSTEM_USER_ID: 'guide', SAFE_INFORMATION_USER_ID: 'info', SCAN_BOT_ID: 'scan',
     normalizeBuiltinStickerId: id => id === 'sticker' ? id : null,
@@ -73,7 +75,7 @@ async function fixture(t) {
   vm.runInNewContext(source.slice(source.indexOf("  socket.on('chat:message',"),source.indexOf("  socket.on('chat:typing',")), {...scope,socket});
   async function call(path, body, requestId, user = sender) {
     const res = {code:200,set(){},status(code){this.code=code;return this;},json(body){this.body=body;return this;}};
-    await routes[path]({ user:{id:user,name:user===sender?'sender':'recipient'}, body, params:{id:requestId} }, res);
+    await routes[path]({ user:{id:user,name:user===sender?'sender':'recipient'}, headers:{authorization:'Bearer fixture-'+user}, body, params:{id:requestId} }, res);
     return res;
   }
   async function payload(type, suffix = '') {
@@ -212,4 +214,46 @@ test('marketplace HTTP inquiry is delivered without friendship; filtered reply c
   assert.equal(reply.code,200,JSON.stringify(f.errors));
   assert.equal((await f.db.query('SELECT * FROM user_contacts')).rows.length,2);
   assert.equal((await f.db.query('SELECT * FROM message_requests')).rows.length,0);
+});
+
+test('locked friendship approval keeps inherited filtering and delivers permitted text', opts, async t => {
+ const f=await fixture(t);
+ const first=await f.call('/api/messages',await f.payload('text'));
+ await f.db.query('INSERT INTO filter_pin_settings(user_id,pin_hash,recovery_email) VALUES($1,$2,$3)',[f.recipient,'unused-test-hash','test@example.test']);
+ const res=await f.call('/api/message-requests/:id/accept',{},first.body.id,f.recipient);
+ assert.equal(res.code,200,JSON.stringify(res.body));
+ const contact=(await f.db.query('SELECT filter_override,filter_choice_confirmed FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',[f.recipient,f.sender])).rows[0];
+ assert.equal(contact.filter_override,null);assert.equal(contact.filter_choice_confirmed,true);
+ assert.equal(res.body.messageIds.length,1);
+});
+test('a locked approval cannot change filtering or consume the pending request', opts, async t => {
+ const f=await fixture(t);
+ const first=await f.call('/api/messages',await f.payload('text'));
+ await f.db.query('INSERT INTO filter_pin_settings(user_id,pin_hash,recovery_email) VALUES($1,$2,$3)',[f.recipient,'unused-test-hash','test@example.test']);
+ const res=await f.accept(first.body.id,all);
+ assert.equal(res.code,423);assert.equal(res.body.code,'FILTER_PIN_LOCKED');
+ assert.equal((await f.db.query('SELECT status FROM message_requests WHERE id=$1',[first.body.id])).rows[0].status,'pending');
+ assert.equal((await f.db.query('SELECT count(*)::int AS n FROM user_contacts WHERE owner_id=$1',[f.recipient])).rows[0].n,0);
+ const allowed=await f.accept(first.body.id,policy.normalizeContentFilter(none));
+ assert.equal(allowed.code,200,JSON.stringify(allowed.body));
+});
+test('locked friendship approval preserves an existing private override', opts, async t => {
+ const f=await fixture(t);
+ const first=await f.call('/api/messages',await f.payload('text'));
+ const override={...none,men:true};
+ await f.db.query('INSERT INTO user_contacts(owner_id,contact_id,filter_override) VALUES($1,$2,$3)',[f.recipient,f.sender,override]);
+ await f.db.query('INSERT INTO filter_pin_settings(user_id,pin_hash,recovery_email) VALUES($1,$2,$3)',[f.recipient,'unused-test-hash','test@example.test']);
+ const res=await f.accept(first.body.id,policy.normalizeContentFilter(override));
+ assert.equal(res.code,200,JSON.stringify(res.body));
+ assert.deepEqual((await f.db.query('SELECT filter_override FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',[f.recipient,f.sender])).rows[0].filter_override,override);
+});
+test('opening the code permits choosing a different filter during approval', opts, async t => {
+ const f=await fixture(t);
+ const first=await f.call('/api/messages',await f.payload('text'));
+ await f.db.query('INSERT INTO filter_pin_settings(user_id,pin_hash,recovery_email) VALUES($1,$2,$3)',[f.recipient,'unused-test-hash','test@example.test']);
+ const key=filterPin.sessionKey({headers:{authorization:'Bearer fixture-'+f.recipient}});
+ await f.db.query("INSERT INTO filter_pin_grants(user_id,session_key,generation,expires_at,screen_scope) VALUES($1,$2,1,'infinity',$3)",[f.recipient,key,'a'.repeat(32)]);
+ const res=await f.accept(first.body.id,all);
+ assert.equal(res.code,200,JSON.stringify(res.body));
+ assert.deepEqual((await f.db.query('SELECT filter_override FROM user_contacts WHERE owner_id=$1 AND contact_id=$2',[f.recipient,f.sender])).rows[0].filter_override,all);
 });

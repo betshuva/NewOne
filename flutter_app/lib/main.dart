@@ -1,3 +1,5 @@
+import 'filter_pin_gate.dart';
+import 'birth_date_selection.dart';
 import 'voice_recording_bar.dart';
 import 'progressive_audio_recorder.dart';
 import 'recording_upload.dart';
@@ -1989,7 +1991,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.64';
+const kVersion = '1.3.66';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -5534,7 +5536,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 labelText: 'שם מלא', prefixIcon: Icon(Icons.person_outline)),
           ),
           const SizedBox(height: 12),
-          _BirthDateField(
+          BirthDateSelection(
               value: _birthDate,
               onChanged: (value) => setState(() => _birthDate = value)),
           const SizedBox(height: 12),
@@ -6022,7 +6024,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             prefixIcon: Icon(Icons.person_outline)),
                       ),
                       const SizedBox(height: 14),
-                      _BirthDateField(
+                      BirthDateSelection(
                         value: _birthDate,
                         onChanged: (value) =>
                             setState(() => _birthDate = value),
@@ -8830,6 +8832,8 @@ class _MainShellContentState extends State<_MainShellContent> {
       ..._newAccountFilter(),
       ...readFilter(request['my_filter'])
     };
+    final initialFilter = Map<String, bool>.from(selectedFilter);
+    var accepting = false;
     final counterpartFilter = readFilter(request['expected_filter']);
     final phoneChoice = PhoneSharingController();
     final senderId = (request['sender_id'] ?? request['senderId'])?.toString();
@@ -8861,6 +8865,7 @@ class _MainShellContentState extends State<_MainShellContent> {
                     ),
                     const SizedBox(height: 12),
                     _InvitationFilterComparisonTable(
+                      token: widget.token,
                       groupName: senderName.toString(),
                       groupFilter: counterpartFilter,
                       personalFilter: selectedFilter,
@@ -8882,16 +8887,28 @@ class _MainShellContentState extends State<_MainShellContent> {
             ),
             actions: [
               FilledButton.icon(
-                onPressed: () => Navigator.pop(dialogContext, {
-                  'accepted': true,
-                  'filter': selectedFilter,
-                  'phoneChoice': phoneChoice.confirmationPayload,
-                }),
+                onPressed: accepting ? null : () async {
+                  setDialogState(() => accepting = true);
+                  try {
+                    final changed = selectedFilter.keys.any((key) => selectedFilter[key] != initialFilter[key]);
+                    final response = await http.post(Uri.parse('$kApi/message-requests/${request['id']}/accept'),
+                        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+                        body: jsonEncode({if (changed) 'filter': selectedFilter, ...phoneChoice.confirmationPayload}));
+                    if (response.statusCode != 200) {
+                      final data = jsonDecode(response.body) as Map<String, dynamic>;
+                      throw Exception(data['error'] ?? 'לא ניתן להשלים כעת את אישור החבר');
+                    }
+                    if (dialogContext.mounted) Navigator.pop(dialogContext, {'accepted': true, 'response': response});
+                  } catch (e) {
+                    if (mounted) ScaffoldMessenger.of(this.context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
+                    if (dialogContext.mounted) setDialogState(() => accepting = false);
+                  }
+                },
                 icon: const Icon(Icons.person_add_outlined),
                 label: Text(phoneChoice.confirmationLabel(saveLabel: 'אשר והוסף כחבר')),
               ),
               TextButton(
-                onPressed: () =>
+                onPressed: accepting ? null : () =>
                     Navigator.pop(dialogContext, {'accepted': false}),
                 style: TextButton.styleFrom(foregroundColor: Colors.red),
                 child: const Text('דחה'),
@@ -8908,20 +8925,11 @@ class _MainShellContentState extends State<_MainShellContent> {
       return;
     }
     final accepted = decision?['accepted'] == true;
-    final chosenFilter = decision?['filter'];
     try {
       final id = request['id'];
       late final http.Response response;
       if (accepted) {
-        response =
-            await http.post(Uri.parse('$kApi/message-requests/$id/accept'),
-                headers: {
-                  'Authorization': 'Bearer ${widget.token}',
-                  'Content-Type': 'application/json',
-                },
-                body: jsonEncode({'filter': chosenFilter,
-                  ...Map<String, dynamic>.from(decision?['phoneChoice'] as Map? ?? {}),
-                }));
+        response = decision!['response'] as http.Response;
         if (response.statusCode != 200) throw Exception('accept failed');
         await _refreshConversationState();
       } else {
@@ -23131,6 +23139,7 @@ Future<bool?> _chooseGroupPhoneSharing(BuildContext context, {bool initial = tru
 
 Future<Map<String, bool>?> _chooseGroupInvitationFilter(
   BuildContext context, {
+  required String token,
   required Map<String, bool> groupFilter,
   required Map<String, bool> initialFilter,
   String counterpart = 'הקבוצה',
@@ -23150,6 +23159,7 @@ Future<Map<String, bool>?> _chooseGroupInvitationFilter(
           width: 760,
           child: SingleChildScrollView(
             child: _InvitationFilterComparisonTable(
+                      token: token,
               groupName: groupName,
               groupFilter: groupFilter,
               personalFilter: selected,
@@ -23178,6 +23188,7 @@ Future<Map<String, bool>?> _chooseGroupInvitationFilter(
 }
 
 class _InvitationFilterComparisonTable extends StatelessWidget {
+  final String token;
   final String? groupName;
   final Map<String, bool>? groupFilter;
   final Map<String, bool>? personalFilter;
@@ -23189,6 +23200,7 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
   final String? hiddenCounterpartExplanation;
 
   const _InvitationFilterComparisonTable({
+    required this.token,
     this.groupName,
     required this.groupFilter,
     required this.personalFilter,
@@ -23336,7 +23348,7 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
       );
     }
 
-    return Directionality(
+    final view = Directionality(
       textDirection: TextDirection.rtl,
       child: Align(
         alignment: Alignment.topCenter,
@@ -23487,6 +23499,8 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
         ),
       ),
     );
+    if (onPersonalFilterChanged == null && onCounterpartFilterChanged == null) return view;
+    return FilterPinGate(api: kApi, token: token, child: view);
   }
 }
 
@@ -24923,6 +24937,7 @@ class _ChatScreenState extends State<ChatScreen> {
             child: SingleChildScrollView(
               child: Column(children: [
                 _InvitationFilterComparisonTable(
+                      token: widget.token,
                 groupName: recipientName,
                 groupFilter: _recipientReceivingFilter,
                 personalFilter: selected,
@@ -26756,6 +26771,7 @@ class _ChatScreenState extends State<ChatScreen> {
               child: SingleChildScrollView(
                 child: Column(children: [
                   _InvitationFilterComparisonTable(
+                      token: widget.token,
                   groupName: recipientName,
                   groupFilter: _recipientReceivingFilter,
                   personalFilter: personalDraft,
@@ -26984,23 +27000,24 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.forward),
             ),
           if (_selectedMessageKeys.isEmpty) ...[
-            IconButton(
-              icon: const Icon(Icons.phone_outlined, color: Colors.white),
-              onPressed: widget.recipient['id'] == kScanBotId
-                  ? null
-                  : () {
-                      if (widget.onVoiceCall != null) {
-                        widget.onVoiceCall!();
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('יש לפתוח את השיחה מרשימת אנשי הקשר'),
-                          ),
-                        );
-                      }
-                    },
-              tooltip: 'שיחת קול',
-            ),
+            if (!kIsWeb)
+              IconButton(
+                icon: const Icon(Icons.phone_outlined, color: Colors.white),
+                onPressed: widget.recipient['id'] == kScanBotId
+                    ? null
+                    : () {
+                        if (widget.onVoiceCall != null) {
+                          widget.onVoiceCall!();
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('יש לפתוח את השיחה מרשימת אנשי הקשר'),
+                            ),
+                          );
+                        }
+                      },
+                tooltip: 'שיחת קול',
+              ),
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert),
               tooltip: 'אפשרויות שיחה',
@@ -27781,6 +27798,7 @@ class _GroupInviteCardState extends State<_GroupInviteCard> {
       setState(() => _loading = false);
       final selected = await _chooseGroupInvitationFilter(
         context,
+        token: widget.token,
         groupFilter: readFilter(previewData['groupFilter']),
         initialFilter: readFilter(previewData['myFilter']),
         counterpart: _meta['groupName']?.toString() ?? 'הקבוצה',
@@ -31684,6 +31702,16 @@ Future<void> _showExpressionPicker(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    constraints: kIsWeb
+        ? BoxConstraints(
+            maxWidth: math.min(
+                  MediaQuery.sizeOf(context).width,
+                  Theme.of(context).bottomSheetTheme.constraints?.maxWidth ??
+                      640.0,
+                ) /
+                2,
+          )
+        : null,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
@@ -31823,16 +31851,18 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
           'categories': (bundled['categories'] as List).map((raw) {
             final category = raw as Map;
             final labels = category['labels'] as List;
+            final removedIds =
+                (category['removedIds'] as List? ?? const []).toSet();
             return {
               'id': category['id'],
-              'items': List.generate(
-                labels.length,
-                (index) => {
-                  'label': labels[index],
-                  'url':
-                      '/betshuva-app/expression-library/${category['coloredPath'] ?? category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
-                },
-              ),
+              'items': List.generate(labels.length, (index) => index)
+                  .where((index) => !removedIds.contains(index + 1))
+                  .map((index) => {
+                        'label': labels[index],
+                        'url':
+                            '/betshuva-app/expression-library/${category['coloredPath'] ?? category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
+                      })
+                  .toList(),
             };
           }).toList(),
         };
@@ -31919,7 +31949,11 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
       child: Directionality(
         textDirection: TextDirection.rtl,
         child: SizedBox(
-          height: math.min(560.0, math.max(0.0, availableHeight - 32)),
+          key: const ValueKey('expression-picker-panel'),
+          height: math.min(
+            kIsWeb ? 280.0 : 560.0,
+            math.max(0.0, availableHeight - 32),
+          ),
           child: Column(
             children: [
               Expanded(
@@ -32045,10 +32079,11 @@ class _RemoteExpressionGrid extends StatelessWidget {
         key: const ValueKey('expression-image-grid'),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: inlineEmoji
-              ? math.max(1, ((constraints.crossAxisExtent - 20) / 48).floor())
-              : constraints.crossAxisExtent < 500
-              ? 3
-              : 4,
+              ? ((constraints.crossAxisExtent - 20) / 48)
+                  .floor()
+                  .clamp(1, 5)
+              : 2,
+          mainAxisExtent: inlineEmoji ? 48 : null,
           mainAxisSpacing: inlineEmoji ? 4 : 8,
           crossAxisSpacing: inlineEmoji ? 4 : 8,
           childAspectRatio: inlineEmoji ? 1 : 0.9,
@@ -32061,14 +32096,20 @@ class _RemoteExpressionGrid extends StatelessWidget {
           final choicePrefix = inlineEmoji
               ? _remoteExpressionPrefix
               : _remoteStickerPrefix;
-          final image = Image.network(
-            url,
-            width: inlineEmoji ? 24 * inlineEmojiScale : null,
-            height: inlineEmoji ? 24 * inlineEmojiScale : null,
-            fit: BoxFit.contain,
-            filterQuality: FilterQuality.medium,
-            errorBuilder: (_, __, ___) =>
-                const Icon(Icons.broken_image_outlined, color: kSubtext),
+          final image = vividInlineEmojiArtwork(
+            inlineEmojiIdFromUrl(rawUrl),
+            Image.network(
+              url,
+              width: inlineEmoji ? 24 * inlineEmojiScale : null,
+              height: inlineEmoji ? 24 * inlineEmojiScale : null,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.medium,
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.broken_image_outlined,
+                color: kSubtext,
+                size: inlineEmoji ? 24 * inlineEmojiScale : 24,
+              ),
+            ),
           );
           if (inlineEmoji) {
             return Tooltip(
@@ -32105,8 +32146,8 @@ class _RemoteExpressionGrid extends StatelessWidget {
                       child: Center(
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(
-                            maxWidth: 150,
-                            maxHeight: 150,
+                            maxWidth: kIsWeb ? 75 : 150,
+                            maxHeight: kIsWeb ? 75 : 150,
                           ),
                           child: image,
                         ),
@@ -33046,7 +33087,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (!mounted) return;
     final selected = await _chooseGroupInvitationFilter(
       context,
-      groupFilter: _groupReceivingFilter ?? const <String, bool>{},
+      token: widget.token,
+        groupFilter: _groupReceivingFilter ?? const <String, bool>{},
       initialFilter:
           _outgoingFilter ?? const <String, bool>{},
       counterpart: widget.group['name']?.toString() ?? 'הקבוצה',
@@ -33180,7 +33222,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             _invitationPersonalFilter ?? const <String, bool>{})
         : await _chooseGroupInvitationFilter(
             context,
-            groupFilter: _groupReceivingFilter ?? const <String, bool>{},
+            token: widget.token,
+        groupFilter: _groupReceivingFilter ?? const <String, bool>{},
             initialFilter: _invitationPersonalFilter ?? const <String, bool>{},
             counterpart: widget.group['name']?.toString() ?? 'הקבוצה',
             groupName: widget.group['name']?.toString(),
@@ -36420,6 +36463,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             width: 760,
             child: SingleChildScrollView(
               child: _InvitationFilterComparisonTable(
+                      token: widget.token,
                 groupName: widget.group['name']?.toString(),
                 groupFilter: groupDraft,
                 personalFilter: personalDraft,
@@ -36603,6 +36647,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
                 const SizedBox(height: 10),
                 _InvitationFilterComparisonTable(
+                      token: widget.token,
                   groupName: widget.group['name']?.toString(),
                   groupFilter: _groupReceivingFilter,
                   personalFilter: filter,
@@ -36972,6 +37017,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               )
                             else
                               _InvitationFilterComparisonTable(
+                      token: widget.token,
                                 groupName: widget.group['name']?.toString(),
                                 groupFilter: _groupReceivingFilter,
                                 personalFilter: _invitationPersonalFilter,
@@ -38848,7 +38894,7 @@ class _ContentFilterSettingsScreenState
             : Center(
                 child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 760),
-                child: ListView(children: [
+                child: ListView(children: [FilterPinGate(api: kApi, token: widget.token, child: Column(children: [
                   if ((_isContact || _isGroup) && _enforceGeneralFilter)
                     const Padding(
                         padding: EdgeInsets.all(16),
@@ -39003,7 +39049,7 @@ class _ContentFilterSettingsScreenState
                       label: Text(_isContact ? _phoneChoice.confirmationLabel(saveLabel: 'שמור הגדרות') : 'שמור הגדרות'),
                     ),
                   ),
-                ]),
+                ])),]),
               )),
       ),
     );

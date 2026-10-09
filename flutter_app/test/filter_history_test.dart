@@ -44,6 +44,11 @@ void main() {
     testWidgets(
         '$action retries only after explicit choice and preserves payload',
         (tester) async {
+      final width = {'hide': 320.0, 'delete': 390.0, 'keep': 1200.0}[action]!;
+      tester.view.physicalSize = Size(width, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final requests = <Map<String, dynamic>>[];
       final notifications = <String>[];
       final subscription =
@@ -72,7 +77,16 @@ void main() {
         expect(requests, hasLength(1));
         expect(notifications, isEmpty);
         expect(find.textContaining('נמצאו 3 תמונות'), findsOneWidget);
-        await tester.tap(find.byKey(ValueKey('existing-media-$action')));
+        final dialogSurface = find.descendant(
+          of: find.byType(AlertDialog), matching: find.byType(Material)).first;
+        final bounds = tester.getRect(dialogSurface);
+        expect(bounds.width, lessThanOrEqualTo(420));
+        expect(bounds.left, greaterThanOrEqualTo(16));
+        expect(bounds.right, lessThanOrEqualTo(width - 16));
+        expect(tester.takeException(), isNull);
+        final choice = find.byKey(ValueKey('existing-media-$action'));
+        await tester.ensureVisible(choice);
+        await tester.tap(choice);
         await tester.pumpAndSettle();
         expect(requests, hasLength(2));
         expect(requests.last['existingMediaAction'], action);
@@ -85,6 +99,7 @@ void main() {
         expect(result?.statusCode, 200);
       },
           () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
                 requests
                     .add(Map<String, dynamic>.from(jsonDecode(request.body)));
                 return requests.length == 1
@@ -132,6 +147,7 @@ void main() {
       expect(notifications, isEmpty);
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               requests++;
               return json({
                 'code': 'EXISTING_MEDIA_CHOICE_REQUIRED',
@@ -174,6 +190,7 @@ void main() {
       expect(restored, true);
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               requests.add(request);
               return json({});
             }));
@@ -286,6 +303,7 @@ void main() {
         expect(tester.takeException(), isNull);
       },
           () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
                 requests.add(request);
                 return json({});
               }));
@@ -335,6 +353,7 @@ void main() {
       expect(tester.takeException(), isNull);
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               requests.add(request);
               return json({});
             }));
@@ -372,6 +391,7 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               final path = request.url.path;
               if (path.endsWith('/messages') && request.method == 'POST') {
                 sent.add(request);
@@ -439,6 +459,7 @@ void main() {
       expect(tester.takeException(), isNull);
     },
         () => MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
               final path = request.url.path;
               if (path == '/old.png') {
                 requestedMedia.add(path);

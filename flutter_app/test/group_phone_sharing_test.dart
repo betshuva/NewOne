@@ -38,6 +38,7 @@ void main() {
         expect(tester.takeException(),isNull);
         await tester.pumpWidget(const SizedBox());
       },()=>MockClient((request) async {
+            if (request.url.path.endsWith('/filter-pin')) return http.Response(jsonEncode({'configured': false, 'unlocked': true}), 200, headers: {'content-type': 'application/json'});
         Object body=[];
         if(request.url.path.endsWith('/filter-settings')) body=filter;
         if(request.method=='POST' && request.url.path.endsWith('/groups')) {

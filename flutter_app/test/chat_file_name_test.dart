@@ -6,6 +6,27 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
+  testWidgets(
+      'sticker labels and rename controls are hidden without an owner lookup',
+      (tester) async {
+    final client = MockClient(
+        (_) async => throw StateError('Sticker name lookup must not run'));
+    await http.runWithClient(() async {
+      await tester.pumpWidget(const MaterialApp(
+          home: Scaffold(
+              body: ChatFileName(
+                  api: 'https://example.test/api',
+                  token: 'owner',
+                  url: '/uploads/sticker.png',
+                  filename: 'betshuva-sticker-01.png',
+                  editable: true))));
+      await tester.pumpAndSettle();
+      expect(find.text('betshuva-sticker-01.png'), findsNothing);
+      expect(find.byIcon(Icons.edit_outlined), findsNothing);
+      expect(find.byType(InkWell), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }, () => client);
+  });
   testWidgets('chat rename saves the owner filename and survives reopening',
       (tester) async {
     var saved = 'original.JPG';
