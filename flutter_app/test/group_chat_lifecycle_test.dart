@@ -109,9 +109,59 @@ void main() {
       expect(find.byType(GroupChatScreen), findsOneWidget);
       expect(sentMessages, isEmpty);
 
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pump(const Duration(seconds: 1));
+      final indicator = find.byKey(const ValueKey('group-typing-indicator'));
+      final input = find.byType(EditableText).first;
+      final indicatorRect = tester.getRect(indicator);
+      final inputRect = tester.getRect(input);
+      final histories = find.byType(Scrollable);
+      List<Rect> historyRects() => [
+            for (final element in histories.evaluate())
+              tester.getRect(find.byElementPredicate((e) => e == element))
+          ];
+      final originalHistoryRects = historyRects();
+      bool isTyping() => find
+          .descendant(of: indicator, matching: find.text('חבר מקליד...'))
+          .evaluate()
+          .isNotEmpty;
+      void receiveTyping() {
+        socket.connected = true;
+        socket.onevent({
+          'data': [
+            'group:typing',
+            {'groupId': 'test-group', 'fromName': 'חבר'}
+          ]
+        });
+        socket.connected = false;
+      }
 
+      void expectStableLayout() {
+        expect(tester.getRect(indicator), indicatorRect);
+        expect(tester.getRect(input), inputRect);
+        expect(historyRects(), originalHistoryRects);
+      }
+
+      expect(isTyping(), isFalse);
+      receiveTyping();
+      await tester.pump();
+      expect(isTyping(), isTrue);
+      expectStableLayout();
+      await tester.pump(const Duration(seconds: 2));
+      receiveTyping();
+      await tester.pump(const Duration(milliseconds: 1200));
+      // The first event's timeout must not hide ongoing typing.
+      expect(isTyping(), isTrue);
+      expectStableLayout();
+      await tester.pump(const Duration(milliseconds: 1900));
+      expect(isTyping(), isFalse);
+      expectStableLayout();
+      // Closing with an active typing timeout must clean it up.
+      receiveTyping();
+      await tester.pump();
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 4));
+
+      received.clear();
       // Inject local receive events without opening a network connection.
       // Removing the group must leave every other screen's callback intact.
       socket.connected = true;

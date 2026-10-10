@@ -56,9 +56,56 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       expect(sentMessages, isEmpty);
 
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pump(const Duration(seconds: 1));
+      final indicator = find.byKey(const ValueKey('private-typing-indicator'));
+      final input = find.byType(EditableText).first;
+      final indicatorRect = tester.getRect(indicator);
+      final inputRect = tester.getRect(input);
+      final histories = find.byType(Scrollable);
+      List<Rect> historyRects() => [
+            for (final element in histories.evaluate())
+              tester.getRect(find.byElementPredicate((e) => e == element))
+          ];
+      final originalHistoryRects = historyRects();
+      bool isTyping() => tester.widget<SizedBox>(indicator).child != null;
+      void receiveTyping() {
+        socket.connected = true;
+        socket.onevent({
+          'data': [
+            'chat:typing',
+            {'fromUserId': 'test-recipient'}
+          ]
+        });
+        socket.connected = false;
+      }
 
+      void expectStableLayout() {
+        expect(tester.getRect(indicator), indicatorRect);
+        expect(tester.getRect(input), inputRect);
+        expect(historyRects(), originalHistoryRects);
+      }
+
+      expect(isTyping(), isFalse);
+      receiveTyping();
+      await tester.pump();
+      expect(isTyping(), isTrue);
+      expectStableLayout();
+      await tester.pump(const Duration(seconds: 2));
+      receiveTyping();
+      await tester.pump(const Duration(milliseconds: 1200));
+      // The first event's timeout must not hide ongoing typing.
+      expect(isTyping(), isTrue);
+      expectStableLayout();
+      await tester.pump(const Duration(milliseconds: 1900));
+      expect(isTyping(), isFalse);
+      expectStableLayout();
+      // Closing with an active typing timeout must clean it up.
+      receiveTyping();
+      await tester.pump();
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 4));
+
+      received.clear();
       // Deliver local events through the socket's receive path without a
       // connection. Home and group listeners must survive the chat disposal.
       socket.connected = true;

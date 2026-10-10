@@ -172,6 +172,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'תכין לי קובץ Excel');
+      await tester.pump();
       await tester.tap(find.byIcon(Icons.send));
       await tester.pumpAndSettle();
       expect(find.text('קובץ מהתשובה הישירה נשמר.'), findsOneWidget);

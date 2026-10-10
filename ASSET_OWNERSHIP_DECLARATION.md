@@ -37,3 +37,12 @@ his economic intellectual-property rights to the company is documented in
 `INTELLECTUAL_PROPERTY_ASSIGNMENT.md` and takes effect only when that document
 is executed by both parties. This update does not alter the historical record
 of authorship above.
+
+## Execution record — 2026-09-06
+
+The corporate resolutions and assignment have now been signed by Yaniv Eliyahu
+in the relevant personal and corporate capacities. See
+`yaniv/Betshuva-IP-Assignment-Execution-Record.md` for the signed original and
+completion evidence. This records execution of the transfer described above;
+it does not change the historical authorship declaration or expand the rights
+covered by the agreement.

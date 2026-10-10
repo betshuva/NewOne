@@ -66,7 +66,10 @@ class _MessageReactionEmojiPickerState
       if (labels is! List || labels.length != 150) {
         throw const FormatException('Invalid immutable reaction IDs');
       }
-      final folder = category['coloredPath'] ?? category['path'];
+      // Reaction IDs retain the original 150 images independently of the
+      // live sticker and emoji folders used by the composer.
+      final folder = category['coloredPath'] ??
+          (category['path'] == 'stickers' ? 'user-20261008-color' : category['path']);
       final entries = <_ReactionEmoji>[];
       for (var index = 0; index < labels.length; index++) {
         final id = index + 1;

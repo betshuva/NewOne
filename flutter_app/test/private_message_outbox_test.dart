@@ -15,31 +15,54 @@ void main() {
     PrivateMessageOutbox.sending.clear();
   });
 
-
   for (final status in ['awaiting_contact_approval', 'rejected_request']) {
-    testWidgets('server request status $status survives opening and reopening chat', (tester) async {
+    testWidgets(
+        'server request status $status survives opening and reopening chat',
+        (tester) async {
       final client = MockClient((request) async {
-        if (request.url.path.endsWith('/messages/peer')) return http.Response(jsonEncode([{
-          'id':'request_test', 'sender_id':'me', 'recipient_id':'peer', 'type':'text',
-          'body':'request content', 'created_at':'2026-09-27T10:00:00Z',
-          'message_status':status, 'scan_reason':'הנמען דחה את בקשת החברות',
-        }]),200,headers:{'content-type':'application/json; charset=utf-8'});
-        if (request.url.path.endsWith('/filter-settings')) return http.Response('{"filter":{"text":true},"requiresChoice":false}',200);
-        return http.Response('{}',200);
+        if (request.url.path.endsWith('/messages/peer'))
+          return http.Response(
+              jsonEncode([
+                {
+                  'id': 'request_test',
+                  'sender_id': 'me',
+                  'recipient_id': 'peer',
+                  'type': 'text',
+                  'body': 'request content',
+                  'created_at': '2026-09-27T10:00:00Z',
+                  'message_status': status,
+                  'scan_reason': 'הנמען דחה את בקשת החברות',
+                }
+              ]),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'});
+        if (request.url.path.endsWith('/filter-settings'))
+          return http.Response(
+              '{"filter":{"text":true},"requiresChoice":false}', 200);
+        return http.Response('{}', 200);
       });
       await http.runWithClient(() async {
-        for (var round=0;round<2;round++) {
-          await tester.pumpWidget(MaterialApp(home:ChatScreen(token:'token',me:const {'id':'me'},recipient:const {'id':'peer','name':'חבר'},socket:null)));
-          await tester.pump(const Duration(milliseconds:300));
+        for (var round = 0; round < 2; round++) {
+          await tester.pumpWidget(MaterialApp(
+              home: ChatScreen(
+                  token: 'token',
+                  me: const {'id': 'me'},
+                  recipient: const {'id': 'peer', 'name': 'חבר'},
+                  socket: null)));
+          await tester.pump(const Duration(milliseconds: 300));
           await tester.pumpAndSettle();
-          expect(find.text('request content'),findsOneWidget);
-          expect(find.textContaining(status=='awaiting_contact_approval'?'טרם נשלח':'לא נשלח — הנמען דחה'),findsOneWidget);
-          expect(find.byIcon(Icons.done),findsNothing);
-          expect(tester.takeException(),isNull);
+          expect(find.text('request content'), findsOneWidget);
+          expect(
+              find.textContaining(status == 'awaiting_contact_approval'
+                  ? 'טרם נשלח'
+                  : 'לא נשלח — הנמען דחה'),
+              findsOneWidget);
+          expect(find.byIcon(Icons.done), findsNothing);
+          expect(tester.takeException(), isNull);
           await tester.pumpWidget(const SizedBox.shrink());
-          await tester.pump(const Duration(milliseconds:300));
+          await tester.pump(const Duration(milliseconds: 300));
         }
-      },()=>client);
+      }, () => client);
     });
   }
   test(
@@ -99,6 +122,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.enterText(find.byType(TextField).first, 'offline retained');
+      await tester.pump();
       await tester.tap(find.byIcon(Icons.send));
       await tester.pump(const Duration(milliseconds: 300));
       await tester.pump(const Duration(milliseconds: 300));

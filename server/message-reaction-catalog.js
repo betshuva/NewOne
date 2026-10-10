@@ -5,7 +5,7 @@
 const catalog = require('../flutter_app/assets/stickers/user-catalog.json');
 const { inlineEmojiPlainText } = require('./inline-custom-emoji');
 const category = catalog.categories?.find(item => item.id === 'user-stickers' &&
-  item.path === 'user-20260907' && item.prefix === 'sticker' && item.extension === 'png');
+  item.prefix === 'sticker' && item.extension === 'png');
 if (!Array.isArray(category?.labels) || category.labels.length !== 150 ||
     category.labels.some(label => typeof label !== 'string' || !label.trim()))
   throw new Error('The message reaction catalog must contain the 150 bundled emoji labels');

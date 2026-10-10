@@ -143,7 +143,9 @@ String? _captureCreatorId(BuildContext context, Map<String, dynamic>? me) {
 }
 
 bool _isPersonalPhoneContact(String? id, String? myId) =>
-    id != null && id.isNotEmpty && id != myId &&
+    id != null &&
+    id.isNotEmpty &&
+    id != myId &&
     !{kScanBotId, kSystemGuideId, kSafeInformationAiId}.contains(id);
 
 // Captured before starting a transfer: State.widget is unavailable after a
@@ -154,10 +156,11 @@ class _ChatUploadDestination {
 }
 
 Future<bool> _videoWithinDurationLimit(
-    BuildContext context, XFile video, {
-    Duration maxDuration = _maxUploadedVideoDuration,
-    Duration tolerance = const Duration(milliseconds: 250),
-    String limitDescription = '90 דקות',
+  BuildContext context,
+  XFile video, {
+  Duration maxDuration = _maxUploadedVideoDuration,
+  Duration tolerance = const Duration(milliseconds: 250),
+  String limitDescription = '90 דקות',
 }) async {
   VideoPlayerController? controller;
   try {
@@ -332,15 +335,19 @@ Future<Map<String, String>?> _manualSharedContact(BuildContext context) async {
   );
 }
 
-Future<Map<String, String>?> _pickPhoneContact(BuildContext context, {bool isGroup = false}) async {
+Future<Map<String, String>?> _pickPhoneContact(BuildContext context,
+    {bool isGroup = false}) async {
   if (kIsWeb) {
     final manual = await _manualSharedContact(context);
     if (manual == null || !context.mounted) return null;
-    final encoded = await selectContactDetails(context, SharedContactDetails(
-      name: manual['name'] ?? '',
-      phones: [if (manual['phone']?.isNotEmpty == true) manual['phone']!],
-      emails: [if (manual['email']?.isNotEmpty == true) manual['email']!],
-    ), isGroup: isGroup);
+    final encoded = await selectContactDetails(
+        context,
+        SharedContactDetails(
+          name: manual['name'] ?? '',
+          phones: [if (manual['phone']?.isNotEmpty == true) manual['phone']!],
+          emails: [if (manual['email']?.isNotEmpty == true) manual['email']!],
+        ),
+        isGroup: isGroup);
     final decoded = encoded == null ? null : _sharedContactFromText(encoded);
     return decoded?.map((key, value) => MapEntry(key, value.toString()));
   }
@@ -348,7 +355,8 @@ Future<Map<String, String>?> _pickPhoneContact(BuildContext context, {bool isGro
   if (!granted) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('יש לאפשר גישה לאנשי הקשר בהגדרות הטלפון כדי לשתף איש קשר'),
+        content:
+            Text('יש לאפשר גישה לאנשי הקשר בהגדרות הטלפון כדי לשתף איש קשר'),
       ));
     }
     return null;
@@ -425,29 +433,36 @@ Future<Map<String, String>?> _pickPhoneContact(BuildContext context, {bool isGro
   );
   if (selected == null) return null;
   if (!context.mounted) return null;
-  final encoded = await selectContactDetails(context, SharedContactDetails(
-    name: selected.displayName,
-    phones: selected.phones.map((p) => p.number).toList(),
-    emails: selected.emails.map((e) => e.address).toList(),
-  ), isGroup: isGroup);
+  final encoded = await selectContactDetails(
+      context,
+      SharedContactDetails(
+        name: selected.displayName,
+        phones: selected.phones.map((p) => p.number).toList(),
+        emails: selected.emails.map((e) => e.address).toList(),
+      ),
+      isGroup: isGroup);
   final decoded = encoded == null ? null : _sharedContactFromText(encoded);
   return decoded?.map((key, value) => MapEntry(key, value.toString()));
 }
 
 Future<bool> _handleSharedDataAttachment(BuildContext context, String token,
-    PlatformFile file, Future<void> Function(String) send, {bool isGroup = false}) async {
+    PlatformFile file, Future<void> Function(String) send,
+    {bool isGroup = false}) async {
   final metadata = {'name': file.name};
-  if (!isSharedCalendarFile(metadata) && !isSharedContactFile(metadata)) return false;
+  if (!isSharedCalendarFile(metadata) && !isSharedContactFile(metadata))
+    return false;
   final raw = await readIncomingText(file.xFile);
   if (!context.mounted) return true;
   if (isSharedCalendarFile(metadata)) {
     await openCalendarImport(context, api: kApi, token: token, rawText: raw);
   } else {
     final contacts = parseSharedVCard(raw);
-    if (contacts.isEmpty) throw const FormatException('לא נמצאו פרטי איש קשר בקובץ');
+    if (contacts.isEmpty)
+      throw const FormatException('לא נמצאו פרטי איש קשר בקובץ');
     for (final contact in contacts) {
       if (!context.mounted) break;
-      final encoded = await selectContactDetails(context, contact, isGroup: isGroup);
+      final encoded =
+          await selectContactDetails(context, contact, isGroup: isGroup);
       if (encoded == null || !context.mounted) break;
       await send(encoded);
     }
@@ -788,7 +803,8 @@ Future<Map<String, String>?> _confirmMyContactShare(
                                   }),
                                 );
                                 if (response.statusCode != 200) {
-                                  throw Exception(geocodingErrorMessage(response.body));
+                                  throw Exception(
+                                      geocodingErrorMessage(response.body));
                                 }
                                 if (!dialogContext.mounted) return;
                                 final payload = jsonDecode(response.body)
@@ -1201,8 +1217,11 @@ Future<void> _setMessageImageAsProfile(
   }
 }
 
-Future<bool> _addChatImageToListing(BuildContext context, String token,
-    Map<String, dynamic> message, Map<String, dynamic>? me, {
+Future<bool> _addChatImageToListing(
+  BuildContext context,
+  String token,
+  Map<String, dynamic> message,
+  Map<String, dynamic>? me, {
   http.Client? client,
   bool Function()? canAdd,
 }) async {
@@ -1212,15 +1231,22 @@ Future<bool> _addChatImageToListing(BuildContext context, String token,
   final sourceId = chatListingImageSourceId(message)!;
   final target = await showChatListingImageTargetChooser(
       context: context, api: kApi, token: token, client: client);
-  if (target == null || !context.mounted ||
+  if (target == null ||
+      !context.mounted ||
       canAdd?.call() == false ||
-      !canAddChatImageToListing(message, currentUserId: currentUserId)) return false;
-  final saved = await Navigator.push<bool>(context, MaterialPageRoute(
-    builder: (_) => target.isNewListing
-        ? PostListingScreen(token: token, me: me, initialMessageId: sourceId)
-        : EditListingScreen(listingId: target.listingId!, token: token,
-            initialMessageId: sourceId),
-  ));
+      !canAddChatImageToListing(message, currentUserId: currentUserId))
+    return false;
+  final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => target.isNewListing
+            ? PostListingScreen(
+                token: token, me: me, initialMessageId: sourceId)
+            : EditListingScreen(
+                listingId: target.listingId!,
+                token: token,
+                initialMessageId: sourceId),
+      ));
   return saved == true;
 }
 
@@ -1855,8 +1881,8 @@ Future<void> _showReportDialog({
             ),
             Text(
               targetType == 'user'
-                ? 'הדיווח ינתק את החברות משני הצדדים ויועבר למנהלים לבדיקה. המשתמש לא יקבל את פרטי הדיווח שלך.'
-                : 'הדיווח יועבר למנהלי בתשובה לבדיקה. המשתמש שעליו דווח לא יקבל את פרטיך.',
+                  ? 'הדיווח ינתק את החברות משני הצדדים ויועבר למנהלים לבדיקה. המשתמש לא יקבל את פרטי הדיווח שלך.'
+                  : 'הדיווח יועבר למנהלי בתשובה לבדיקה. המשתמש שעליו דווח לא יקבל את פרטיך.',
               style: TextStyle(fontSize: 12, color: kSubtext),
               textDirection: TextDirection.rtl,
             ),
@@ -1976,13 +2002,14 @@ Future<void> _initLocalNotifications() async {
   await _localNotif.initialize(
     const InitializationSettings(android: android, iOS: ios),
     onDidReceiveNotificationResponse: (response) {
-      _localNotificationOpen.value = notificationMessageFromPayload(response.payload);
+      _localNotificationOpen.value =
+          notificationMessageFromPayload(response.payload);
     },
   );
   final launch = await _localNotif.getNotificationAppLaunchDetails();
   if (launch?.didNotificationLaunchApp == true) {
-    _localNotificationOpen.value = notificationMessageFromPayload(
-        launch?.notificationResponse?.payload);
+    _localNotificationOpen.value =
+        notificationMessageFromPayload(launch?.notificationResponse?.payload);
   }
   const channel = AndroidNotificationChannel(
     'betshuva_messages',
@@ -1998,8 +2025,11 @@ Future<void> _initLocalNotifications() async {
 }
 
 Future<void> _showLocalNotification(RemoteMessage msg) async {
-  try { await showForegroundMessageNotification(_localNotif, msg); }
-  catch (error) { debugPrint('Notification display failed: $error'); }
+  try {
+    await showForegroundMessageNotification(_localNotif, msg);
+  } catch (error) {
+    debugPrint('Notification display failed: $error');
+  }
 }
 
 // ── Color Palette — Betshuva Brand ───────────────────────────────
@@ -2031,7 +2061,7 @@ final bool kOpenClassificationStats =
 final kServerUri = Uri.parse(kServer);
 final kSocketOrigin = kServerUri.origin;
 final kSocketPath = '${kServerUri.path}/socket.io/';
-const kVersion = '1.3.67';
+const kVersion = '1.3.68';
 const kApkUrl = '$kServer/betshuva-$kVersion.apk';
 const kScanBotId = '00000000-0000-4000-8000-000000000001';
 const kSystemGuideId = '00000000-0000-4000-8000-000000000002';
@@ -2135,10 +2165,11 @@ class _FileUploadResult {
       {this.data = const <String, dynamic>{}, this.error});
 }
 
-bool _isVideoModeration(Map data) => _normalizeIncomingFileType(
-    (data['fileType'] ?? data['type'])?.toString(),
-    fileUrl: (data['fileUrl'] ?? data['url'])?.toString(),
-    fileName: (data['fileName'] ?? data['scanFileName'])?.toString()) == 'video';
+bool _isVideoModeration(Map data) =>
+    _normalizeIncomingFileType((data['fileType'] ?? data['type'])?.toString(),
+        fileUrl: (data['fileUrl'] ?? data['url'])?.toString(),
+        fileName: (data['fileName'] ?? data['scanFileName'])?.toString()) ==
+    'video';
 
 bool _isSenderFilterRejection(Map data) =>
     data['code'] == 'SENDER_CONTENT_FILTERED' ||
@@ -2150,28 +2181,35 @@ String _senderFilterRejectionMessage(Map data) =>
     'סוג התמונה חסום בהגדרות הסינון שלך';
 
 bool _isScanStopped(Map data) =>
-    data['scanStopped'] == true || data['scan_stopped'] == true ||
+    data['scanStopped'] == true ||
+    data['scan_stopped'] == true ||
     data['moderation_status'] == 'stopped' ||
     data['moderationStatus'] == 'stopped' ||
-    data['status'] == 'stopped' || data['status'] == 'stopped_scan';
+    data['status'] == 'stopped' ||
+    data['status'] == 'stopped_scan';
 
 String _scanStoppedNotice(Map data) {
   if (!kIsWeb) return blockedVideoMessage;
   // Display only fixed explanations for server result codes. Provider prose
   // and raw client-supplied reasons must not reach this user notification.
   const reasons = <String, String>{
-    'modesty_uncertain': 'לא ניתן לאשר את הקובץ: בדיקת הצניעות לא הוכרעה בוודאות',
+    'modesty_uncertain':
+        'לא ניתן לאשר את הקובץ: בדיקת הצניעות לא הוכרעה בוודאות',
     'provider_unavailable': 'הסריקה לא הושלמה: שירות הבדיקה אינו זמין',
     'provider_error': 'הסריקה לא הושלמה עקב תקלה בשירות הבדיקה',
     'uncertainty_review_limit': 'הסריקה נעצרה: מכסת בדיקות ההשלמה מוצתה',
-    'uncertainty_review_disabled': 'לא ניתן לאשר את הקובץ: בדיקת הסינון לא הושלמה',
+    'uncertainty_review_disabled':
+        'לא ניתן לאשר את הקובץ: בדיקת הסינון לא הושלמה',
     'operation_outcome_unknown': 'הסריקה נעצרה: תוצאת בדיקה קודמת אינה ידועה',
     'budget_exhausted': 'הסריקה נעצרה: מכסת הבדיקות מוצתה',
     'deadline_exceeded': 'הסריקה נעצרה: זמן הבדיקה המרבי הסתיים',
   };
-  final code = data['reasonCode'] ?? data['scanReasonCode'] ?? data['scan_reason_code'];
-  return reasons[code] ?? (_isVideoModeration(data)
-      ? blockedVideoMessage : 'הסריקה נעצרה והקובץ לא נשלח');
+  final code =
+      data['reasonCode'] ?? data['scanReasonCode'] ?? data['scan_reason_code'];
+  return reasons[code] ??
+      (_isVideoModeration(data)
+          ? blockedVideoMessage
+          : 'הסריקה נעצרה והקובץ לא נשלח');
 }
 
 bool _matchesRecentFailedUpload(
@@ -2193,42 +2231,56 @@ Future<_FileUploadResult> _rejectOversizedUpload({
   required int maxBytes,
   required String token,
 }) async {
-  final recorded = await reportRejectedUpload(api: kApi, token: token,
-      fileName: fileName, fileSize: fileSize, fileType: fileType, maxBytes: maxBytes);
-  final reason = 'הקובץ גדול מדי. הגודל המרבי להעלאה זו הוא ${maxBytes ~/ 1048576} MB';
+  final recorded = await reportRejectedUpload(
+      api: kApi,
+      token: token,
+      fileName: fileName,
+      fileSize: fileSize,
+      fileType: fileType,
+      maxBytes: maxBytes);
+  final reason =
+      'הקובץ גדול מדי. הגודל המרבי להעלאה זו הוא ${maxBytes ~/ 1048576} MB';
   return _FileUploadResult(_FileUploadOutcome.failed,
       error: recorded ? reason : '$reason\nלא ניתן היה לתעד את הניסיון ביומן');
 }
 
 Future<Uint8List> _attachmentHeader(PlatformFile picked) async {
   if (picked.bytes != null) {
-    return Uint8List.sublistView(picked.bytes!, 0, math.min(picked.bytes!.length, 1024 * 1024));
+    return Uint8List.sublistView(
+        picked.bytes!, 0, math.min(picked.bytes!.length, 1024 * 1024));
   }
   final file = picked.xFile;
   final bytes = BytesBuilder(copy: false);
-  await for (final chunk in file.openRead(0, math.min(await file.length(), 1024 * 1024))) {
+  await for (final chunk
+      in file.openRead(0, math.min(await file.length(), 1024 * 1024))) {
     bytes.add(chunk);
   }
   return bytes.takeBytes();
 }
 
 Future<http.StreamedResponse> _sendMediaUpload(http.MultipartRequest request,
-    {http.Client? client, Duration timeout = const Duration(seconds: 60)}) async {
+    {http.Client? client,
+    Duration timeout = const Duration(seconds: 60)}) async {
   if (kIsWeb && request.files.length == 1) {
     final part = request.files.single;
     final bytes = await part.finalize().toBytes();
     final result = await uploadPickedWebAttachment(
-      file: XFile.fromData(bytes, name: part.filename ?? 'file',
-          mimeType: part.contentType.toString()),
+      file: XFile.fromData(bytes,
+          name: part.filename ?? 'file', mimeType: part.contentType.toString()),
       url: request.url.toString(),
-      token: (request.headers['Authorization'] ?? request.headers['authorization'] ?? '').replaceFirst('Bearer ', ''),
+      token: (request.headers['Authorization'] ??
+              request.headers['authorization'] ??
+              '')
+          .replaceFirst('Bearer ', ''),
       fields: request.fields,
     );
     if (result != null) {
-      return http.StreamedResponse(Stream.value(utf8.encode(result.body)), result.statusCode);
+      return http.StreamedResponse(
+          Stream.value(utf8.encode(result.body)), result.statusCode);
     }
   }
-  return await (client == null ? request.send() : client.send(request)).timeout(timeout);
+  return await (client == null ? request.send() : client.send(request))
+      .timeout(timeout);
 }
 
 Future<_FileUploadResult> _uploadFileRequest({
@@ -2239,53 +2291,65 @@ Future<_FileUploadResult> _uploadFileRequest({
 }) async {
   var length = 0;
   try {
-    final maxBytes = (fields['recordedAudio'] == 'true' ? 256 : 150) * 1024 * 1024;
+    final maxBytes =
+        (fields['recordedAudio'] == 'true' ? 256 : 150) * 1024 * 1024;
     length = file is XFile ? await file.length() : (file as PlatformFile).size;
     final namedVideo = chatAttachmentType(fileName) == 'video';
     if (!namedVideo && length > maxBytes) {
-      return await _rejectOversizedUpload(fileName: fileName, fileSize: length,
+      return await _rejectOversizedUpload(
+          fileName: fileName,
+          fileSize: length,
           fileType: fileName.toLowerCase().endsWith('.webm')
-              ? 'file' : chatAttachmentType(fileName) ?? 'file',
-          maxBytes: maxBytes, token: token);
+              ? 'file'
+              : chatAttachmentType(fileName) ?? 'file',
+          maxBytes: maxBytes,
+          token: token);
     }
-    final webResponse = await RecordingUpload.upload(file: file, token: token,
-        name: fileName, fields: fields) ?? await uploadPickedWebAttachment(
-        file: file, url: '$kApi/upload', token: token, fields: fields);
+    final webResponse = await RecordingUpload.upload(
+            file: file, token: token, name: fileName, fields: fields) ??
+        await uploadPickedWebAttachment(
+            file: file, url: '$kApi/upload', token: token, fields: fields);
     late int responseStatus;
     late String body;
     if (webResponse != null) {
       responseStatus = webResponse.statusCode;
       body = webResponse.body;
     } else {
-    final bytes = file is XFile
-        ? await file.readAsBytes()
-        : (file as PlatformFile).bytes ?? await File(file.path!).readAsBytes();
-    var contentType = _mimeFromFileName(fileName);
-    if (file is XFile &&
-        file.mimeType != null &&
-        file.mimeType!.contains('/')) {
-      contentType = MediaType.parse(file.mimeType!.split(';').first);
-    }
-    final detectedType = chatAttachmentType(fileName, bytes: bytes);
-    final isAudio = detectedType == 'audio' ||
-        (detectedType == null && contentType.type == 'audio');
-    final isVideo = detectedType == 'video' || contentType.type == 'video';
-    if (!isVideo && !isAudio && length > 50 * 1024 * 1024) {
-      return await _rejectOversizedUpload(fileName: fileName, fileSize: length,
-          fileType: detectedType ?? 'file', maxBytes: 50 * 1024 * 1024, token: token);
-    }
-    if (fileName.toLowerCase().endsWith('.webm')) {
-      contentType = MediaType(isAudio ? 'audio' : 'video', 'webm');
-    }
-    final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
-      ..headers['Authorization'] = 'Bearer $token'
-      ..fields.addAll(fields)
-      ..files.add(http.MultipartFile.fromBytes('file', bytes,
-          filename: fileName, contentType: contentType));
-    final streamed =
-        await (isVideo ? request.send() : request.send().timeout(Duration(seconds: isAudio ? 1800 : 60)));
-    responseStatus = streamed.statusCode;
-    body = await streamed.stream.bytesToString();
+      final bytes = file is XFile
+          ? await file.readAsBytes()
+          : (file as PlatformFile).bytes ??
+              await File(file.path!).readAsBytes();
+      var contentType = _mimeFromFileName(fileName);
+      if (file is XFile &&
+          file.mimeType != null &&
+          file.mimeType!.contains('/')) {
+        contentType = MediaType.parse(file.mimeType!.split(';').first);
+      }
+      final detectedType = chatAttachmentType(fileName, bytes: bytes);
+      final isAudio = detectedType == 'audio' ||
+          (detectedType == null && contentType.type == 'audio');
+      final isVideo = detectedType == 'video' || contentType.type == 'video';
+      if (!isVideo && !isAudio && length > 50 * 1024 * 1024) {
+        return await _rejectOversizedUpload(
+            fileName: fileName,
+            fileSize: length,
+            fileType: detectedType ?? 'file',
+            maxBytes: 50 * 1024 * 1024,
+            token: token);
+      }
+      if (fileName.toLowerCase().endsWith('.webm')) {
+        contentType = MediaType(isAudio ? 'audio' : 'video', 'webm');
+      }
+      final request = http.MultipartRequest('POST', Uri.parse('$kApi/upload'))
+        ..headers['Authorization'] = 'Bearer $token'
+        ..fields.addAll(fields)
+        ..files.add(http.MultipartFile.fromBytes('file', bytes,
+            filename: fileName, contentType: contentType));
+      final streamed = await (isVideo
+          ? request.send()
+          : request.send().timeout(Duration(seconds: isAudio ? 1800 : 60)));
+      responseStatus = streamed.statusCode;
+      body = await streamed.stream.bytesToString();
     }
     Map<String, dynamic> data = const <String, dynamic>{};
     try {
@@ -2326,33 +2390,42 @@ Future<_FileUploadResult> _uploadFileRequest({
     }
     return _FileUploadResult(_FileUploadOutcome.approved, data: data);
   } on AttachmentReadException catch (error) {
-    return _FileUploadResult(_FileUploadOutcome.failed, error: error.toString());
+    return _FileUploadResult(_FileUploadOutcome.failed,
+        error: error.toString());
   } catch (error) {
     return _FileUploadResult(_FileUploadOutcome.failed,
         error: 'שגיאת העלאה של "$fileName": $error');
   }
 }
 
-Future<_FileUploadResult> _uploadListingImageRequest(XFile file, String token) =>
+Future<_FileUploadResult> _uploadListingImageRequest(
+        XFile file, String token) =>
     _uploadListingMediaRequest(file, token);
 
 Future<String> _uploadListingVideoRequest(XFile file, String token) async {
   final result = await _uploadListingMediaRequest(file, token, video: true);
   final url = result.data['url']?.toString();
   if (result.outcome == _FileUploadOutcome.approved &&
-      url != null && url.isNotEmpty) {
+      url != null &&
+      url.isNotEmpty) {
     return url;
   }
-  throw Exception(result.error ?? result.data['reason']?.toString() ??
+  throw Exception(result.error ??
+      result.data['reason']?.toString() ??
       'הסרטון לא אושר לצירוף למודעה');
 }
 
 Future<_FileUploadResult> _uploadListingMediaRequest(XFile file, String token,
     {bool video = false}) async {
-  final result = await _uploadFileRequest(file: file, fileName: file.name,
-      token: token, fields: {video ? 'listingVideo' : 'listingImage': 'true'});
+  final result = await _uploadFileRequest(
+      file: file,
+      fileName: file.name,
+      token: token,
+      fields: {video ? 'listingVideo' : 'listingImage': 'true'});
   final url = result.data['url']?.toString();
-  if (result.outcome != _FileUploadOutcome.pending || url == null || url.isEmpty) {
+  if (result.outcome != _FileUploadOutcome.pending ||
+      url == null ||
+      url.isEmpty) {
     return result;
   }
   try {
@@ -2361,15 +2434,22 @@ Future<_FileUploadResult> _uploadListingMediaRequest(XFile file, String token,
     final scan = await waitForListingImageScan(
         api: kApi, token: token, url: url, video: video);
     return _FileUploadResult(
-        scan.status == 'approved' ? _FileUploadOutcome.approved
-            : scan.status == 'rejected' ? _FileUploadOutcome.rejected
-            : _FileUploadOutcome.failed,
-        data: {...result.data, 'status': scan.status,
-          if (scan.reason != null) 'reason': scan.reason},
+        scan.status == 'approved'
+            ? _FileUploadOutcome.approved
+            : scan.status == 'rejected'
+                ? _FileUploadOutcome.rejected
+                : _FileUploadOutcome.failed,
+        data: {
+          ...result.data,
+          'status': scan.status,
+          if (scan.reason != null) 'reason': scan.reason
+        },
         error: scan.status == 'unavailable' ? scan.reason : null);
   } catch (_) {
-    return _FileUploadResult(_FileUploadOutcome.failed, data: result.data,
-        error: 'לא ניתן היה לקבל אישור לסריקת המדיה. יש לבדוק את החיבור ולנסות שוב');
+    return _FileUploadResult(_FileUploadOutcome.failed,
+        data: result.data,
+        error:
+            'לא ניתן היה לקבל אישור לסריקת המדיה. יש לבדוק את החיבור ולנסות שוב');
   }
 }
 
@@ -2390,12 +2470,13 @@ Future<void> _completeChatListingImageUpload({
     }
     result = await _uploadListingImageRequest(file, token);
   } catch (error) {
-    result = _FileUploadResult(_FileUploadOutcome.failed,
-        error: error.toString());
+    result =
+        _FileUploadResult(_FileUploadOutcome.failed, error: error.toString());
   }
   final url = result.data['url']?.toString();
   final approved = result.outcome == _FileUploadOutcome.approved &&
-      url != null && url.isNotEmpty;
+      url != null &&
+      url.isNotEmpty;
   task.complete(approved ? ListingImageAttachment(url: url) : null);
   onResult(result);
 }
@@ -2606,8 +2687,11 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
   }
 
   void _observeDisplay() {
-    if (!_hasFrame || _displayReported || widget.onDisplayed == null ||
-        !mounted || !filterWidgetIsVisible(context)) {
+    if (!_hasFrame ||
+        _displayReported ||
+        widget.onDisplayed == null ||
+        !mounted ||
+        !filterWidgetIsVisible(context)) {
       return;
     }
     _displayReported = true;
@@ -2651,7 +2735,8 @@ class _PersistentMediaImageState extends State<_PersistentMediaImage> {
             frameBuilder: (context, child, frame, synchronous) {
               if (frame != null || synchronous) {
                 _hasFrame = true;
-                WidgetsBinding.instance.addPostFrameCallback((_) => _observeDisplay());
+                WidgetsBinding.instance
+                    .addPostFrameCallback((_) => _observeDisplay());
               }
               if (widget.fitNaturalBounds && frame == null && !synchronous) {
                 return widget.loadingBuilder?.call(context) ??
@@ -2704,9 +2789,9 @@ class _BlockedImagePreviewState extends State<_BlockedImagePreview> {
   Timer? _expiryTimer;
 
   int get _secondsLeft => math.max(
-    0,
-    widget.expiresAt.difference(DateTime.now().toUtc()).inSeconds,
-  );
+        0,
+        widget.expiresAt.difference(DateTime.now().toUtc()).inSeconds,
+      );
 
   @override
   void initState() {
@@ -2725,12 +2810,10 @@ class _BlockedImagePreviewState extends State<_BlockedImagePreview> {
 
   Future<void> _load() async {
     try {
-      final response = await http
-          .get(
-            Uri.parse(_absoluteMediaUrl(widget.url)),
-            headers: {'Authorization': 'Bearer ${widget.token}'},
-          )
-          .timeout(const Duration(seconds: 30));
+      final response = await http.get(
+        Uri.parse(_absoluteMediaUrl(widget.url)),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 30));
       if (!mounted) return;
       setState(() {
         _bytes = response.statusCode == 200 && response.bodyBytes.isNotEmpty
@@ -2783,8 +2866,9 @@ class _BlockedImagePreviewState extends State<_BlockedImagePreview> {
       child: _loading
           ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
           : _bytes == null
-          ? const Center(child: Icon(Icons.broken_image_outlined))
-          : Image.memory(_bytes!, fit: BoxFit.contain, gaplessPlayback: true),
+              ? const Center(child: Icon(Icons.broken_image_outlined))
+              : Image.memory(_bytes!,
+                  fit: BoxFit.contain, gaplessPlayback: true),
     );
     if (widget.builder != null) return widget.builder!(image, status);
     return Column(
@@ -2838,14 +2922,17 @@ Future<void> _clearGroupMessagesCache(Object? userId, Object? groupId) async {
   await prefs.remove(_groupMessagesCacheKey(userId, groupId));
 }
 
-Future<ForwardChatResult> _forwardChatMessage(BuildContext context, String token,
-        io.Socket? socket, Map<String, dynamic> message, {
+Future<ForwardChatResult> _forwardChatMessage(
+  BuildContext context,
+  String token,
+  io.Socket? socket,
+  Map<String, dynamic> message, {
   Map<String, dynamic>? me,
 }) =>
     forwardChatMessages(context, token, socket, [message], me: me);
 
 bool _canForwardToListing(List<Map<String, dynamic>> messages,
-    {String? currentUserId}) =>
+        {String? currentUserId}) =>
     messages.length == 1 &&
     messages.single['localPath'] == null &&
     messages.single['localBytes'] == null &&
@@ -2917,12 +3004,10 @@ Future<ForwardChatResult> forwardChatMessages(
   try {
     Future<http.Response> loadTargets(String path) async {
       try {
-        return await transport
-            .get(
-              Uri.parse('$kApi/$path'),
-              headers: {'Authorization': 'Bearer $token'},
-            )
-            .timeout(const Duration(seconds: 15));
+        return await transport.get(
+          Uri.parse('$kApi/$path'),
+          headers: {'Authorization': 'Bearer $token'},
+        ).timeout(const Duration(seconds: 15));
       } catch (_) {
         return http.Response('', 599);
       }
@@ -2962,31 +3047,48 @@ Future<ForwardChatResult> forwardChatMessages(
       }
       var filterCheckFailed = false;
       final needsFilterPreview = messages.any((m) =>
-          m['fileUrl'] != null || m['localPath'] != null || m['localBytes'] != null);
-      if (needsFilterPreview && (usersById.isNotEmpty || (groups?.isNotEmpty ?? false))) {
+          m['fileUrl'] != null ||
+          m['localPath'] != null ||
+          m['localBytes'] != null);
+      if (needsFilterPreview &&
+          (usersById.isNotEmpty || (groups?.isNotEmpty ?? false))) {
         final targets = [
-          for (final user in usersById.values) {'kind': 'user', 'id': user['id']},
-          for (final group in groups ?? <Map<String, dynamic>>[]) {'kind': 'group', 'id': group['id']},
+          for (final user in usersById.values)
+            {'kind': 'user', 'id': user['id']},
+          for (final group in groups ?? <Map<String, dynamic>>[])
+            {'kind': 'group', 'id': group['id']},
         ];
         final previews = <String, Map<String, dynamic>>{};
         try {
-          final response = await transport.post(
-            Uri.parse('$kApi/forward/filter-preview'),
-            headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'targets': targets,
-              'messages': [for (final message in messages) {
-                'fileUrl': message['fileUrl'],
-                'fileType': message['fileType'] ??
-                    (message['localPath'] != null || message['localBytes'] != null ? 'image' : 'text'),
-              }],
-            }),
-          ).timeout(const Duration(seconds: 15));
+          final response = await transport
+              .post(
+                Uri.parse('$kApi/forward/filter-preview'),
+                headers: {
+                  'Authorization': 'Bearer $token',
+                  'Content-Type': 'application/json'
+                },
+                body: jsonEncode({
+                  'targets': targets,
+                  'messages': [
+                    for (final message in messages)
+                      {
+                        'fileUrl': message['fileUrl'],
+                        'fileType': message['fileType'] ??
+                            (message['localPath'] != null ||
+                                    message['localBytes'] != null
+                                ? 'image'
+                                : 'text'),
+                      }
+                  ],
+                }),
+              )
+              .timeout(const Duration(seconds: 15));
           if (response.statusCode != 200) throw const FormatException();
           final results = (jsonDecode(response.body) as Map)['targets'] as List;
           for (final result in results.whereType<Map>()) {
             if (['allowed', 'blocked', 'unknown'].contains(result['status'])) {
-              previews['${result['kind']}:${result['id']}'] = Map<String, dynamic>.from(result);
+              previews['${result['kind']}:${result['id']}'] =
+                  Map<String, dynamic>.from(result);
             }
           }
         } catch (_) {
@@ -2995,13 +3097,20 @@ Future<ForwardChatResult> forwardChatMessages(
         void attachPreview(Map<String, dynamic> item, String kind) {
           final preview = previews['$kind:${item['id']}'];
           if (preview == null) filterCheckFailed = true;
-          item['_forwardFilter'] = preview ?? {
-            'status': 'unknown',
-            'reason': 'לא ניתן לבדוק כרגע את הסינון ליעד זה. הסינון ייבדק בעת השליחה.',
-          };
+          item['_forwardFilter'] = preview ??
+              {
+                'status': 'unknown',
+                'reason':
+                    'לא ניתן לבדוק כרגע את הסינון ליעד זה. הסינון ייבדק בעת השליחה.',
+              };
         }
-        for (final user in usersById.values) { attachPreview(user, 'user'); }
-        for (final group in groups ?? <Map<String, dynamic>>[]) { attachPreview(group, 'group'); }
+
+        for (final user in usersById.values) {
+          attachPreview(user, 'user');
+        }
+        for (final group in groups ?? <Map<String, dynamic>>[]) {
+          attachPreview(group, 'group');
+        }
       }
       return _ForwardTargetsData(
         filterCheckFailed: filterCheckFailed,
@@ -3015,13 +3124,13 @@ Future<ForwardChatResult> forwardChatMessages(
     }
 
     final targetData = await loadTargetLists();
-    if (!context.mounted || canForward?.call() == false) return const ForwardChatResult(cancelled: true);
+    if (!context.mounted || canForward?.call() == false)
+      return const ForwardChatResult(cancelled: true);
     final users = targetData.users ?? <Map<String, dynamic>>[];
     final groups = targetData.groups ?? <Map<String, dynamic>>[];
     final usersById = {for (final user in users) user['id'].toString(): user};
-    final directUser = initialRecipientId == null
-        ? null
-        : usersById[initialRecipientId];
+    final directUser =
+        initialRecipientId == null ? null : usersById[initialRecipientId];
     if (initialRecipientId != null && directUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -3031,7 +3140,8 @@ Future<ForwardChatResult> forwardChatMessages(
       return const ForwardChatResult();
     }
     final initialSelection = <String, Map<String, dynamic>>{
-      if (directUser != null && directUser['_forwardFilter']?['status'] != 'blocked')
+      if (directUser != null &&
+          directUser['_forwardFilter']?['status'] != 'blocked')
         'user:$initialRecipientId': {
           'kind': 'user',
           'id': initialRecipientId,
@@ -3058,9 +3168,13 @@ Future<ForwardChatResult> forwardChatMessages(
           final data = await loadTargetLists();
           if (directUser == null) return data;
           return _ForwardTargetsData(
-            users: data.users?.where((u) => u['id'] == initialRecipientId).toList(),
-            groups: const [], contactsLoaded: data.contactsLoaded,
-            loadFailed: data.loadFailed, filterCheckFailed: data.filterCheckFailed,
+            users: data.users
+                ?.where((u) => u['id'] == initialRecipientId)
+                .toList(),
+            groups: const [],
+            contactsLoaded: data.contactsLoaded,
+            loadFailed: data.loadFailed,
+            filterCheckFailed: data.filterCheckFailed,
           );
         },
       ),
@@ -3075,11 +3189,15 @@ Future<ForwardChatResult> forwardChatMessages(
     // navigation choice as a user/group delivery or clear the source selection.
     if (targets.any((target) => target['kind'] == 'listing')) {
       if (targets.length != 1 ||
-          !_canForwardToListing(messages, currentUserId: me?['id']?.toString())) {
+          !_canForwardToListing(messages,
+              currentUserId: me?['id']?.toString())) {
         return const ForwardChatResult(cancelled: true);
       }
       final saved = await _addChatImageToListing(
-        context, token, messages.single, me,
+        context,
+        token,
+        messages.single,
+        me,
         client: transport,
         canAdd: canForward,
       );
@@ -3105,11 +3223,9 @@ Future<ForwardChatResult> forwardChatMessages(
 
     deliveries:
     for (final target in targets) {
-      for (
-        var messageIndex = 0;
-        messageIndex < messages.length;
-        messageIndex++
-      ) {
+      for (var messageIndex = 0;
+          messageIndex < messages.length;
+          messageIndex++) {
         if (canForward?.call() == false) break deliveries;
         final targetKey = '${target['kind']}:${target['id']}';
         if (acceptedTargets[messageIndex]!.contains(targetKey)) {
@@ -3154,7 +3270,8 @@ Future<ForwardChatResult> forwardChatMessages(
                 ),
               );
             }
-            if (!context.mounted || canForward?.call() == false) break deliveries;
+            if (!context.mounted || canForward?.call() == false)
+              break deliveries;
             final upload = await _sendMediaUpload(request, client: transport);
             final uploadBody = await upload.stream.bytesToString();
             if (upload.statusCode != 200) {
@@ -3236,21 +3353,24 @@ Future<ForwardChatResult> forwardChatMessages(
       final allSent = sentCount == totalDeliveries;
       final uniqueErrors = forwardingErrors.toSet().join(' • ');
       final scanPendingCount = pendingCount - contactPendingCount;
-      final pendingNotice =
-          (scanPendingCount == 0 ? '' : ' • $scanPendingCount קבצים ממתינים לסריקה') +
-          (contactPendingCount == 0 ? '' : ' • $contactPendingCount פריטים ממתינים לאישור הנמען');
+      final pendingNotice = (scanPendingCount == 0
+              ? ''
+              : ' • $scanPendingCount קבצים ממתינים לסריקה') +
+          (contactPendingCount == 0
+              ? ''
+              : ' • $contactPendingCount פריטים ממתינים לאישור הנמען');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             (forwardingErrors.isNotEmpty
                     ? (sentCount == 0
-                          ? uniqueErrors
-                          : '$uniqueErrors (הושלמו $sentCount מתוך $totalDeliveries שליחות)')
+                        ? uniqueErrors
+                        : '$uniqueErrors (הושלמו $sentCount מתוך $totalDeliveries שליחות)')
                     : allSent
-                    ? (messages.length == 1 && targets.length == 1
-                          ? 'ההודעה הועברה'
-                          : '${messages.length} פריטים הועברו ל־${targets.length} יעדים')
-                    : 'הושלמו $sentCount מתוך $totalDeliveries שליחות') +
+                        ? (messages.length == 1 && targets.length == 1
+                            ? 'ההודעה הועברה'
+                            : '${messages.length} פריטים הועברו ל־${targets.length} יעדים')
+                        : 'הושלמו $sentCount מתוך $totalDeliveries שליחות') +
                 pendingNotice,
           ),
         ),
@@ -3414,26 +3534,31 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                 child: Padding(
                   padding: const EdgeInsets.all(6),
                   child: Icon(blocked ? Icons.filter_alt : Icons.info_outline,
-                    size: 20, color: blocked ? const Color(0xFFAD7400) : kSubtext),
+                      size: 20,
+                      color: blocked ? const Color(0xFFAD7400) : kSubtext),
                 ),
               ),
-              Expanded(child: Text(
+              Expanded(
+                  child: Text(
                 blocked ? 'לא ניתן להעביר — הגדרות סינון' : 'הסינון טרם נבדק',
-                style: TextStyle(color: blocked ? const Color(0xFFAD7400) : kSubtext),
+                style: TextStyle(
+                    color: blocked ? const Color(0xFFAD7400) : kSubtext),
               )),
             ])
           : Text(kind == 'user' ? 'משתמש' : 'קבוצה'),
-      onChanged: blocked ? null : (value) => setState(() {
-        if (value == true) {
-          _selected[key] = {
-            'kind': kind,
-            'id': item['id'],
-            'name': item['name'],
-          };
-        } else {
-          _selected.remove(key);
-        }
-      }),
+      onChanged: blocked
+          ? null
+          : (value) => setState(() {
+                if (value == true) {
+                  _selected[key] = {
+                    'kind': kind,
+                    'id': item['id'],
+                    'name': item['name'],
+                  };
+                } else {
+                  _selected.remove(key);
+                }
+              }),
     );
   }
 
@@ -3509,11 +3634,17 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                         '${widget.messages.length} פריטים • ${_selected.length} יעדים',
                         style: const TextStyle(color: kSubtext),
                       ),
-                      if (_selected.values.any((target) => target['kind'] == 'group') &&
-                          widget.messages.any((message) => _sharedContactFromText(message['text']?.toString() ?? '') != null))
+                      if (_selected.values
+                              .any((target) => target['kind'] == 'group') &&
+                          widget.messages.any((message) =>
+                              _sharedContactFromText(
+                                  message['text']?.toString() ?? '') !=
+                              null))
                         const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 18, vertical: 6),
-                          child: Text('פרטי אנשי הקשר שבחרת לשתף יהיו גלויים לכל משתתפי הקבוצות שנבחרו.'),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                          child: Text(
+                              'פרטי אנשי הקשר שבחרת לשתף יהיו גלויים לכל משתתפי הקבוצות שנבחרו.'),
                         ),
                       if (widget.showListings)
                         ListTile(
@@ -3526,15 +3657,17 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                             _canForwardToListing(widget.messages,
                                     currentUserId: widget.currentUserId)
                                 ? 'מודעה חדשה או אחת מהמודעות שלי'
-                                : _forwardListingUnavailableReason(widget.messages),
-                            key: const ValueKey('forward-listings-target-reason'),
+                                : _forwardListingUnavailableReason(
+                                    widget.messages),
+                            key: const ValueKey(
+                                'forward-listings-target-reason'),
                           ),
                           onTap: !_canForwardToListing(widget.messages,
                                   currentUserId: widget.currentUserId)
                               ? null
                               : () => Navigator.pop(context, [
-                                  <String, dynamic>{'kind': 'listing'},
-                                ]),
+                                    <String, dynamic>{'kind': 'listing'},
+                                  ]),
                         ),
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -3557,8 +3690,8 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                                     icon: const Icon(Icons.close),
                                   ),
                           ),
-                          onChanged: (value) =>
-                              setState(() => _query = value.trim().toLowerCase()),
+                          onChanged: (value) => setState(
+                              () => _query = value.trim().toLowerCase()),
                         ),
                       ),
                       if (_selected.isNotEmpty)
@@ -3568,26 +3701,31 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                             scrollDirection: Axis.horizontal,
                             padding: const EdgeInsets.symmetric(horizontal: 16),
                             children: _selected.entries.map((entry) {
-                              final name = entry.value['name']?.toString() ?? '';
+                              final name =
+                                  entry.value['name']?.toString() ?? '';
                               return Padding(
-                                padding: const EdgeInsetsDirectional.only(end: 6),
+                                padding:
+                                    const EdgeInsetsDirectional.only(end: 6),
                                 child: InputChip(
-                                  key: ValueKey('forward-selected-${entry.key}'),
+                                  key:
+                                      ValueKey('forward-selected-${entry.key}'),
                                   avatar: Icon(
                                     entry.value['kind'] == 'group'
                                         ? Icons.group_outlined
                                         : Icons.person_outline,
                                   ),
                                   label: ConstrainedBox(
-                                    constraints: const BoxConstraints(maxWidth: 150),
+                                    constraints:
+                                        const BoxConstraints(maxWidth: 150),
                                     child: Text(
                                       name,
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
-                                  deleteButtonTooltipMessage: 'הסרת $name מהבחירה',
-                                  onDeleted: () =>
-                                      setState(() => _selected.remove(entry.key)),
+                                  deleteButtonTooltipMessage:
+                                      'הסרת $name מהבחירה',
+                                  onDeleted: () => setState(
+                                      () => _selected.remove(entry.key)),
                                 ),
                               );
                             }).toList(),
@@ -3606,7 +3744,8 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                         const Padding(
                           padding: EdgeInsets.symmetric(horizontal: 16),
                           child: Text('בדיקת הסינון לא הושלמה. ניתן לנסות שוב.',
-                            textAlign: TextAlign.center, style: TextStyle(color: kSubtext)),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: kSubtext)),
                         ),
                       if (_targetLoadFailed || _filterCheckFailed)
                         TextButton.icon(
@@ -3616,7 +3755,8 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
                                 )
                               : const Icon(Icons.refresh),
                           label: Text(_reloading ? 'טוען…' : 'נסו שוב'),
@@ -3628,8 +3768,8 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                             _targetLoadFailed
                                 ? 'לא ניתן לטעון כרגע את המשתתפים והקבוצות. נסו שוב.'
                                 : _query.isNotEmpty
-                                ? 'לא נמצאו משתמשים או קבוצות התואמים לחיפוש'
-                                : 'לא נמצאו משתתפים או קבוצות שניתן להעביר אליהם.',
+                                    ? 'לא נמצאו משתמשים או קבוצות התואמים לחיפוש'
+                                    : 'לא נמצאו משתתפים או קבוצות שניתן להעביר אליהם.',
                             textAlign: TextAlign.center,
                             style: const TextStyle(color: kSubtext),
                           ),
@@ -3647,9 +3787,9 @@ class _ForwardTargetsSheetState extends State<_ForwardTargetsSheet> {
                       onPressed: _selected.isEmpty || _reloading
                           ? null
                           : () => Navigator.pop(
-                              context,
-                              _selected.values.toList(),
-                            ),
+                                context,
+                                _selected.values.toList(),
+                              ),
                       icon: const Icon(Icons.forward),
                       label: Text(
                         _selected.isEmpty
@@ -4505,71 +4645,87 @@ class _PhoneAuthScreenState extends State<PhoneAuthScreen> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: kBg,
-    body: SafeArea(child: Center(child: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 480),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Image.asset('icon_source.png', width: 72, height: 72),
-          const SizedBox(height: 20),
-          const Text('כניסה לחשבון קיים עם SMS',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          const Text('הרשמה חדשה זמינה באמצעות Google בלבד.',
-              textAlign: TextAlign.center),
-          const SizedBox(height: 20),
-          if (!_otpSent)
-            TextField(
-              controller: _phoneCtrl,
-              keyboardType: TextInputType.phone,
-              textDirection: TextDirection.ltr,
-              decoration: const InputDecoration(
-                  labelText: 'מספר הטלפון של החשבון', hintText: '05X-XXX-XXXX'),
-            )
-          else ...[
-            const Text('הזן את הקוד שנשלח ב־SMS'),
-            const _SmsCodeWaitingAnimation(),
-            TextField(
-              controller: _otpCtrl,
-              keyboardType: TextInputType.number,
-              autofillHints: const [AutofillHints.oneTimeCode],
-              textDirection: TextDirection.ltr,
-              textAlign: TextAlign.center,
-              maxLength: 6,
-              decoration: const InputDecoration(labelText: 'קוד אימות'),
-            ),
-          ],
-          if (_error != null) ...[
-            const SizedBox(height: 12),
-            Text(_error!, style: const TextStyle(color: Colors.red)),
-          ],
-          const SizedBox(height: 16),
-          FilledButton(
-            onPressed: _loading ? null : (_otpSent ? _verifyOtp : _sendOtp),
-            child: Text(_loading ? 'נא להמתין...' : (_otpSent ? 'כניסה' : 'שליחת קוד')),
+        backgroundColor: kBg,
+        body: SafeArea(
+            child: Center(
+                child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Image.asset('icon_source.png', width: 72, height: 72),
+              const SizedBox(height: 20),
+              const Text('כניסה לחשבון קיים עם SMS',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              const Text('הרשמה חדשה זמינה באמצעות Google בלבד.',
+                  textAlign: TextAlign.center),
+              const SizedBox(height: 20),
+              if (!_otpSent)
+                TextField(
+                  controller: _phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  textDirection: TextDirection.ltr,
+                  decoration: const InputDecoration(
+                      labelText: 'מספר הטלפון של החשבון',
+                      hintText: '05X-XXX-XXXX'),
+                )
+              else ...[
+                const Text('הזן את הקוד שנשלח ב־SMS'),
+                const _SmsCodeWaitingAnimation(),
+                TextField(
+                  controller: _otpCtrl,
+                  keyboardType: TextInputType.number,
+                  autofillHints: const [AutofillHints.oneTimeCode],
+                  textDirection: TextDirection.ltr,
+                  textAlign: TextAlign.center,
+                  maxLength: 6,
+                  decoration: const InputDecoration(labelText: 'קוד אימות'),
+                ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error!, style: const TextStyle(color: Colors.red)),
+              ],
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: _loading ? null : (_otpSent ? _verifyOtp : _sendOtp),
+                child: Text(_loading
+                    ? 'נא להמתין...'
+                    : (_otpSent ? 'כניסה' : 'שליחת קוד')),
+              ),
+              if (_otpSent)
+                TextButton(
+                    onPressed: _loading
+                        ? null
+                        : () => setState(() {
+                              _otpSent = false;
+                              _otpCtrl.clear();
+                              _error = null;
+                            }),
+                    child: const Text('שינוי מספר טלפון')),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: _loading
+                    ? null
+                    : () => Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) =>
+                                const AuthScreen(initialRegistration: true))),
+                child: const Text('הרשמה חדשה באמצעות Google'),
+              ),
+              TextButton(
+                onPressed: _loading
+                    ? null
+                    : () => Navigator.pushReplacement(context,
+                        MaterialPageRoute(builder: (_) => const AuthScreen())),
+                child: const Text('כניסה עם Google או אימייל וסיסמה'),
+              ),
+            ]),
           ),
-          if (_otpSent)
-            TextButton(onPressed: _loading ? null : () => setState(() {
-              _otpSent = false;
-              _otpCtrl.clear();
-              _error = null;
-            }), child: const Text('שינוי מספר טלפון')),
-          const SizedBox(height: 12),
-          TextButton(
-            onPressed: _loading ? null : () => Navigator.pushReplacement(context,
-                MaterialPageRoute(builder: (_) => const AuthScreen(initialRegistration: true))),
-            child: const Text('הרשמה חדשה באמצעות Google'),
-          ),
-          TextButton(
-            onPressed: _loading ? null : () => Navigator.pushReplacement(context,
-                MaterialPageRoute(builder: (_) => const AuthScreen())),
-            child: const Text('כניסה עם Google או אימייל וסיסמה'),
-          ),
-        ]),
-      ),
-    ))),
-  );
+        ))),
+      );
 }
 
 // ── Auth Screen (Login / Register) ───────────────────────────────
@@ -4747,8 +4903,8 @@ class _AuthScreenState extends State<AuthScreen> {
     _emailCtrl.text = widget.initialEmail ?? '';
   }
 
-  Future<void> _signInWithGoogle({GoogleSignInAccount? webAccount,
-      bool existingAccount = false}) async {
+  Future<void> _signInWithGoogle(
+      {GoogleSignInAccount? webAccount, bool existingAccount = false}) async {
     final loginAttempt = _isLogin;
     final completingRegistration = !loginAttempt && !existingAccount;
     setState(() {
@@ -4756,9 +4912,10 @@ class _AuthScreenState extends State<AuthScreen> {
       _error = null;
     });
     try {
-      String? idToken = webAccount == null &&
-              (completingRegistration || existingAccount)
-          ? _googleRegistrationIdToken : null;
+      String? idToken =
+          webAccount == null && (completingRegistration || existingAccount)
+              ? _googleRegistrationIdToken
+              : null;
       if (idToken == null) {
         if (!kIsWeb) await _googleSignIn.signOut();
         final account = kIsWeb ? webAccount : await _googleSignIn.signIn();
@@ -4792,7 +4949,9 @@ class _AuthScreenState extends State<AuthScreen> {
       if (!mounted) return;
       final data = jsonDecode(res.body);
       if (res.statusCode != 200) {
-        if (loginAttempt && _isLogin && res.statusCode == 400 &&
+        if (loginAttempt &&
+            _isLogin &&
+            res.statusCode == 400 &&
             data['code'] == 'REGISTRATION_REQUIRED') {
           setState(() {
             _isLogin = false;
@@ -5346,7 +5505,8 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _finishRegistration() async {
-    if (!_identityVerified || _googleRegistrationIdToken == null ||
+    if (!_identityVerified ||
+        _googleRegistrationIdToken == null ||
         _registrationMethod != 'google') {
       _registrationError('יש להתחבר באמצעות Google כדי להשלים הרשמה');
       return;
@@ -5432,7 +5592,8 @@ class _AuthScreenState extends State<AuthScreen> {
           const Text('הרשמה באמצעות Google',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
-          const Text('יצירת חשבון חדש עם חשבון Google שלך. חיבור Google Drive יוצע בהמשך לבחירתך.',
+          const Text(
+              'יצירת חשבון חדש עם חשבון Google שלך. חיבור Google Drive יוצע בהמשך לבחירתך.',
               textAlign: TextAlign.center,
               style: TextStyle(color: kSubtext, fontSize: 12.5)),
           const SizedBox(height: 20),
@@ -5445,10 +5606,10 @@ class _AuthScreenState extends State<AuthScreen> {
             )
           else
             _registrationMethodCard(
-              method: 'google',
-              icon: Icons.g_mobiledata_rounded,
-              title: 'הרשמה באמצעות Google',
-              subtitle: 'מהיר ומאובטח — ללא יצירת סיסמה נוספת'),
+                method: 'google',
+                icon: Icons.g_mobiledata_rounded,
+                title: 'הרשמה באמצעות Google',
+                subtitle: 'מהיר ומאובטח — ללא יצירת סיסמה נוספת'),
           const SizedBox(height: 12),
           if (_googleRegistrationIdToken != null && !_identityVerified)
             TextButton.icon(
@@ -5901,9 +6062,8 @@ class _AuthScreenState extends State<AuthScreen> {
                               height: 5,
                               margin: EdgeInsets.only(left: index == 3 ? 0 : 5),
                               decoration: BoxDecoration(
-                                color: index <= visibleStep
-                                    ? kPrimary
-                                    : kBorder,
+                                color:
+                                    index <= visibleStep ? kPrimary : kBorder,
                                 borderRadius: BorderRadius.circular(5),
                               ),
                             ),
@@ -5951,7 +6111,8 @@ class _AuthScreenState extends State<AuthScreen> {
                           ? null
                           : () => setState(() {
                                 _registrationStep = _registrationStep <= 2
-                                    ? 0 : _registrationStep - 1;
+                                    ? 0
+                                    : _registrationStep - 1;
                                 _error = null;
                               }),
                       child: const Text('חזרה'),
@@ -5959,7 +6120,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   if (_registrationStep > 0) const SizedBox(width: 10),
                   Expanded(
                     child: FilledButton(
-                      onPressed: _loading || _showVerificationSuccess ||
+                      onPressed: _loading ||
+                              _showVerificationSuccess ||
                               _registrationStep == 0
                           ? null
                           : (_registrationStep == 1 && !_identityVerified
@@ -6304,8 +6466,10 @@ class _AuthScreenState extends State<AuthScreen> {
                                       fontWeight: FontWeight.w600,
                                       color: kTextDark)),
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(color: kBorder, width: 1.5),
-                                padding: const EdgeInsets.symmetric(vertical: 13),
+                                side: const BorderSide(
+                                    color: kBorder, width: 1.5),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 13),
                                 shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(12)),
                               ),
@@ -6954,12 +7118,13 @@ void _approveProfilePictures(dynamic data, int revision) {
 
 Map<String, dynamic> _withoutCachedProfilePicture(
   Map<String, dynamic> user,
-) => {
-  ...user,
-  // Preserve offline names/conversations and emoji; photos wait for the API.
-  if (!_isEmojiAvatar(user['profile_pic_url']?.toString()))
-    'profile_pic_url': null,
-};
+) =>
+    {
+      ...user,
+      // Preserve offline names/conversations and emoji; photos wait for the API.
+      if (!_isEmojiAvatar(user['profile_pic_url']?.toString()))
+        'profile_pic_url': null,
+    };
 
 class UserAvatar extends StatelessWidget {
   final String? picUrl;
@@ -7038,10 +7203,10 @@ class UserAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ValueListenableBuilder<Set<String>?>(
-    valueListenable: _approvedProfilePictures,
-    builder: (context, _, __) =>
-        _buildAvatar(context, previewOwnPhoto || _profilePictureAllowed(picUrl) ? picUrl : null),
-  );
+        valueListenable: _approvedProfilePictures,
+        builder: (context, _, __) => _buildAvatar(context,
+            previewOwnPhoto || _profilePictureAllowed(picUrl) ? picUrl : null),
+      );
 
   Widget _buildAvatar(BuildContext context, String? picUrl) {
     if (_isEmojiAvatar(picUrl)) {
@@ -7091,9 +7256,8 @@ class UserAvatar extends StatelessWidget {
       child: CircleAvatar(
         radius: radius,
         backgroundColor: kPrimary,
-        backgroundImage: picUrl != null
-            ? NetworkImage(_absoluteMediaUrl(picUrl))
-            : null,
+        backgroundImage:
+            picUrl != null ? NetworkImage(_absoluteMediaUrl(picUrl)) : null,
         child: picUrl == null
             ? Text(
                 name.isNotEmpty ? name[0].toUpperCase() : '?',
@@ -7248,10 +7412,12 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
     super.initState();
     if (widget.filterToken != null) {
       _filterSubscription = receivingFilterChanges.stream.listen((token) {
-        if (token != widget.filterToken || !mounted || _filterInvalidated) return;
+        if (token != widget.filterToken || !mounted || _filterInvalidated)
+          return;
         setState(() => _filterInvalidated = true);
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && ModalRoute.of(context)?.isCurrent == true) Navigator.pop(context);
+          if (mounted && ModalRoute.of(context)?.isCurrent == true)
+            Navigator.pop(context);
         });
       });
     }
@@ -7293,7 +7459,8 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
     );
   }
 
-  bool get _canRename => widget.onRename != null ||
+  bool get _canRename =>
+      widget.onRename != null ||
       (widget.filterToken != null && _ownedNames[_urls[_currentIndex]] != null);
 
   Future<void> _loadCurrentName() async {
@@ -7327,12 +7494,17 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
     try {
       final name = rename != null
           ? await rename(url, filename)
-          : await renameMediaByUrl(context, api: kApi,
-              token: widget.filterToken!, url: url, media: _ownedNames[url]);
-      if (!mounted || name == null || name.isEmpty || _filterInvalidated) return;
+          : await renameMediaByUrl(context,
+              api: kApi,
+              token: widget.filterToken!,
+              url: url,
+              media: _ownedNames[url]);
+      if (!mounted || name == null || name.isEmpty || _filterInvalidated)
+        return;
       setState(() {
         final owned = _ownedNames[url];
-        if (owned != null) _ownedNames[url] = OwnedMediaName(id: owned.id, name: name);
+        if (owned != null)
+          _ownedNames[url] = OwnedMediaName(id: owned.id, name: name);
         for (var index = 0; index < _urls.length; index++) {
           if (_urls[index] == url) _filenames[index] = name;
         }
@@ -7376,10 +7548,13 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                   child: _PersistentMediaImage(
                     url: _urls[index],
                     onDisplayed: widget.filterToken == null ||
-                        index >= (widget.messages?.length ?? 0)
-                        ? null : () => reportFilterDisplay(api: kApi,
+                            index >= (widget.messages?.length ?? 0)
+                        ? null
+                        : () => reportFilterDisplay(
+                            api: kApi,
                             token: widget.filterToken!,
-                            messageId: widget.messages![index]['id']?.toString() ?? '',
+                            messageId:
+                                widget.messages![index]['id']?.toString() ?? '',
                             event: 'displayed'),
                     fit: BoxFit.contain,
                     loadingBuilder: (_) => const Center(
@@ -7489,7 +7664,8 @@ class _ImagePreviewScreenState extends State<ImagePreviewScreen> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               )
-                            else if ((_filenames[_currentIndex] ?? '').isNotEmpty)
+                            else if ((_filenames[_currentIndex] ?? '')
+                                .isNotEmpty)
                               Text(
                                 _filenames[_currentIndex]!,
                                 style: const TextStyle(
@@ -7605,8 +7781,8 @@ class _BirthDateFieldState extends State<_BirthDateField> {
 
   void _changed(String text) {
     final input = text.trim();
-    final match = RegExp(r'^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$')
-        .firstMatch(input);
+    final match =
+        RegExp(r'^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$').firstMatch(input);
     DateTime? date;
     String? error;
     if (match == null) {
@@ -8165,12 +8341,10 @@ class _MainShellState extends State<MainShell> {
 
   Future<bool> _fetchBirthDate() async {
     try {
-      final response = await http
-          .get(
-            Uri.parse('$kApi/registration-status'),
-            headers: {'Authorization': 'Bearer ${widget.token}'},
-          )
-          .timeout(const Duration(seconds: 15));
+      final response = await http.get(
+        Uri.parse('$kApi/registration-status'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 15));
       if (response.statusCode == 401) {
         throw const _BirthDateCheckFailure(
           'יש להתחבר מחדש כדי להמשיך.',
@@ -8309,8 +8483,7 @@ class _BirthDateStatusErrorScreen extends StatefulWidget {
 }
 
 class _BirthDateStatusErrorScreenState
-    extends State<_BirthDateStatusErrorScreen>
-    with _BirthDateRetryCooldown {
+    extends State<_BirthDateStatusErrorScreen> with _BirthDateRetryCooldown {
   @override
   void initState() {
     super.initState();
@@ -8532,7 +8705,10 @@ class _MainShellContent extends StatefulWidget {
 class _MainShellContentState extends State<_MainShellContent> {
   // The Drive OAuth callback returns to the same browser tab.
   int _idx = kIsWeb && Uri.base.queryParameters['screen'] == 'calendar'
-      ? 5 : kIsWeb && Uri.base.queryParameters.containsKey('backup') ? 3 : 0;
+      ? 5
+      : kIsWeb && Uri.base.queryParameters.containsKey('backup')
+          ? 3
+          : 0;
   final _desktopContentNavigatorKey = GlobalKey<NavigatorState>();
   int _conversationFilterIndex = 0;
   final GlobalKey<_ConversationsScreenState> _conversationsKey =
@@ -8638,9 +8814,10 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   List<Map<String, dynamic>> _withoutScanBot(List<Map<String, dynamic>> users) {
-    final sorted =
-        users.where((user) => user['id']?.toString() != kScanBotId)
-          .map(sanitizedPhoneContact).toList();
+    final sorted = users
+        .where((user) => user['id']?.toString() != kScanBotId)
+        .map(sanitizedPhoneContact)
+        .toList();
     sorted.sort((a, b) {
       final aTime = DateTime.tryParse(a['last_message_at']?.toString() ?? '');
       final bTime = DateTime.tryParse(b['last_message_at']?.toString() ?? '');
@@ -8659,8 +8836,8 @@ class _MainShellContentState extends State<_MainShellContent> {
     super.initState();
     _profilePicturesRevision++;
     _approvedProfilePictures.value = null;
-    _profilePictureFilterSubscription =
-        _profilePictureFilterChanges.stream.listen(_profilePictureFilterChanged);
+    _profilePictureFilterSubscription = _profilePictureFilterChanges.stream
+        .listen(_profilePictureFilterChanged);
     _conversationChangesSubscription =
         conversationChanges.stream.listen(_conversationListChanged);
     _lifecycleObserver = _AppLifecycleObserver(onResume: _handleAppResume);
@@ -8713,48 +8890,79 @@ class _MainShellContentState extends State<_MainShellContent> {
           final shared = await _shareChannel.invokeMapMethod<String, dynamic>(
               'takePendingShare', {'accountId': account});
           if (shared == null || !mounted) break;
-          bool currentAccount() => mounted && _accountId == account && widget.token == token;
+          bool currentAccount() =>
+              mounted && _accountId == account && widget.token == token;
           var result = const IncomingActionResult('retry');
           try {
             final errors = shared['errors'];
             if (errors is List && errors.isNotEmpty) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errors.join('\n'))));
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text(errors.join('\n'))));
             }
-            result = await processIncomingShare(context,
-              share: shared, api: kApi, token: token, accountId: account,
+            result = await processIncomingShare(
+              context,
+              share: shared,
+              api: kApi,
+              token: token,
+              accountId: account,
               canAct: currentAccount,
               deliver: (messages, recipient) async {
                 if (!currentAccount()) return const IncomingDeliveryResult({});
                 var initialRecipient = recipient;
                 if (recipient != null) {
                   final latest = await http.get(Uri.parse('$kApi/users'),
-                      headers: {'Authorization': 'Bearer $token'}).timeout(const Duration(seconds: 10));
-                  if (latest.statusCode != 200 || !currentAccount()) return const IncomingDeliveryResult({});
-                  final contacts = (jsonDecode(latest.body) as List).whereType<Map>();
-                  if (!contacts.any((u) => u['id'] == recipient && u['is_friend'] == true)) {
+                      headers: {
+                        'Authorization': 'Bearer $token'
+                      }).timeout(const Duration(seconds: 10));
+                  if (latest.statusCode != 200 || !currentAccount())
+                    return const IncomingDeliveryResult({});
+                  final contacts =
+                      (jsonDecode(latest.body) as List).whereType<Map>();
+                  if (!contacts.any(
+                      (u) => u['id'] == recipient && u['is_friend'] == true)) {
                     initialRecipient = null;
-                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                      content: Text('החבר שבקיצור הדרך אינו זמין עוד. בחר נמען לשיתוף')));
+                    if (mounted)
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                          content: Text(
+                              'החבר שבקיצור הדרך אינו זמין עוד. בחר נמען לשיתוף')));
                   }
                 }
                 final prior = shared['deliveredTargets'] as Map? ?? const {};
-                final keys = [for (final message in messages) incomingDeliveryKey(message)];
-                final response = await forwardChatMessages(context, token, _socket, messages,
-                    initialRecipientId: initialRecipient, me: _me, canForward: currentAccount,
-                    previousDeliveries: {for (var i = 0; i < keys.length; i++)
-                      i: ((prior[keys[i]] as List?) ?? const []).whereType<String>().toSet()});
-                return IncomingDeliveryResult(response.completedMessageIndexes, cancelled: response.cancelled,
-                  deliveredTargets: {for (final entry in response.completedTargetsByMessage.entries)
-                    keys[entry.key]: entry.value.toList()});
+                final keys = [
+                  for (final message in messages) incomingDeliveryKey(message)
+                ];
+                final response = await forwardChatMessages(
+                    context, token, _socket, messages,
+                    initialRecipientId: initialRecipient,
+                    me: _me,
+                    canForward: currentAccount,
+                    previousDeliveries: {
+                      for (var i = 0; i < keys.length; i++)
+                        i: ((prior[keys[i]] as List?) ?? const [])
+                            .whereType<String>()
+                            .toSet()
+                    });
+                return IncomingDeliveryResult(response.completedMessageIndexes,
+                    cancelled: response.cancelled,
+                    deliveredTargets: {
+                      for (final entry
+                          in response.completedTargetsByMessage.entries)
+                        keys[entry.key]: entry.value.toList()
+                    });
               },
               createListing: (images) async {
                 if (!currentAccount()) return false;
                 final processed = Completer<void>();
                 if (images.isEmpty) processed.complete();
-                final saved = await Navigator.of(context).push<bool>(MaterialPageRoute(
-                  builder: (_) => PostListingScreen(token: token, me: _me,
-                    initialImages: images,
-                    onInitialImagesProcessed: () { if (!processed.isCompleted) processed.complete(); }),
+                final saved =
+                    await Navigator.of(context).push<bool>(MaterialPageRoute(
+                  builder: (_) => PostListingScreen(
+                      token: token,
+                      me: _me,
+                      initialImages: images,
+                      onInitialImagesProcessed: () {
+                        if (!processed.isCompleted) processed.complete();
+                      }),
                 ));
                 // An early publish transfers uploads to the background worker.
                 // Keep Android's source files until every transfer has read them.
@@ -8762,11 +8970,19 @@ class _MainShellContentState extends State<_MainShellContent> {
                 return saved == true && currentAccount();
               },
               openChat: (recipient) async {
-                final target = recipient == null ? await _pickAppFriend(context, token) :
-                    _users.where((u) => u['id'] == recipient && u['is_friend'] == true).firstOrNull;
+                final target = recipient == null
+                    ? await _pickAppFriend(context, token)
+                    : _users
+                        .where((u) =>
+                            u['id'] == recipient && u['is_friend'] == true)
+                        .firstOrNull;
                 if (target == null || !currentAccount()) return;
-                await Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(
-                  token: token, me: _me, recipient: Map<String, dynamic>.from(target), socket: _socket)));
+                await Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => ChatScreen(
+                        token: token,
+                        me: _me,
+                        recipient: Map<String, dynamic>.from(target),
+                        socket: _socket)));
               },
               capture: () async {
                 if (!currentAccount()) return null;
@@ -8774,33 +8990,50 @@ class _MainShellContentState extends State<_MainShellContent> {
                 if (creator == null) return null;
                 final photo = await captureNativePhoto(context);
                 if (photo == null || !currentAccount()) return null;
-                final name = await capturedPhotoFileName(photo, creatorId: creator);
+                final name =
+                    await capturedPhotoFileName(photo, creatorId: creator);
                 if (!currentAccount()) return null;
-                final cached = await _shareChannel.invokeMapMethod<String,dynamic>('attachCapturedShareFile', {
-                  'id': shared['id'], 'leaseId': shared['leaseId'], 'accountId': account,
-                  'path': photo.path, 'name': name, 'mime': photo.mimeType ?? 'image/jpeg',
+                final cached = await _shareChannel
+                    .invokeMapMethod<String, dynamic>(
+                        'attachCapturedShareFile', {
+                  'id': shared['id'],
+                  'leaseId': shared['leaseId'],
+                  'accountId': account,
+                  'path': photo.path,
+                  'name': name,
+                  'mime': photo.mimeType ?? 'image/jpeg',
                 });
                 return cached;
               },
               prepareMessages: (messages) async {
-                if (!currentAccount()) throw const FormatException('החשבון השתנה במהלך השיתוף');
+                if (!currentAccount())
+                  throw const FormatException('החשבון השתנה במהלך השיתוף');
                 await _shareChannel.invokeMethod('prepareShareMessages', {
-                  'id': shared['id'], 'leaseId': shared['leaseId'], 'accountId': account,
+                  'id': shared['id'],
+                  'leaseId': shared['leaseId'],
+                  'accountId': account,
                   'messages': messages,
                 });
               },
             );
           } catch (error) {
-            if (currentAccount()) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('השיתוף נשמר לניסיון נוסף: ${error.toString().replaceFirst('FormatException: ', '')}')));
+            if (currentAccount())
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(
+                      'השיתוף נשמר לניסיון נוסף: ${error.toString().replaceFirst('FormatException: ', '')}')));
           } finally {
             await _shareChannel.invokeMethod('finishShare', {
-              'id': shared['id'], 'leaseId': shared['leaseId'], 'accountId': account,
+              'id': shared['id'],
+              'leaseId': shared['leaseId'],
+              'accountId': account,
               'outcome': currentAccount() ? result.outcome : 'retry',
-              'completedPaths': currentAccount() ? result.completedPaths : <String>[],
+              'completedPaths':
+                  currentAccount() ? result.completedPaths : <String>[],
               'clearText': currentAccount() && result.clearText,
               'clearCalendar': currentAccount() && result.clearCalendar,
-              'deliveredTargets': currentAccount() ? result.deliveredTargets : const <String,List<String>>{},
+              'deliveredTargets': currentAccount()
+                  ? result.deliveredTargets
+                  : const <String, List<String>>{},
             });
           }
         }
@@ -8816,14 +9049,20 @@ class _MainShellContentState extends State<_MainShellContent> {
   Future<void> _showPendingAndroidShares() async {
     if (!mounted || _accountId == null) return;
     final account = _accountId;
-    final count = await _shareChannel.invokeMethod<int>('pendingShareCount', {'accountId': account}) ?? 0;
+    final count = await _shareChannel
+            .invokeMethod<int>('pendingShareCount', {'accountId': account}) ??
+        0;
     if (!mounted || _accountId != account || count == 0) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       duration: const Duration(seconds: 30),
       content: Text('$count שיתופים ממתינים להשלמה'),
-      action: SnackBarAction(label: 'נסה שוב', onPressed: () {
-        if (_accountId == account) _shareChannel.invokeMethod('retryPendingShares', {'accountId': account});
-      }),
+      action: SnackBarAction(
+          label: 'נסה שוב',
+          onPressed: () {
+            if (_accountId == account)
+              _shareChannel
+                  .invokeMethod('retryPendingShares', {'accountId': account});
+          }),
     ));
   }
 
@@ -8952,7 +9191,10 @@ class _MainShellContentState extends State<_MainShellContent> {
 
   Future<void> _showNextMessageRequest() async {
     if (!mounted || _showingMessageRequest || _showingPhoneRequest) return;
-    if (_messageRequests.isEmpty) { _showNextPhoneRequest(); return; }
+    if (_messageRequests.isEmpty) {
+      _showNextPhoneRequest();
+      return;
+    }
     _showingMessageRequest = true;
     final request = _messageRequests.first;
     final senderName =
@@ -9008,9 +9250,14 @@ class _MainShellContentState extends State<_MainShellContent> {
                     ),
                     if (_isPersonalPhoneContact(senderId, _accountId))
                       PhoneSharingPanel(
-                        api: kApi, token: widget.token, contactId: senderId!,
-                        contactName: senderName.toString(), compact: true,
-                        controller: phoneChoice, initialChoice: true, friendshipConfirmation: true,
+                        api: kApi,
+                        token: widget.token,
+                        contactId: senderId!,
+                        contactName: senderName.toString(),
+                        compact: true,
+                        controller: phoneChoice,
+                        initialChoice: true,
+                        friendshipConfirmation: true,
                         onChanged: () => setDialogState(() {}),
                       ),
                   ],
@@ -9019,29 +9266,52 @@ class _MainShellContentState extends State<_MainShellContent> {
             ),
             actions: [
               FilledButton.icon(
-                onPressed: accepting ? null : () async {
-                  setDialogState(() => accepting = true);
-                  try {
-                    final changed = selectedFilter.keys.any((key) => selectedFilter[key] != initialFilter[key]);
-                    final response = await http.post(Uri.parse('$kApi/message-requests/${request['id']}/accept'),
-                        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-                        body: jsonEncode({if (changed) 'filter': selectedFilter, ...phoneChoice.confirmationPayload}));
-                    if (response.statusCode != 200) {
-                      final data = jsonDecode(response.body) as Map<String, dynamic>;
-                      throw Exception(data['error'] ?? 'לא ניתן להשלים כעת את אישור החבר');
-                    }
-                    if (dialogContext.mounted) Navigator.pop(dialogContext, {'accepted': true, 'response': response});
-                  } catch (e) {
-                    if (mounted) ScaffoldMessenger.of(this.context).showSnackBar(SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))));
-                    if (dialogContext.mounted) setDialogState(() => accepting = false);
-                  }
-                },
+                onPressed: accepting
+                    ? null
+                    : () async {
+                        setDialogState(() => accepting = true);
+                        try {
+                          final changed = selectedFilter.keys.any((key) =>
+                              selectedFilter[key] != initialFilter[key]);
+                          final response = await http.post(
+                              Uri.parse(
+                                  '$kApi/message-requests/${request['id']}/accept'),
+                              headers: {
+                                'Authorization': 'Bearer ${widget.token}',
+                                'Content-Type': 'application/json'
+                              },
+                              body: jsonEncode({
+                                if (changed) 'filter': selectedFilter,
+                                ...phoneChoice.confirmationPayload
+                              }));
+                          if (response.statusCode != 200) {
+                            final data = jsonDecode(response.body)
+                                as Map<String, dynamic>;
+                            throw Exception(data['error'] ??
+                                'לא ניתן להשלים כעת את אישור החבר');
+                          }
+                          if (dialogContext.mounted)
+                            Navigator.pop(dialogContext,
+                                {'accepted': true, 'response': response});
+                        } catch (e) {
+                          if (mounted)
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                                SnackBar(
+                                    content: Text(e
+                                        .toString()
+                                        .replaceFirst('Exception: ', ''))));
+                          if (dialogContext.mounted)
+                            setDialogState(() => accepting = false);
+                        }
+                      },
                 icon: const Icon(Icons.person_add_outlined),
-                label: Text(phoneChoice.confirmationLabel(saveLabel: 'אשר והוסף כחבר')),
+                label: Text(
+                    phoneChoice.confirmationLabel(saveLabel: 'אשר והוסף כחבר')),
               ),
               TextButton(
-                onPressed: accepting ? null : () =>
-                    Navigator.pop(dialogContext, {'accepted': false}),
+                onPressed: accepting
+                    ? null
+                    : () => Navigator.pop(dialogContext, {'accepted': false}),
                 style: TextButton.styleFrom(foregroundColor: Colors.red),
                 child: const Text('דחה'),
               ),
@@ -9089,13 +9359,23 @@ class _MainShellContentState extends State<_MainShellContent> {
     final pictureRevision = _profilePicturesRevision;
     try {
       final response = await http.get(Uri.parse('$kApi/phone-sharing/requests'),
-        headers: {'Authorization': 'Bearer ${widget.token}', 'Cache-Control': 'no-store'});
+          headers: {
+            'Authorization': 'Bearer ${widget.token}',
+            'Cache-Control': 'no-store'
+          });
       if (!mounted || response.statusCode != 200) return;
       final raw = jsonDecode(response.body);
-      final rows = raw is List ? raw : raw is Map ? raw['requests'] : null;
+      final rows = raw is List
+          ? raw
+          : raw is Map
+              ? raw['requests']
+              : null;
       if (rows is! List) return;
       _approveProfilePictures(rows, pictureRevision);
-      _phoneRequests..clear()..addAll(rows.whereType<Map>().map((row) => Map<String, dynamic>.from(row)));
+      _phoneRequests
+        ..clear()
+        ..addAll(
+            rows.whereType<Map>().map((row) => Map<String, dynamic>.from(row)));
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _showNextPhoneRequest();
       });
@@ -9103,29 +9383,41 @@ class _MainShellContentState extends State<_MainShellContent> {
   }
 
   Future<void> _showNextPhoneRequest() async {
-    if (!mounted || _showingPhoneRequest || _showingMessageRequest || _messageRequests.isNotEmpty) return;
-    final pending = _phoneRequests.where((item) => !_deferredPhoneRequests.contains(
-        '${item['user_id']}:${item['requested_at']}')).toList();
+    if (!mounted ||
+        _showingPhoneRequest ||
+        _showingMessageRequest ||
+        _messageRequests.isNotEmpty) return;
+    final pending = _phoneRequests
+        .where((item) => !_deferredPhoneRequests
+            .contains('${item['user_id']}:${item['requested_at']}'))
+        .toList();
     if (pending.isEmpty) return;
     final request = pending.first;
     final id = request['user_id']?.toString();
     if (id == null || id == _accountId) return;
     _showingPhoneRequest = true;
     try {
-      final decision = await showDialog<String>(context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('בקשה למספר הטלפון שלך'),
-          content: Text('${request['name'] ?? 'החבר'} מבקש לקבל את מספר הטלפון שלך. שיתוף יתבצע רק אם תאשר.'),
-          actions: [
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, 'approve'),
-              child: const Text('אשר ושתף את הטלפון שלי')),
-            TextButton(onPressed: () => Navigator.pop(dialogContext, 'decline'),
-              child: const Text('דחה')),
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('מאוחר יותר')),
-          ],
-        ));
+      final decision = await showDialog<String>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+                title: const Text('בקשה למספר הטלפון שלך'),
+                content: Text(
+                    '${request['name'] ?? 'החבר'} מבקש לקבל את מספר הטלפון שלך. שיתוף יתבצע רק אם תאשר.'),
+                actions: [
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dialogContext, 'approve'),
+                      child: const Text('אשר ושתף את הטלפון שלי')),
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext, 'decline'),
+                      child: const Text('דחה')),
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('מאוחר יותר')),
+                ],
+              ));
       if (decision != null) {
-        await updatePhoneSharing(kApi, widget.token, id, {'phone_response': decision});
+        await updatePhoneSharing(
+            kApi, widget.token, id, {'phone_response': decision});
         await _loadUsers();
         await _loadPhoneRequests();
       } else {
@@ -9135,7 +9427,7 @@ class _MainShellContentState extends State<_MainShellContent> {
       _deferredPhoneRequests.add('$id:${request['requested_at']}');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('לא ניתן לעדכן כעת את שיתוף הטלפון')));
+            const SnackBar(content: Text('לא ניתן לעדכן כעת את שיתוף הטלפון')));
       }
     } finally {
       _showingPhoneRequest = false;
@@ -9222,7 +9514,9 @@ class _MainShellContentState extends State<_MainShellContent> {
         Uri.parse('$kApi/groups/unread'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (res.statusCode == 200 && mounted && serial == _groupUnreadLoadSerial) {
+      if (res.statusCode == 200 &&
+          mounted &&
+          serial == _groupUnreadLoadSerial) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         setState(() => _groupUnreadCounts = data.map((k, v) => MapEntry(
             k, v is num ? v.toInt() : int.tryParse(v.toString()) ?? 0)));
@@ -9415,7 +9709,8 @@ class _MainShellContentState extends State<_MainShellContent> {
       // Resolve current membership instead of trusting stale push metadata.
       final response = await http.get(Uri.parse('$kApi/groups'),
           headers: {'Authorization': 'Bearer ${widget.token}'});
-      if (!mounted || accountId != _accountId || response.statusCode != 200) return;
+      if (!mounted || accountId != _accountId || response.statusCode != 200)
+        return;
       final groups = jsonDecode(response.body);
       if (groups is! List) return;
       final matching = groups.whereType<Map>().where((group) =>
@@ -9430,7 +9725,10 @@ class _MainShellContentState extends State<_MainShellContent> {
           setState(() => _groupUnreadCounts.remove(groupId));
           Navigator.of(context).push(MaterialPageRoute(
             builder: (_) => GroupChatScreen(
-              group: group, me: _me, token: widget.token, socket: _socket,
+              group: group,
+              me: _me,
+              token: widget.token,
+              socket: _socket,
             ),
           ));
         }
@@ -9451,9 +9749,10 @@ class _MainShellContentState extends State<_MainShellContent> {
       final cacheKey = _usersCacheKey;
       final cached = cacheKey == null ? null : prefs.getString(cacheKey);
       if (cached != null && _users.isEmpty) {
-        setState(() => _users = _withoutScanBot(
-            (jsonDecode(cached) as List).cast<Map<String, dynamic>>()
-                .map(_withoutCachedProfilePicture).toList()));
+        setState(() => _users = _withoutScanBot((jsonDecode(cached) as List)
+            .cast<Map<String, dynamic>>()
+            .map(_withoutCachedProfilePicture)
+            .toList()));
       }
     } catch (_) {}
     // Then fetch from server and update cache
@@ -9472,15 +9771,21 @@ class _MainShellContentState extends State<_MainShellContent> {
             final selectedId = _desktopRecipient?['id'];
             if (selectedId != null) {
               final fresh = _users.where((user) => user['id'] == selectedId);
-              _desktopRecipient = fresh.isNotEmpty ? fresh.first
-                : {..._desktopRecipient!, 'phone': null, 'phone_visibility': 'hidden'};
+              _desktopRecipient = fresh.isNotEmpty
+                  ? fresh.first
+                  : {
+                      ..._desktopRecipient!,
+                      'phone': null,
+                      'phone_visibility': 'hidden'
+                    };
             }
           });
         }
         final prefs = await SharedPreferences.getInstance();
         if (!mounted || generation != _usersLoadGeneration) return;
         final cacheKey = _usersCacheKey;
-        if (cacheKey != null) await prefs.setString(cacheKey, jsonEncode(_users));
+        if (cacheKey != null)
+          await prefs.setString(cacheKey, jsonEncode(_users));
         await _updateAndroidShareTargets();
       } else if (res.statusCode == 403) {
         _requirePhoneSetup();
@@ -9560,9 +9865,15 @@ class _MainShellContentState extends State<_MainShellContent> {
         phoneSharingChanges.add(id);
         setState(() {
           for (final user in _users.where((u) => u['id'] == id)) {
-            user['phone'] = null; user['phone_visibility'] = 'hidden';
+            user['phone'] = null;
+            user['phone_visibility'] = 'hidden';
           }
-          if (_desktopRecipient?['id'] == id) _desktopRecipient = {..._desktopRecipient!, 'phone': null, 'phone_visibility': 'hidden'};
+          if (_desktopRecipient?['id'] == id)
+            _desktopRecipient = {
+              ..._desktopRecipient!,
+              'phone': null,
+              'phone_visibility': 'hidden'
+            };
         });
       }
       _usersLoadGeneration++;
@@ -9574,8 +9885,10 @@ class _MainShellContentState extends State<_MainShellContent> {
       final activity = MessageReactionActivity.tryParse(data);
       if (activity == null || !_reactionEvents.accept(activity)) return;
       MessageReactionsCache.shared.invalidate(
-        api: kApi, token: widget.token,
-        messageId: activity.messageId, eventId: activity.eventId,
+        api: kApi,
+        token: widget.token,
+        messageId: activity.messageId,
+        eventId: activity.eventId,
       );
       // Use server truth for both own and incoming activity; reactions do not
       // create chat messages or increment delivery/unread counts locally.
@@ -9583,7 +9896,8 @@ class _MainShellContentState extends State<_MainShellContent> {
       _refreshReactionConversationState();
     });
     _socket!.on('message:reactions-read', (data) {
-      if (!mounted || data is! Map ||
+      if (!mounted ||
+          data is! Map ||
           !const ['chat', 'group'].contains(data['kind']) ||
           data['targetId'] is! String) return;
       _refreshReactionConversationState();
@@ -9849,7 +10163,9 @@ class _MainShellContentState extends State<_MainShellContent> {
         embedded: isDesktop,
         onClose: () => _selectMainNavigation(0),
       ),
-      CalendarScreen(api: kApi, token: widget.token,
+      CalendarScreen(
+          api: kApi,
+          token: widget.token,
           onClose: () => _selectMainNavigation(0)),
     ];
 
@@ -9907,8 +10223,10 @@ class _MainShellContentState extends State<_MainShellContent> {
                                               ? GroupChatScreen(
                                                   key: ValueKey(
                                                       'chat-tab:${_desktopGroup!['id']}:$_openGroupMembersOnSelect:$_desktopSearchMessageId:$_desktopSearchRevision'),
-                                                  searchMessageId: _desktopSearchMessageId,
-                                                  searchMessageAt: _desktopSearchMessageAt,
+                                                  searchMessageId:
+                                                      _desktopSearchMessageId,
+                                                  searchMessageAt:
+                                                      _desktopSearchMessageAt,
                                                   group: _desktopGroup!,
                                                   me: _me,
                                                   token: widget.token,
@@ -9934,9 +10252,12 @@ class _MainShellContentState extends State<_MainShellContent> {
                                               : _desktopRecipient == null
                                                   ? const _DesktopChatWelcome()
                                                   : ChatScreen(
-                                                      key: ValueKey('chat:${_desktopRecipient!['id']}:$_desktopSearchMessageId:$_desktopSearchRevision'),
-                                                      searchMessageId: _desktopSearchMessageId,
-                                                      searchMessageAt: _desktopSearchMessageAt,
+                                                      key: ValueKey(
+                                                          'chat:${_desktopRecipient!['id']}:$_desktopSearchMessageId:$_desktopSearchRevision'),
+                                                      searchMessageId:
+                                                          _desktopSearchMessageId,
+                                                      searchMessageAt:
+                                                          _desktopSearchMessageAt,
                                                       token: widget.token,
                                                       me: _me,
                                                       recipient:
@@ -9983,8 +10304,10 @@ class _MainShellContentState extends State<_MainShellContent> {
                                               : GroupChatScreen(
                                                   key: ValueKey(
                                                       '${_desktopGroup!['id']}:$_openGroupMembersOnSelect:$_desktopSearchMessageId:$_desktopSearchRevision'),
-                                                  searchMessageId: _desktopSearchMessageId,
-                                                  searchMessageAt: _desktopSearchMessageAt,
+                                                  searchMessageId:
+                                                      _desktopSearchMessageId,
+                                                  searchMessageAt:
+                                                      _desktopSearchMessageAt,
                                                   group: _desktopGroup!,
                                                   me: _me,
                                                   token: widget.token,
@@ -10119,11 +10442,18 @@ class _MainShellContentState extends State<_MainShellContent> {
                 return true;
               },
               child: Column(children: [
-                StorageQuotaView(api: kApi, token: widget.token, alertsOnly: true,
-                  onCleanup: () => Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => PersonalMediaScreen(token: widget.token, initialCleanup: true))),
-                  onDrive: () => Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => GoogleDriveBackupOfferScreen(token: widget.token, returnToPrevious: true))),
+                StorageQuotaView(
+                  api: kApi,
+                  token: widget.token,
+                  alertsOnly: true,
+                  onCleanup: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => PersonalMediaScreen(
+                              token: widget.token, initialCleanup: true))),
+                  onDrive: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                          builder: (_) => GoogleDriveBackupOfferScreen(
+                              token: widget.token, returnToPrevious: true))),
                 ),
                 Expanded(child: body),
               ]),
@@ -10219,30 +10549,42 @@ class _BrandAppBarTitle extends StatelessWidget {
             else
               _magenDavid(size: 34),
             const SizedBox(width: 9),
-            Expanded(child: Column(
+            Expanded(
+                child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                LayoutBuilder(builder: (context, constraints) => Row(
-                  mainAxisSize: MainAxisSize.max,
-                  children: [
-                    const Flexible(child: Text('בתשובה', maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 19,
-                            height: 1.05,
-                            fontWeight: FontWeight.w700))),
-                    if (constraints.maxWidth >= 170) const SizedBox(width: 7),
-                    if (constraints.maxWidth >= 170) const Flexible(child: Text('תוכן יהודי נקי', maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            height: 1.05,
-                            fontWeight: FontWeight.w700))),
-                  ],
-                )),
+                LayoutBuilder(
+                    builder: (context, constraints) => Row(
+                          mainAxisSize: MainAxisSize.max,
+                          children: [
+                            const Flexible(
+                                child: Text('בתשובה',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 19,
+                                        height: 1.05,
+                                        fontWeight: FontWeight.w700))),
+                            if (constraints.maxWidth >= 170)
+                              const SizedBox(width: 7),
+                            if (constraints.maxWidth >= 170)
+                              const Flexible(
+                                  child: Text('תוכן יהודי נקי',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10,
+                                          height: 1.05,
+                                          fontWeight: FontWeight.w700))),
+                          ],
+                        )),
                 if (name.isNotEmpty)
-                  Text(name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  Text(name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           color: Colors.white70, fontSize: 11, height: 1.1)),
               ],
@@ -14969,7 +15311,8 @@ class _ListingsScreenState extends State<ListingsScreen> {
       if (!mounted) return;
       final data = jsonDecode(res.body);
       final items = List<Map<String, dynamic>>.from(data);
-      if (res.statusCode == 200) _approveProfilePictures(items, pictureRevision);
+      if (res.statusCode == 200)
+        _approveProfilePictures(items, pictureRevision);
       _persistRecentImageUrls(items).ignore();
       setState(() {
         _items = items;
@@ -15777,12 +16120,16 @@ class _ListingCard extends StatelessWidget {
                     fit: BoxFit.cover,
                     errorBuilder: (_) => _placeholder())
                 : item['video_url'] != null
-                    ? SizedBox(width: 110, height: 110,
+                    ? SizedBox(
+                        width: 110,
+                        height: 110,
                         child: VideoThumbnail(
                           url: _absoluteMediaUrl(item['video_url'].toString()),
                           small: true,
-                          fallback: Container(color: const Color(0xFFE8F4FD),
-                            child: const Icon(Icons.play_circle_outline, color: kPrimary)),
+                          fallback: Container(
+                              color: const Color(0xFFE8F4FD),
+                              child: const Icon(Icons.play_circle_outline,
+                                  color: kPrimary)),
                         ))
                     : _placeholder(),
           ),
@@ -16016,7 +16363,8 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
       if (!mounted) return;
       setState(() {
         _items = List<Map<String, dynamic>>.from(jsonDecode(res.body));
-        if (res.statusCode == 200) _approveProfilePictures(_items, pictureRevision);
+        if (res.statusCode == 200)
+          _approveProfilePictures(_items, pictureRevision);
         _loading = false;
       });
     } catch (_) {
@@ -16162,12 +16510,17 @@ class _MyListingCard extends StatelessWidget {
                       fit: BoxFit.cover,
                       errorBuilder: (_) => _imgPlaceholder())
                   : item['video_url'] != null
-                      ? SizedBox(width: 66, height: 66,
+                      ? SizedBox(
+                          width: 66,
+                          height: 66,
                           child: VideoThumbnail(
-                            url: _absoluteMediaUrl(item['video_url'].toString()),
+                            url:
+                                _absoluteMediaUrl(item['video_url'].toString()),
                             small: true,
-                            fallback: Container(color: const Color(0xFFE8F4FD),
-                              child: const Icon(Icons.play_circle_outline, color: kPrimary)),
+                            fallback: Container(
+                                color: const Color(0xFFE8F4FD),
+                                child: const Icon(Icons.play_circle_outline,
+                                    color: kPrimary)),
                           ))
                       : _imgPlaceholder(),
             ),
@@ -16411,7 +16764,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   final _listingVideo = ListingVideoDraft();
   bool _preparingVideo = false;
-  final _imageUploadTasks = List<Completer<ListingImageAttachment?>?>.filled(8, null);
+  final _imageUploadTasks =
+      List<Completer<ListingImageAttachment?>?>.filled(8, null);
   final _imageOriginalUrls = List<String?>.filled(8, null);
   final List<_FileUploadOutcome?> _imageOutcomes =
       List<_FileUploadOutcome?>.filled(8, null);
@@ -16645,7 +16999,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
     _listenToVehicleFields();
     _listenToAllListingFields();
     if (widget.initialMessageId != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _addInitialMessageImage());
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _addInitialMessageImage());
     }
     if (widget.initialImages.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -16712,8 +17067,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
     if (!mounted || _locatingCity) return;
     setState(() => _locatingCity = true);
     try {
-      final approved = await requestGeocodingConsent(
-          context, GeocodingPurpose.city);
+      final approved =
+          await requestGeocodingConsent(context, GeocodingPurpose.city);
       if (!approved || !mounted) return;
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
@@ -16828,11 +17183,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
     final messageId = widget.initialMessageId;
     if (!mounted || messageId == null || _initialMessageImageStarted) return;
     _initialMessageImageStarted = true;
-    final slot = _imageUrls.asMap().entries.where((entry) =>
-        entry.value == null && !_uploadingSlot[entry.key]).map((entry) => entry.key).firstOrNull;
+    final slot = _imageUrls
+        .asMap()
+        .entries
+        .where((entry) => entry.value == null && !_uploadingSlot[entry.key])
+        .map((entry) => entry.key)
+        .firstOrNull;
     if (slot == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('המודעה כבר כוללת 8 תמונות')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('המודעה כבר כוללת 8 תמונות')));
       return;
     }
     final token = widget.token;
@@ -16843,8 +17202,11 @@ class _PostListingScreenState extends State<PostListingScreen> {
       _imageUploadTasks[slot] = task;
       _imageOriginalUrls[slot] = null;
     });
-    unawaited(_completeChatListingImageUpload(token: token, messageId: messageId,
-        task: task, shouldUpload: () => mounted || _retainInitialImageUpload,
+    unawaited(_completeChatListingImageUpload(
+        token: token,
+        messageId: messageId,
+        task: task,
+        shouldUpload: () => mounted || _retainInitialImageUpload,
         onResult: (result) {
           _applyImageUploadResult(slot, result);
           if (mounted) _showImageBatchSummary(context, [result]);
@@ -16856,7 +17218,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
     if (!mounted) return;
     final url = result.data['url']?.toString();
     final approved = result.outcome == _FileUploadOutcome.approved &&
-        url != null && url.isNotEmpty;
+        url != null &&
+        url.isNotEmpty;
     setState(() {
       _uploadingSlot[slot] = false;
       _imageReasons[slot] = result.data['reason']?.toString() ?? result.error;
@@ -16867,27 +17230,31 @@ class _PostListingScreenState extends State<PostListingScreen> {
     });
   }
 
-  Future<void> _pickImage(int slot, {bool camera = false, List<XFile>? initialImages}) async {
+  Future<void> _pickImage(int slot,
+      {bool camera = false, List<XFile>? initialImages}) async {
     if (_saving || _uploadingSlot[slot]) return;
     final token = widget.token;
-    final free = _imageUrls.asMap().entries.where((entry) =>
-        entry.value == null && !_uploadingSlot[entry.key]).length;
+    final free = _imageUrls
+        .asMap()
+        .entries
+        .where((entry) => entry.value == null && !_uploadingSlot[entry.key])
+        .length;
     List<XFile> picked;
     if (initialImages != null) {
       picked = initialImages.take(8).toList();
     } else
-    try {
-      picked = camera
-          ? await captureListingPhotos(context, maxPhotos: free,
-              creatorId: 'listing')
-          : await ImagePicker().pickMultiImage(imageQuality: 80);
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('לא ניתן לפתוח את התמונות. נסה שוב')));
+      try {
+        picked = camera
+            ? await captureListingPhotos(context,
+                maxPhotos: free, creatorId: 'listing')
+            : await ImagePicker().pickMultiImage(imageQuality: 80);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('לא ניתן לפתוח את התמונות. נסה שוב')));
+        }
+        return;
       }
-      return;
-    }
     if (picked.isEmpty || !mounted || _saving) return;
     final availableSlots = <int>[
       if (!_uploadingSlot[slot]) slot,
@@ -16901,9 +17268,15 @@ class _PostListingScreenState extends State<PostListingScreen> {
         content: Text('ניתן לצרף עד 8 תמונות למודעה'),
       ));
     }
-    final previousUrls = [for (final target in availableSlots.take(selected.length))
-      _imageOutcomes[target] == _FileUploadOutcome.approved ? _imageUrls[target] : null];
-    final tasks = [for (final _ in selected) Completer<ListingImageAttachment?>()];
+    final previousUrls = [
+      for (final target in availableSlots.take(selected.length))
+        _imageOutcomes[target] == _FileUploadOutcome.approved
+            ? _imageUrls[target]
+            : null
+    ];
+    final tasks = [
+      for (final _ in selected) Completer<ListingImageAttachment?>()
+    ];
     setState(() {
       for (var i = 0; i < selected.length; i++) {
         final target = availableSlots[i];
@@ -16921,10 +17294,13 @@ class _PostListingScreenState extends State<PostListingScreen> {
         onResult: (index, file, result) async {
           final url = result.data['url']?.toString();
           final approved = result.outcome == _FileUploadOutcome.approved &&
-              url != null && url.isNotEmpty;
+              url != null &&
+              url.isNotEmpty;
           // Delivery belongs to the saved listing, independently of this route.
-          tasks[index].complete(approved ? ListingImageAttachment(
-              url: url, expectedOldUrl: previousUrls[index]) : null);
+          tasks[index].complete(approved
+              ? ListingImageAttachment(
+                  url: url, expectedOldUrl: previousUrls[index])
+              : null);
           _applyImageUploadResult(availableSlots[index], result,
               previousUrl: previousUrls[index]);
         },
@@ -16935,7 +17311,7 @@ class _PostListingScreenState extends State<PostListingScreen> {
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
+            SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
       }
     } finally {
       for (final task in tasks) {
@@ -16953,7 +17329,6 @@ class _PostListingScreenState extends State<PostListingScreen> {
       }
     }
   }
-
 
   Future<void> _removeImage(int slot) async {
     if (_saving || _uploadingSlot[slot] || _imageUrls[slot] == null) return;
@@ -17028,15 +17403,21 @@ class _PostListingScreenState extends State<PostListingScreen> {
       return;
     }
     final token = widget.token;
-    final hasPendingImages = _imageUploadTasks.any((task) => task != null && !task.isCompleted);
+    final hasPendingImages =
+        _imageUploadTasks.any((task) => task != null && !task.isCompleted);
     final pendingImages = hasPendingImages
-        ? [for (final task in _imageUploadTasks) if (task != null) task.future]
+        ? [
+            for (final task in _imageUploadTasks)
+              if (task != null) task.future
+          ]
         : <Future<ListingImageAttachment?>>[];
     final pendingVideo = _listingVideo.pendingUpload;
     final savedVideoUrl = _listingVideo.url;
     final saveVideoChange = _listingVideo.changed;
-    final pendingMedia = [...pendingImages,
-      if (pendingVideo != null) pendingVideo];
+    final pendingMedia = [
+      ...pendingImages,
+      if (pendingVideo != null) pendingVideo
+    ];
     setState(() => _saving = true);
     try {
       final urls = <String>[];
@@ -17045,7 +17426,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
         // Fast images from this batch must not jump ahead of slower ones.
         final original = hasPendingImages && _imageUploadTasks[i] != null;
         final url = original ? _imageOriginalUrls[i] : _imageUrls[i];
-        if (url != null && (original || _imageOutcomes[i] == _FileUploadOutcome.approved)) {
+        if (url != null &&
+            (original || _imageOutcomes[i] == _FileUploadOutcome.approved)) {
           urls.add(url);
         }
       }
@@ -17133,8 +17515,12 @@ class _PostListingScreenState extends State<PostListingScreen> {
         final listingId = (jsonDecode(res.body) as Map)['id']?.toString();
         if (pendingMedia.isNotEmpty && listingId != null) {
           _retainInitialImageUpload = true;
-          listingBackgroundImages.start(api: kApi, token: token,
-              listingId: listingId, title: title, uploads: pendingMedia,
+          listingBackgroundImages.start(
+              api: kApi,
+              token: token,
+              listingId: listingId,
+              title: title,
+              uploads: pendingMedia,
               includesVideo: pendingVideo != null);
         }
         if (!mounted) return;
@@ -17356,7 +17742,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
                       onPressed: _locatingCity ? null : _loadCityFromDevice,
                       icon: const Icon(Icons.my_location),
                       label: Text(_locatingCity
-                          ? 'מאתר יישוב...' : 'זיהוי עיר לפי המיקום שלי'),
+                          ? 'מאתר יישוב...'
+                          : 'זיהוי עיר לפי המיקום שלי'),
                     ),
                     const GeocodingAttribution(),
                     if (_category != 'רכב' && _category != 'נדל״ן') ...[
@@ -17812,7 +18199,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
       upload: (file) => _uploadListingVideoRequest(file, token),
       validate: (file) => _videoWithinDurationLimit(context, file,
           maxDuration: const Duration(seconds: 10),
-          tolerance: Duration.zero, limitDescription: '10 שניות'),
+          tolerance: Duration.zero,
+          limitDescription: '10 שניות'),
       preview: (url) => _ChatVideoPlayer(url: url),
     );
   }
@@ -17850,7 +18238,8 @@ class _PostListingScreenState extends State<PostListingScreen> {
             width: 150,
             height: 150,
             child: OutlinedButton.icon(
-              onPressed: _saving ? null : () => _pickImage(firstFree!, camera: true),
+              onPressed:
+                  _saving ? null : () => _pickImage(firstFree!, camera: true),
               icon: const Icon(Icons.photo_camera_outlined),
               label: const Text('צילום תמונות'),
             ),
@@ -18218,8 +18607,10 @@ class EditListingScreen extends StatefulWidget {
   final String token;
   final String? initialMessageId;
   const EditListingScreen(
-      {super.key, required this.listingId, required this.token,
-        this.initialMessageId});
+      {super.key,
+      required this.listingId,
+      required this.token,
+      this.initialMessageId});
   @override
   State<EditListingScreen> createState() => _EditListingScreenState();
 }
@@ -18277,7 +18668,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
   final List<bool> _uploadingSlot = List<bool>.filled(8, false);
   final _listingVideo = ListingVideoDraft();
   bool _preparingVideo = false;
-  final _imageUploadTasks = List<Completer<ListingImageAttachment?>?>.filled(8, null);
+  final _imageUploadTasks =
+      List<Completer<ListingImageAttachment?>?>.filled(8, null);
   final _imageOriginalUrls = List<String?>.filled(8, null);
   final List<_FileUploadOutcome?> _imageOutcomes =
       List<_FileUploadOutcome?>.filled(8, null);
@@ -18934,11 +19326,15 @@ class _EditListingScreenState extends State<EditListingScreen> {
     final messageId = widget.initialMessageId;
     if (!mounted || messageId == null || _initialMessageImageStarted) return;
     _initialMessageImageStarted = true;
-    final slot = _imageUrls.asMap().entries.where((entry) =>
-        entry.value == null && !_uploadingSlot[entry.key]).map((entry) => entry.key).firstOrNull;
+    final slot = _imageUrls
+        .asMap()
+        .entries
+        .where((entry) => entry.value == null && !_uploadingSlot[entry.key])
+        .map((entry) => entry.key)
+        .firstOrNull;
     if (slot == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('המודעה כבר כוללת 8 תמונות')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('המודעה כבר כוללת 8 תמונות')));
       return;
     }
     final token = widget.token;
@@ -18948,8 +19344,11 @@ class _EditListingScreenState extends State<EditListingScreen> {
       _imageUploadTasks[slot] = task;
       _imageOriginalUrls[slot] = null;
     });
-    unawaited(_completeChatListingImageUpload(token: token, messageId: messageId,
-        task: task, shouldUpload: () => mounted || _retainInitialImageUpload,
+    unawaited(_completeChatListingImageUpload(
+        token: token,
+        messageId: messageId,
+        task: task,
+        shouldUpload: () => mounted || _retainInitialImageUpload,
         onResult: (result) {
           _applyImageUploadResult(slot, result);
           if (mounted) _showImageBatchSummary(context, [result]);
@@ -18961,7 +19360,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
     if (!mounted) return;
     final url = result.data['url']?.toString();
     final approved = result.outcome == _FileUploadOutcome.approved &&
-        url != null && url.isNotEmpty;
+        url != null &&
+        url.isNotEmpty;
     setState(() {
       _uploadingSlot[slot] = false;
       _imageReasons[slot] = result.data['reason']?.toString() ?? result.error;
@@ -18975,18 +19375,21 @@ class _EditListingScreenState extends State<EditListingScreen> {
   Future<void> _pickImage(int slot, {bool camera = false}) async {
     if (_saving || _uploadingSlot[slot]) return;
     final token = widget.token;
-    final free = _imageUrls.asMap().entries.where((entry) =>
-        entry.value == null && !_uploadingSlot[entry.key]).length;
+    final free = _imageUrls
+        .asMap()
+        .entries
+        .where((entry) => entry.value == null && !_uploadingSlot[entry.key])
+        .length;
     List<XFile> picked;
     try {
       picked = camera
-          ? await captureListingPhotos(context, maxPhotos: free,
-              creatorId: 'listing')
+          ? await captureListingPhotos(context,
+              maxPhotos: free, creatorId: 'listing')
           : await ImagePicker().pickMultiImage(imageQuality: 80);
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('לא ניתן לפתוח את התמונות. נסה שוב')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('לא ניתן לפתוח את התמונות. נסה שוב')));
       }
       return;
     }
@@ -19003,9 +19406,15 @@ class _EditListingScreenState extends State<EditListingScreen> {
         content: Text('ניתן לצרף עד 8 תמונות למודעה'),
       ));
     }
-    final previousUrls = [for (final target in availableSlots.take(selected.length))
-      _imageOutcomes[target] == _FileUploadOutcome.approved ? _imageUrls[target] : null];
-    final tasks = [for (final _ in selected) Completer<ListingImageAttachment?>()];
+    final previousUrls = [
+      for (final target in availableSlots.take(selected.length))
+        _imageOutcomes[target] == _FileUploadOutcome.approved
+            ? _imageUrls[target]
+            : null
+    ];
+    final tasks = [
+      for (final _ in selected) Completer<ListingImageAttachment?>()
+    ];
     setState(() {
       for (var i = 0; i < selected.length; i++) {
         final target = availableSlots[i];
@@ -19023,10 +19432,13 @@ class _EditListingScreenState extends State<EditListingScreen> {
         onResult: (index, file, result) async {
           final url = result.data['url']?.toString();
           final approved = result.outcome == _FileUploadOutcome.approved &&
-              url != null && url.isNotEmpty;
+              url != null &&
+              url.isNotEmpty;
           // Delivery belongs to the saved listing, independently of this route.
-          tasks[index].complete(approved ? ListingImageAttachment(
-              url: url, expectedOldUrl: previousUrls[index]) : null);
+          tasks[index].complete(approved
+              ? ListingImageAttachment(
+                  url: url, expectedOldUrl: previousUrls[index])
+              : null);
           _applyImageUploadResult(availableSlots[index], result,
               previousUrl: previousUrls[index]);
         },
@@ -19037,7 +19449,7 @@ class _EditListingScreenState extends State<EditListingScreen> {
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
+            SnackBar(content: Text('שגיאה בהעלאת תמונה: $error')));
       }
     } finally {
       for (final task in tasks) {
@@ -19056,7 +19468,6 @@ class _EditListingScreenState extends State<EditListingScreen> {
     }
   }
 
-
   Future<void> _submit() async {
     if (_saving || _preparingVideo) return;
     if (!_contactInApp && !_contactEmail && !_contactPhone && !_contactPhone) {
@@ -19071,15 +19482,21 @@ class _EditListingScreenState extends State<EditListingScreen> {
     }
     final token = widget.token;
     final listingId = widget.listingId;
-    final hasPendingImages = _imageUploadTasks.any((task) => task != null && !task.isCompleted);
+    final hasPendingImages =
+        _imageUploadTasks.any((task) => task != null && !task.isCompleted);
     final pendingImages = hasPendingImages
-        ? [for (final task in _imageUploadTasks) if (task != null) task.future]
+        ? [
+            for (final task in _imageUploadTasks)
+              if (task != null) task.future
+          ]
         : <Future<ListingImageAttachment?>>[];
     final pendingVideo = _listingVideo.pendingUpload;
     final savedVideoUrl = _listingVideo.url;
     final saveVideoChange = _listingVideo.changed;
-    final pendingMedia = [...pendingImages,
-      if (pendingVideo != null) pendingVideo];
+    final pendingMedia = [
+      ...pendingImages,
+      if (pendingVideo != null) pendingVideo
+    ];
     setState(() => _saving = true);
     try {
       final urls = <String>[];
@@ -19088,7 +19505,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
         // Fast images from this batch must not jump ahead of slower ones.
         final original = hasPendingImages && _imageUploadTasks[i] != null;
         final url = original ? _imageOriginalUrls[i] : _imageUrls[i];
-        if (url != null && (original || _imageOutcomes[i] == _FileUploadOutcome.approved)) {
+        if (url != null &&
+            (original || _imageOutcomes[i] == _FileUploadOutcome.approved)) {
           urls.add(url);
         }
       }
@@ -19175,8 +19593,12 @@ class _EditListingScreenState extends State<EditListingScreen> {
       if (res.statusCode == 200) {
         if (pendingMedia.isNotEmpty) {
           _retainInitialImageUpload = true;
-          listingBackgroundImages.start(api: kApi, token: token,
-              listingId: listingId, title: title, uploads: pendingMedia,
+          listingBackgroundImages.start(
+              api: kApi,
+              token: token,
+              listingId: listingId,
+              title: title,
+              uploads: pendingMedia,
               includesVideo: pendingVideo != null);
         }
         if (!mounted) return;
@@ -19386,7 +19808,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
                               backgroundColor: kPrimary,
                               padding:
                                   const EdgeInsets.symmetric(vertical: 14)),
-                          onPressed: _saving || _preparingVideo ? null : _submit,
+                          onPressed:
+                              _saving || _preparingVideo ? null : _submit,
                           child: _saving
                               ? const CircularProgressIndicator(
                                   color: Colors.white)
@@ -19497,12 +19920,12 @@ class _EditListingScreenState extends State<EditListingScreen> {
   void _clearEditImage(int index) {
     if (_saving || _uploadingSlot[index]) return;
     setState(() {
-        _imageUploadTasks[index] = null;
-        _imageOriginalUrls[index] = null;
-        _imageUrls[index] = null;
-        _imageOutcomes[index] = null;
-        _imageReasons[index] = null;
-      });
+      _imageUploadTasks[index] = null;
+      _imageOriginalUrls[index] = null;
+      _imageUrls[index] = null;
+      _imageOutcomes[index] = null;
+      _imageReasons[index] = null;
+    });
   }
 
   Widget _listingVideoPicker() {
@@ -19516,7 +19939,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
       upload: (file) => _uploadListingVideoRequest(file, token),
       validate: (file) => _videoWithinDurationLimit(context, file,
           maxDuration: const Duration(seconds: 10),
-          tolerance: Duration.zero, limitDescription: '10 שניות'),
+          tolerance: Duration.zero,
+          limitDescription: '10 שניות'),
       preview: (url) => _ChatVideoPlayer(url: url),
     );
   }
@@ -19554,7 +19978,8 @@ class _EditListingScreenState extends State<EditListingScreen> {
             width: 150,
             height: 150,
             child: OutlinedButton.icon(
-              onPressed: _saving ? null : () => _pickImage(firstFree!, camera: true),
+              onPressed:
+                  _saving ? null : () => _pickImage(firstFree!, camera: true),
               icon: const Icon(Icons.photo_camera_outlined),
               label: const Text('צילום תמונות'),
             ),
@@ -19621,15 +20046,19 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
     if (!mounted || _imageRevision == listingBackgroundImages.revision) return;
     final previousRevision = _imageRevision;
     _imageRevision = listingBackgroundImages.revision;
-    final jobs = listingBackgroundImages.forToken(widget.token).where((job) =>
-        job.listingId == widget.item['id']?.toString() &&
-        job.attachedRevision > previousRevision &&
-        (job.imageUrls != null || job.hasVideoResult))
-        .toList()..sort((a, b) => a.attachedRevision.compareTo(b.attachedRevision));
+    final jobs = listingBackgroundImages
+        .forToken(widget.token)
+        .where((job) =>
+            job.listingId == widget.item['id']?.toString() &&
+            job.attachedRevision > previousRevision &&
+            (job.imageUrls != null || job.hasVideoResult))
+        .toList()
+      ..sort((a, b) => a.attachedRevision.compareTo(b.attachedRevision));
     if (jobs.isNotEmpty) {
       setState(() {
         for (final job in jobs) {
-          if (job.imageUrls != null) _backgroundImageUrls = List.of(job.imageUrls!);
+          if (job.imageUrls != null)
+            _backgroundImageUrls = List.of(job.imageUrls!);
           if (job.hasVideoResult) {
             _hasBackgroundVideo = true;
             _backgroundVideoUrl = job.videoUrl;
@@ -19676,7 +20105,8 @@ class _ListingDetailScreenState extends State<ListingDetailScreen> {
   }
 
   String? get _videoUrl => _hasBackgroundVideo
-      ? _backgroundVideoUrl : widget.item['video_url']?.toString();
+      ? _backgroundVideoUrl
+      : widget.item['video_url']?.toString();
 
   Future<void> _openImageViewer(List<String> images, int initialIndex) async {
     final controller = PageController(initialPage: initialIndex);
@@ -20802,29 +21232,32 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
               color: Color(0x10000000), blurRadius: 14, offset: Offset(0, 4))
         ],
       ),
-      child: Material(color: Colors.transparent, child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Row(children: [
-          Container(
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(
-                  color: const Color(0xFFE8F4FD),
-                  borderRadius: BorderRadius.circular(12)),
-              child: Icon(icon, color: kPrimary)),
-          const SizedBox(width: 11),
-          Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontSize: 17, fontWeight: FontWeight.w800)),
-                Text(subtitle,
-                    style: const TextStyle(fontSize: 12, color: kSubtext))
-              ])),
-        ]),
-        const SizedBox(height: 16),
-        child,
-      ])),
+      child: Material(
+          color: Colors.transparent,
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFE8F4FD),
+                      borderRadius: BorderRadius.circular(12)),
+                  child: Icon(icon, color: kPrimary)),
+              const SizedBox(width: 11),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text(title,
+                        style: const TextStyle(
+                            fontSize: 17, fontWeight: FontWeight.w800)),
+                    Text(subtitle,
+                        style: const TextStyle(fontSize: 12, color: kSubtext))
+                  ])),
+            ]),
+            const SizedBox(height: 16),
+            child,
+          ])),
     );
   }
 
@@ -20911,9 +21344,14 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                     CheckboxListTile(
                       contentPadding: EdgeInsets.zero,
                       value: _shareGroupPhone,
-                      title: const Text('הצג את מספר הטלפון שלי למשתתפי הקבוצה'),
-                      subtitle: const Text('אפשר לבטל את השיתוף. המספר נשאר גלוי לחברים.'),
-                      onChanged: _saving ? null : (value) => setState(() => _shareGroupPhone = value == true),
+                      title:
+                          const Text('הצג את מספר הטלפון שלי למשתתפי הקבוצה'),
+                      subtitle: const Text(
+                          'אפשר לבטל את השיתוף. המספר נשאר גלוי לחברים.'),
+                      onChanged: _saving
+                          ? null
+                          : (value) =>
+                              setState(() => _shareGroupPhone = value == true),
                     ),
                     const Text('סוג הקבוצה',
                         style: TextStyle(fontWeight: FontWeight.w700)),
@@ -21183,8 +21621,10 @@ class _MainNavigationTabs extends StatelessWidget {
     if (MediaQuery.sizeOf(context).width >= 900) {
       onSelected(5);
     } else {
-      await Navigator.push(context, MaterialPageRoute<void>(
-        builder: (_) => CalendarScreen(api: kApi, token: token)));
+      await Navigator.push(
+          context,
+          MaterialPageRoute<void>(
+              builder: (_) => CalendarScreen(api: kApi, token: token)));
     }
   }
 
@@ -21192,8 +21632,10 @@ class _MainNavigationTabs extends StatelessWidget {
     if (MediaQuery.sizeOf(context).width >= 900) {
       onSelected(4);
     } else {
-      await Navigator.push(context, MaterialPageRoute<void>(
-        builder: (_) => PersonalMediaScreen(token: token)));
+      await Navigator.push(
+          context,
+          MaterialPageRoute<void>(
+              builder: (_) => PersonalMediaScreen(token: token)));
     }
   }
 
@@ -21201,21 +21643,29 @@ class _MainNavigationTabs extends StatelessWidget {
   Widget build(BuildContext context) => Row(
         textDirection: TextDirection.rtl,
         children: [
-          Expanded(child: MainNavigationTab(label: 'שיחות',
-            selected: currentIndex == 0, onTap: () => onSelected(0))),
-          Expanded(child: CalendarNavigationButton(
+          Expanded(
+              child: MainNavigationTab(
+                  label: 'שיחות',
+                  selected: currentIndex == 0,
+                  onTap: () => onSelected(0))),
+          Expanded(
+              child: CalendarNavigationButton(
             api: kApi,
             token: token,
             selected: currentIndex == 5,
             onTap: () => _openCalendar(context),
           )),
-          Expanded(child: _PersonalMediaNavigationButton(
+          Expanded(
+              child: _PersonalMediaNavigationButton(
             token: token,
             selected: currentIndex == 4,
             onTap: () => _openMedia(context),
           )),
-          Expanded(child: MainNavigationTab(label: 'מודעות',
-            selected: currentIndex == 2, onTap: () => onSelected(2))),
+          Expanded(
+              child: MainNavigationTab(
+                  label: 'מודעות',
+                  selected: currentIndex == 2,
+                  onTap: () => onSelected(2))),
         ],
       );
 }
@@ -21231,8 +21681,9 @@ class ConversationsScreen extends StatefulWidget {
   final Set<String> typingUserIds;
   final void Function(String userId) onChatOpened;
   final void Function(Map<String, dynamic> user)? onUserSelected;
-  final void Function(Map<String, dynamic> item, bool group,
-      Map<String, dynamic> message)? onSearchMessageSelected;
+  final void Function(
+          Map<String, dynamic> item, bool group, Map<String, dynamic> message)?
+      onSearchMessageSelected;
   final String? selectedUserId;
   final String? selectedGroupId;
   final void Function(Map<String, dynamic> group, bool openMembers)?
@@ -21282,7 +21733,8 @@ class ConversationsScreen extends StatefulWidget {
   State<ConversationsScreen> createState() => _ConversationsScreenState();
 }
 
-class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsBindingObserver {
+class _ConversationsScreenState extends State<ConversationsScreen>
+    with WidgetsBindingObserver {
   int _tab = 0;
   List<Map<String, dynamic>> _groups = [];
   int _groupsLoadGeneration = 0;
@@ -21346,8 +21798,10 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || kIsWeb) return;
-      _contactWarmup = Timer(const Duration(seconds: 3), () => _loadDeviceSearchContacts());
-      _contactRefresh = Timer.periodic(const Duration(minutes: 15), (_) => _refreshDeviceSearchContacts());
+      _contactWarmup =
+          Timer(const Duration(seconds: 3), () => _loadDeviceSearchContacts());
+      _contactRefresh = Timer.periodic(
+          const Duration(minutes: 15), (_) => _refreshDeviceSearchContacts());
     });
     _loadGroups();
     _groupInvitedHandler = (data) async {
@@ -21433,7 +21887,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
     if (confirmed == true) await widget.onLogout();
   }
 
-  late final _deviceContactCache = DeviceContactCache(widget.me?['id']?.toString() ?? '');
+  late final _deviceContactCache =
+      DeviceContactCache(widget.me?['id']?.toString() ?? '');
   List<Map<String, dynamic>>? _deviceSearchResults;
   Future<List<Map<String, dynamic>>>? _deviceSearchLoad;
   int _deviceContactsRevision = 0;
@@ -21441,7 +21896,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
   Timer? _contactRefresh;
   Future<void> Function()? _findFriendPermissionRefresh;
 
-  Future<List<Map<String, dynamic>>> _loadDeviceSearchContacts({bool requestPermission = false}) async {
+  Future<List<Map<String, dynamic>>> _loadDeviceSearchContacts(
+      {bool requestPermission = false}) async {
     if (kIsWeb) return [];
     final granted = await ContactReadPermission.isGranted;
     if (!granted) {
@@ -21452,51 +21908,74 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
       }
     }
     if (granted && _deviceSearchResults != null) return _deviceSearchResults!;
-    return _deviceSearchLoad ??= _readDeviceSearchContacts(requestPermission: requestPermission)
-        .then((rows) async {
-          final stillGranted = await ContactReadPermission.isGranted;
-          final visibleRows = stillGranted ? rows : <Map<String, dynamic>>[];
-          if (mounted) {
-            setState(() {
-              _deviceSearchResults = stillGranted ? visibleRows : null;
-              _deviceContactsRevision++;
-            });
-          }
-          return visibleRows;
-        })
-        .whenComplete(() => _deviceSearchLoad = null);
+    return _deviceSearchLoad ??=
+        _readDeviceSearchContacts(requestPermission: requestPermission)
+            .then((rows) async {
+      final stillGranted = await ContactReadPermission.isGranted;
+      final visibleRows = stillGranted ? rows : <Map<String, dynamic>>[];
+      if (mounted) {
+        setState(() {
+          _deviceSearchResults = stillGranted ? visibleRows : null;
+          _deviceContactsRevision++;
+        });
+      }
+      return visibleRows;
+    }).whenComplete(() => _deviceSearchLoad = null);
   }
 
   Future<List<Map<String, dynamic>>> _quickDeviceSearchContacts() async {
     if (kIsWeb) return [];
-    if (!await ContactReadPermission.isGranted) return _loadDeviceSearchContacts();
+    if (!await ContactReadPermission.isGranted)
+      return _loadDeviceSearchContacts();
     if (_deviceSearchResults != null) return _deviceSearchResults!;
     final local = await _deviceContactCache.load();
     _loadDeviceSearchContacts().ignore();
     return local.map((c) => {...c, 'device_only': true}).toList();
   }
 
-  Future<List<Map<String, dynamic>>> _readDeviceSearchContacts({bool requestPermission = false}) async {
+  Future<List<Map<String, dynamic>>> _readDeviceSearchContacts(
+      {bool requestPermission = false}) async {
     final deviceResults = <Map<String, dynamic>>[];
     if (!kIsWeb) {
       try {
-        final localContacts = await _deviceContactCache.load(requestPermission: requestPermission);
-        deviceResults.addAll(localContacts.map((c) => {...c, 'device_only': true}));
-        final phones = localContacts.map((c) => c['phone'].toString()).where((p) => p.isNotEmpty).toSet().toList();
-        final emails = localContacts.map((c) => c['email'].toString()).where((e) => e.contains('@')).toSet().toList();
+        final localContacts = await _deviceContactCache.load(
+            requestPermission: requestPermission);
+        deviceResults
+            .addAll(localContacts.map((c) => {...c, 'device_only': true}));
+        final phones = localContacts
+            .map((c) => c['phone'].toString())
+            .where((p) => p.isNotEmpty)
+            .toSet()
+            .toList();
+        final emails = localContacts
+            .map((c) => c['email'].toString())
+            .where((e) => e.contains('@'))
+            .toSet()
+            .toList();
         {
           var matched = <Map<String, dynamic>>[];
           if (phones.isNotEmpty || emails.isNotEmpty) {
             final pictureRevision = _profilePicturesRevision;
-            for (var offset = 0; offset < math.max(phones.length, emails.length); offset += 2000) {
-              final response = await http.post(
-                Uri.parse('$kApi/contacts/match'),
-                headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-                body: jsonEncode({'phones': phones.skip(offset).take(2000).toList(),
-                  'emails': emails.skip(offset).take(2000).toList(), 'source': 'phone_import'}),
-              ).timeout(const Duration(seconds: 20));
+            for (var offset = 0;
+                offset < math.max(phones.length, emails.length);
+                offset += 2000) {
+              final response = await http
+                  .post(
+                    Uri.parse('$kApi/contacts/match'),
+                    headers: {
+                      'Authorization': 'Bearer ${widget.token}',
+                      'Content-Type': 'application/json'
+                    },
+                    body: jsonEncode({
+                      'phones': phones.skip(offset).take(2000).toList(),
+                      'emails': emails.skip(offset).take(2000).toList(),
+                      'source': 'phone_import'
+                    }),
+                  )
+                  .timeout(const Duration(seconds: 20));
               if (response.statusCode == 200) {
-                matched.addAll((jsonDecode(response.body) as List).cast<Map<String, dynamic>>());
+                matched.addAll((jsonDecode(response.body) as List)
+                    .cast<Map<String, dynamic>>());
               }
             }
             _approveProfilePictures(matched, pictureRevision);
@@ -21505,20 +21984,25 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
           final byPhone = <String, Map<String, dynamic>>{};
           final byEmail = <String, Map<String, dynamic>>{};
           for (final user in matched) {
-            final phone = DeviceContactCache.normalizePhone((user['phone'] ?? '').toString());
+            final phone = DeviceContactCache.normalizePhone(
+                (user['phone'] ?? '').toString());
             final email = (user['email'] ?? '').toString().trim().toLowerCase();
             if (phone.isNotEmpty) byPhone[phone] = user;
             if (email.isNotEmpty) byEmail[email] = user;
           }
           final seen = <String>{};
           for (final local in localContacts) {
-            final candidate = byPhone[local['phone']] ?? byEmail[local['email']];
-            final appUser = candidate == null ? null : Map<String, dynamic>.from(candidate);
+            final candidate =
+                byPhone[local['phone']] ?? byEmail[local['email']];
+            final appUser =
+                candidate == null ? null : Map<String, dynamic>.from(candidate);
             if (appUser != null) {
               appUser['device_name'] = local['name'];
               final knownPhone = local['phone']?.toString() ?? '';
               if (knownPhone.isNotEmpty &&
-                  DeviceContactCache.normalizePhone(appUser['phone']?.toString() ?? '') == knownPhone) {
+                  DeviceContactCache.normalizePhone(
+                          appUser['phone']?.toString() ?? '') ==
+                      knownPhone) {
                 appUser['_known_phone'] = knownPhone;
                 appUser['_contact_save_source'] = 'phone_import';
               } else {
@@ -21527,7 +22011,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
               if (seen.add(appUser['id'].toString())) {
                 deviceResults.add(appUser);
               }
-            } else if (seen.add('${local['name']}|${local['phone']}|${local['email']}')) {
+            } else if (seen
+                .add('${local['name']}|${local['phone']}|${local['email']}')) {
               deviceResults.add({...local, 'device_only': true});
             }
           }
@@ -21541,30 +22026,54 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
 
   Future<void> _saveSearchUser(Map<String, dynamic> user) async {
     final phone = DeviceContactCache.normalizePhone(_searchQuery);
-    final manualPhone = RegExp(r'^[+\d ()-]+$').hasMatch(_searchQuery) && phone.length >= 9 && phone.length <= 15;
-    final response = await http.post(Uri.parse('$kApi/contacts/save/${user['id']}'),
-      headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-      body: jsonEncode({'source': user['_contact_save_source'] ?? (manualPhone ? 'phone_manual' : 'in_app'),
-        if (user['_known_phone'] != null || manualPhone) 'knownPhone': user['_known_phone'] ?? phone}));
+    final manualPhone = RegExp(r'^[+\d ()-]+$').hasMatch(_searchQuery) &&
+        phone.length >= 9 &&
+        phone.length <= 15;
+    final response = await http.post(
+        Uri.parse('$kApi/contacts/save/${user['id']}'),
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json'
+        },
+        body: jsonEncode({
+          'source': user['_contact_save_source'] ??
+              (manualPhone ? 'phone_manual' : 'in_app'),
+          if (user['_known_phone'] != null || manualPhone)
+            'knownPhone': user['_known_phone'] ?? phone
+        }));
     if (response.statusCode != 200) throw Exception('save failed');
     await widget.onContactsChanged();
   }
 
   void _openSearchConversation(Map<String, dynamic> item, bool group) {
     if (group) {
-      if (MediaQuery.sizeOf(context).width >= 900 && widget.onGroupSelected != null) {
+      if (MediaQuery.sizeOf(context).width >= 900 &&
+          widget.onGroupSelected != null) {
         widget.onGroupSelected!(item, false);
       } else {
-        Navigator.push(context, MaterialPageRoute(builder: (_) => GroupChatScreen(
-          group: item, token: widget.token, me: widget.me, socket: widget.socket)));
+        Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => GroupChatScreen(
+                    group: item,
+                    token: widget.token,
+                    me: widget.me,
+                    socket: widget.socket)));
       }
     } else {
       widget.onChatOpened(item['id'].toString());
-      if (MediaQuery.sizeOf(context).width >= 900 && widget.onUserSelected != null) {
+      if (MediaQuery.sizeOf(context).width >= 900 &&
+          widget.onUserSelected != null) {
         widget.onUserSelected!(item);
       } else {
-        Navigator.push(context, MaterialPageRoute(builder: (_) => ChatScreen(
-          recipient: item, token: widget.token, me: widget.me, socket: widget.socket)));
+        Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (_) => ChatScreen(
+                    recipient: item,
+                    token: widget.token,
+                    me: widget.me,
+                    socket: widget.socket)));
       }
     }
   }
@@ -21572,9 +22081,14 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
   void _openSearchMessage(Map<String, dynamic> message) {
     final group = message['kind'] == 'group';
     final items = group ? _groups : widget.users;
-    final item = items.where((i) => i['id'] == message['conversation_id']).firstOrNull ??
-      {'id': message['conversation_id'], 'name': message['conversation_name']};
-    if (MediaQuery.sizeOf(context).width >= 900 && widget.onSearchMessageSelected != null) {
+    final item =
+        items.where((i) => i['id'] == message['conversation_id']).firstOrNull ??
+            {
+              'id': message['conversation_id'],
+              'name': message['conversation_name']
+            };
+    if (MediaQuery.sizeOf(context).width >= 900 &&
+        widget.onSearchMessageSelected != null) {
       widget.onSearchMessageSelected!(item, group, message);
       return;
     }
@@ -21588,19 +22102,32 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
           width: math.min(1100, size.width * 0.9),
           height: size.height * 0.85,
           child: group
-              ? GroupChatScreen(group: item, token: widget.token, me: widget.me, socket: widget.socket,
-                  searchMessageId: message['id'].toString(), searchMessageAt: message['created_at'].toString())
-              : ChatScreen(recipient: item, token: widget.token, me: widget.me, socket: widget.socket,
-                  searchMessageId: message['id'].toString(), searchMessageAt: message['created_at'].toString()),
+              ? GroupChatScreen(
+                  group: item,
+                  token: widget.token,
+                  me: widget.me,
+                  socket: widget.socket,
+                  searchMessageId: message['id'].toString(),
+                  searchMessageAt: message['created_at'].toString())
+              : ChatScreen(
+                  recipient: item,
+                  token: widget.token,
+                  me: widget.me,
+                  socket: widget.socket,
+                  searchMessageId: message['id'].toString(),
+                  searchMessageAt: message['created_at'].toString()),
         ),
       ),
     );
   }
 
   Future<void> _showFindFriendDialog() async {
-    String normalizeContactPhone(String value) => DeviceContactCache.normalizePhone(value);
-    final deviceResults = List<Map<String, dynamic>>.from(await _loadDeviceSearchContacts(requestPermission: true));
-    var contactsPermissionDenied = !kIsWeb && !await ContactReadPermission.isGranted;
+    String normalizeContactPhone(String value) =>
+        DeviceContactCache.normalizePhone(value);
+    final deviceResults = List<Map<String, dynamic>>.from(
+        await _loadDeviceSearchContacts(requestPermission: true));
+    var contactsPermissionDenied =
+        !kIsWeb && !await ContactReadPermission.isGranted;
     if (!mounted) return;
     final directoryResults = <Map<String, dynamic>>[];
 
@@ -21651,488 +22178,510 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
     String? error;
     try {
       await showDialog(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          final route = ModalRoute.of(dialogContext);
-          if (route != null) dialogRemoved ??= route.completed;
-          bool dialogIsActive() =>
-              dialogActive && mounted && dialogContext.mounted;
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            final route = ModalRoute.of(dialogContext);
+            if (route != null) dialogRemoved ??= route.completed;
+            bool dialogIsActive() =>
+                dialogActive && mounted && dialogContext.mounted;
 
-          Iterable<Map<String, dynamic>> localMatches(String query) {
-            final lowerQuery = query.toLowerCase();
-            final phoneQuery = RegExp(r'^[+\d ()-]+$').hasMatch(query)
-                ? normalizeContactPhone(query)
-                : '';
-            return [...deviceResults, ...directoryResults].where((item) {
-              final phone = item['device_only'] == true
-                  ? (item['phone'] ?? '').toString()
-                  : visibleContactPhone(item);
-              final text = [item['name'], item['device_name'], phone, item['email']]
-                  .whereType<Object>().join(' ').toLowerCase();
-              return text.contains(lowerQuery) ||
-                  (phoneQuery.isNotEmpty &&
-                      normalizeContactPhone(phone).contains(phoneQuery));
-            });
-          }
+            Iterable<Map<String, dynamic>> localMatches(String query) {
+              final lowerQuery = query.toLowerCase();
+              final phoneQuery = RegExp(r'^[+\d ()-]+$').hasMatch(query)
+                  ? normalizeContactPhone(query)
+                  : '';
+              return [...deviceResults, ...directoryResults].where((item) {
+                final phone = item['device_only'] == true
+                    ? (item['phone'] ?? '').toString()
+                    : visibleContactPhone(item);
+                final text = [
+                  item['name'],
+                  item['device_name'],
+                  phone,
+                  item['email']
+                ].whereType<Object>().join(' ').toLowerCase();
+                return text.contains(lowerQuery) ||
+                    (phoneQuery.isNotEmpty &&
+                        normalizeContactPhone(phone).contains(phoneQuery));
+              });
+            }
 
-          void rebuildContactResults() {
-            initialResults = mergeAndSort(deviceResults, directoryResults);
-            final query = searchController.text.trim();
-            results = query.isEmpty
-                ? List<Map<String, dynamic>>.from(initialResults)
-                : mergeAndSort(
-                    queryServerText == query ? queryServerResults : [],
-                    localMatches(query));
-          }
+            void rebuildContactResults() {
+              initialResults = mergeAndSort(deviceResults, directoryResults);
+              final query = searchController.text.trim();
+              results = query.isEmpty
+                  ? List<Map<String, dynamic>>.from(initialResults)
+                  : mergeAndSort(
+                      queryServerText == query ? queryServerResults : [],
+                      localMatches(query));
+            }
 
-          Future<void> refreshContactsPermission({bool request = false}) async {
-            if (!dialogIsActive() || permissionBusy) return;
-            setDialogState(() => permissionBusy = true);
-            try {
-              var status = await ContactReadPermission.status;
-              if (!dialogIsActive()) return;
-              if (!request && status.isGranted && !contactsPermissionDenied) return;
-              if (request && !status.isGranted) {
-                FocusManager.instance.primaryFocus?.unfocus();
-                if (status.isPermanentlyDenied || status.isRestricted) {
-                  final opened = await permissions.openAppSettings();
-                  if (!dialogIsActive()) return;
-                  if (!opened) {
-                    setDialogState(() => error = 'לא ניתן לפתוח את הגדרות האפליקציה');
+            Future<void> refreshContactsPermission(
+                {bool request = false}) async {
+              if (!dialogIsActive() || permissionBusy) return;
+              setDialogState(() => permissionBusy = true);
+              try {
+                var status = await ContactReadPermission.status;
+                if (!dialogIsActive()) return;
+                if (!request && status.isGranted && !contactsPermissionDenied)
+                  return;
+                if (request && !status.isGranted) {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  if (status.isPermanentlyDenied || status.isRestricted) {
+                    final opened = await permissions.openAppSettings();
+                    if (!dialogIsActive()) return;
+                    if (!opened) {
+                      setDialogState(
+                          () => error = 'לא ניתן לפתוח את הגדרות האפליקציה');
+                    }
+                  } else {
+                    await ContactReadPermission.request();
+                    if (!dialogIsActive()) return;
                   }
-                } else {
-                  await ContactReadPermission.request();
-                  if (!dialogIsActive()) return;
+                  status = await ContactReadPermission.status;
                 }
-                status = await ContactReadPermission.status;
-              }
-              if (!dialogIsActive()) return;
-              if (!status.isGranted) {
-                await _deviceContactCache.load();
+                if (!dialogIsActive()) return;
+                if (!status.isGranted) {
+                  await _deviceContactCache.load();
+                  if (!dialogIsActive()) return;
+                  _deviceSearchResults = null;
+                  setDialogState(() {
+                    contactsPermissionDenied = true;
+                    deviceResults.clear();
+                    rebuildContactResults();
+                  });
+                  return;
+                }
+                final pendingLoad = _deviceSearchLoad;
+                if (pendingLoad != null) await pendingLoad;
+                if (!dialogIsActive()) return;
+                await _deviceContactCache.refresh();
                 if (!dialogIsActive()) return;
                 _deviceSearchResults = null;
+                final rows = await _loadDeviceSearchContacts();
+                if (!dialogIsActive()) return;
+                final pictureRevision = _profilePicturesRevision;
+                try {
+                  final response = await http.get(
+                    Uri.parse('$kApi/users/directory'),
+                    headers: {'Authorization': 'Bearer ${widget.token}'},
+                  ).timeout(const Duration(seconds: 20));
+                  if (!dialogIsActive()) return;
+                  if (response.statusCode == 200) {
+                    directoryResults
+                      ..clear()
+                      ..addAll((jsonDecode(response.body) as List)
+                          .cast<Map<String, dynamic>>());
+                    _approveProfilePictures(directoryResults, pictureRevision);
+                  }
+                } catch (_) {
+                  // Keep the current directory available if refreshing fails.
+                }
+                if (!dialogIsActive()) return;
+                final granted = await ContactReadPermission.isGranted;
+                if (!dialogIsActive()) return;
+                if (!granted) {
+                  await _deviceContactCache.load();
+                  if (!dialogIsActive()) return;
+                  _deviceSearchResults = null;
+                }
                 setDialogState(() {
-                  contactsPermissionDenied = true;
-                  deviceResults.clear();
+                  contactsPermissionDenied = !granted;
+                  deviceResults
+                    ..clear()
+                    ..addAll(granted ? rows : <Map<String, dynamic>>[]);
+                  rebuildContactResults();
+                  error = null;
+                });
+              } catch (_) {
+                if (dialogIsActive()) {
+                  setDialogState(
+                      () => error = 'לא ניתן לטעון אנשי קשר. נסה שוב');
+                }
+              } finally {
+                if (dialogIsActive()) {
+                  setDialogState(() => permissionBusy = false);
+                }
+              }
+            }
+
+            refreshPermissionOnResume ??= () => refreshContactsPermission();
+            if (dialogIsActive()) {
+              _findFriendPermissionRefresh = refreshPermissionOnResume;
+            }
+            if (!directoryLoadStarted) {
+              directoryLoadStarted = true;
+              Future<void>(() async {
+                final pictureRevision = _profilePicturesRevision;
+                try {
+                  final response = await http.get(
+                    Uri.parse('$kApi/users/directory'),
+                    headers: {'Authorization': 'Bearer ${widget.token}'},
+                  );
+                  if (response.statusCode == 200) {
+                    directoryResults
+                      ..clear()
+                      ..addAll((jsonDecode(response.body) as List)
+                          .cast<Map<String, dynamic>>());
+                    _approveProfilePictures(directoryResults, pictureRevision);
+                  }
+                } catch (_) {
+                  // Search remains available even if the initial directory
+                  // cannot be loaded.
+                }
+                if (!dialogIsActive()) return;
+                setDialogState(() {
+                  directoryLoading = false;
                   rebuildContactResults();
                 });
-                return;
-              }
-              final pendingLoad = _deviceSearchLoad;
-              if (pendingLoad != null) await pendingLoad;
-              if (!dialogIsActive()) return;
-              await _deviceContactCache.refresh();
-              if (!dialogIsActive()) return;
-              _deviceSearchResults = null;
-              final rows = await _loadDeviceSearchContacts();
-              if (!dialogIsActive()) return;
-              final pictureRevision = _profilePicturesRevision;
-              try {
-                final response = await http.get(
-                  Uri.parse('$kApi/users/directory'),
-                  headers: {'Authorization': 'Bearer ${widget.token}'},
-                ).timeout(const Duration(seconds: 20));
-                if (!dialogIsActive()) return;
-                if (response.statusCode == 200) {
-                  directoryResults
-                    ..clear()
-                    ..addAll((jsonDecode(response.body) as List)
-                        .cast<Map<String, dynamic>>());
-                  _approveProfilePictures(directoryResults, pictureRevision);
-                }
-              } catch (_) {
-                // Keep the current directory available if refreshing fails.
-              }
-              if (!dialogIsActive()) return;
-              final granted = await ContactReadPermission.isGranted;
-              if (!dialogIsActive()) return;
-              if (!granted) {
-                await _deviceContactCache.load();
-                if (!dialogIsActive()) return;
-                _deviceSearchResults = null;
-              }
-              setDialogState(() {
-                contactsPermissionDenied = !granted;
-                deviceResults
-                  ..clear()
-                  ..addAll(granted ? rows : <Map<String, dynamic>>[]);
-                rebuildContactResults();
-                error = null;
               });
-            } catch (_) {
-              if (dialogIsActive()) {
-                setDialogState(() => error = 'לא ניתן לטעון אנשי קשר. נסה שוב');
-              }
-            } finally {
-              if (dialogIsActive()) {
-                setDialogState(() => permissionBusy = false);
-              }
             }
-          }
 
-          refreshPermissionOnResume ??= () => refreshContactsPermission();
-          if (dialogIsActive()) {
-            _findFriendPermissionRefresh = refreshPermissionOnResume;
-          }
-          if (!directoryLoadStarted) {
-            directoryLoadStarted = true;
-            Future<void>(() async {
-              final pictureRevision = _profilePicturesRevision;
-              try {
-                final response = await http.get(
-                  Uri.parse('$kApi/users/directory'),
-                  headers: {'Authorization': 'Bearer ${widget.token}'},
-                );
-                if (response.statusCode == 200) {
-                  directoryResults
-                    ..clear()
-                    ..addAll((jsonDecode(response.body) as List)
-                        .cast<Map<String, dynamic>>());
-                  _approveProfilePictures(directoryResults, pictureRevision);
-                }
-              } catch (_) {
-                // Search remains available even if the initial directory
-                // cannot be loaded.
-              }
+            Future<void> search() async {
+              searchDebounce?.cancel();
               if (!dialogIsActive()) return;
-              setDialogState(() {
-                directoryLoading = false;
-                rebuildContactResults();
-              });
-            });
-          }
-
-          Future<void> search() async {
-            searchDebounce?.cancel();
-            if (!dialogIsActive()) return;
-            final generation = ++searchGeneration;
-            final pictureRevision = _profilePicturesRevision;
-            final query = searchController.text.trim();
-            bool searchIsCurrent() => dialogIsActive() &&
-                generation == searchGeneration &&
-                searchController.text.trim() == query;
-            if (query.isEmpty) {
-              setDialogState(() {
-                loading = false;
-                queryServerText = null;
-                queryServerResults.clear();
-                results = List<Map<String, dynamic>>.from(initialResults);
-                error = null;
-              });
-              return;
-            }
-            setDialogState(() {
-              loading = true;
-              error = null;
-            });
-            try {
-              final response = await http.get(
-                Uri.parse('$kApi/users/search')
-                    .replace(queryParameters: {'q': query}),
-                headers: {'Authorization': 'Bearer ${widget.token}'},
-              ).timeout(const Duration(seconds: 15));
-              if (!searchIsCurrent()) return;
-              if (response.statusCode != 200) {
+              final generation = ++searchGeneration;
+              final pictureRevision = _profilePicturesRevision;
+              final query = searchController.text.trim();
+              bool searchIsCurrent() =>
+                  dialogIsActive() &&
+                  generation == searchGeneration &&
+                  searchController.text.trim() == query;
+              if (query.isEmpty) {
                 setDialogState(() {
                   loading = false;
-                  error = response.statusCode == 429
-                      ? 'בוצעו חיפושים רבים. המתן רגע ונסה שוב'
-                      : response.statusCode == 401
-                          ? 'החיבור לחשבון פג. יש להתחבר מחדש'
-                          : 'לא ניתן לבצע חיפוש כרגע. נסה שוב';
+                  queryServerText = null;
+                  queryServerResults.clear();
+                  results = List<Map<String, dynamic>>.from(initialResults);
+                  error = null;
                 });
                 return;
               }
-              final serverResults = (jsonDecode(response.body) as List)
-                  .cast<Map<String, dynamic>>();
-              _approveProfilePictures(serverResults, pictureRevision);
-              final manualPhone = normalizeContactPhone(query);
-              if (RegExp(r'^[+\d ()-]+$').hasMatch(query) &&
-                  manualPhone.length >= 8 && manualPhone.length <= 15) {
-                // The proof is the number the user entered, not a number
-                // obtained from a directory response. Persist it only when
-                // the user explicitly saves the exact matching friend.
-                for (final user in serverResults) {
-                  if (normalizeContactPhone(visibleContactPhone(user)) == manualPhone) {
-                    user['_known_phone'] = query;
-                    user['_contact_save_source'] = 'phone_manual';
+              setDialogState(() {
+                loading = true;
+                error = null;
+              });
+              try {
+                final response = await http.get(
+                  Uri.parse('$kApi/users/search')
+                      .replace(queryParameters: {'q': query}),
+                  headers: {'Authorization': 'Bearer ${widget.token}'},
+                ).timeout(const Duration(seconds: 15));
+                if (!searchIsCurrent()) return;
+                if (response.statusCode != 200) {
+                  setDialogState(() {
+                    loading = false;
+                    error = response.statusCode == 429
+                        ? 'בוצעו חיפושים רבים. המתן רגע ונסה שוב'
+                        : response.statusCode == 401
+                            ? 'החיבור לחשבון פג. יש להתחבר מחדש'
+                            : 'לא ניתן לבצע חיפוש כרגע. נסה שוב';
+                  });
+                  return;
+                }
+                final serverResults = (jsonDecode(response.body) as List)
+                    .cast<Map<String, dynamic>>();
+                _approveProfilePictures(serverResults, pictureRevision);
+                final manualPhone = normalizeContactPhone(query);
+                if (RegExp(r'^[+\d ()-]+$').hasMatch(query) &&
+                    manualPhone.length >= 8 &&
+                    manualPhone.length <= 15) {
+                  // The proof is the number the user entered, not a number
+                  // obtained from a directory response. Persist it only when
+                  // the user explicitly saves the exact matching friend.
+                  for (final user in serverResults) {
+                    if (normalizeContactPhone(visibleContactPhone(user)) ==
+                        manualPhone) {
+                      user['_known_phone'] = query;
+                      user['_contact_save_source'] = 'phone_manual';
+                    }
                   }
                 }
-              }
-              final merged = mergeAndSort(serverResults, localMatches(query));
-              setDialogState(() {
-                queryServerText = query;
-                queryServerResults
-                  ..clear()
-                  ..addAll(serverResults);
-                loading = false;
-                results = merged;
-                if (results.isEmpty) error = 'לא נמצאו משתמשים';
-              });
-            } catch (_) {
-              if (searchIsCurrent()) {
+                final merged = mergeAndSort(serverResults, localMatches(query));
                 setDialogState(() {
+                  queryServerText = query;
+                  queryServerResults
+                    ..clear()
+                    ..addAll(serverResults);
                   loading = false;
-                  error = 'שגיאה בחיפוש';
+                  results = merged;
+                  if (results.isEmpty) error = 'לא נמצאו משתמשים';
+                });
+              } catch (_) {
+                if (searchIsCurrent()) {
+                  setDialogState(() {
+                    loading = false;
+                    error = 'שגיאה בחיפוש';
+                  });
+                }
+              }
+            }
+
+            Future<void> save(Map<String, dynamic> user) async {
+              final response = await http.post(
+                Uri.parse('$kApi/contacts/save/${user['id']}'),
+                headers: {
+                  'Authorization': 'Bearer ${widget.token}',
+                  'Content-Type': 'application/json'
+                },
+                body: jsonEncode({
+                  'source': user['_contact_save_source'] ?? 'in_app',
+                  if (user['_known_phone'] != null)
+                    'knownPhone': user['_known_phone'],
+                }),
+              );
+              if (response.statusCode == 200) {
+                await widget.onContactsChanged();
+                if (!dialogContext.mounted) return;
+                setDialogState(() {
+                  user['saved'] = true;
+                  final userId = user['id']?.toString();
+                  bool sameUser(Map<String, dynamic> item) =>
+                      userId != null && item['id']?.toString() == userId;
+                  results.removeWhere(sameUser);
+                  initialResults.removeWhere(sameUser);
+                  deviceResults.removeWhere(sameUser);
+                  directoryResults.removeWhere(sameUser);
+                  queryServerResults.removeWhere(sameUser);
                 });
               }
             }
-          }
 
-          Future<void> save(Map<String, dynamic> user) async {
-            final response = await http.post(
-              Uri.parse('$kApi/contacts/save/${user['id']}'),
-              headers: {'Authorization': 'Bearer ${widget.token}',
-                'Content-Type': 'application/json'},
-              body: jsonEncode({
-                'source': user['_contact_save_source'] ?? 'in_app',
-                if (user['_known_phone'] != null) 'knownPhone': user['_known_phone'],
-              }),
-            );
-            if (response.statusCode == 200) {
-              await widget.onContactsChanged();
-              if (!dialogContext.mounted) return;
-              setDialogState(() {
-                user['saved'] = true;
-                final userId = user['id']?.toString();
-                bool sameUser(Map<String, dynamic> item) =>
-                    userId != null && item['id']?.toString() == userId;
-                results.removeWhere(sameUser);
-                initialResults.removeWhere(sameUser);
-                deviceResults.removeWhere(sameUser);
-                directoryResults.removeWhere(sameUser);
-                queryServerResults.removeWhere(sameUser);
-              });
-            }
-          }
-
-          Future<void> invite(Map<String, dynamic> contact) async {
-            final email = (contact['email'] ?? '').toString();
-            final phone = (contact['phone'] ?? '').toString();
-            final delivery = await _chooseInviteDelivery(
-              dialogContext,
-              hasPhone: phone.trim().isNotEmpty,
-              hasEmail: email.contains('@'),
-            );
-            if (delivery == null) return;
-            var message = 'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
-            if (delivery != 'system_sms') {
-              try {
-                final prepareResponse = await http.post(
-                  Uri.parse('$kApi/invites/prepare'),
+            Future<void> invite(Map<String, dynamic> contact) async {
+              final email = (contact['email'] ?? '').toString();
+              final phone = (contact['phone'] ?? '').toString();
+              final delivery = await _chooseInviteDelivery(
+                dialogContext,
+                hasPhone: phone.trim().isNotEmpty,
+                hasEmail: email.contains('@'),
+              );
+              if (delivery == null) return;
+              var message = 'הצטרף אליי לאפליקציית בתשובה: $_appInviteUrl';
+              if (delivery != 'system_sms') {
+                try {
+                  final prepareResponse = await http.post(
+                    Uri.parse('$kApi/invites/prepare'),
+                    headers: {
+                      'Authorization': 'Bearer ${widget.token}',
+                      'Content-Type': 'application/json',
+                    },
+                    body: jsonEncode({'phone': phone, 'email': email}),
+                  );
+                  if (prepareResponse.statusCode != 200) {
+                    if (!dialogContext.mounted) return;
+                    var reason = 'לא ניתן להכין את ההזמנה';
+                    try {
+                      reason = (jsonDecode(prepareResponse.body)
+                              as Map<String, dynamic>)['error']
+                          .toString();
+                    } catch (_) {}
+                    ScaffoldMessenger.of(dialogContext)
+                        .showSnackBar(SnackBar(content: Text(reason)));
+                    return;
+                  }
+                  message = (jsonDecode(prepareResponse.body)
+                              as Map<String, dynamic>)['message']
+                          ?.toString() ??
+                      message;
+                } catch (_) {
+                  if (!dialogContext.mounted) return;
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(content: Text('לא ניתן להכין את ההזמנה')),
+                  );
+                  return;
+                }
+              }
+              if (delivery == 'whatsapp') {
+                final opened = await _openWhatsApp(phone, message);
+                if (!opened) {
+                  await Clipboard.setData(ClipboardData(text: message));
+                  if (!dialogContext.mounted) return;
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(
+                      content:
+                          Text('לא ניתן לפתוח את WhatsApp. ההודעה הועתקה.'),
+                    ),
+                  );
+                }
+                return;
+              }
+              if (delivery == 'device_sms') {
+                await launchUrl(_deviceSmsUri(phone, message),
+                    mode: LaunchMode.externalApplication);
+                return;
+              }
+              if (delivery == 'email') {
+                await launchUrl(
+                  Uri(
+                    scheme: 'mailto',
+                    path: email,
+                    queryParameters: {
+                      'subject': 'הזמנה לבתשובה',
+                      'body': message,
+                    },
+                  ),
+                  mode: LaunchMode.externalApplication,
+                );
+                return;
+              }
+              if (delivery == 'system_sms') {
+                final response = await http.post(
+                  Uri.parse('$kApi/invites/send'),
                   headers: {
                     'Authorization': 'Bearer ${widget.token}',
                     'Content-Type': 'application/json',
                   },
-                  body: jsonEncode({'phone': phone, 'email': email}),
+                  body: jsonEncode({'phone': phone}),
                 );
-                if (prepareResponse.statusCode != 200) {
-                  if (!dialogContext.mounted) return;
-                  var reason = 'לא ניתן להכין את ההזמנה';
-                  try {
-                    reason = (jsonDecode(prepareResponse.body)
-                            as Map<String, dynamic>)['error']
-                        .toString();
-                  } catch (_) {}
-                  ScaffoldMessenger.of(dialogContext)
-                      .showSnackBar(SnackBar(content: Text(reason)));
-                  return;
-                }
-                message = (jsonDecode(prepareResponse.body)
-                            as Map<String, dynamic>)['message']
-                        ?.toString() ??
-                    message;
-              } catch (_) {
                 if (!dialogContext.mounted) return;
-                ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  const SnackBar(content: Text('לא ניתן להכין את ההזמנה')),
-                );
-                return;
+                ScaffoldMessenger.of(dialogContext).showSnackBar(SnackBar(
+                  content: Text(response.statusCode == 200
+                      ? 'ההזמנה נשלחה ב־SMS'
+                      : 'שליחת ה־SMS נכשלה'),
+                ));
               }
             }
-            if (delivery == 'whatsapp') {
-              final opened = await _openWhatsApp(phone, message);
-              if (!opened) {
-                await Clipboard.setData(ClipboardData(text: message));
-                if (!dialogContext.mounted) return;
-                ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  const SnackBar(
-                    content: Text('לא ניתן לפתוח את WhatsApp. ההודעה הועתקה.'),
-                  ),
-                );
-              }
-              return;
-            }
-            if (delivery == 'device_sms') {
-              await launchUrl(_deviceSmsUri(phone, message),
-                  mode: LaunchMode.externalApplication);
-              return;
-            }
-            if (delivery == 'email') {
-              await launchUrl(
-                Uri(
-                  scheme: 'mailto',
-                  path: email,
-                  queryParameters: {
-                    'subject': 'הזמנה לבתשובה',
-                    'body': message,
-                  },
-                ),
-                mode: LaunchMode.externalApplication,
-              );
-              return;
-            }
-            if (delivery == 'system_sms') {
-              final response = await http.post(
-                Uri.parse('$kApi/invites/send'),
-                headers: {
-                  'Authorization': 'Bearer ${widget.token}',
-                  'Content-Type': 'application/json',
-                },
-                body: jsonEncode({'phone': phone}),
-              );
-              if (!dialogContext.mounted) return;
-              ScaffoldMessenger.of(dialogContext).showSnackBar(SnackBar(
-                content: Text(response.statusCode == 200
-                    ? 'ההזמנה נשלחה ב־SMS'
-                    : 'שליחת ה־SMS נכשלה'),
-              ));
-            }
-          }
 
-          final media = MediaQuery.of(dialogContext);
-          final availableHeight =
-              media.size.height - media.viewInsets.bottom - 48;
-          final contentHeight = math.max(
-            220.0,
-            math.min(520.0, availableHeight - 150),
-          );
-          return AlertDialog(
-            insetPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
-            contentPadding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            title: Row(
-              children: [
-                Expanded(child: const Text('חיפוש ושמירת חבר')),
-                IconButton(
-                  tooltip: 'סגור',
-                  onPressed: () => Navigator.pop(dialogContext),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-            content: SizedBox(
-              width: math.min(520, media.size.width - 56),
-              height: contentHeight,
-              child: Column(
+            final media = MediaQuery.of(dialogContext);
+            final availableHeight =
+                media.size.height - media.viewInsets.bottom - 48;
+            final contentHeight = math.max(
+              220.0,
+              math.min(520.0, availableHeight - 150),
+            );
+            return AlertDialog(
+              insetPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+              contentPadding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              title: Row(
                 children: [
-                  TextField(
-                    controller: searchController,
-                    autofocus: true,
-                    textDirection: TextDirection.rtl,
-                    decoration: InputDecoration(
-                      hintText: 'שם, מספר טלפון או אימייל',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.arrow_forward),
-                        onPressed: search,
-                      ),
-                    ),
-                    onChanged: (_) {
-                      searchDebounce?.cancel();
-                      searchGeneration++;
-                      setDialogState(() {
-                        loading = false;
-                        queryServerText = null;
-                        queryServerResults.clear();
-                        error = null;
-                        rebuildContactResults();
-                      });
-                      if (searchController.text.trim().isNotEmpty) {
-                        searchDebounce = Timer(
-                            const Duration(milliseconds: 300), () => search());
-                      }
-                    },
-                    onSubmitted: (_) => search(),
+                  Expanded(child: const Text('חיפוש ושמירת חבר')),
+                  IconButton(
+                    tooltip: 'סגור',
+                    onPressed: () => Navigator.pop(dialogContext),
+                    icon: const Icon(Icons.close),
                   ),
-                  const SizedBox(height: 12),
-                  if (directoryLoading && !loading)
-                    const LinearProgressIndicator(minHeight: 2),
-                  if (contactsPermissionDenied && !kIsWeb)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: TextButton.icon(
-                        key: const ValueKey('friend-contacts-permission-action'),
-                        onPressed: permissionBusy
-                            ? null
-                            : () => refreshContactsPermission(request: true),
-                        style: TextButton.styleFrom(foregroundColor: Colors.orange),
-                        icon: permissionBusy
-                            ? const SizedBox(width: 16, height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.contacts_outlined, size: 18),
-                        label: const Text(
-                          'כדי להציג אנשי קשר, לחץ כאן לאישור גישה',
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    ),
-                  if (loading) const CircularProgressIndicator(),
-                  if (error != null && !loading)
-                    Text(error!, style: const TextStyle(color: kSubtext)),
-                  if (!loading && results.isNotEmpty)
-                    Expanded(
-                      child: Scrollbar(
-                        thumbVisibility: true,
-                        child: ListView.builder(
-                          primary: true,
-                          keyboardDismissBehavior:
-                              ScrollViewKeyboardDismissBehavior.onDrag,
-                          padding: const EdgeInsets.only(bottom: 8),
-                          itemCount: results.length,
-                          itemBuilder: (_, index) {
-                            final user = results[index];
-                            final deviceOnly = user['device_only'] == true;
-                            final saved = user['saved'] == true;
-                            return ListTile(
-                              contentPadding:
-                                  const EdgeInsets.symmetric(horizontal: 4),
-                              horizontalTitleGap: 10,
-                              leading: UserAvatar(
-                                picUrl: user['profile_pic_url'] as String?,
-                                name: user['name'] as String? ?? '',
-                              ),
-                              title: Text((user['device_name'] ?? user['name'])
-                                  .toString()),
-                              subtitle: Text(
-                                '${deviceOnly ? 'מהטלפון שלי' : contactSourceLabel(user)}  •  '
-                                '${deviceOnly ? user['phone'] ?? '' : visibleContactPhone(user).isNotEmpty ? visibleContactPhone(user) : 'הטלפון לא שותף'}',
-                              ),
-                              trailing: deviceOnly
-                                  ? TextButton(
-                                      onPressed: () => invite(user),
-                                      child: const Text('הזמן'),
-                                    )
-                                  : saved
-                                      ? const Icon(Icons.check_circle,
-                                          color: Colors.green)
-                                      : TextButton(
-                                          onPressed: () => save(user),
-                                          child: const Text('שמור'),
-                                        ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
                 ],
               ),
-            ),
-          );
-        },
-      ),
-    );
+              content: SizedBox(
+                width: math.min(520, media.size.width - 56),
+                height: contentHeight,
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: searchController,
+                      autofocus: true,
+                      textDirection: TextDirection.rtl,
+                      decoration: InputDecoration(
+                        hintText: 'שם, מספר טלפון או אימייל',
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.arrow_forward),
+                          onPressed: search,
+                        ),
+                      ),
+                      onChanged: (_) {
+                        searchDebounce?.cancel();
+                        searchGeneration++;
+                        setDialogState(() {
+                          loading = false;
+                          queryServerText = null;
+                          queryServerResults.clear();
+                          error = null;
+                          rebuildContactResults();
+                        });
+                        if (searchController.text.trim().isNotEmpty) {
+                          searchDebounce = Timer(
+                              const Duration(milliseconds: 300),
+                              () => search());
+                        }
+                      },
+                      onSubmitted: (_) => search(),
+                    ),
+                    const SizedBox(height: 12),
+                    if (directoryLoading && !loading)
+                      const LinearProgressIndicator(minHeight: 2),
+                    if (contactsPermissionDenied && !kIsWeb)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: TextButton.icon(
+                          key: const ValueKey(
+                              'friend-contacts-permission-action'),
+                          onPressed: permissionBusy
+                              ? null
+                              : () => refreshContactsPermission(request: true),
+                          style: TextButton.styleFrom(
+                              foregroundColor: Colors.orange),
+                          icon: permissionBusy
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.contacts_outlined, size: 18),
+                          label: const Text(
+                            'כדי להציג אנשי קשר, לחץ כאן לאישור גישה',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                    if (loading) const CircularProgressIndicator(),
+                    if (error != null && !loading)
+                      Text(error!, style: const TextStyle(color: kSubtext)),
+                    if (!loading && results.isNotEmpty)
+                      Expanded(
+                        child: Scrollbar(
+                          thumbVisibility: true,
+                          child: ListView.builder(
+                            primary: true,
+                            keyboardDismissBehavior:
+                                ScrollViewKeyboardDismissBehavior.onDrag,
+                            padding: const EdgeInsets.only(bottom: 8),
+                            itemCount: results.length,
+                            itemBuilder: (_, index) {
+                              final user = results[index];
+                              final deviceOnly = user['device_only'] == true;
+                              final saved = user['saved'] == true;
+                              return ListTile(
+                                contentPadding:
+                                    const EdgeInsets.symmetric(horizontal: 4),
+                                horizontalTitleGap: 10,
+                                leading: UserAvatar(
+                                  picUrl: user['profile_pic_url'] as String?,
+                                  name: user['name'] as String? ?? '',
+                                ),
+                                title: Text(
+                                    (user['device_name'] ?? user['name'])
+                                        .toString()),
+                                subtitle: Text(
+                                  '${deviceOnly ? 'מהטלפון שלי' : contactSourceLabel(user)}  •  '
+                                  '${deviceOnly ? user['phone'] ?? '' : visibleContactPhone(user).isNotEmpty ? visibleContactPhone(user) : 'הטלפון לא שותף'}',
+                                ),
+                                trailing: deviceOnly
+                                    ? TextButton(
+                                        onPressed: () => invite(user),
+                                        child: const Text('הזמן'),
+                                      )
+                                    : saved
+                                        ? const Icon(Icons.check_circle,
+                                            color: Colors.green)
+                                        : TextButton(
+                                            onPressed: () => save(user),
+                                            child: const Text('שמור'),
+                                          ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      );
     } finally {
       dialogActive = false;
       searchGeneration++;
@@ -22352,12 +22901,17 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
             ),
           // List
           if (_searchQuery.isNotEmpty)
-            Expanded(child: UnifiedSearchResults(
-              api: kApi, token: widget.token, query: _searchQuery,
-              users: widget.users, groups: _groups,
+            Expanded(
+                child: UnifiedSearchResults(
+              api: kApi,
+              token: widget.token,
+              query: _searchQuery,
+              users: widget.users,
+              groups: _groups,
               loadDeviceContacts: _quickDeviceSearchContacts,
               deviceContactsRevision: _deviceContactsRevision,
-              saveUser: _saveSearchUser, openConversation: _openSearchConversation,
+              saveUser: _saveSearchUser,
+              openConversation: _openSearchConversation,
               openMessage: _openSearchMessage,
               pictureRevision: _profilePicturesRevision,
               approvePictures: _approveProfilePictures,
@@ -22664,7 +23218,8 @@ class _ConversationsScreenState extends State<ConversationsScreen> with WidgetsB
                                 children: [
                                   if (typingName == null &&
                                       lastMessageIsMine &&
-                                      group['last_message_type'] != 'reaction' &&
+                                      group['last_message_type'] !=
+                                          'reaction' &&
                                       lastMessage.isNotEmpty) ...[
                                     const Icon(Icons.done,
                                         size: 15, color: kPrimaryMid),
@@ -22940,13 +23495,15 @@ class _PersonalMediaNavigationButtonState
         key: const ValueKey('personal-media-shortcut'),
         selected: widget.selected,
         child: Tooltip(
-          message: 'המדיה שלי${_summary == null ? '' : '\n$_summary'}',
-          child: MainNavigationTab(label: 'מדיה', selected: widget.selected,
-          onTap: () async {
-            await widget.onTap();
-            if (mounted) _loadSummary();
-          },
-        )),
+            message: 'המדיה שלי${_summary == null ? '' : '\n$_summary'}',
+            child: MainNavigationTab(
+              label: 'מדיה',
+              selected: widget.selected,
+              onTap: () async {
+                await widget.onTap();
+                if (mounted) _loadSummary();
+              },
+            )),
       );
 }
 
@@ -23035,7 +23592,8 @@ class _ConversationTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Row(children: [
-                    if (!isTyping && user['last_message_is_mine'] == true &&
+                    if (!isTyping &&
+                        user['last_message_is_mine'] == true &&
                         user['last_message_type'] != 'reaction') ...[
                       _lastMessageStatus(),
                       const SizedBox(width: 4),
@@ -23053,12 +23611,12 @@ class _ConversationTile extends StatelessWidget {
                             : user['last_message_type'] == 'reaction'
                                 ? conversationReactionPreview(user)
                                 : _conversationPreview(user).isNotEmpty
-                                ? _conversationPreview(user)
-                                : unreadCount > 0
-                                    ? 'יש הודעות חדשות!'
-                                    : user['id'] == kScanBotId
-                                        ? 'שלח תמונה וקבל דוח סריקה מלא'
-                                        : 'לחץ לפתיחת שיחה',
+                                    ? _conversationPreview(user)
+                                    : unreadCount > 0
+                                        ? 'יש הודעות חדשות!'
+                                        : user['id'] == kScanBotId
+                                            ? 'שלח תמונה וקבל דוח סריקה מלא'
+                                            : 'לחץ לפתיחת שיחה',
                         style: TextStyle(
                             fontSize: 12,
                             color: isTyping
@@ -23079,10 +23637,14 @@ class _ConversationTile extends StatelessWidget {
                   if (user['phone_visibility'] != null &&
                       user['phone_visibility'] != 'self' &&
                       _isPersonalPhoneContact(user['id']?.toString(), null))
-                    Padding(padding: const EdgeInsets.only(top: 3),
-                      child: Text('${contactSourceLabel(user)}${visibleContactPhone(user).isEmpty ? ' • הטלפון לא שותף' : ''}',
-                        maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 10, color: kSubtext))),
+                    Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Text(
+                            '${contactSourceLabel(user)}${visibleContactPhone(user).isEmpty ? ' • הטלפון לא שותף' : ''}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 10, color: kSubtext))),
                 ],
               ),
             ),
@@ -23268,21 +23830,30 @@ class _BlockedReceivingFilterIcons extends StatelessWidget {
   }
 }
 
-Future<bool?> _chooseGroupPhoneSharing(BuildContext context, {bool initial = true}) {
+Future<bool?> _chooseGroupPhoneSharing(BuildContext context,
+    {bool initial = true}) {
   var share = initial;
-  return showDialog<bool>(context: context, builder: (dialogContext) => StatefulBuilder(
-    builder: (_, update) => AlertDialog(
-      title: const Text('שיתוף טלפון בקבוצה'),
-      content: CheckboxListTile(value: share,
-        title: const Text('הצג את מספר הטלפון שלי לכל משתתפי הקבוצה'),
-        subtitle: const Text('ביטול השיתוף אינו מסתיר את המספר מחברים.'),
-        onChanged: (value) => update(() => share = value == true)),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('ביטול')),
-        FilledButton(onPressed: () => Navigator.pop(dialogContext, share), child: const Text('אישור')),
-      ],
-    ),
-  ));
+  return showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+            builder: (_, update) => AlertDialog(
+              title: const Text('שיתוף טלפון בקבוצה'),
+              content: CheckboxListTile(
+                  value: share,
+                  title: const Text('הצג את מספר הטלפון שלי לכל משתתפי הקבוצה'),
+                  subtitle:
+                      const Text('ביטול השיתוף אינו מסתיר את המספר מחברים.'),
+                  onChanged: (value) => update(() => share = value == true)),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('ביטול')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(dialogContext, share),
+                    child: const Text('אישור')),
+              ],
+            ),
+          ));
 }
 
 Future<Map<String, bool>?> _chooseGroupInvitationFilter(
@@ -23307,7 +23878,7 @@ Future<Map<String, bool>?> _chooseGroupInvitationFilter(
           width: 760,
           child: SingleChildScrollView(
             child: _InvitationFilterComparisonTable(
-                      token: token,
+              token: token,
               groupName: groupName,
               groupFilter: groupFilter,
               personalFilter: selected,
@@ -23647,7 +24218,8 @@ class _InvitationFilterComparisonTable extends StatelessWidget {
         ),
       ),
     );
-    if (onPersonalFilterChanged == null && onCounterpartFilterChanged == null) return view;
+    if (onPersonalFilterChanged == null && onCounterpartFilterChanged == null)
+      return view;
     return FilterPinGate(api: kApi, token: token, child: view);
   }
 }
@@ -23717,6 +24289,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<String, dynamic>? _editingMsg;
   bool _loading = true;
   bool _isTyping = false;
+  Timer? _typingTimer;
   late final void Function(dynamic) _chatMessageHandler;
   late final void Function(dynamic) _messageReactionHandler;
   late final MessageReactionReadTracker _reactionReadTracker;
@@ -23837,9 +24410,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void>? _initialMessagesFuture;
   Future<void>? _initialOutgoingFilterFuture;
 
-  bool get _isUnfilteredAssistantChat =>
-      const {kSystemGuideId, kSafeInformationAiId}
-          .contains(widget.recipient['id']);
+  bool get _isUnfilteredAssistantChat => const {
+        kSystemGuideId,
+        kSafeInformationAiId
+      }.contains(widget.recipient['id']);
 
   static const _unfilteredAssistantFilter = <String, bool>{
     'text': true,
@@ -23877,9 +24451,9 @@ class _ChatScreenState extends State<ChatScreen> {
         .toList();
     if (selected.isEmpty) return;
     final selectedKeys = selected.map(_selectionKey).toList();
-    final result =
-        await forwardChatMessages(context, widget.token, widget.socket, selected,
-            me: widget.me);
+    final result = await forwardChatMessages(
+        context, widget.token, widget.socket, selected,
+        me: widget.me);
     if (mounted && result.completedMessageIndexes.isNotEmpty) {
       setState(() {
         for (final index in result.completedMessageIndexes) {
@@ -23933,16 +24507,19 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _expressionPanel.addListener(_refreshExpressionPanel);
-    _scrollCtrl.openSearchMessage(widget.searchMessageId, widget.searchMessageAt);
+    _scrollCtrl.openSearchMessage(
+        widget.searchMessageId, widget.searchMessageAt);
     _loadUploadBatchNotices();
     _uploadNoticesSubscription = _uploadNotices.changes.listen((_) {
       if (mounted) _loadUploadBatchNotices();
     });
     _listenForConversationChanges();
-    _receivingFilterSubscription = receivingFilterChanges.stream.listen((token) {
+    _receivingFilterSubscription =
+        receivingFilterChanges.stream.listen((token) {
       if (token == widget.token) _refreshReceivingFilter();
     });
-    _receivingFilterSocketHandler = (_) => receivingFilterChanges.add(widget.token);
+    _receivingFilterSocketHandler =
+        (_) => receivingFilterChanges.add(widget.token);
     widget.socket?.on('filter:changed', _receivingFilterSocketHandler);
     if (widget.recipient['conversation_hidden'] == true) {
       reopenConversation(
@@ -24041,7 +24618,9 @@ class _ChatScreenState extends State<ChatScreen> {
         Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-settings'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       ).timeout(const Duration(seconds: 10));
-      if (!mounted || generation != _historyGeneration || response.statusCode != 200) return;
+      if (!mounted ||
+          generation != _historyGeneration ||
+          response.statusCode != 200) return;
       final body = jsonDecode(response.body);
       final raw = body is Map ? body['filter'] : null;
       if (raw is! Map) return;
@@ -24065,7 +24644,9 @@ class _ChatScreenState extends State<ChatScreen> {
         Uri.parse('$kApi/contacts/${widget.recipient['id']}/filter-comparison'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       ).timeout(const Duration(seconds: 10));
-      if (!mounted || generation != _historyGeneration || response.statusCode != 200) return false;
+      if (!mounted ||
+          generation != _historyGeneration ||
+          response.statusCode != 200) return false;
       final body = jsonDecode(response.body);
       final recipient = body is Map ? body['recipientFilter'] : null;
       final personal = body is Map ? body['personalFilter'] : null;
@@ -24102,7 +24683,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _outgoingFilter = null;
     });
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('cache_msgs_${widget.me?['id']}_${widget.recipient['id']}');
+    await prefs
+        .remove('cache_msgs_${widget.me?['id']}_${widget.recipient['id']}');
     if (!mounted) return;
     await Future.wait([_loadOutgoingFilter(), _loadMessages(silent: true)]);
   }
@@ -24117,7 +24699,8 @@ class _ChatScreenState extends State<ChatScreen> {
     // Polls must not invalidate a slow response. Explicit refreshes still
     // start a fresh request after messages or their visibility change.
     late final Future<void> load;
-    load = _fetchMessages(silent: silent, generation: generation).whenComplete(() {
+    load =
+        _fetchMessages(silent: silent, generation: generation).whenComplete(() {
       if (identical(_historyLoad, load)) {
         _historyLoad = null;
         _historyLoadGeneration = null;
@@ -24128,25 +24711,34 @@ class _ChatScreenState extends State<ChatScreen> {
     return load;
   }
 
-  Future<void> _fetchMessages({required bool silent, required int generation}) async {
+  Future<void> _fetchMessages(
+      {required bool silent, required int generation}) async {
     final requestSerial = ++_historyRequestSerial;
     final cacheKey = 'cache_msgs_${widget.me?['id']}_${widget.recipient['id']}';
     final outbox = _useOutbox ? await _outbox.load() : <Map<String, dynamic>>[];
-    if (!mounted || requestSerial != _historyRequestSerial || generation != _historyGeneration) return;
+    if (!mounted ||
+        requestSerial != _historyRequestSerial ||
+        generation != _historyGeneration) return;
     if (outbox.isNotEmpty) {
       setState(() {
-      _loading = false;
-      for (final message in outbox) {
-        final index = _messages.indexWhere((m) => m['outboxId'] == message['outboxId']);
-        if (index < 0) { _messages.add(message); }
-        else { _messages[index].addAll(message); }
-      }
+        _loading = false;
+        for (final message in outbox) {
+          final index =
+              _messages.indexWhere((m) => m['outboxId'] == message['outboxId']);
+          if (index < 0) {
+            _messages.add(message);
+          } else {
+            _messages[index].addAll(message);
+          }
+        }
       });
     }
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+      if (!mounted ||
+          generation != _historyGeneration ||
+          requestSerial != _historyRequestSerial) return;
       final cached = prefs.getString(cacheKey);
       if (!silent && cached != null && mounted) {
         final list = (jsonDecode(cached) as List)
@@ -24154,9 +24746,11 @@ class _ChatScreenState extends State<ChatScreen> {
             .where((message) => !_isVisualMediaMessage(message))
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
-        final localUploads = _messages.where((message) =>
-            message['isUploadBatchNotice'] == true ||
-            message['status'] == 'uploading').toList();
+        final localUploads = _messages
+            .where((message) =>
+                message['isUploadBatchNotice'] == true ||
+                message['status'] == 'uploading')
+            .toList();
         setState(() {
           _messages
             ..clear()
@@ -24170,11 +24764,13 @@ class _ChatScreenState extends State<ChatScreen> {
     // Fetch from server and update
     try {
       final res = await http.get(
-        Uri.parse('$kApi/messages/${widget.recipient['id']}').replace(
-            queryParameters: _scrollCtrl.queryParameters),
+        Uri.parse('$kApi/messages/${widget.recipient['id']}')
+            .replace(queryParameters: _scrollCtrl.queryParameters),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       ).timeout(const Duration(seconds: 20));
-      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+      if (!mounted ||
+          generation != _historyGeneration ||
+          requestSerial != _historyRequestSerial) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         final normalized = data
@@ -24187,25 +24783,32 @@ class _ChatScreenState extends State<ChatScreen> {
             await _outbox.remove(key);
           }
         }
-        if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+        if (!mounted ||
+            generation != _historyGeneration ||
+            requestSerial != _historyRequestSerial) return;
         // Reconcile acknowledgements even when the fetched history itself has
         // not changed (for example, an older route saved a timed-out attempt).
-        final confirmedKeys = normalized.map((m) => m['clientMessageId'])
-            .whereType<String>().toSet();
+        final confirmedKeys = normalized
+            .map((m) => m['clientMessageId'])
+            .whereType<String>()
+            .toSet();
         if (_messages.any((m) => confirmedKeys.contains(m['outboxId']))) {
-          setState(() => _messages.removeWhere((m) => confirmedKeys.contains(m['outboxId'])));
+          setState(() => _messages
+              .removeWhere((m) => confirmedKeys.contains(m['outboxId'])));
         }
         _persistRecentImageUrls(normalized).ignore();
         final fingerprint = jsonEncode(normalized);
         final reconcileUploads =
             chatUploadHistoryNeedsReconciliation(normalized, _messages);
-        if (silent && fingerprint == _serverMessagesFingerprint &&
+        if (silent &&
+            fingerprint == _serverMessagesFingerprint &&
             !reconcileUploads) return;
         _serverMessagesFingerprint = fingerprint;
         final initialHistory = _scrollCtrl.captureInitialHistory(normalized);
         setState(() {
           final pending = _messages
-              .where((m) => m['isUploadBatchNotice'] == true ||
+              .where((m) =>
+                  m['isUploadBatchNotice'] == true ||
                   m['status'] == 'uploading' ||
                   (m['id'] as String? ?? '').startsWith('temp_'))
               .toList();
@@ -24219,7 +24822,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _markAsRead();
         // Save to cache (last 50 messages)
         final prefs = await SharedPreferences.getInstance();
-        if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+        if (!mounted ||
+            generation != _historyGeneration ||
+            requestSerial != _historyRequestSerial) return;
         final toCache = normalized.length > 50
             ? normalized.sublist(normalized.length - 50)
             : normalized;
@@ -24228,7 +24833,9 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _loading = false);
       }
     } catch (_) {
-      if (mounted && generation == _historyGeneration && requestSerial == _historyRequestSerial) {
+      if (mounted &&
+          generation == _historyGeneration &&
+          requestSerial == _historyRequestSerial) {
         setState(() => _loading = false);
       }
     }
@@ -24249,7 +24856,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final privateFilter = map['private_filter'];
     return {
       'id': map['id'],
-      if (map['client_message_id'] != null) 'clientMessageId': map['client_message_id'],
+      if (map['client_message_id'] != null)
+        'clientMessageId': map['client_message_id'],
       'text': map['body'] ?? map['file_name'] ?? '',
       'from': map['sender_id'],
       'time': _formatTime(map['created_at']),
@@ -24257,16 +24865,18 @@ class _ChatScreenState extends State<ChatScreen> {
       'isUnread': map['sender_id'] != widget.me?['id'] &&
           map['is_read'] != true &&
           map['is_read'] != 1,
-      'status': contactRequestStatus(map['message_status']) ?? (_isScanStopped(map) ? 'stopped_scan'
-          : map['message_status'] == 'pending_scan'
-          ? 'pending_scan'
-          : map['message_status'] == 'rejected_scan'
-              ? 'rejected_scan'
-              : map['message_status'] == 'read'
-                  ? 'read'
-                  : map['message_status'] == 'delivered'
-                      ? 'delivered'
-                      : 'sent'),
+      'status': contactRequestStatus(map['message_status']) ??
+          (_isScanStopped(map)
+              ? 'stopped_scan'
+              : map['message_status'] == 'pending_scan'
+                  ? 'pending_scan'
+                  : map['message_status'] == 'rejected_scan'
+                      ? 'rejected_scan'
+                      : map['message_status'] == 'read'
+                          ? 'read'
+                          : map['message_status'] == 'delivered'
+                              ? 'delivered'
+                              : 'sent'),
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['scan_reason_code'] != null || map['reasonCode'] != null)
         'scanReasonCode': map['scan_reason_code'] ?? map['reasonCode'],
@@ -24329,7 +24939,8 @@ class _ChatScreenState extends State<ChatScreen> {
   void _setupSocket() {
     _reactionReadTracker = MessageReactionReadTracker(
       currentUserId: widget.me?['id']?.toString(),
-      kind: 'chat', targetId: widget.recipient['id'].toString(),
+      kind: 'chat',
+      targetId: widget.recipient['id'].toString(),
       isActive: () => mounted && _reactionConversationIsActive(context),
       markRead: _markAsRead,
     );
@@ -24346,8 +24957,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final toUserId = data['toUserId'];
       final isIncoming = fromUserId == widget.recipient['id'] &&
           (toUserId == null || toUserId == widget.me?['id']);
-      final isOwnConversation = fromUserId == widget.me?['id'] &&
-          toUserId == widget.recipient['id'];
+      final isOwnConversation =
+          fromUserId == widget.me?['id'] && toUserId == widget.recipient['id'];
       final pendingIndex = fileUrl == null
           ? -1
           : _messages.indexWhere((message) =>
@@ -24360,7 +24971,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   _matchesRecentFailedUpload(message, fileName, 'failed_'));
       final isDelayedOutgoing = fromUserId == widget.me?['id'] &&
           (toUserId == null || toUserId == widget.recipient['id']) &&
-          (isOwnConversation || pendingIndex != -1 || recoveredFailedIndex != -1);
+          (isOwnConversation ||
+              pendingIndex != -1 ||
+              recoveredFailedIndex != -1);
       if (!isIncoming && !isDelayedOutgoing) return;
       final fileType = _normalizeIncomingFileType(
         data['fileType'] as String?,
@@ -24375,7 +24988,8 @@ class _ChatScreenState extends State<ChatScreen> {
         // matched by destination even when no local upload preview remains.
         setState(() => _messages.removeWhere((message) =>
             message['id'] == data['id'] ||
-            (fileUrl != null && message['fileUrl'] == fileUrl &&
+            (fileUrl != null &&
+                message['fileUrl'] == fileUrl &&
                 message['status'] == 'pending_scan')));
         _serverMessagesFingerprint = null;
         _loadMessages(silent: true);
@@ -24446,7 +25060,8 @@ class _ChatScreenState extends State<ChatScreen> {
             const ['pending_scan', 'uploading', 'rejected_scan']
                 .contains(message['status'])));
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(_isVideoModeration(data) ? blockedVideoMessage
+            content: Text(_isVideoModeration(data)
+                ? blockedVideoMessage
                 : _senderFilterRejectionMessage(data)),
             backgroundColor: Colors.red));
         return;
@@ -24470,7 +25085,11 @@ class _ChatScreenState extends State<ChatScreen> {
       _serverMessagesFingerprint = null;
       _loadMessages(silent: true);
     };
-    for (final event in ['message:request-pending', 'message:request-accepted', 'message:request-declined']) {
+    for (final event in [
+      'message:request-pending',
+      'message:request-accepted',
+      'message:request-declined'
+    ]) {
       widget.socket?.on(event, _contactRequestChangedHandler);
     }
 
@@ -24478,7 +25097,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted || data is! Map) return;
       final fileUrl = data['fileUrl']?.toString();
       final targetId = data['toUserId']?.toString();
-      if (fileUrl == null || data['groupId'] != null ||
+      if (fileUrl == null ||
+          data['groupId'] != null ||
           targetId != null && targetId != widget.recipient['id']?.toString()) {
         return;
       }
@@ -24495,9 +25115,11 @@ class _ChatScreenState extends State<ChatScreen> {
         _loadMessages(silent: true);
       }
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(_isScanStopped(data) ? _scanStoppedNotice(data)
-            : data['reason']?.toString() ??
-                'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
+        content: Text(
+            _isScanStopped(data)
+                ? _scanStoppedNotice(data)
+                : data['reason']?.toString() ??
+                    'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
             textDirection: TextDirection.rtl),
       ));
     };
@@ -24518,18 +25140,22 @@ class _ChatScreenState extends State<ChatScreen> {
                   .contains(message['status'])));
         }
       }
-      ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
-          _isVideoModeration(data) ? blockedVideoMessage
+      ScaffoldMessenger.of(context)
+          .showSnackBar(_contentWarningSnackBar(_isVideoModeration(data)
+              ? blockedVideoMessage
               : _isSenderFilterRejection(data)
-              ? _senderFilterRejectionMessage(data)
-              : data['reason']?.toString() ?? 'ההודעה נחסמה'));
+                  ? _senderFilterRejectionMessage(data)
+                  : data['reason']?.toString() ?? 'ההודעה נחסמה'));
     };
     widget.socket?.on('message:rejected', _messageRejectedSocketHandler);
 
     _chatTypingHandler = (data) {
       if (data['fromUserId'] == widget.recipient['id'] && mounted) {
-        setState(() => _isTyping = true);
-        Future.delayed(const Duration(seconds: 3), () {
+        _typingTimer?.cancel();
+        if (!_isTyping) {
+          setState(() => _isTyping = true);
+        }
+        _typingTimer = Timer(const Duration(seconds: 3), () {
           if (mounted) setState(() => _isTyping = false);
         });
       }
@@ -24624,6 +25250,7 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
     widget.socket?.off('conversation:changed', _conversationChangedHandler);
     _clipboardImagePasteListener.dispose();
+    _typingTimer?.cancel();
     _messageRefreshTimer?.cancel();
     _recordTimer?.cancel();
     _recordDeadlineTimer?.cancel();
@@ -24632,7 +25259,11 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.socket?.off('message:reaction', _messageReactionHandler);
     _reactionReadTracker.dispose();
     widget.socket?.off('scan:rejected', _scanRejectedSocketHandler);
-    for (final event in ['message:request-pending', 'message:request-accepted', 'message:request-declined']) {
+    for (final event in [
+      'message:request-pending',
+      'message:request-accepted',
+      'message:request-declined'
+    ]) {
       widget.socket?.off(event, _contactRequestChangedHandler);
     }
 
@@ -24664,8 +25295,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _recordTimer?.cancel();
     _recordDeadlineTimer?.cancel();
     if (mounted) setState(() => _isRecording = false);
-    try { await _audioRecorder.cancel(); }
-    finally { _voiceSubmissionInProgress = false; }
+    try {
+      await _audioRecorder.cancel();
+    } finally {
+      _voiceSubmissionInProgress = false;
+    }
   }
 
   Future<void> _toggleVoiceRecording() async {
@@ -24724,7 +25358,9 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       final directory = kIsWeb ? null : await getTemporaryDirectory();
       _voiceFileName = captureFileNames.create(
-        kind: 'audio', extension: extension, creatorId: creatorId,
+        kind: 'audio',
+        extension: extension,
+        creatorId: creatorId,
       );
       final path = directory == null ? '' : '${directory.path}/$_voiceFileName';
       await _audioRecorder.start(
@@ -24733,7 +25369,10 @@ class _ChatScreenState extends State<ChatScreen> {
               numChannels: 1,
               sampleRate: 16000,
               bitRate: 32000),
-          path: path, api: kApi, token: widget.token, name: _voiceFileName);
+          path: path,
+          api: kApi,
+          token: widget.token,
+          name: _voiceFileName);
       if (!await _audioRecorder.isRecording()) {
         throw Exception('המיקרופון לא התחיל להקליט');
       }
@@ -24744,7 +25383,8 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _recordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (!mounted) return;
-        setState(() => _recordSeconds = math.min(timer.tick, _maxVoiceRecordingDuration.inSeconds));
+        setState(() => _recordSeconds =
+            math.min(timer.tick, _maxVoiceRecordingDuration.inSeconds));
       });
       _recordDeadlineTimer = Timer(_maxVoiceRecordingDuration, () {
         if (!mounted || !_isRecording) return;
@@ -24766,22 +25406,29 @@ class _ChatScreenState extends State<ChatScreen> {
   late final _outbox = PrivateMessageOutbox(
       widget.me?['id']?.toString() ?? '', widget.recipient['id'].toString());
   bool _sendingText = false;
-  bool get _useOutbox => (widget.me?['id']?.toString().isNotEmpty ?? false) &&
-      !{kSystemGuideId, kSafeInformationAiId, kScanBotId}.contains(widget.recipient['id']);
+  bool get _useOutbox =>
+      (widget.me?['id']?.toString().isNotEmpty ?? false) &&
+      !{kSystemGuideId, kSafeInformationAiId, kScanBotId}
+          .contains(widget.recipient['id']);
 
   Future<void> _discardOutbox(Map<String, dynamic> message) async {
     final key = message['outboxId'].toString();
     if (PrivateMessageOutbox.sending.contains(key)) return;
     await _outbox.remove(key);
-    if (mounted) setState(() => _messages.removeWhere((m) => m['outboxId'] == key));
+    if (mounted)
+      setState(() => _messages.removeWhere((m) => m['outboxId'] == key));
   }
 
   Future<void> _sendDurableText(String text, String? stickerId) async {
     final key = PrivateMessageOutbox.newId();
     final message = <String, dynamic>{
-      'id': 'temp_$key', 'outboxId': key, 'text': text,
-      'from': widget.me?['id'], 'time': _nowTime(),
-      'createdAt': DateTime.now().toIso8601String(), 'status': 'sending',
+      'id': 'temp_$key',
+      'outboxId': key,
+      'text': text,
+      'from': widget.me?['id'],
+      'time': _nowTime(),
+      'createdAt': DateTime.now().toIso8601String(),
+      'status': 'sending',
       if (stickerId != null) 'stickerId': stickerId,
       if (stickerId != null) 'fileType': 'sticker',
       if (_replyTo != null) 'replyTo': Map<String, dynamic>.from(_replyTo!),
@@ -24790,7 +25437,8 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await _outbox.save(message);
     } catch (_) {
-      if (mounted) _showError('לא ניתן לשמור את ההודעה במכשיר. הטקסט נשאר בשדה הכתיבה');
+      if (mounted)
+        _showError('לא ניתן לשמור את ההודעה במכשיר. הטקסט נשאר בשדה הכתיבה');
       return;
     }
     if (!mounted) return;
@@ -24809,16 +25457,26 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!PrivateMessageOutbox.sending.add(key)) return;
     if (mounted) setState(() => message['status'] = 'sending');
     try {
-      final response = await http.post(Uri.parse('$kApi/messages'),
-        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'clientMessageId': key, 'toUserId': widget.recipient['id'],
-          'text': message['text'],
-          if (message['stickerId'] != null) 'stickerId': message['stickerId'],
-          if (message['replyTo'] != null) 'replyToId': message['replyTo']['id'],
-          if (message['listingId'] != null) 'listingId': message['listingId'],
-        }),
-      ).timeout(const Duration(seconds: 35));
+      final response = await http
+          .post(
+            Uri.parse('$kApi/messages'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Content-Type': 'application/json'
+            },
+            body: jsonEncode({
+              'clientMessageId': key,
+              'toUserId': widget.recipient['id'],
+              'text': message['text'],
+              if (message['stickerId'] != null)
+                'stickerId': message['stickerId'],
+              if (message['replyTo'] != null)
+                'replyToId': message['replyTo']['id'],
+              if (message['listingId'] != null)
+                'listingId': message['listingId'],
+            }),
+          )
+          .timeout(const Duration(seconds: 35));
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode != 200 || data['id'] == null) {
         if (data['code'] == 'CHAT_CONTENT_BLOCKED') {
@@ -24837,21 +25495,32 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       setState(() {
         _messages.removeWhere((m) => m['outboxId'] == key);
-        if (!_messages.any((m) => m['id'] == data['id'] || m['id'] == 'request_${data['id']}')) {
-          _messages.add({...message, 'id': data['requestPending'] == true ? 'request_${data['id']}' : data['id'], 'outboxId': null,
-            'clientMessageId': key, 'status': data['requestPending'] == true ? 'awaiting_contact_approval' : data['status'] ?? 'sent'});
+        if (!_messages.any((m) =>
+            m['id'] == data['id'] || m['id'] == 'request_${data['id']}')) {
+          _messages.add({
+            ...message,
+            'id': data['requestPending'] == true
+                ? 'request_${data['id']}'
+                : data['id'],
+            'outboxId': null,
+            'clientMessageId': key,
+            'status': data['requestPending'] == true
+                ? 'awaiting_contact_approval'
+                : data['status'] ?? 'sent'
+          });
         }
       });
       if (data['requestPending'] == true) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('ממתין לאישור חברות ולהרשאת הנמען לקבלת התוכן')));
+            content: Text('ממתין לאישור חברות ולהרשאת הנמען לקבלת התוכן')));
       }
       if (widget.listingId != null) widget.onMessageSent?.call();
     } catch (error) {
       // Keep the original record even if the route has already been closed.
       // The same id is reused on retry, including after an ambiguous timeout.
       message['status'] = 'failed';
-      message['outboxError'] = error is StateError ? error.message.toString()
+      message['outboxError'] = error is StateError
+          ? error.message.toString()
           : 'אין חיבור לשרת. ההודעה נשמרה במכשיר ולא אושרה לשליחה';
       await _outbox.save(message);
       if (mounted) setState(() {});
@@ -24863,8 +25532,11 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send({String? stickerId}) async {
     if (_sendingText) return;
     _sendingText = true;
-    try { await _sendImpl(stickerId: stickerId); }
-    finally { _sendingText = false; }
+    try {
+      await _sendImpl(stickerId: stickerId);
+    } finally {
+      _sendingText = false;
+    }
   }
 
   Future<void> _sendImpl({String? stickerId}) async {
@@ -25095,22 +25767,27 @@ class _ChatScreenState extends State<ChatScreen> {
             child: SingleChildScrollView(
               child: Column(children: [
                 _InvitationFilterComparisonTable(
+                  token: widget.token,
+                  groupName: recipientName,
+                  groupFilter: _recipientReceivingFilter,
+                  personalFilter: selected,
+                  counterpartKind: 'החבר',
+                  showCounterpartFilter: false,
+                  counterpartIcon: Icons.person_outline,
+                  onPersonalFilterChanged: (updated) =>
+                      setDialogState(() => selected = updated),
+                ),
+                if (_isPersonalPhoneContact(widget.recipient['id']?.toString(),
+                    widget.me?['id']?.toString()))
+                  PhoneSharingPanel(
+                      api: kApi,
                       token: widget.token,
-                groupName: recipientName,
-                groupFilter: _recipientReceivingFilter,
-                personalFilter: selected,
-                counterpartKind: 'החבר',
-                showCounterpartFilter: false,
-                counterpartIcon: Icons.person_outline,
-                onPersonalFilterChanged: (updated) =>
-                    setDialogState(() => selected = updated),
-              ),
-                if (_isPersonalPhoneContact(widget.recipient['id']?.toString(), widget.me?['id']?.toString()))
-                  PhoneSharingPanel(api: kApi, token: widget.token,
-                    contactId: widget.recipient['id'].toString(),
-                    contactName: recipientName, compact: true,
-                    controller: phoneChoice, initialChoice: true,
-                    onChanged: () => setDialogState(() {})),
+                      contactId: widget.recipient['id'].toString(),
+                      contactName: recipientName,
+                      compact: true,
+                      controller: phoneChoice,
+                      initialChoice: true,
+                      onChanged: () => setDialogState(() {})),
               ]),
             ),
           ),
@@ -25121,9 +25798,10 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             FilledButton.icon(
               onPressed: () => Navigator.pop(dialogContext,
-                {'filter': selected, ...phoneChoice.confirmationPayload}),
+                  {'filter': selected, ...phoneChoice.confirmationPayload}),
               icon: const Icon(Icons.send_outlined),
-              label: Text(phoneChoice.confirmationLabel(saveLabel: 'שמור והמשך')),
+              label:
+                  Text(phoneChoice.confirmationLabel(saveLabel: 'שמור והמשך')),
             ),
           ],
         ),
@@ -25132,10 +25810,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (choice == null || !mounted) return false;
 
     try {
-      final response = await saveReceivingFilter(context: context, api: kApi,
-        token: widget.token,
-        path: '/contacts/${widget.recipient['id']}/filter-settings',
-        body: Map<String, dynamic>.from(choice));
+      final response = await saveReceivingFilter(
+          context: context,
+          api: kApi,
+          token: widget.token,
+          path: '/contacts/${widget.recipient['id']}/filter-settings',
+          body: Map<String, dynamic>.from(choice));
       if (response == null) return false;
       if (!mounted) return false;
       if (response.statusCode != 200) throw Exception();
@@ -25144,7 +25824,8 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() {
         final effective = payload is Map ? payload['filter'] : null;
         _outgoingFilter = effective is Map
-            ? effective.map((key, value) => MapEntry(key.toString(), value == true))
+            ? effective
+                .map((key, value) => MapEntry(key.toString(), value == true))
             : null;
         _requiresFirstMessageFilterChoice = false;
         if (privateEntry is Map) {
@@ -25165,7 +25846,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _showMessageOptions(Map<String, dynamic> msg, bool isMe, {BuildContext? anchorContext}) {
+  void _showMessageOptions(Map<String, dynamic> msg, bool isMe,
+      {BuildContext? anchorContext}) {
     final isText = msg['isFile'] != true && msg['isGroupInvite'] != true;
     showMessageOptionsMenu(
       context: context,
@@ -25178,7 +25860,8 @@ class _ChatScreenState extends State<ChatScreen> {
           CompactMessageMenuItem(
             leading: const Icon(Icons.info_outline, color: kPrimary),
             title: Text(isFilterBlockReason(msg['scanReason']?.toString())
-                ? 'פרטי הסינון' : 'פרטי החסימה'),
+                ? 'פרטי הסינון'
+                : 'פרטי החסימה'),
             onTap: () {
               Navigator.pop(context);
               showScanExplanation(context, msg);
@@ -25201,7 +25884,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 me: widget.me);
           },
         ),
-        if (canAddChatImageToListing(msg, currentUserId: widget.me?['id']?.toString()))
+        if (canAddChatImageToListing(msg,
+            currentUserId: widget.me?['id']?.toString()))
           CompactMessageMenuItem(
             leading: const Icon(Icons.post_add_outlined, color: kPrimary),
             title: const Text('הוסף למודעה'),
@@ -25230,16 +25914,15 @@ class _ChatScreenState extends State<ChatScreen> {
         if (msg['fileType'] == 'image' &&
             msg['fileUrl'] != null &&
             msg['status'] != 'pending_scan' &&
-            (msg['status'] != 'rejected_scan' || msg['forwardAllowed'] == true) &&
+            (msg['status'] != 'rejected_scan' ||
+                msg['forwardAllowed'] == true) &&
             msg['id']?.toString().startsWith('temp_') != true)
           CompactMessageMenuItem(
-            leading:
-                const Icon(Icons.account_circle_outlined, color: kPrimary),
+            leading: const Icon(Icons.account_circle_outlined, color: kPrimary),
             title: const Text('הגדר כתמונת פרופיל'),
             onTap: () {
               Navigator.pop(context);
-              _setMessageImageAsProfile(
-                  context, widget.token, msg, widget.me);
+              _setMessageImageAsProfile(context, widget.token, msg, widget.me);
             },
           ),
         if (!isMe &&
@@ -25273,8 +25956,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         CompactMessageMenuItem(
           leading: const Icon(Icons.delete_outline),
-          title: Text(
-              _isLocalOnlyChatMessage(msg) ? 'הסר את ההודעה' : 'מחק אצלי'),
+          title:
+              Text(_isLocalOnlyChatMessage(msg) ? 'הסר את ההודעה' : 'מחק אצלי'),
           onTap: () {
             Navigator.pop(context);
             _deleteMessage(msg, forEveryone: false);
@@ -25283,8 +25966,8 @@ class _ChatScreenState extends State<ChatScreen> {
         if (isMe && !_isLocalOnlyChatMessage(msg))
           CompactMessageMenuItem(
             leading: const Icon(Icons.delete_outline, color: Colors.red),
-            title: const Text('מחק אצל כולם',
-                style: TextStyle(color: Colors.red)),
+            title:
+                const Text('מחק אצל כולם', style: TextStyle(color: Colors.red)),
             onTap: () {
               Navigator.pop(context);
               _deleteMessage(msg, forEveryone: true);
@@ -25498,26 +26181,41 @@ class _ChatScreenState extends State<ChatScreen> {
                       style: const TextStyle(color: kSubtext, fontSize: 13)),
                 ],
                 const SizedBox(height: 16),
-                if (_isPersonalPhoneContact(widget.recipient['id']?.toString(), widget.me?['id']?.toString())) ...[
-                  PhoneSharingPanel(api: kApi, token: widget.token,
-                    contactName: name,
-                    contactId: widget.recipient['id'].toString(), controller: phoneChoice),
-                  AnimatedBuilder(animation: phoneChoice, builder: (context, _) =>
-                    !phoneChoice.canShare ? const SizedBox.shrink() : FilledButton(
-                      onPressed: () async {
-                        try {
-                          final data = await updatePhoneSharing(kApi, widget.token,
-                            widget.recipient['id'].toString(), phoneChoice.confirmationPayload);
-                          if (dialogContext.mounted) phoneChoice.apply(data);
-                        } catch (_) {
-                          if (dialogContext.mounted) {
-                            ScaffoldMessenger.of(dialogContext).showSnackBar(
-                              const SnackBar(content: Text('עדכון שיתוף הטלפון נכשל')));
-                          }
-                        }
-                      },
-                      child: Text(phoneChoice.selectedShare ? 'אשר ושתף את הטלפון שלי' : 'אשר ללא שיתוף טלפון'),
-                    )),
+                if (_isPersonalPhoneContact(widget.recipient['id']?.toString(),
+                    widget.me?['id']?.toString())) ...[
+                  PhoneSharingPanel(
+                      api: kApi,
+                      token: widget.token,
+                      contactName: name,
+                      contactId: widget.recipient['id'].toString(),
+                      controller: phoneChoice),
+                  AnimatedBuilder(
+                      animation: phoneChoice,
+                      builder: (context, _) => !phoneChoice.canShare
+                          ? const SizedBox.shrink()
+                          : FilledButton(
+                              onPressed: () async {
+                                try {
+                                  final data = await updatePhoneSharing(
+                                      kApi,
+                                      widget.token,
+                                      widget.recipient['id'].toString(),
+                                      phoneChoice.confirmationPayload);
+                                  if (dialogContext.mounted)
+                                    phoneChoice.apply(data);
+                                } catch (_) {
+                                  if (dialogContext.mounted) {
+                                    ScaffoldMessenger.of(dialogContext)
+                                        .showSnackBar(const SnackBar(
+                                            content: Text(
+                                                'עדכון שיתוף הטלפון נכשל')));
+                                  }
+                                }
+                              },
+                              child: Text(phoneChoice.selectedShare
+                                  ? 'אשר ושתף את הטלפון שלי'
+                                  : 'אשר ללא שיתוף טלפון'),
+                            )),
                 ],
                 if (email.isNotEmpty)
                   ListTile(
@@ -25565,16 +26263,17 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   );
                 }),
-                if (!_isUnfilteredAssistantChat) ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.tune_rounded, color: kPrimary),
-                  title: const Text('הגדרות סינון לאיש הקשר'),
-                  trailing: const Icon(Icons.chevron_left),
-                  onTap: () {
-                    Navigator.pop(dialogContext);
-                    _openContactFilterSettings();
-                  },
-                ),
+                if (!_isUnfilteredAssistantChat)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.tune_rounded, color: kPrimary),
+                    title: const Text('הגדרות סינון לאיש הקשר'),
+                    trailing: const Icon(Icons.chevron_left),
+                    onTap: () {
+                      Navigator.pop(dialogContext);
+                      _openContactFilterSettings();
+                    },
+                  ),
                 const Divider(),
                 ListTile(
                   dense: true,
@@ -25663,8 +26362,13 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             const Divider(),
-            ListTile(leading: const Icon(Icons.person_remove_outlined),
-              title: const Text('ניתוק חברות'), onTap: () { Navigator.pop(context); _disconnectFriend(); }),
+            ListTile(
+                leading: const Icon(Icons.person_remove_outlined),
+                title: const Text('ניתוק חברות'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _disconnectFriend();
+                }),
             ListTile(
               leading: const Icon(Icons.thumb_down_alt_outlined,
                   color: Colors.orange),
@@ -25802,20 +26506,34 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _disconnectFriend() async {
-    final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) => AlertDialog(
-      title: const Text('ניתוק חברות'),
-      content: const Text('לנתק את החברות משני הצדדים? היסטוריית השיחה תישאר. שיתוף מספר דרך קבוצה משותפת יישאר לפי הבחירה בקבוצה.'),
-      actions: [TextButton(onPressed: () => Navigator.pop(dialogContext,false), child: const Text('ביטול')),
-        FilledButton(onPressed: () => Navigator.pop(dialogContext,true), child: const Text('נתק חברות'))],
-    ));
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+              title: const Text('ניתוק חברות'),
+              content: const Text(
+                  'לנתק את החברות משני הצדדים? היסטוריית השיחה תישאר. שיתוף מספר דרך קבוצה משותפת יישאר לפי הבחירה בקבוצה.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dialogContext, false),
+                    child: const Text('ביטול')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(dialogContext, true),
+                    child: const Text('נתק חברות'))
+              ],
+            ));
     if (confirmed != true) return;
     try {
-      final response = await http.delete(Uri.parse('$kApi/contacts/${widget.recipient['id']}/friendship'),
-        headers: {'Authorization': 'Bearer ${widget.token}'}).timeout(const Duration(seconds: 12));
+      final response = await http.delete(
+          Uri.parse('$kApi/contacts/${widget.recipient['id']}/friendship'),
+          headers: {
+            'Authorization': 'Bearer ${widget.token}'
+          }).timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) throw StateError('disconnect failed');
       phoneSharingChanges.add(widget.recipient['id'].toString());
       widget.onBlocked?.call();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('החברות נותקה')));
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('החברות נותקה')));
     } catch (_) {
       if (mounted) _showError('לא ניתן לנתק את החברות כרגע. נסה שוב.');
     }
@@ -25906,10 +26624,17 @@ class _ChatScreenState extends State<ChatScreen> {
     final editing = _editingMsg;
     final reply = _replyTo;
     await sendSeparateComposerText(_msgCtrl, text,
-      canRestore: () => mounted && widget.token == token && widget.me?['id'] == account,
-      isolateContext: () => setState(() { _editingMsg = null; _replyTo = null; }),
-      restoreContext: () => setState(() { _editingMsg ??= editing; _replyTo ??= reply; }),
-      send: () => _send());
+        canRestore: () =>
+            mounted && widget.token == token && widget.me?['id'] == account,
+        isolateContext: () => setState(() {
+              _editingMsg = null;
+              _replyTo = null;
+            }),
+        restoreContext: () => setState(() {
+              _editingMsg ??= editing;
+              _replyTo ??= reply;
+            }),
+        send: () => _send());
   }
 
   Future<void> _showAttachMenu() async {
@@ -25928,9 +26653,12 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (!mounted || action == null) return;
       final allowed = switch (action) {
-        ChatAttachmentAction.photo || ChatAttachmentAction.paste => _recipientAllowsImages,
+        ChatAttachmentAction.photo ||
+        ChatAttachmentAction.paste =>
+          _recipientAllowsImages,
         ChatAttachmentAction.video => _recipientAllowsVideo,
-        ChatAttachmentAction.capture => _recipientAllowsImages || _recipientAllowsVideo,
+        ChatAttachmentAction.capture =>
+          _recipientAllowsImages || _recipientAllowsVideo,
         ChatAttachmentAction.upload => true,
         _ => _recipientAllowsText,
       };
@@ -25955,11 +26683,13 @@ class _ChatScreenState extends State<ChatScreen> {
           await _sharePhoneContact();
         case ChatAttachmentAction.location:
           final location = await showLocationShareDialog(context, api: kApi);
-          if (location != null && mounted) await _sendSeparateSharedText(location);
+          if (location != null && mounted)
+            await _sendSeparateSharedText(location);
         case ChatAttachmentAction.myContact:
           await _shareMyContact();
         case ChatAttachmentAction.paste:
-          await pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
+          await pasteChatImage(
+              context, _clipboardImagePasteListener.pasteImage);
       }
     } finally {
       _attachmentMenuOpen = false;
@@ -26121,12 +26851,10 @@ class _ChatScreenState extends State<ChatScreen> {
           gif['file_name'] as String? ?? '${gif['title']}.gif',
           'image',
         );
-        http
-            .post(
-              Uri.parse('$kApi/gifs/${gif['id']}/use'),
-              headers: {'Authorization': 'Bearer ${widget.token}'},
-            )
-            .ignore();
+        http.post(
+          Uri.parse('$kApi/gifs/${gif['id']}/use'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        ).ignore();
         return;
       }
       if (choice.startsWith(_stickerPrefix)) {
@@ -26180,18 +26908,30 @@ class _ChatScreenState extends State<ChatScreen> {
     XFile? captured;
     try {
       captured = kIsWeb
-          ? await captureWebCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
-              imagesAllowed: _recipientAllowsImages, videoAllowed: _recipientAllowsVideo)
-          : await captureNativeCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
+          ? await captureWebCamera(context,
+              api: kApi,
+              token: widget.token,
+              creatorId: creatorId,
+              imagesAllowed: _recipientAllowsImages,
+              videoAllowed: _recipientAllowsVideo)
+          : await captureNativeCamera(context,
+              api: kApi,
+              token: widget.token,
+              creatorId: creatorId,
               maxDuration: _maxVideoDuration,
-              imagesAllowed: _recipientAllowsImages, videoAllowed: _recipientAllowsVideo);
+              imagesAllowed: _recipientAllowsImages,
+              videoAllowed: _recipientAllowsVideo);
     } finally {
       _cameraCaptureOpen = false;
     }
-    if (captured == null || !mounted) { await RecordingUpload.discard(captured); return; }
+    if (captured == null || !mounted) {
+      await RecordingUpload.discard(captured);
+      return;
+    }
     final video = captured.mimeType?.startsWith('video/') == true;
     if (video && !await _videoWithinDurationLimit(context, captured)) {
-      await RecordingUpload.discard(captured); return;
+      await RecordingUpload.discard(captured);
+      return;
     }
     if (!mounted) return;
     final name = !kIsWeb && !video
@@ -26251,8 +26991,9 @@ class _ChatScreenState extends State<ChatScreen> {
     await _uploadAndSend(pdf, pdf.name, 'document');
   }
 
-  Future<int> _uploadPrivateImageBatch(List<XFile> files,
-      _ChatUploadDestination destination, {ChatUploadBatchOrder? batchOrder}) async {
+  Future<int> _uploadPrivateImageBatch(
+      List<XFile> files, _ChatUploadDestination destination,
+      {ChatUploadBatchOrder? batchOrder}) async {
     if (files.isEmpty) return 0;
     final completed = ValueNotifier<int>(0);
     var refreshScanBot = false;
@@ -26312,7 +27053,8 @@ class _ChatScreenState extends State<ChatScreen> {
       },
     );
     completed.dispose();
-    final failed = results.where((r) => r.outcome == _FileUploadOutcome.failed).length;
+    final failed =
+        results.where((r) => r.outcome == _FileUploadOutcome.failed).length;
     if (!mounted) return failed;
 
     if (refreshScanBot) await _loadMessages(silent: true);
@@ -26321,17 +27063,25 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   ChatUploadNotices get _uploadNotices => ChatUploadNotices(
-    api: kApi, token: widget.token, account: widget.me?['id']?.toString() ?? '',
-    kind: 'personal', target: widget.recipient['id'].toString());
+      api: kApi,
+      token: widget.token,
+      account: widget.me?['id']?.toString() ?? '',
+      kind: 'personal',
+      target: widget.recipient['id'].toString());
 
   Future<void> _loadUploadBatchNotices() async {
     try {
       final notices = await _uploadNotices.load();
       if (!mounted) return;
       setState(() {
-        final merged = mergeChatUploadHistory(_messages,
-            notices.where((m) => conversationMessageAfter(m, _clearedAt)).toList());
-        _messages..clear()..addAll(merged);
+        final merged = mergeChatUploadHistory(
+            _messages,
+            notices
+                .where((m) => conversationMessageAfter(m, _clearedAt))
+                .toList());
+        _messages
+          ..clear()
+          ..addAll(merged);
       });
     } catch (_) {}
   }
@@ -26349,7 +27099,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (mounted) {
       setState(() {
         final merged = mergeChatUploadHistory(_messages, [notice]);
-        _messages..clear()..addAll(merged);
+        _messages
+          ..clear()
+          ..addAll(merged);
       });
       _scrollToBottom();
     }
@@ -26361,19 +27113,24 @@ class _ChatScreenState extends State<ChatScreen> {
     _attachmentPickerOpen = true;
     List<PlatformFile>? pickedFiles;
     try {
-      pickedFiles = pastedFiles ?? (kIsWeb ? await pickWebChatAttachments() : (await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: chatAttachmentExtensions,
-        allowMultiple: true,
-        withData: false,
-      ))?.files);
+      pickedFiles = pastedFiles ??
+          (kIsWeb
+              ? await pickWebChatAttachments()
+              : (await FilePicker.platform.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: chatAttachmentExtensions,
+                  allowMultiple: true,
+                  withData: false,
+                ))
+                  ?.files);
       if (!mounted || pickedFiles == null || pickedFiles.isEmpty) return;
       if (pickedFiles.length > maxChatAttachments) {
         showChatUploadLimitExceeded(context, pickedFiles.length);
         return;
       }
       final files = pickedFiles;
-      if (!await confirmChatUploadBatch(context, files.length) || !mounted) return;
+      if (!await confirmChatUploadBatch(context, files.length) || !mounted)
+        return;
       if (files.every((file) => chatAttachmentType(file.name) == 'image')) {
         await _loadRecipientReceivingFilter();
         if (!mounted) return;
@@ -26383,7 +27140,8 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         if (!await _ensureFirstMessageFilterChoice()) return;
         if (!mounted) return;
-        final images = await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
+        final images =
+            await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
         if (!mounted) return;
         final destination = _uploadDestination;
         final notices = _uploadNotices;
@@ -26392,8 +27150,12 @@ class _ChatScreenState extends State<ChatScreen> {
         await runChatUploadBatch(
           count: images.length,
           failedCount: () => failed,
-          onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
-          upload: () async { failed = await _uploadPrivateImageBatch(images, destination, batchOrder: batchOrder); },
+          onNotice: (text) => _showUploadBatchNotice(text,
+              store: notices, batchOrder: batchOrder),
+          upload: () async {
+            failed = await _uploadPrivateImageBatch(images, destination,
+                batchOrder: batchOrder);
+          },
         );
         return;
       }
@@ -26402,11 +27164,13 @@ class _ChatScreenState extends State<ChatScreen> {
       final prepared = <(PlatformFile, String)>[];
       final permissions = <String, bool>{};
       for (final file in files) {
-        if (await _handleSharedDataAttachment(context, widget.token, file, _sendSeparateSharedText)) continue;
+        if (await _handleSharedDataAttachment(
+            context, widget.token, file, _sendSeparateSharedText)) continue;
         if (!mounted) return;
         final type = chatAttachmentType(file.name,
             bytes: file.name.toLowerCase().endsWith('.webm')
-                ? await _attachmentHeader(file) : null);
+                ? await _attachmentHeader(file)
+                : null);
         if (!mounted) return;
         if (type == null) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -26414,7 +27178,8 @@ class _ChatScreenState extends State<ChatScreen> {
           ));
           continue;
         }
-        if (type == 'video' && !await _videoWithinDurationLimit(context, file.xFile)) continue;
+        if (type == 'video' &&
+            !await _videoWithinDurationLimit(context, file.xFile)) continue;
         if (!mounted) return;
         final allowed = permissions[type] ??= await _preparePrivateUpload(type);
         if (!allowed) continue;
@@ -26428,12 +27193,15 @@ class _ChatScreenState extends State<ChatScreen> {
       await runChatUploadBatch(
         count: files.length,
         failedCount: () => failed,
-        onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
+        onNotice: (text) => _showUploadBatchNotice(text,
+            store: notices, batchOrder: batchOrder),
         upload: () async {
           for (final (file, type) in prepared) {
             await _uploadAndSend(file, file.name, type,
-                preparedDestination: destination, batchOrder: batchOrder,
-                onComplete: (hasFailed) { if (hasFailed) failed++; });
+                preparedDestination: destination,
+                batchOrder: batchOrder, onComplete: (hasFailed) {
+              if (hasFailed) failed++;
+            });
           }
         },
       );
@@ -26455,12 +27223,20 @@ class _ChatScreenState extends State<ChatScreen> {
     final creatorId = _captureCreatorId(context, widget.me);
     if (creatorId == null) return;
     final video = kIsWeb
-        ? await captureWebVideo(context, api: kApi, token: widget.token, creatorId: creatorId)
-        : await captureNativeVideo(context, api: kApi, token: widget.token,
-            maxDuration: _maxVideoDuration, creatorId: creatorId);
-    if (video == null || !mounted) { await RecordingUpload.discard(video); return; }
+        ? await captureWebVideo(context,
+            api: kApi, token: widget.token, creatorId: creatorId)
+        : await captureNativeVideo(context,
+            api: kApi,
+            token: widget.token,
+            maxDuration: _maxVideoDuration,
+            creatorId: creatorId);
+    if (video == null || !mounted) {
+      await RecordingUpload.discard(video);
+      return;
+    }
     if (!await _videoWithinDurationLimit(context, video)) {
-      await RecordingUpload.discard(video); return;
+      await RecordingUpload.discard(video);
+      return;
     }
     if (!mounted) return;
     await _uploadAndSend(video, video.name, 'video',
@@ -26531,8 +27307,9 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _scrollToBottom();
     }
-    final navigator =
-        showProgress && mounted ? Navigator.of(context, rootNavigator: true) : null;
+    final navigator = showProgress && mounted
+        ? Navigator.of(context, rootNavigator: true)
+        : null;
     final dialogFuture = showProgress && mounted
         ? showDialog<void>(
             context: context,
@@ -26560,7 +27337,7 @@ class _ChatScreenState extends State<ChatScreen> {
       token: destination.token,
       fields: {
         'toUserId': destination.targetId,
-          if (widget.listingId != null) 'listingInquiryId': widget.listingId!,
+        if (widget.listingId != null) 'listingInquiryId': widget.listingId!,
         if (!isLibrarySticker) 'scanReport': 'true',
         ...extraFields,
         'clientUploadId': uploadMessageId,
@@ -26576,8 +27353,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     await _applyPrivateUploadResult(result, fileName, fileType,
         destination: destination,
-        showNotice:
-            (fileType != 'image' && fileType != 'video') || isClipboardPaste || isLibrarySticker);
+        showNotice: (fileType != 'image' && fileType != 'video') ||
+            isClipboardPaste ||
+            isLibrarySticker);
     batchOrder?.recordResult(result.data);
     onComplete?.call(result.outcome == _FileUploadOutcome.failed);
   }
@@ -26651,13 +27429,15 @@ class _ChatScreenState extends State<ChatScreen> {
         });
         _scrollToBottom();
         if (showNotice) {
-          _showBlockedDialog(fileType == 'video' ? blockedVideoMessage
+          _showBlockedDialog(fileType == 'video'
+              ? blockedVideoMessage
               : data['reason'] as String? ?? 'התמונה לא נשלחה');
         }
         return false;
       case _FileUploadOutcome.pending:
         final upload = <String, dynamic>{
-          'clientUploadId': data['clientUploadId'], 'fileUrl': fileUrl,
+          'clientUploadId': data['clientUploadId'],
+          'fileUrl': fileUrl,
         };
         if (hasResolvedChatUpload(_messages, upload)) return false;
         setState(() {
@@ -26732,7 +27512,8 @@ class _ChatScreenState extends State<ChatScreen> {
           }
           if (sendData['id'] != null) {
             data['_sentMessageId'] = sendData['requestPending'] == true
-                ? 'request_${sendData['id']}' : sendData['id'].toString();
+                ? 'request_${sendData['id']}'
+                : sendData['id'].toString();
           }
           if (sendData['requestPending'] == true) {
             if (!mounted) return false;
@@ -26740,7 +27521,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 contactRequestListingImageSourceId(sendData['id']);
             setState(() {
               _messages.add({
-                'id': sendData['id'] != null ? 'request_${sendData['id']}' : _newUploadMessageId('request_'),
+                'id': sendData['id'] != null
+                    ? 'request_${sendData['id']}'
+                    : _newUploadMessageId('request_'),
                 if (listingImageSourceId != null)
                   'listingImageSourceId': listingImageSourceId,
                 'text': fileName,
@@ -26817,11 +27600,17 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showBlockedDialog(String reason) {
     if (!mounted) return;
     if (reason == blockedVideoMessage) {
-      showDialog<void>(context: context, builder: (context) => AlertDialog(
-        content: const Text(blockedVideoMessage, textAlign: TextAlign.right),
-        actions: [TextButton(onPressed: () => Navigator.pop(context),
-            child: const Text('סגירה'))],
-      ));
+      showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+                content:
+                    const Text(blockedVideoMessage, textAlign: TextAlign.right),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('סגירה'))
+                ],
+              ));
       return;
     }
     showDialog(
@@ -26952,29 +27741,35 @@ class _ChatScreenState extends State<ChatScreen> {
               child: SingleChildScrollView(
                 child: Column(children: [
                   _InvitationFilterComparisonTable(
-                      token: widget.token,
-                  groupName: recipientName,
-                  groupFilter: _recipientReceivingFilter,
-                  personalFilter: personalDraft,
-                  counterpartKind: 'החבר',
-                  showCounterpartFilter: _counterpartFilterAvailable,
-                  hiddenCounterpartExplanation:
-                      'בחרו איזה תוכן תהיו מוכנים לקבל מ$recipientName. לאחר אישור הקשר על ידי $recipientName, תוכלו לראות מה מותר לשלוח בשיחה.',
-                  counterpartIcon: Icons.person_outline,
-                  onPersonalFilterChanged: _isUnfilteredAssistantChat
-                      ? null
-                      : (updated) => setDialogState(() {
-                    personalDraft = updated;
-                    dirty = true;
-                  }),
-                ),
-                  if (_isPersonalPhoneContact(widget.recipient['id']?.toString(), widget.me?['id']?.toString()))
-                    PhoneSharingPanel(api: kApi, token: widget.token,
-                      contactId: widget.recipient['id'].toString(),
-                      contactName: recipientName, compact: true,
-                      controller: phoneChoice,
-                      initialChoice: _requiresFirstMessageFilterChoice == true,
-                      onChanged: () => setDialogState(() => dirty = true)),
+                    token: widget.token,
+                    groupName: recipientName,
+                    groupFilter: _recipientReceivingFilter,
+                    personalFilter: personalDraft,
+                    counterpartKind: 'החבר',
+                    showCounterpartFilter: _counterpartFilterAvailable,
+                    hiddenCounterpartExplanation:
+                        'בחרו איזה תוכן תהיו מוכנים לקבל מ$recipientName. לאחר אישור הקשר על ידי $recipientName, תוכלו לראות מה מותר לשלוח בשיחה.',
+                    counterpartIcon: Icons.person_outline,
+                    onPersonalFilterChanged: _isUnfilteredAssistantChat
+                        ? null
+                        : (updated) => setDialogState(() {
+                              personalDraft = updated;
+                              dirty = true;
+                            }),
+                  ),
+                  if (_isPersonalPhoneContact(
+                      widget.recipient['id']?.toString(),
+                      widget.me?['id']?.toString()))
+                    PhoneSharingPanel(
+                        api: kApi,
+                        token: widget.token,
+                        contactId: widget.recipient['id'].toString(),
+                        contactName: recipientName,
+                        compact: true,
+                        controller: phoneChoice,
+                        initialChoice:
+                            _requiresFirstMessageFilterChoice == true,
+                        onChanged: () => setDialogState(() => dirty = true)),
                 ]),
               ),
             ),
@@ -27060,7 +27855,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _contactFilterStatusButton() {
     if (widget.recipient['id'] == kScanBotId ||
         widget.recipient['is_self'] == true ||
-        (widget.me?['id'] != null && widget.recipient['id'] == widget.me?['id'])) {
+        (widget.me?['id'] != null &&
+            widget.recipient['id'] == widget.me?['id'])) {
       return const SizedBox.shrink();
     }
     final hasRestrictions =
@@ -27104,711 +27900,914 @@ class _ChatScreenState extends State<ChatScreen> {
     final recipientName = widget.recipient['name'] as String? ?? '';
     return Scaffold(
       backgroundColor: kChatBg,
-      appBar: _expressionPanel.isOpen &&
+      appBar: (_expressionPanel.isOpen ||
+                  MediaQuery.sizeOf(context).height -
+                          MediaQuery.viewInsetsOf(context).bottom <
+                      180) &&
               MediaQuery.viewInsetsOf(context).bottom > 0 &&
-              MediaQuery.sizeOf(context).height - MediaQuery.viewInsetsOf(context).bottom < 250
+              MediaQuery.sizeOf(context).height -
+                      MediaQuery.viewInsetsOf(context).bottom <
+                  250
           ? null
           : AppBar(
-        backgroundColor: kPrimary,
-        leading: _selectedMessageKeys.isNotEmpty
-            ? IconButton(
-                tooltip: 'ביטול הבחירה',
-                onPressed: () => setState(_selectedMessageKeys.clear),
-                icon: const Icon(Icons.close),
-              )
-            : BackButton(
-                color: Colors.white,
-                onPressed: widget.onClose ?? () => Navigator.pop(context)),
-        leadingWidth: 40,
-        title: _selectedMessageKeys.isNotEmpty
-            ? Text('${_selectedMessageKeys.length} פריטים נבחרו')
-            : Row(
-                children: [
-                  Semantics(
-                    button: true,
-                    label: 'פתיחת פרטי איש הקשר',
-                    child: GestureDetector(
-                      onTap: _showContactDetails,
-                      child: Tooltip(
-                        message: 'פרטי איש הקשר',
-                        child: UserAvatar(
-                          radius: 19,
-                          picUrl:
-                              widget.recipient['profile_pic_url'] as String?,
-                          name: recipientName,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
+              backgroundColor: kPrimary,
+              leading: _selectedMessageKeys.isNotEmpty
+                  ? IconButton(
+                      tooltip: 'ביטול הבחירה',
+                      onPressed: () => setState(_selectedMessageKeys.clear),
+                      icon: const Icon(Icons.close),
+                    )
+                  : BackButton(
+                      color: Colors.white,
+                      onPressed:
+                          widget.onClose ?? () => Navigator.pop(context)),
+              leadingWidth: 40,
+              title: _selectedMessageKeys.isNotEmpty
+                  ? Text('${_selectedMessageKeys.length} פריטים נבחרו')
+                  : Row(
                       children: [
-                        Text(recipientName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.white)),
-                        Row(
-                          children: [
-                            const Icon(Icons.verified_user_outlined,
-                                size: 10, color: Colors.white60),
-                            const SizedBox(width: 3),
-                            Flexible(
-                              child: Text(
-                                  widget.recipient['id'] == kSafeInformationAiId
-                                      ? 'AI אוטומטי · מסונן'
-                                      : 'מסונן · מקוון',
+                        Semantics(
+                          button: true,
+                          label: 'פתיחת פרטי איש הקשר',
+                          child: GestureDetector(
+                            onTap: _showContactDetails,
+                            child: Tooltip(
+                              message: 'פרטי איש הקשר',
+                              child: UserAvatar(
+                                radius: 19,
+                                picUrl: widget.recipient['profile_pic_url']
+                                    as String?,
+                                name: recipientName,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(recipientName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
-                                      fontSize: 11, color: Colors.white70)),
-                            ),
-                            const SizedBox(width: 5),
-                            _contactFilterStatusButton(),
-                          ],
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.white)),
+                              Row(
+                                children: [
+                                  const Icon(Icons.verified_user_outlined,
+                                      size: 10, color: Colors.white60),
+                                  const SizedBox(width: 3),
+                                  Flexible(
+                                    child: Text(
+                                        widget.recipient['id'] ==
+                                                kSafeInformationAiId
+                                            ? 'AI אוטומטי · מסונן'
+                                            : 'מסונן · מקוון',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.white70)),
+                                  ),
+                                  const SizedBox(width: 5),
+                                  _contactFilterStatusButton(),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
+              actions: [
+                if (_selectedMessageKeys.isNotEmpty)
+                  IconButton(
+                    tooltip: 'העבר את הפריטים שנבחרו',
+                    onPressed: _forwardSelectedMessages,
+                    icon: const Icon(Icons.forward),
+                  ),
+                if (_selectedMessageKeys.isEmpty) ...[
+                  if (!kIsWeb)
+                    IconButton(
+                      icon:
+                          const Icon(Icons.phone_outlined, color: Colors.white),
+                      onPressed: widget.recipient['id'] == kScanBotId
+                          ? null
+                          : () {
+                              if (widget.onVoiceCall != null) {
+                                widget.onVoiceCall!();
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                        'יש לפתוח את השיחה מרשימת אנשי הקשר'),
+                                  ),
+                                );
+                              }
+                            },
+                      tooltip: 'שיחת קול',
+                    ),
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert),
+                    tooltip: 'אפשרויות שיחה',
+                    position: PopupMenuPosition.under,
+                    constraints:
+                        const BoxConstraints(minWidth: 210, maxWidth: 250),
+                    onSelected: _handleChatMenuAction,
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                          value: 'info',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.info_outline, 'פרטי איש הקשר')),
+                      PopupMenuItem(
+                          value: 'search',
+                          height: 40,
+                          child:
+                              _CompactMenuItem(Icons.search, 'חיפוש בהודעות')),
+                      PopupMenuItem(
+                          value: 'mute',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.notifications_off_outlined,
+                              'השתקת התראות')),
+                      PopupMenuItem(
+                          value: 'clear_conversation',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.cleaning_services_outlined, 'ניקוי שיחה')),
+                      PopupMenuItem(
+                          value: 'delete_conversation',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.delete_outline, 'מחיקת שיחה',
+                              color: Colors.red)),
+                      PopupMenuDivider(height: 8),
+                      PopupMenuItem(
+                          value: 'unfriend',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.person_remove_outlined, 'ניתוק חברות')),
+                      PopupMenuItem(
+                          value: 'report',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.thumb_down_alt_outlined, 'דיווח')),
+                      PopupMenuItem(
+                          value: 'block',
+                          height: 40,
+                          child: _CompactMenuItem(Icons.block, 'חסימה',
+                              color: Colors.red)),
+                    ],
                   ),
                 ],
-              ),
-        actions: [
-          if (_selectedMessageKeys.isNotEmpty)
-            IconButton(
-              tooltip: 'העבר את הפריטים שנבחרו',
-              onPressed: _forwardSelectedMessages,
-              icon: const Icon(Icons.forward),
-            ),
-          if (_selectedMessageKeys.isEmpty) ...[
-            if (!kIsWeb)
-              IconButton(
-                icon: const Icon(Icons.phone_outlined, color: Colors.white),
-                onPressed: widget.recipient['id'] == kScanBotId
-                    ? null
-                    : () {
-                        if (widget.onVoiceCall != null) {
-                          widget.onVoiceCall!();
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('יש לפתוח את השיחה מרשימת אנשי הקשר'),
-                            ),
-                          );
-                        }
-                      },
-                tooltip: 'שיחת קול',
-              ),
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert),
-              tooltip: 'אפשרויות שיחה',
-              position: PopupMenuPosition.under,
-              constraints: const BoxConstraints(minWidth: 210, maxWidth: 250),
-              onSelected: _handleChatMenuAction,
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                    value: 'info',
-                    height: 40,
-                    child:
-                        _CompactMenuItem(Icons.info_outline, 'פרטי איש הקשר')),
-                PopupMenuItem(
-                    value: 'search',
-                    height: 40,
-                    child: _CompactMenuItem(Icons.search, 'חיפוש בהודעות')),
-                PopupMenuItem(
-                    value: 'mute',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.notifications_off_outlined, 'השתקת התראות')),
-                PopupMenuItem(
-                    value: 'clear_conversation',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.cleaning_services_outlined, 'ניקוי שיחה')),
-                PopupMenuItem(
-                    value: 'delete_conversation',
-                    height: 40,
-                    child: _CompactMenuItem(Icons.delete_outline, 'מחיקת שיחה',
-                        color: Colors.red)),
-                PopupMenuDivider(height: 8),
-                PopupMenuItem(
-                    value: 'unfriend', height: 40,
-                    child: _CompactMenuItem(Icons.person_remove_outlined, 'ניתוק חברות')),
-                PopupMenuItem(
-                    value: 'report',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.thumb_down_alt_outlined, 'דיווח')),
-                PopupMenuItem(
-                    value: 'block',
-                    height: 40,
-                    child: _CompactMenuItem(Icons.block, 'חסימה',
-                        color: Colors.red)),
               ],
             ),
-          ],
-        ],
-      ),
-      body: LayoutBuilder(builder: (context, constraints) => Column(
-        children: [
-          // Reply preview bar
-          if (_replyTo != null)
-            Container(
-              color: kCard,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
+      body: LayoutBuilder(
+          builder: (context, constraints) => Column(
                 children: [
-                  Container(
-                    width: 3,
-                    height: 36,
-                    color: kPrimary,
-                    margin: const EdgeInsets.only(left: 8),
-                  ),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('ציטוט',
-                            style: TextStyle(
-                                color: kPrimary,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold)),
-                        InlineEmojiText(
-                          _replyTo!['text'] as String,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 13, color: kSubtext),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () => setState(() => _replyTo = null),
-                  ),
-                ],
-              ),
-            ),
-
-          // Edit mode bar
-          if (_editingMsg != null)
-            Container(
-              color: const Color(0xFFFFF8E1),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  Container(
-                    width: 3,
-                    height: 36,
-                    color: Colors.orange,
-                    margin: const EdgeInsets.only(left: 8),
-                  ),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('עריכת הודעה',
-                            style: TextStyle(
-                                color: Colors.orange,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold)),
-                        InlineEmojiText(
-                          _editingMsg!['text'] as String? ?? '',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 13, color: kSubtext),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () => setState(() {
-                      _editingMsg = null;
-                      _msgCtrl.clear();
-                    }),
-                  ),
-                ],
-              ),
-            ),
-
-          // Messages list
-          Expanded(
-            child: _loading
-                ? const Center(
-                    child: CircularProgressIndicator(color: kPrimary))
-                : _messages.isEmpty
-                    ? _AvielEmptyChat(
-                        asset: widget.recipient['id'] == kSafeInformationAiId
-                            ? 'assets/guide/safe-information-ai.png'
-                            : 'icon_source.png',
-                        text: 'אין הודעות עדיין — שלח הודעה ראשונה!')
-                    : ChatHistoryList(
-                        controller: _scrollCtrl,
-                        anchorIndex: _scrollCtrl.anchorIndex(_messages),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 8),
-                        itemCount: _messages.length,
-                        itemBuilder: (_, i) {
-                          final messageIndex = i;
-                          final msg = _messages[messageIndex];
-                          if (msg['isUploadBatchNotice'] == true) {
-                            return ChatUploadBatchNotice(
-                                key: ValueKey(msg['id']), text: msg['text'] as String,
-                                summary: chatUploadBatchSummary(msg, _messages));
-                          }
-                          final isMe = msg['from'] == widget.me?['id'];
-                          final rawSenderName = isMe
-                              ? (widget.me?['name']?.toString().trim() ?? '')
-                              : (widget.recipient['name']?.toString().trim() ?? '');
-                          final senderName = rawSenderName.isNotEmpty
-                              ? rawSenderName : isMe ? 'אני' : 'משתמש';
-                          final senderAvatarUrl = isMe
-                              ? (widget.me?['profile_pic_url']?.toString())
-                              : widget.recipient['profile_pic_url']?.toString();
-                          final isSystemGuideChat =
-                              widget.recipient['id'] == kSystemGuideId;
-                          final nextMessage =
-                              messageIndex + 1 < _messages.length
-                                  ? _messages[messageIndex + 1]
-                                  : null;
-                          final hideAnsweredGuidePrompt = isSystemGuideChat &&
-                              !isMe &&
-                              nextMessage?['from'] == widget.me?['id'] &&
-                              (msg['text']?.toString().contains('?') ?? false);
-                          final firstUnreadIndex = _messages.indexWhere(
-                              (message) => message['isUnread'] == true);
-                          final showDate = messageIndex == 0 ||
-                              !_sameMessageDay(
-                                  msg, _messages[messageIndex - 1]);
-                          return Column(
-                            textDirection: TextDirection.rtl,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (showDate)
-                                _DateDivider(label: _messageDateLabel(msg)),
-                              if (firstUnreadIndex == messageIndex)
-                                const _UnreadMessagesDivider(),
-                              if (msg['isPrivateFilterEntry'] != true && !hideAnsweredGuidePrompt)
-                                _ChatSenderLabel(
-                                  key: ValueKey('message-sender-${_selectionKey(msg)}'),
-                                  name: senderName,
-                                  avatarUrl: senderAvatarUrl,
+                  // Reply preview bar
+                  if (_replyTo != null)
+                    Container(
+                      color: kCard,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 3,
+                            height: 36,
+                            color: kPrimary,
+                            margin: const EdgeInsets.only(left: 8),
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('ציטוט',
+                                    style: TextStyle(
+                                        color: kPrimary,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold)),
+                                InlineEmojiText(
+                                  _replyTo!['text'] as String,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 13, color: kSubtext),
                                 ),
-                              if (msg['isGroupInvite'] == true && !isMe)
-                                _GroupInviteCard(
-                                  message: msg,
-                                  token: widget.token,
-                                  onJoined: () => setState(() {}),
-                                )
-                              else if (msg['isPrivateFilterEntry'] == true)
-                                _PrivateContactFilterEntry(
-                                  recipientName: widget.recipient['name']
-                                              ?.toString()
-                                              .trim()
-                                              .isNotEmpty ==
-                                          true
-                                      ? widget.recipient['name']
-                                          .toString()
-                                          .trim()
-                                      : 'החבר',
-                                  recipientAvatarUrl: widget
-                                      .recipient['profile_pic_url']
-                                      ?.toString(),
-                                  filter: _outgoingFilter,
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => setState(() => _replyTo = null),
+                          ),
+                        ],
+                      ),
+                    ),
 
-                                  onUpdate: _showContactFilterStatus,
-                                )
-                              else if (msg['fileDeleted'] == true)
-                                Padding(
-                                  key: ValueKey('deleted-media-${msg['id']}'),
-                                  padding: const EdgeInsets.all(12),
-                                  child: const Text('הקובץ נמחק',
-                                      style: TextStyle(color: kSubtext)),
-                                )
-                              else if (_isScanStopped(msg))
-                                _ScanStoppedCard(message: msg)
-                              else if (isPendingOwnUpload(msg))
-                                _pendingOwnUploadCard(msg)
-                              else if (msg['filterHidden'] == true)
-                                FilterHiddenImage(
-                                  key: ValueKey('hidden-${msg['id']}'),
-                                  api: kApi, token: widget.token,
-                                  messageId: msg['id'].toString(),
-                                  fileName: msg['scanFileName']?.toString(),
-                                  fileType: msg['fileType']?.toString(),
-                                  hiddenReason: msg['hiddenReason']?.toString(),
-                                  status: (msg['moderationStatus'] ?? msg['status'])
-                                      ?.toString(),
-                                  reason: msg['scanReason']?.toString(),
-                                  contentPurged: msg['contentPurged'] == true,
-                                  onRestored: () => _loadMessages(silent: true),
-                                )
-                              else if (hideAnsweredGuidePrompt)
-                                const SizedBox.shrink()
-                              else
-                                GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: _selectedMessageKeys.isNotEmpty
-                                      ? () => _toggleMessageSelection(msg)
-                                      : !kIsWeb && msg['isFile'] != true
-                                          ? () => _copyMessageText(context, msg)
-                                          : null,
-                                  onDoubleTap: kIsWeb && msg['isFile'] != true
-                                      ? () => _copyMessageText(context, msg)
-                                      : null,
-                                  onLongPress: msg['outboxId'] != null ? null : () =>
-                                      _selectedMessageKeys.isNotEmpty
-                                          ? _toggleMessageSelection(msg)
-                                          : _showMessageOptions(msg, isMe),
-                                  child: Stack(children: [
-                                    IgnorePointer(
-                                      ignoring: _selectedMessageKeys.isNotEmpty,
-                                      child: Builder(builder: (context) {
-                                        final bubble = Column(mainAxisSize: MainAxisSize.min, children: [_MessageBubble(
-                                          message: msg,
-                                          conversationMessages: _messages,
-                                          isMe: isMe,
-                                          token: widget.token,
-                                          me: widget.me,
-                                          senderAvatarUrl: senderAvatarUrl,
-                                          senderName: senderName,
-                                          recipientName: widget
-                                              .recipient['name']
-                                              ?.toString(),
-                                          hideReply: isSystemGuideChat,
-                                          onMessageOptions: (message) =>
-                                              _showMessageOptions(
-                                                  message,
-                                                  message['from'] ==
-                                                      widget.me?['id']),
-                                          onDocumentOpen: widget.onDocumentOpen,
+                  // Edit mode bar
+                  if (_editingMsg != null)
+                    Container(
+                      color: const Color(0xFFFFF8E1),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 3,
+                            height: 36,
+                            color: Colors.orange,
+                            margin: const EdgeInsets.only(left: 8),
+                          ),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('עריכת הודעה',
+                                    style: TextStyle(
+                                        color: Colors.orange,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold)),
+                                InlineEmojiText(
+                                  _editingMsg!['text'] as String? ?? '',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 13, color: kSubtext),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => setState(() {
+                              _editingMsg = null;
+                              _msgCtrl.clear();
+                            }),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  // Messages list
+                  Expanded(
+                    child: _loading
+                        ? const Center(
+                            child: CircularProgressIndicator(color: kPrimary))
+                        : _messages.isEmpty
+                            ? _AvielEmptyChat(
+                                asset: widget.recipient['id'] ==
+                                        kSafeInformationAiId
+                                    ? 'assets/guide/safe-information-ai.png'
+                                    : 'icon_source.png',
+                                text: 'אין הודעות עדיין — שלח הודעה ראשונה!')
+                            : ChatHistoryList(
+                                controller: _scrollCtrl,
+                                anchorIndex: _scrollCtrl.anchorIndex(_messages),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 8),
+                                itemCount: _messages.length,
+                                itemBuilder: (_, i) {
+                                  final messageIndex = i;
+                                  final msg = _messages[messageIndex];
+                                  if (msg['isUploadBatchNotice'] == true) {
+                                    return ChatUploadBatchNotice(
+                                        key: ValueKey(msg['id']),
+                                        text: msg['text'] as String,
+                                        summary: chatUploadBatchSummary(
+                                            msg, _messages));
+                                  }
+                                  final isMe = msg['from'] == widget.me?['id'];
+                                  final rawSenderName = isMe
+                                      ? (widget.me?['name']
+                                              ?.toString()
+                                              .trim() ??
+                                          '')
+                                      : (widget.recipient['name']
+                                              ?.toString()
+                                              .trim() ??
+                                          '');
+                                  final senderName = rawSenderName.isNotEmpty
+                                      ? rawSenderName
+                                      : isMe
+                                          ? 'אני'
+                                          : 'משתמש';
+                                  final senderAvatarUrl = isMe
+                                      ? (widget.me?['profile_pic_url']
+                                          ?.toString())
+                                      : widget.recipient['profile_pic_url']
+                                          ?.toString();
+                                  final isSystemGuideChat =
+                                      widget.recipient['id'] == kSystemGuideId;
+                                  final nextMessage =
+                                      messageIndex + 1 < _messages.length
+                                          ? _messages[messageIndex + 1]
+                                          : null;
+                                  final hideAnsweredGuidePrompt =
+                                      isSystemGuideChat &&
+                                          !isMe &&
+                                          nextMessage?['from'] ==
+                                              widget.me?['id'] &&
+                                          (msg['text']
+                                                  ?.toString()
+                                                  .contains('?') ??
+                                              false);
+                                  final firstUnreadIndex = _messages.indexWhere(
+                                      (message) => message['isUnread'] == true);
+                                  final showDate = messageIndex == 0 ||
+                                      !_sameMessageDay(
+                                          msg, _messages[messageIndex - 1]);
+                                  return Column(
+                                    textDirection: TextDirection.rtl,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      if (showDate)
+                                        _DateDivider(
+                                            label: _messageDateLabel(msg)),
+                                      if (firstUnreadIndex == messageIndex)
+                                        const _UnreadMessagesDivider(),
+                                      if (msg['isPrivateFilterEntry'] != true &&
+                                          !hideAnsweredGuidePrompt)
+                                        _ChatSenderLabel(
+                                          key: ValueKey(
+                                              'message-sender-${_selectionKey(msg)}'),
+                                          name: senderName,
+                                          avatarUrl: senderAvatarUrl,
                                         ),
-                                          if (msg['outboxId'] != null && msg['status'] != 'sending')
-                                            Column(mainAxisSize: MainAxisSize.min, children: [
-                                              Text(msg['outboxError']?.toString() ?? 'ההודעה נשמרה במכשיר וממתינה לניסיון נוסף',
-                                                textAlign: TextAlign.right, style: const TextStyle(fontSize: 12, color: Colors.red)),
-                                              Wrap(children: [
-                                                TextButton.icon(onPressed: () => _submitOutboxMessage(msg),
-                                                  icon: const Icon(Icons.refresh), label: const Text('נסה לשלוח שוב')),
-                                                TextButton(onPressed: () => _discardOutbox(msg), child: const Text('הסר הודעה שלא נשלחה')),
-                                              ]),
-                                            ]),
-                                        ]);
-                                        return Row(
-                                          textDirection: TextDirection.ltr,
-                                          mainAxisAlignment:
-                                              MainAxisAlignment.end,
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.center,
-                                          children: [
-                                            Flexible(
-                                              child: Align(
-                                                alignment:
-                                                    Alignment.centerRight,
-                                                child: ConstrainedBox(
-                                                  constraints:
-                                                      const BoxConstraints(
-                                                    maxWidth: 760,
-                                                  ),
-                                                  child: MessageHover(
-                                                      reactionsOnChild: msg['isFile'] == true && msg['fileUrl'] != null &&
-                                                          const ['image', 'video'].contains(_normalizeIncomingFileType(
-                                                            msg['fileType'] as String?, fileUrl: msg['fileUrl'] as String?,
-                                                            fileName: msg['fileName'] as String?)),
-                                                      sideReactions: MessageReactionSummary(api: kApi, token: widget.token, message: msg),
-                                                      actions: MessageActionBar(api: kApi, token: widget.token,
-                                                        message: msg, onOptions: (anchor) => _showMessageOptions(msg, isMe, anchorContext: anchor)),
-                                                      child: bubble),
+                                      if (msg['isGroupInvite'] == true && !isMe)
+                                        _GroupInviteCard(
+                                          message: msg,
+                                          token: widget.token,
+                                          onJoined: () => setState(() {}),
+                                        )
+                                      else if (msg['isPrivateFilterEntry'] ==
+                                          true)
+                                        _PrivateContactFilterEntry(
+                                          recipientName: widget
+                                                      .recipient['name']
+                                                      ?.toString()
+                                                      .trim()
+                                                      .isNotEmpty ==
+                                                  true
+                                              ? widget.recipient['name']
+                                                  .toString()
+                                                  .trim()
+                                              : 'החבר',
+                                          recipientAvatarUrl: widget
+                                              .recipient['profile_pic_url']
+                                              ?.toString(),
+                                          filter: _outgoingFilter,
+                                          onUpdate: _showContactFilterStatus,
+                                        )
+                                      else if (msg['fileDeleted'] == true)
+                                        Padding(
+                                          key: ValueKey(
+                                              'deleted-media-${msg['id']}'),
+                                          padding: const EdgeInsets.all(12),
+                                          child: const Text('הקובץ נמחק',
+                                              style:
+                                                  TextStyle(color: kSubtext)),
+                                        )
+                                      else if (_isScanStopped(msg))
+                                        _ScanStoppedCard(message: msg)
+                                      else if (isPendingOwnUpload(msg))
+                                        _pendingOwnUploadCard(msg)
+                                      else if (msg['filterHidden'] == true)
+                                        FilterHiddenImage(
+                                          key: ValueKey('hidden-${msg['id']}'),
+                                          api: kApi,
+                                          token: widget.token,
+                                          messageId: msg['id'].toString(),
+                                          fileName:
+                                              msg['scanFileName']?.toString(),
+                                          fileType: msg['fileType']?.toString(),
+                                          hiddenReason:
+                                              msg['hiddenReason']?.toString(),
+                                          status: (msg['moderationStatus'] ??
+                                                  msg['status'])
+                                              ?.toString(),
+                                          reason: msg['scanReason']?.toString(),
+                                          contentPurged:
+                                              msg['contentPurged'] == true,
+                                          onRestored: () =>
+                                              _loadMessages(silent: true),
+                                        )
+                                      else if (hideAnsweredGuidePrompt)
+                                        const SizedBox.shrink()
+                                      else
+                                        GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onTap: _selectedMessageKeys.isNotEmpty
+                                              ? () =>
+                                                  _toggleMessageSelection(msg)
+                                              : !kIsWeb && msg['isFile'] != true
+                                                  ? () => _copyMessageText(
+                                                      context, msg)
+                                                  : null,
+                                          onDoubleTap: kIsWeb &&
+                                                  msg['isFile'] != true
+                                              ? () =>
+                                                  _copyMessageText(context, msg)
+                                              : null,
+                                          onLongPress: msg['outboxId'] != null
+                                              ? null
+                                              : () => _selectedMessageKeys
+                                                      .isNotEmpty
+                                                  ? _toggleMessageSelection(msg)
+                                                  : _showMessageOptions(
+                                                      msg, isMe),
+                                          child: Stack(children: [
+                                            IgnorePointer(
+                                              ignoring: _selectedMessageKeys
+                                                  .isNotEmpty,
+                                              child:
+                                                  Builder(builder: (context) {
+                                                final bubble = Column(
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      _MessageBubble(
+                                                        message: msg,
+                                                        conversationMessages:
+                                                            _messages,
+                                                        isMe: isMe,
+                                                        token: widget.token,
+                                                        me: widget.me,
+                                                        senderAvatarUrl:
+                                                            senderAvatarUrl,
+                                                        senderName: senderName,
+                                                        recipientName: widget
+                                                            .recipient['name']
+                                                            ?.toString(),
+                                                        hideReply:
+                                                            isSystemGuideChat,
+                                                        onMessageOptions: (message) =>
+                                                            _showMessageOptions(
+                                                                message,
+                                                                message['from'] ==
+                                                                    widget.me?[
+                                                                        'id']),
+                                                        onDocumentOpen: widget
+                                                            .onDocumentOpen,
+                                                      ),
+                                                      if (msg['outboxId'] !=
+                                                              null &&
+                                                          msg['status'] !=
+                                                              'sending')
+                                                        Column(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            children: [
+                                                              Text(
+                                                                  msg['outboxError']
+                                                                          ?.toString() ??
+                                                                      'ההודעה נשמרה במכשיר וממתינה לניסיון נוסף',
+                                                                  textAlign:
+                                                                      TextAlign
+                                                                          .right,
+                                                                  style: const TextStyle(
+                                                                      fontSize:
+                                                                          12,
+                                                                      color: Colors
+                                                                          .red)),
+                                                              Wrap(children: [
+                                                                TextButton.icon(
+                                                                    onPressed: () =>
+                                                                        _submitOutboxMessage(
+                                                                            msg),
+                                                                    icon: const Icon(
+                                                                        Icons
+                                                                            .refresh),
+                                                                    label: const Text(
+                                                                        'נסה לשלוח שוב')),
+                                                                TextButton(
+                                                                    onPressed: () =>
+                                                                        _discardOutbox(
+                                                                            msg),
+                                                                    child: const Text(
+                                                                        'הסר הודעה שלא נשלחה')),
+                                                              ]),
+                                                            ]),
+                                                    ]);
+                                                return Row(
+                                                  textDirection:
+                                                      TextDirection.ltr,
+                                                  mainAxisAlignment:
+                                                      MainAxisAlignment.end,
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.center,
+                                                  children: [
+                                                    Flexible(
+                                                      child: Align(
+                                                        alignment: Alignment
+                                                            .centerRight,
+                                                        child: ConstrainedBox(
+                                                          constraints:
+                                                              const BoxConstraints(
+                                                            maxWidth: 760,
+                                                          ),
+                                                          child: MessageHover(
+                                                              reactionsOnChild: msg['isFile'] == true &&
+                                                                  msg['fileUrl'] !=
+                                                                      null &&
+                                                                  const [
+                                                                    'image',
+                                                                    'video'
+                                                                  ].contains(_normalizeIncomingFileType(msg['fileType'] as String?,
+                                                                      fileUrl: msg['fileUrl']
+                                                                          as String?,
+                                                                      fileName: msg['fileName']
+                                                                          as String?)),
+                                                              sideReactions:
+                                                                  MessageReactionSummary(
+                                                                      api: kApi,
+                                                                      token: widget
+                                                                          .token,
+                                                                      message:
+                                                                          msg),
+                                                              actions: MessageActionBar(
+                                                                  api: kApi,
+                                                                  token: widget.token,
+                                                                  message: msg,
+                                                                  onOptions: (anchor) => _showMessageOptions(msg, isMe, anchorContext: anchor)),
+                                                              child: bubble),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                );
+                                              }),
+                                            ),
+                                            if (_selectedMessageKeys.isNotEmpty)
+                                              Positioned(
+                                                top: 6,
+                                                right: 6,
+                                                child: Icon(
+                                                  _selectedMessageKeys.contains(
+                                                          _selectionKey(msg))
+                                                      ? Icons.check_circle
+                                                      : Icons
+                                                          .radio_button_unchecked,
+                                                  color: _selectedMessageKeys
+                                                          .contains(
+                                                              _selectionKey(
+                                                                  msg))
+                                                      ? kPrimary
+                                                      : kSubtext,
+                                                  size: 26,
                                                 ),
                                               ),
-                                            ),
-                                          ],
-                                        );
-                                      }),
-                                    ),
-                                    if (_selectedMessageKeys.isNotEmpty)
-                                      Positioned(
-                                        top: 6,
-                                        right: 6,
-                                        child: Icon(
-                                          _selectedMessageKeys
-                                                  .contains(_selectionKey(msg))
-                                              ? Icons.check_circle
-                                              : Icons.radio_button_unchecked,
-                                          color: _selectedMessageKeys
-                                                  .contains(_selectionKey(msg))
-                                              ? kPrimary
-                                              : kSubtext,
-                                          size: 26,
+                                          ]),
                                         ),
-                                      ),
-                                  ]),
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-          ),
+                                    ],
+                                  );
+                                },
+                              ),
+                  ),
 
-          // Typing indicator
-          if (_isTyping)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Container(
-                margin: const EdgeInsets.only(right: 12, left: 12, bottom: 4),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: kBorder),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(width: 2),
-                    _TypingDots(),
-                  ],
-                ),
-              ),
-            ),
-
-          if (widget.recipient['id'] == kSafeInformationAiId)
-            SizedBox(
-              height: 43,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                children: const [
-                  (
-                    'מודעות בתשובה',
-                    Icons.storefront_outlined,
-                    'אילו מקררים מוצעים למכירה או למסירה בבתשובה?'
-                  ),
-                  ('מוצרים', Icons.compare_arrows, 'עזור לי להשוות בין מוצרים'),
-                  (
-                    'תחבורה',
-                    Icons.directions_bus_outlined,
-                    'אני צריך מידע על תחבורה ציבורית'
-                  ),
-                  (
-                    'ממשלה',
-                    Icons.account_balance_outlined,
-                    'אני מחפש שירות או טופס ממשלתי'
-                  ),
-                  (
-                    'בריאות',
-                    Icons.local_hospital_outlined,
-                    'אני מחפש מידע רשמי על שירותי בריאות'
-                  ),
-                  (
-                    'משכנתא',
-                    Icons.home_work_outlined,
-                    'הסבר לי מידע כללי על משכנתא'
-                  ),
-                  (
-                    'טיולים',
-                    Icons.hiking_outlined,
-                    'עזור לי למצוא מידע על טיול'
-                  ),
-                ]
-                    .reversed
-                    .map((item) => Padding(
-                          padding: const EdgeInsetsDirectional.only(start: 6),
-                          child: ActionChip(
-                            avatar: Icon(item.$2, size: 17),
-                            label: Text(item.$1),
-                            onPressed: () {
-                              _msgCtrl.text = item.$3;
-                              _msgCtrl.selection = TextSelection.collapsed(
-                                  offset: _msgCtrl.text.length);
-                              _msgFocusNode.requestFocus();
-                            },
-                          ),
-                        ))
-                    .toList(),
-              ),
-            ),
-
-          if (widget.recipient['id'] == kSystemGuideId)
-            Align(
-              alignment: Alignment.centerRight,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 900),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: DirectSupportButtons(
-                    api: kApi,
-                    token: widget.token,
-                    appVersion: kVersion,
-                    onMyIssues: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) => OpenIssuesScreen(token: widget.token)),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // Input bar
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 900),
-                child: _isRecording
-                    ? VoiceRecordingBar(timeLabel: _voiceRecordingTime(_recordSeconds),
-                        onSend: _toggleVoiceRecording, onCancel: _cancelVoiceRecording)
-                    : Row(
-                  textDirection: TextDirection.rtl,
-                  children: [
-                    if (_isRecording)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 6),
-                        child: Text(
-                          'זמן הקלטה: ${_voiceRecordingTime(_recordSeconds)}\nעד שעתיים',
-                          style:
-                              const TextStyle(color: Colors.red, fontSize: 12),
-                        ),
-                      ),
-                    Expanded(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF0F6FC),
-                          borderRadius: BorderRadius.circular(22),
-                          border: Border.all(
-                              color: const Color(0xFFC5DFF2), width: 1.5),
-                        ),
-                        child: Row(
-                          children: [
-                            const SizedBox(width: 10),
-                            IconButton(
-                              key: _attachmentAnchorKey,
-                              tooltip: 'צירוף קובץ',
-                              icon: const Icon(Icons.attach_file,
-                                  size: 18, color: kSubtext),
-                              onPressed: _showAttachMenu,
-                              padding: const EdgeInsets.all(8),
-                              style: const ButtonStyle(
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                              constraints: const BoxConstraints.tightFor(
-                                  width: 36, height: 36),
-                            ),
-                            IconButton(
-                              key: const ValueKey('chat-stickers-shortcut'),
-                              tooltip: 'מדבקות',
-                              icon: const Icon(Icons.sticky_note_2_outlined,
-                                  size: 18, color: kPrimary),
-                              onPressed: () => _showExpressions(inlineEmoji: false),
-                              padding: const EdgeInsets.all(8),
-                              style: const ButtonStyle(
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                              constraints: const BoxConstraints.tightFor(
-                                  width: 36, height: 36),
-                            ),
-                            IconButton(
-                              key: const ValueKey('chat-inline-emoji-shortcut'),
-                              tooltip: 'אימוג׳י',
-                              icon: const Icon(Icons.emoji_emotions_outlined,
-                                  size: 19, color: kPrimary),
-                              onPressed: () => _showExpressions(inlineEmoji: true),
-                              padding: const EdgeInsets.all(8),
-                              style: const ButtonStyle(
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                              constraints: const BoxConstraints.tightFor(
-                                  width: 36, height: 36),
-                            ),
-                            IconButton(
-                              tooltip: _isRecording ? 'סיים ושלח' : 'הקלט הודעה קולית',
-                              icon: Icon(_isRecording ? Icons.stop_circle : Icons.mic,
-                                  size: 19, color: _isRecording ? Colors.red : kPrimary),
-                              onPressed: _toggleVoiceRecording,
-                              padding: const EdgeInsets.all(8),
-                              style: const ButtonStyle(
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                              constraints: const BoxConstraints.tightFor(
-                                  width: 36, height: 36),
-                            ),
-                            Expanded(
-                              child: Focus(
-                                onKeyEvent: (_, event) =>
-                                    _handleMessageInputNavigation(
-                                        _msgCtrl, _msgHistory, event,
-                                        onWebEnter: _send),
-                                child: ValueListenableBuilder<TextEditingValue>(
-                                  valueListenable: _msgCtrl,
-                                  builder: (context, value, _) => TextField(
-                                    controller: _msgCtrl,
-                                    focusNode: _msgFocusNode,
-                                    contextMenuBuilder: (context, state) => buildImagePasteMenu(
-                                        context, state, _clipboardImagePasteListener.pasteImage),
-                                    enabled: _recipientAllowsText,
-                                    textDirection: inlineEmojiDraftDirection(value.text),
-                                    textAlign: TextAlign.right,
-                                    maxLines: 4,
-                                    minLines: 1,
-                                    textInputAction: TextInputAction.newline,
-                                    onTap: _expressionPanel.close,
-                                    onChanged: (_) {
-                                      _keyboardClick.click();
-                                      _onTyping();
-                                    },
-                                    decoration: InputDecoration(
-                                      hintText: _recipientAllowsText
-                                          ? 'כתוב הודעה...'
-                                          : 'הנמען אינו מקבל תוכן טקסטואלי',
-                                      hintTextDirection: TextDirection.rtl,
-                                      hintStyle: const TextStyle(
-                                          fontSize: 13, color: kSubtext),
-                                      contentPadding: const EdgeInsets.symmetric(
-                                          horizontal: 4, vertical: 9),
-                                      border: InputBorder.none,
-                                      isDense: true,
-                                    ),
-                                    style: const TextStyle(
-                                        fontSize: 13, color: kTextDark),
-                                    onSubmitted: (_) => _send(),
-                                  ),
-                                ),
+                  // Reserve space so typing never resizes the message history.
+                  SizedBox(
+                    key: const ValueKey('private-typing-indicator'),
+                    width: double.infinity,
+                    height: 28,
+                    child: _isTyping
+                        ? Align(
+                            alignment: Alignment.centerLeft,
+                            child: Container(
+                              margin: const EdgeInsets.only(
+                                  right: 12, left: 12, bottom: 4),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: kBorder),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const SizedBox(width: 2),
+                                  _TypingDots(),
+                                ],
                               ),
                             ),
-                          ],
+                          )
+                        : null,
+                  ),
+
+                  if (widget.recipient['id'] == kSafeInformationAiId)
+                    SizedBox(
+                      height: 43,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        children: const [
+                          (
+                            'מודעות בתשובה',
+                            Icons.storefront_outlined,
+                            'אילו מקררים מוצעים למכירה או למסירה בבתשובה?'
+                          ),
+                          (
+                            'מוצרים',
+                            Icons.compare_arrows,
+                            'עזור לי להשוות בין מוצרים'
+                          ),
+                          (
+                            'תחבורה',
+                            Icons.directions_bus_outlined,
+                            'אני צריך מידע על תחבורה ציבורית'
+                          ),
+                          (
+                            'ממשלה',
+                            Icons.account_balance_outlined,
+                            'אני מחפש שירות או טופס ממשלתי'
+                          ),
+                          (
+                            'בריאות',
+                            Icons.local_hospital_outlined,
+                            'אני מחפש מידע רשמי על שירותי בריאות'
+                          ),
+                          (
+                            'משכנתא',
+                            Icons.home_work_outlined,
+                            'הסבר לי מידע כללי על משכנתא'
+                          ),
+                          (
+                            'טיולים',
+                            Icons.hiking_outlined,
+                            'עזור לי למצוא מידע על טיול'
+                          ),
+                        ]
+                            .reversed
+                            .map((item) => Padding(
+                                  padding: const EdgeInsetsDirectional.only(
+                                      start: 6),
+                                  child: ActionChip(
+                                    avatar: Icon(item.$2, size: 17),
+                                    label: Text(item.$1),
+                                    onPressed: () {
+                                      _msgCtrl.text = item.$3;
+                                      _msgCtrl.selection =
+                                          TextSelection.collapsed(
+                                              offset: _msgCtrl.text.length);
+                                      _msgFocusNode.requestFocus();
+                                    },
+                                  ),
+                                ))
+                            .toList(),
+                      ),
+                    ),
+
+                  if (widget.recipient['id'] == kSystemGuideId)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 900),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: DirectSupportButtons(
+                            api: kApi,
+                            token: widget.token,
+                            appVersion: kVersion,
+                            onMyIssues: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (_) =>
+                                      OpenIssuesScreen(token: widget.token)),
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    GestureDetector(
-                      onTap: _recipientAllowsText ? _send : null,
-                      child: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: _recipientAllowsText ? kPrimary : Colors.grey,
-                          borderRadius: BorderRadius.circular(22),
-                        ),
-                        child: const Icon(Icons.send,
-                            color: Colors.white, size: 20),
+
+                  // Input bar
+                  Container(
+                    color: Colors.white,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 900),
+                        child: _isRecording
+                            ? VoiceRecordingBar(
+                                timeLabel: _voiceRecordingTime(_recordSeconds),
+                                onSend: _toggleVoiceRecording,
+                                onCancel: _cancelVoiceRecording)
+                            : _ChatComposerBar(
+                                compact: constraints.maxHeight < 180,
+                                controller: _msgCtrl,
+                                input: Focus(
+                                  onKeyEvent: (_, event) =>
+                                      _handleMessageInputNavigation(
+                                          _msgCtrl, _msgHistory, event,
+                                          onWebEnter: _send),
+                                  child:
+                                      ValueListenableBuilder<TextEditingValue>(
+                                    valueListenable: _msgCtrl,
+                                    builder: (context, value, _) => TextField(
+                                      controller: _msgCtrl,
+                                      focusNode: _msgFocusNode,
+                                      contextMenuBuilder: (context, state) =>
+                                          buildImagePasteMenu(
+                                              context,
+                                              state,
+                                              _clipboardImagePasteListener
+                                                  .pasteImage),
+                                      enabled: _recipientAllowsText,
+                                      textDirection:
+                                          inlineEmojiDraftDirection(value.text),
+                                      textAlign: TextAlign.right,
+                                      maxLines: 4,
+                                      minLines: 1,
+                                      textInputAction: TextInputAction.newline,
+                                      onTap: _expressionPanel.close,
+                                      onChanged: (_) {
+                                        _keyboardClick.click();
+                                        _onTyping();
+                                      },
+                                      decoration: InputDecoration(
+                                        hintText: _recipientAllowsText
+                                            ? 'כתוב הודעה...'
+                                            : 'הנמען אינו מקבל תוכן טקסטואלי',
+                                        hintTextDirection: TextDirection.rtl,
+                                        hintStyle: const TextStyle(
+                                            fontSize: 13, color: kSubtext),
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                                horizontal: 4, vertical: 9),
+                                        border: InputBorder.none,
+                                        isDense: true,
+                                      ),
+                                      style: const TextStyle(
+                                          fontSize: 13, color: kTextDark),
+                                      onSubmitted: (_) => _send(),
+                                    ),
+                                  ),
+                                ),
+                                attachmentKey: _attachmentAnchorKey,
+                                onAttach: _showAttachMenu,
+                                onRecord: _toggleVoiceRecording,
+                                onSend: _send,
+                                onStickers: () =>
+                                    _showExpressions(inlineEmoji: false),
+                                onEmoji: () =>
+                                    _showExpressions(inlineEmoji: true),
+                                canSendText: _recipientAllowsText,
+                              ),
                       ),
                     ),
-                  ],
+                  ),
+                  _ExpressionPanel(
+                    controller: _expressionPanel,
+                    maxHeight: math.max(
+                        0.0,
+                        math.min(
+                            constraints.maxHeight * 0.6,
+                            constraints.maxHeight -
+                                (constraints.maxHeight < 180 ? 106 : 124))),
+                  ),
+                ],
+              )),
+    );
+  }
+}
+
+// The text field stays mounted while draft changes update its tools.
+class _ChatComposerBar extends StatelessWidget {
+  const _ChatComposerBar({
+    required this.controller,
+    required this.input,
+    required this.attachmentKey,
+    required this.compact,
+    required this.onAttach,
+    required this.onRecord,
+    required this.onSend,
+    required this.onStickers,
+    required this.onEmoji,
+    required this.canSendText,
+  });
+
+  final TextEditingController controller;
+  final Widget input;
+  final Key attachmentKey;
+  final bool compact;
+  final VoidCallback onAttach;
+  final VoidCallback onRecord;
+  final VoidCallback onSend;
+  final VoidCallback onStickers;
+  final VoidCallback onEmoji;
+  final bool canSendText;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      child: input,
+      builder: (context, value, field) {
+        final hasText = inlineEmojiPlainText(value.text).trim().isNotEmpty;
+        final shortcutHeight = compact ? 24.0 : 36.0;
+        final actionSize = compact ? 36.0 : 44.0;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              textDirection: TextDirection.rtl,
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0F6FC),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(
+                          color: const Color(0xFFC5DFF2), width: 1.5),
+                    ),
+                    child: Row(
+                      textDirection: TextDirection.rtl,
+                      children: [
+                        const SizedBox(width: 10),
+                        IconButton(
+                          key: attachmentKey,
+                          tooltip: 'צירוף קובץ',
+                          icon: const Icon(Icons.attach_file,
+                              size: 18, color: kSubtext),
+                          onPressed: onAttach,
+                          padding: const EdgeInsets.all(8),
+                          style: const ButtonStyle(
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                          constraints: const BoxConstraints.tightFor(
+                              width: 36, height: 36),
+                        ),
+                        Expanded(child: field!),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+                const SizedBox(width: 6),
+                IconButton(
+                  key: const ValueKey('chat-composer-action'),
+                  tooltip: hasText ? 'שלח הודעה' : 'הקלט הודעה קולית',
+                  onPressed: hasText ? (canSendText ? onSend : null) : onRecord,
+                  style: IconButton.styleFrom(
+                    backgroundColor: kPrimary,
+                    disabledBackgroundColor: Colors.grey,
+                    foregroundColor: Colors.white,
+                    disabledForegroundColor: Colors.white,
+                    minimumSize: Size.zero,
+                    fixedSize: Size(actionSize, actionSize),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: EdgeInsets.zero,
+                  ),
+                  icon: Icon(hasText ? Icons.send : Icons.mic, size: 20),
+                ),
+              ],
             ),
-          ),
-          _ExpressionPanel(
-            controller: _expressionPanel,
-            maxHeight: math.max(0.0, math.min(constraints.maxHeight * 0.6, constraints.maxHeight - 100)),
-          ),
-        ],
-      )),
+            // Keep the same height when the draft is cleared or sent.
+            SizedBox(
+              key: const ValueKey('chat-composer-shortcuts'),
+              width: double.infinity,
+              height: shortcutHeight,
+              child: hasText
+                  ? Row(
+                      textDirection: TextDirection.rtl,
+                      children: [
+                        IconButton(
+                          key: const ValueKey('chat-stickers-shortcut'),
+                          tooltip: 'מדבקות',
+                          icon: const Icon(Icons.sticky_note_2_outlined,
+                              size: 18, color: kPrimary),
+                          onPressed: onStickers,
+                          padding: EdgeInsets.all(compact ? 3 : 8),
+                          style: const ButtonStyle(
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                          constraints: BoxConstraints.tightFor(
+                              width: 36, height: shortcutHeight),
+                        ),
+                        IconButton(
+                          key: const ValueKey('chat-inline-emoji-shortcut'),
+                          tooltip: 'אימוג׳י',
+                          icon: const Icon(Icons.emoji_emotions_outlined,
+                              size: 19, color: kPrimary),
+                          onPressed: onEmoji,
+                          padding: EdgeInsets.all(compact ? 3 : 8),
+                          style: const ButtonStyle(
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                          constraints: BoxConstraints.tightFor(
+                              width: 36, height: shortcutHeight),
+                        ),
+                      ],
+                    )
+                  : null,
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -28654,7 +29653,8 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _createSource();
-    _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _savePosition());
+    _saveTimer =
+        Timer.periodic(const Duration(seconds: 5), (_) => _savePosition());
   }
 
   bool _current(int generation) => mounted && generation == _generation;
@@ -28681,12 +29681,15 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
   void _createSource() {
     final generation = ++_generation;
     final player = _player = AudioPlayer();
-    _progress = widget.token == null ? null : MediaPlaybackProgress(
-      api: kApi, token: widget.token!, url: widget.url);
+    _progress = widget.token == null
+        ? null
+        : MediaPlaybackProgress(
+            api: kApi, token: widget.token!, url: widget.url);
     _position = Duration.zero;
     final initial = widget.initialDurationSeconds;
     _duration = initial != null && initial.isFinite && initial > 0
-        ? Duration(milliseconds: (initial * 1000).round()) : Duration.zero;
+        ? Duration(milliseconds: (initial * 1000).round())
+        : Duration.zero;
     _playing = false;
     _loading = true;
     _loadFailed = false;
@@ -28697,12 +29700,20 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
     _dragMs = null;
     void onMediaError(Object error, StackTrace stack) {
       if (_current(generation)) {
-        setState(() { _loading = false; _loadFailed = true; _playing = false; });
+        setState(() {
+          _loading = false;
+          _loadFailed = true;
+          _playing = false;
+        });
       }
     }
+
     _subscriptions.add(player.onPositionChanged.listen((value) {
       if (!_current(generation) || _loading || _seeking || !_playing) return;
-      setState(() { _position = _bounded(value); _dirty = true; });
+      setState(() {
+        _position = _bounded(value);
+        _dirty = true;
+      });
     }, onError: onMediaError));
     _subscriptions.add(player.onDurationChanged.listen((value) {
       if (_current(generation) && value > Duration.zero) {
@@ -28710,18 +29721,25 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
       }
     }, onError: onMediaError));
     _subscriptions.add(player.onPlayerStateChanged.listen((value) {
-      if (_current(generation)) setState(() => _playing = value == PlayerState.playing);
+      if (_current(generation))
+        setState(() => _playing = value == PlayerState.playing);
     }, onError: onMediaError));
     _subscriptions.add(player.onPlayerComplete.listen((_) {
       if (!_current(generation)) return;
-      setState(() { _playing = false; _position = Duration.zero; _dirty = true; });
+      setState(() {
+        _playing = false;
+        _position = Duration.zero;
+        _dirty = true;
+      });
       _savePosition();
     }, onError: onMediaError));
     _preparing = _prepareSource(player, generation, widget.url, _progress);
   }
 
-  Duration _bounded(Duration value) => Duration(milliseconds:
-      value.inMilliseconds.clamp(0, math.max(0, _duration.inMilliseconds)).toInt());
+  Duration _bounded(Duration value) => Duration(
+      milliseconds: value.inMilliseconds
+          .clamp(0, math.max(0, _duration.inMilliseconds))
+          .toInt());
 
   String _durationLabel(Duration value) =>
       '${value.inMinutes}:${(value.inSeconds % 60).toString().padLeft(2, '0')}';
@@ -28747,12 +29765,15 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
       if (!_current(generation)) return false;
       await player.setReleaseMode(ReleaseMode.stop);
       var duration = await player.getDuration();
-      if ((duration == null || duration <= Duration.zero) && _duration > Duration.zero) {
+      if ((duration == null || duration <= Duration.zero) &&
+          _duration > Duration.zero) {
         duration = _duration;
       }
       if (duration == null || duration <= Duration.zero) {
-        duration = await player.onDurationChanged.firstWhere((v) => v > Duration.zero)
-            .timeout(const Duration(seconds: 8), onTimeout: () => Duration.zero);
+        duration = await player.onDurationChanged
+            .firstWhere((v) => v > Duration.zero)
+            .timeout(const Duration(seconds: 8),
+                onTimeout: () => Duration.zero);
       }
       if (!_current(generation)) return false;
       if (duration > Duration.zero) _duration = duration;
@@ -28769,7 +29790,10 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
       return true;
     } catch (_) {
       if (_current(generation)) {
-        setState(() { _loading = false; _loadFailed = true; });
+        setState(() {
+          _loading = false;
+          _loadFailed = true;
+        });
       }
       return false;
     }
@@ -28810,7 +29834,8 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
         if (!_current(generation)) return;
         _saveFailed = _progress != null && saved == null;
         if (saved != null) {
-          final position = saved >= _duration.inMilliseconds ? Duration.zero
+          final position = saved >= _duration.inMilliseconds
+              ? Duration.zero
               : _bounded(Duration(milliseconds: saved));
           _seeking = true;
           await player.seek(position);
@@ -28824,10 +29849,14 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
     } catch (_) {
       if (mounted && _current(generation)) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('לא ניתן לנגן את ההודעה הקולית')));
+            const SnackBar(content: Text('לא ניתן לנגן את ההודעה הקולית')));
       }
     } finally {
-      if (_current(generation)) setState(() { _busy = false; _seeking = false; });
+      if (_current(generation))
+        setState(() {
+          _busy = false;
+          _seeking = false;
+        });
     }
   }
 
@@ -28835,16 +29864,22 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
     if (_loading || _loadFailed || _seeking) return;
     final generation = _generation;
     final position = _bounded(value);
-    setState(() { _seeking = true; _dragMs = null; });
+    setState(() {
+      _seeking = true;
+      _dragMs = null;
+    });
     try {
       await _player.seek(position);
       if (!_current(generation)) return;
-      setState(() { _position = position; _dirty = true; });
+      setState(() {
+        _position = position;
+        _dirty = true;
+      });
       await _savePosition();
     } catch (_) {
       if (mounted && _current(generation)) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('לא ניתן לעבור לזמן המבוקש')));
+            const SnackBar(content: Text('לא ניתן לעבור לזמן המבוקש')));
       }
     } finally {
       if (_current(generation)) setState(() => _seeking = false);
@@ -28875,52 +29910,99 @@ class _VoiceMessagePlayerState extends State<VoiceMessagePlayer>
   @override
   Widget build(BuildContext context) {
     final totalMs = _duration.inMilliseconds;
-    final canSeek = !_loading && !_loadFailed && !_seeking && !_busy && totalMs > 0;
-    final shownPosition = Duration(milliseconds: (_dragMs ?? _position.inMilliseconds.toDouble()).round());
+    final canSeek =
+        !_loading && !_loadFailed && !_seeking && !_busy && totalMs > 0;
+    final shownPosition = Duration(
+        milliseconds: (_dragMs ?? _position.inMilliseconds.toDouble()).round());
     final explicitName = widget.fileName?.trim();
     final segments = Uri.tryParse(widget.url)?.pathSegments ?? const <String>[];
-    final fileName = explicitName?.isNotEmpty == true ? explicitName!
-        : segments.isNotEmpty && segments.last.isNotEmpty ? segments.last : 'הקלטה';
-    return SizedBox(width: 285, child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (widget.showFileName)
-        Padding(padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
-          child: Tooltip(message: fileName, child: Text(fileName,
-            maxLines: 2, overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.right,
-            style: const TextStyle(fontSize: 12, color: kSubtext)))),
-        Row(children: [
-      IconButton(
-        onPressed: _loading || _busy ? null : _loadFailed ? () {
-          _retireSource(); setState(_createSource);
-        } : _toggle,
-        tooltip: _loadFailed ? 'נסה שוב' : _playing ? 'השהיה' : 'המשך השיעור',
-        icon: _loading ? const SizedBox(width: 20, height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2))
-            : Icon(_loadFailed ? Icons.refresh : _playing ? Icons.pause : Icons.play_arrow),
-      ),
-      Expanded(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Directionality(textDirection: TextDirection.ltr, child: Slider(
-          value: (_dragMs ?? _position.inMilliseconds.toDouble()).clamp(0, math.max(1, totalMs)).toDouble(),
-          max: math.max(1, totalMs).toDouble(),
-          label: _durationLabel(shownPosition),
-          semanticFormatterCallback: (v) => _durationLabel(Duration(milliseconds: v.round())),
-          onChanged: canSeek ? (v) => setState(() => _dragMs = v) : null,
-          onChangeEnd: canSeek ? (v) => _seek(Duration(milliseconds: v.round())) : null,
-        )),
-        if (_loading) const Text('טוען הקלטה...', style: TextStyle(fontSize: 11))
-        else if (_loadFailed) const Text('הטעינה נכשלה — לחצו לניסיון חוזר', style: TextStyle(fontSize: 11))
-        else TextButton(onPressed: canSeek ? _jumpToTime : null,
-          style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(48, 30)),
-          child: Text('${_durationLabel(shownPosition)} / ${_durationLabel(_duration)}',
-            textDirection: TextDirection.ltr, style: const TextStyle(fontSize: 12))),
-        if (_saveFailed) const Text('שמירת ההתקדמות אינה זמינה כרגע',
-            style: TextStyle(fontSize: 10, color: kSubtext)),
-      ])),
-    ]),
-    ]));
+    final fileName = explicitName?.isNotEmpty == true
+        ? explicitName!
+        : segments.isNotEmpty && segments.last.isNotEmpty
+            ? segments.last
+            : 'הקלטה';
+    return SizedBox(
+        width: 285,
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (widget.showFileName)
+                Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 2, 8, 2),
+                    child: Tooltip(
+                        message: fileName,
+                        child: Text(fileName,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                                fontSize: 12, color: kSubtext)))),
+              Row(children: [
+                IconButton(
+                  onPressed: _loading || _busy
+                      ? null
+                      : _loadFailed
+                          ? () {
+                              _retireSource();
+                              setState(_createSource);
+                            }
+                          : _toggle,
+                  tooltip: _loadFailed
+                      ? 'נסה שוב'
+                      : _playing
+                          ? 'השהיה'
+                          : 'המשך השיעור',
+                  icon: _loading
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : Icon(_loadFailed
+                          ? Icons.refresh
+                          : _playing
+                              ? Icons.pause
+                              : Icons.play_arrow),
+                ),
+                Expanded(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Directionality(
+                      textDirection: TextDirection.ltr,
+                      child: Slider(
+                        value: (_dragMs ?? _position.inMilliseconds.toDouble())
+                            .clamp(0, math.max(1, totalMs))
+                            .toDouble(),
+                        max: math.max(1, totalMs).toDouble(),
+                        label: _durationLabel(shownPosition),
+                        semanticFormatterCallback: (v) =>
+                            _durationLabel(Duration(milliseconds: v.round())),
+                        onChanged:
+                            canSeek ? (v) => setState(() => _dragMs = v) : null,
+                        onChangeEnd: canSeek
+                            ? (v) => _seek(Duration(milliseconds: v.round()))
+                            : null,
+                      )),
+                  if (_loading)
+                    const Text('טוען הקלטה...', style: TextStyle(fontSize: 11))
+                  else if (_loadFailed)
+                    const Text('הטעינה נכשלה — לחצו לניסיון חוזר',
+                        style: TextStyle(fontSize: 11))
+                  else
+                    TextButton(
+                        onPressed: canSeek ? _jumpToTime : null,
+                        style: TextButton.styleFrom(
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(48, 30)),
+                        child: Text(
+                            '${_durationLabel(shownPosition)} / ${_durationLabel(_duration)}',
+                            textDirection: TextDirection.ltr,
+                            style: const TextStyle(fontSize: 12))),
+                  if (_saveFailed)
+                    const Text('שמירת ההתקדמות אינה זמינה כרגע',
+                        style: TextStyle(fontSize: 10, color: kSubtext)),
+                ])),
+              ]),
+            ]));
   }
 }
 
@@ -29107,8 +30189,7 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
     final error = _loadError ??
         (controller?.value.hasError == true
             ? PlatformException(
-                code: 'VideoError',
-                message: controller!.value.errorDescription)
+                code: 'VideoError', message: controller!.value.errorDescription)
             : null);
     if (supportsCompatibleVideoPlayback(error)) {
       return _preview(onTap: _openingCompatible ? null : _openCompatible);
@@ -29133,8 +30214,7 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
               onPressed: _retry,
               icon: const Icon(Icons.refresh, size: 18),
               label: const Text('נסה שוב'),
-              style:
-                  OutlinedButton.styleFrom(foregroundColor: Colors.white),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
             ),
             FilledButton.icon(
               onPressed: _openExternally,
@@ -29145,7 +30225,8 @@ class _ChatVideoPlayerState extends State<_ChatVideoPlayer> {
         ]),
       );
     }
-    if (_startingInline || controller == null ||
+    if (_startingInline ||
+        controller == null ||
         !controller.value.isInitialized) {
       return _preview(
         onTap: _startingInline || _openingCompatible ? null : _startPlayback,
@@ -29283,7 +30364,8 @@ class _GroupDeliverySummary extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => MessageDetails(child: _buildDetails(context));
+  Widget build(BuildContext context) =>
+      MessageDetails(child: _buildDetails(context));
 
   Widget _buildDetails(BuildContext context) {
     final deliveredCount = summary['deliveredCount'] as int? ?? 0;
@@ -29409,7 +30491,8 @@ Widget _pendingOwnUploadCard(Map<String, dynamic> message) =>
     _UploadProcessingCard(
       fileName: message['fileName']?.toString() ?? '',
       fileType: message['fileType']?.toString() ?? 'image',
-      startedAt: DateTime.tryParse(message['createdAt']?.toString() ?? '') ?? DateTime.now(),
+      startedAt: DateTime.tryParse(message['createdAt']?.toString() ?? '') ??
+          DateTime.now(),
       scanning: true,
     );
 
@@ -29446,10 +30529,10 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
     final typeLabel = widget.fileType == 'video'
         ? 'הווידאו'
         : widget.fileType == 'document'
-        ? 'המסמך'
-        : widget.fileType == 'audio'
-        ? 'ההקלטה'
-        : 'התמונה';
+            ? 'המסמך'
+            : widget.fileType == 'audio'
+                ? 'ההקלטה'
+                : 'התמונה';
     return AnimatedBuilder(
       animation: _controller,
       builder: (_, __) {
@@ -29485,10 +30568,12 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
                       children: [
                         Text(
                           widget.fileType == 'audio'
-                              ? (widget.scanning ? 'מכין את ההקלטה לשליחה' : 'מעלה את ההקלטה')
+                              ? (widget.scanning
+                                  ? 'מכין את ההקלטה לשליחה'
+                                  : 'מעלה את ההקלטה')
                               : widget.scanning
-                              ? 'סורק את $typeLabel'
-                              : 'מעלה ואחר כך סורק את $typeLabel',
+                                  ? 'סורק את $typeLabel'
+                                  : 'מעלה ואחר כך סורק את $typeLabel',
                           style: const TextStyle(fontWeight: FontWeight.w800),
                         ),
                         Text(
@@ -29521,12 +30606,14 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
               const SizedBox(height: 7),
               Text(
                 widget.fileType == 'audio'
-                    ? (widget.scanning ? 'ההקלטה שמורה וממתינה לשליחה' : 'ההקלטה עולה לשרת')
+                    ? (widget.scanning
+                        ? 'ההקלטה שמורה וממתינה לשליחה'
+                        : 'ההקלטה עולה לשרת')
                     : widget.scanning
-                    ? 'הקובץ שמור וממתין לאישור הסריקה לפני שליחה'
-                    : elapsed >= 45
-                    ? 'ההעלאה עדיין מתבצעת; הקובץ טרם נשלח'
-                    : 'קודם העלאה לאחסון, אחריה בדיקת בטיחות וסינון',
+                        ? 'הקובץ שמור וממתין לאישור הסריקה לפני שליחה'
+                        : elapsed >= 45
+                            ? 'ההעלאה עדיין מתבצעת; הקובץ טרם נשלח'
+                            : 'קודם העלאה לאחסון, אחריה בדיקת בטיחות וסינון',
                 style: const TextStyle(fontSize: 10, color: kSubtext),
               ),
             ],
@@ -29537,13 +30624,14 @@ class _UploadProcessingCardState extends State<_UploadProcessingCard>
   }
 }
 
-
 class _AudioScanBadge extends StatelessWidget {
   const _AudioScanBadge();
   @override
   Widget build(BuildContext context) => const MessageDetails(
-    child: Padding(padding: EdgeInsets.only(top: 4), child: Text('הקלטה קולית',
-        style: TextStyle(fontSize: 10, color: kPrimary))));
+      child: Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Text('הקלטה קולית',
+              style: TextStyle(fontSize: 10, color: kPrimary))));
 }
 
 class _ChatSenderLabel extends StatelessWidget {
@@ -29590,25 +30678,35 @@ class _MessageSelectionCard extends StatelessWidget {
   final VoidCallback onToggle;
   final Widget child;
 
-  const _MessageSelectionCard({super.key, required this.active,
-    required this.selected, required this.onToggle, required this.child});
+  const _MessageSelectionCard(
+      {super.key,
+      required this.active,
+      required this.selected,
+      required this.onToggle,
+      required this.child});
 
   @override
   Widget build(BuildContext context) => Semantics(
-    selected: active ? selected : null,
-    child: GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: active ? onToggle : null,
-      child: Stack(children: [
-        IgnorePointer(ignoring: active, child: child),
-        if (active)
-          Positioned(right: 4, top: 6, child: Icon(
-            selected ? Icons.check_circle : Icons.radio_button_unchecked,
-            color: selected ? kPrimary : kSubtext, size: 26,
-          )),
-      ]),
-    ),
-  );
+        selected: active ? selected : null,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: active ? onToggle : null,
+          child: Stack(children: [
+            IgnorePointer(ignoring: active, child: child),
+            if (active)
+              Positioned(
+                  right: 4,
+                  top: 6,
+                  child: Icon(
+                    selected
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    color: selected ? kPrimary : kSubtext,
+                    size: 26,
+                  )),
+          ]),
+        ),
+      );
 }
 
 class _UploadResultCard extends StatelessWidget {
@@ -29648,19 +30746,19 @@ class _UploadResultCard extends StatelessWidget {
   });
 
   Widget _imageNotice(Widget image, {String? expiryText}) => BlockedImageNotice(
-    image: image,
-    title: title,
-    reason: reason,
-    classification: classification,
-    fileName: fileName,
-    recipientName: destinationFilterRejected ? recipientName : null,
-    onlyYouText: contentPurged
-        ? '$onlyYouText\nהקובץ נמחק. אירוע החסימה נשמר למעקב בטיחות.'
-        : onlyYouText,
-    expiryText: expiryText,
-    previewExpiresAt: previewExpiresAt,
-    onMoreActions: onMoreActions,
-  );
+        image: image,
+        title: title,
+        reason: reason,
+        classification: classification,
+        fileName: fileName,
+        recipientName: destinationFilterRejected ? recipientName : null,
+        onlyYouText: contentPurged
+            ? '$onlyYouText\nהקובץ נמחק. אירוע החסימה נשמר למעקב בטיחות.'
+            : onlyYouText,
+        expiryText: expiryText,
+        previewExpiresAt: previewExpiresAt,
+        onMoreActions: onMoreActions,
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -29927,7 +31025,8 @@ class _ImageClassificationBadges extends StatelessWidget {
   };
 
   @override
-  Widget build(BuildContext context) => MessageDetails(child: _buildDetails(context));
+  Widget build(BuildContext context) =>
+      MessageDetails(child: _buildDetails(context));
 
   Widget _buildDetails(BuildContext context) {
     final raw = message['classification'];
@@ -29991,7 +31090,8 @@ class _DocumentClassificationSummary extends StatelessWidget {
   };
 
   @override
-  Widget build(BuildContext context) => MessageDetails(child: _buildDetails(context));
+  Widget build(BuildContext context) =>
+      MessageDetails(child: _buildDetails(context));
 
   Widget _buildDetails(BuildContext context) {
     final raw = message['classification'];
@@ -30338,7 +31438,8 @@ class _SharedContactCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = contact['name']?.toString() ?? 'איש קשר';
     final phone = (contact['appUserId']?.toString() ?? '').isNotEmpty
-        ? '' : contact['phone']?.toString() ?? '';
+        ? ''
+        : contact['phone']?.toString() ?? '';
     final email = contact['email']?.toString() ?? '';
     final city = contact['city']?.toString() ?? '';
     final address = contact['address']?.toString() ?? '';
@@ -30620,35 +31721,37 @@ class _ScanStoppedCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final notice = _scanStoppedNotice(message);
-    final fileName = (message['scanFileName'] ?? message['fileName'])?.toString();
+    final fileName =
+        (message['scanFileName'] ?? message['fileName'])?.toString();
     return Align(
-        key: ValueKey('scan-stopped-${message['id']}'),
-        alignment: Alignment.centerRight,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 3),
-          child: notice == blockedVideoMessage
-              ? BlockedVideoNotice(fileName: fileName)
-              : Container(
-                  constraints: const BoxConstraints(maxWidth: 280),
-                  margin: const EdgeInsets.symmetric(vertical: 5),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF0F5F9),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    if (fileName?.trim().isNotEmpty == true) ...[
-                      CopyableFileName(fileName!,
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 6),
-                    ],
-                    const Icon(Icons.stop_circle_outlined),
-                    const SizedBox(height: 6),
-                    Text(notice, textAlign: TextAlign.center),
-                  ]),
+      key: ValueKey('scan-stopped-${message['id']}'),
+      alignment: Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: notice == blockedVideoMessage
+            ? BlockedVideoNotice(fileName: fileName)
+            : Container(
+                constraints: const BoxConstraints(maxWidth: 280),
+                margin: const EdgeInsets.symmetric(vertical: 5),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0F5F9),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-        ),
-      );
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  if (fileName?.trim().isNotEmpty == true) ...[
+                    CopyableFileName(fileName!,
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                  ],
+                  const Icon(Icons.stop_circle_outlined),
+                  const SizedBox(height: 6),
+                  Text(notice, textAlign: TextAlign.center),
+                ]),
+              ),
+      ),
+    );
   }
 }
 
@@ -30687,8 +31790,9 @@ class _MessageBubble extends StatelessWidget {
     switch (message['status'] as String? ?? 'sent') {
       case 'sending':
       case 'uploading':
-        return const Tooltip(message: 'ממתין לאישור שליחה',
-          child: Icon(Icons.schedule, size: 15, color: kSubtext));
+        return const Tooltip(
+            message: 'ממתין לאישור שליחה',
+            child: Icon(Icons.schedule, size: 15, color: kSubtext));
       case 'read':
         return const Icon(Icons.done_all, size: 14, color: kReadTick);
       case 'received':
@@ -30737,21 +31841,34 @@ class _MessageBubble extends StatelessWidget {
     );
     final uploadStatus = message['status']?.toString();
     if (uploadStatus == 'rejected_request') {
-      return Align(widthFactor: 1,alignment: _messageAlignment,
-        child: Container(padding: const EdgeInsets.all(10), margin: const EdgeInsets.symmetric(vertical: 3),
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
-          decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.red.shade200)),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(fileName ?? message['text']?.toString() ?? '', textDirection: TextDirection.rtl),
-              ContactRequestStatusBanner(status: uploadStatus!, reason: message['scanReason']?.toString()),
-            ])));
+      return Align(
+          widthFactor: 1,
+          alignment: _messageAlignment,
+          child: Container(
+              padding: const EdgeInsets.all(10),
+              margin: const EdgeInsets.symmetric(vertical: 3),
+              constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.72),
+              decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.shade200)),
+              child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(fileName ?? message['text']?.toString() ?? '',
+                        textDirection: TextDirection.rtl),
+                    ContactRequestStatusBanner(
+                        status: uploadStatus!,
+                        reason: message['scanReason']?.toString()),
+                  ])));
     }
 
     if (fileType == 'document' &&
         (uploadStatus == 'pending_scan' || uploadStatus == 'rejected_scan')) {
-      return Align(widthFactor: 1,
+      return Align(
+        widthFactor: 1,
         alignment: _messageAlignment,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
@@ -30771,7 +31888,8 @@ class _MessageBubble extends StatelessWidget {
             : 'התמונה';
     if ((isVisualUpload || fileType == 'audio' || fileType == 'document') &&
         uploadStatus == 'uploading') {
-      return Align(widthFactor: 1,
+      return Align(
+        widthFactor: 1,
         alignment: _messageAlignment,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
@@ -30787,7 +31905,8 @@ class _MessageBubble extends StatelessWidget {
     }
     if ((isVisualUpload || fileType == 'audio') &&
         uploadStatus == 'pending_scan') {
-      return Align(widthFactor: 1,
+      return Align(
+        widthFactor: 1,
         alignment: _messageAlignment,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
@@ -30803,7 +31922,8 @@ class _MessageBubble extends StatelessWidget {
       );
     }
     if ((isVisualUpload || fileType == 'audio') && uploadStatus == 'failed') {
-      return Align(widthFactor: 1,
+      return Align(
+        widthFactor: 1,
         alignment: _messageAlignment,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
@@ -30828,14 +31948,17 @@ class _MessageBubble extends StatelessWidget {
       final displayedReason = message['forwardAllowed'] == true
           ? '$baseReason\n$retainedFilterFileMessage'
           : baseReason;
-      return Align(widthFactor: 1,
+      return Align(
+        widthFactor: 1,
         alignment: _messageAlignment,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 3),
           child: _UploadResultCard(
             blocked: true,
             isVideo: fileType == 'video',
-            classification: message['classification'] is Map ? Map<String, dynamic>.from(message['classification']) : null,
+            classification: message['classification'] is Map
+                ? Map<String, dynamic>.from(message['classification'])
+                : null,
             showBlockedArtwork: fileType != 'image',
             onMoreActions: onMessageOptions == null
                 ? null
@@ -30937,7 +32060,8 @@ class _MessageBubble extends StatelessWidget {
     final avielSticker = _avielStickerById(
         message['stickerId'] ?? (fileType == 'sticker' ? rawText : null));
     if (avielSticker != null) {
-      return Align(widthFactor: 1,
+      return Align(
+        widthFactor: 1,
         alignment: _messageAlignment,
         child: GestureDetector(
           onLongPress: onMessageOptions == null
@@ -30976,7 +32100,8 @@ class _MessageBubble extends StatelessWidget {
     final replyBg = kPrimary.withValues(alpha: 0.08);
     const replyBorder = kPrimary;
 
-    return Align(widthFactor: 1,
+    return Align(
+      widthFactor: 1,
       alignment: _messageAlignment,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 2),
@@ -31012,7 +32137,10 @@ class _MessageBubble extends StatelessWidget {
             if (isFile && fileUrl != null)
               ChatFileName(
                 key: ValueKey('chat-filename-$fileUrl'),
-                api: kApi, token: token, url: fileUrl, filename: fileName,
+                api: kApi,
+                token: token,
+                url: fileUrl,
+                filename: fileName,
                 editable: isMe && uploadStatus != 'blocked_content',
                 onRenamed: (name) => message['fileName'] = name,
               ),
@@ -31066,10 +32194,12 @@ class _MessageBubble extends StatelessWidget {
                     _AudioScanBadge(),
                   ])
             else if (isVideoFile)
-              MessageObjectReactions(child: Stack(children: [
+              MessageObjectReactions(
+                  child: Stack(children: [
                 if (kIsWeb)
                   NativeWebVideoPlayer(
-                    progressApi: kApi, token: token,
+                    progressApi: kApi,
+                    token: token,
                     key: ValueKey('video-$fileUrl'),
                     url: _absoluteMediaUrl(fileUrl),
                     onOptions: onMessageOptions == null
@@ -31099,7 +32229,8 @@ class _MessageBubble extends StatelessWidget {
                         context,
                         MaterialPageRoute(
                           builder: (_) => ImagePreviewScreen(
-                            filterToken: token, currentUserId: me?['id']?.toString(),
+                            filterToken: token,
+                            currentUserId: me?['id']?.toString(),
                             url: fileUrl,
                             filename: fileName,
                             urls: conversationImages
@@ -31116,16 +32247,20 @@ class _MessageBubble extends StatelessWidget {
                             initialIndex: selectedImageIndex,
                           ),
                         )),
-                    child: MessageObjectReactions(child: Stack(
+                    child: MessageObjectReactions(
+                        child: Stack(
                       children: [
                         ClipRRect(
                           borderRadius: BorderRadius.circular(10),
                           child: _PersistentMediaImage(
-                            key: ValueKey('chat-image-${message['id']}-$fileUrl'),
+                            key: ValueKey(
+                                'chat-image-${message['id']}-$fileUrl'),
                             url: fileUrl,
                             onDisplayed: () => reportFilterDisplay(
-                              api: kApi, token: token,
-                              messageId: message['id']?.toString() ?? '', event: 'displayed'),
+                                api: kApi,
+                                token: token,
+                                messageId: message['id']?.toString() ?? '',
+                                event: 'displayed'),
                             width: imageMaxSize.width,
                             height: imageMaxSize.height,
                             fitNaturalBounds: true,
@@ -31297,10 +32432,7 @@ class _MessageBubble extends StatelessWidget {
               InlineEmojiText(
                 displayText,
                 messageEmojis: true,
-                style: TextStyle(
-                    fontSize: 14,
-                    height: 1.45,
-                    color: textColor),
+                style: TextStyle(fontSize: 14, height: 1.45, color: textColor),
                 textDirection: TextDirection.rtl,
                 textAlign: TextAlign.right,
               ),
@@ -31462,7 +32594,25 @@ const _remoteStickerPrefix = '__betshuva_remote_sticker__:';
 Future<({XFile file, String fileName})> _loadRemoteLibrarySticker(
     String url) async {
   final id = inlineEmojiIdFromUrl(url);
-  if (id == null) throw const FormatException('Unknown library sticker');
+  final uri = Uri.parse(url);
+  final segments = uri.pathSegments;
+  final isServerSticker = uri.scheme == 'https' &&
+      uri.host == 'betshuva.com' &&
+      uri.port == 443 &&
+      uri.userInfo.isEmpty &&
+      !uri.hasQuery &&
+      !uri.hasFragment &&
+      segments.length == 4 &&
+      segments[0] == 'betshuva-app' &&
+      segments[1] == 'expression-library' &&
+      segments[2] == 'stickers' &&
+      !RegExp(r'[/\\%\x00]').hasMatch(segments[3]) &&
+      !segments[3].startsWith('.') &&
+      RegExp(r'\.(png|gif|webp|jpe?g)$', caseSensitive: false)
+          .hasMatch(segments[3]);
+  if (id == null && !isServerSticker) {
+    throw const FormatException('Unknown library sticker');
+  }
   final request = http.Request('GET', Uri.parse(url))..followRedirects = false;
   final response = await request.send().timeout(const Duration(seconds: 12));
   if (response.statusCode != 200) {
@@ -31477,18 +32627,36 @@ Future<({XFile file, String fileName})> _loadRemoteLibrarySticker(
     downloaded.add(chunk);
   }).timeout(const Duration(seconds: 12));
   final bytes = downloaded.takeBytes();
-  const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (bytes.length < pngSignature.length ||
-      !listEquals(bytes.take(pngSignature.length).toList(), pngSignature)) {
+  bool signature(List<int> expected, [int offset = 0]) =>
+      bytes.length >= offset + expected.length &&
+      listEquals(bytes.sublist(offset, offset + expected.length), expected);
+  final String extension;
+  final String mimeType;
+  if (signature([137, 80, 78, 71, 13, 10, 26, 10])) {
+    extension = 'png';
+    mimeType = 'image/png';
+  } else if (signature([255, 216, 255])) {
+    extension = 'jpg';
+    mimeType = 'image/jpeg';
+  } else if (signature([71, 73, 70, 56, 55, 97]) ||
+      signature([71, 73, 70, 56, 57, 97])) {
+    extension = 'gif';
+    mimeType = 'image/gif';
+  } else if (signature([82, 73, 70, 70]) && signature([87, 69, 66, 80], 8)) {
+    extension = 'webp';
+    mimeType = 'image/webp';
+  } else {
     throw const FormatException('Library sticker unavailable');
   }
-  final fileName =
-      'betshuva-sticker-${id.toString().padLeft(2, '0')}.png';
+  final fileName = id != null
+      ? 'betshuva-sticker-${id.toString().padLeft(2, '0')}.$extension'
+      : 'betshuva-sticker-${segments.last.replaceFirst(RegExp(r'\.[^.]+$'), '')}.$extension';
   return (
-    file: XFile.fromData(bytes, name: fileName, mimeType: 'image/png'),
+    file: XFile.fromData(bytes, name: fileName, mimeType: mimeType),
     fileName: fileName,
   );
 }
+
 const _avielGuideStickers = <({String id, String asset, String label})>[
   (
     id: 'betshuva_guide_welcome',
@@ -31547,21 +32715,21 @@ class _AvielEmptyChat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-    child: SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Image.asset(asset, width: 132, height: 132, fit: BoxFit.contain),
-          const SizedBox(height: 8),
-          Text(
-            text,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: kSubtext),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset(asset, width: 132, height: 132, fit: BoxFit.contain),
+              const SizedBox(height: 8),
+              Text(
+                text,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: kSubtext),
+              ),
+            ],
           ),
-        ],
-      ),
-    ),
-  );
+        ),
+      );
 }
 
 // Legacy expression catalog retained for migration of saved messages.
@@ -31890,6 +33058,7 @@ const _emojiCategories = <String, List<String>>{
     '🇮🇱'
   ],
 };
+
 class _ExpressionPanelController extends ChangeNotifier {
   Widget? panel;
   Completer<void>? _closed;
@@ -31925,32 +33094,34 @@ class _ExpressionPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: controller,
-    builder: (context, _) {
-      if (!controller.isOpen) return const SizedBox.shrink();
-      return PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) controller.close();
-        },
-        child: Align(
-          alignment: Alignment.centerRight,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: maxHeight, maxWidth: 900),
-            child: BottomSheet(
-              onClosing: controller.close,
-              enableDrag: false,
-              constraints: const BoxConstraints(maxWidth: 900),
-              shape: const RoundedRectangleBorder(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+        listenable: controller,
+        builder: (context, _) {
+          if (!controller.isOpen) return const SizedBox.shrink();
+          return PopScope(
+            canPop: false,
+            onPopInvokedWithResult: (didPop, _) {
+              if (!didPop) controller.close();
+            },
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: ConstrainedBox(
+                constraints:
+                    BoxConstraints(maxHeight: maxHeight, maxWidth: 900),
+                child: BottomSheet(
+                  onClosing: controller.close,
+                  enableDrag: false,
+                  constraints: const BoxConstraints(maxWidth: 900),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(12)),
+                  ),
+                  builder: (_) => controller.panel!,
+                ),
               ),
-              builder: (_) => controller.panel!,
             ),
-          ),
-        ),
+          );
+        },
       );
-    },
-  );
 }
 
 Future<void> _showExpressionPicker(
@@ -31962,17 +33133,18 @@ Future<void> _showExpressionPicker(
   required bool inlineEmojiAllowed,
   required String blockedLabel,
   required Future<void> Function(String) onSelected,
-}) => controller.open(
-  (close) => _ExpressionPickerSheet(
-    token: token,
-    initialInlineEmoji: initialInlineEmoji,
-    stickersAllowed: stickersAllowed,
-    inlineEmojiAllowed: inlineEmojiAllowed,
-    blockedLabel: blockedLabel,
-    onSelected: onSelected,
-    onClose: close,
-  ),
-);
+}) =>
+    controller.open(
+      (close) => _ExpressionPickerSheet(
+        token: token,
+        initialInlineEmoji: initialInlineEmoji,
+        stickersAllowed: stickersAllowed,
+        inlineEmojiAllowed: inlineEmojiAllowed,
+        blockedLabel: blockedLabel,
+        onSelected: onSelected,
+        onClose: close,
+      ),
+    );
 
 Future<Map<String, String>?> _requestSharedGifDetails(
     BuildContext context) async {
@@ -32050,6 +33222,9 @@ class _ExpressionPickerSheet extends StatefulWidget {
 
 class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   List<Map<String, dynamic>> _items = [];
+  List<Map<String, dynamic>> _emojiItems = [];
+  Timer? _catalogRefresh;
+  bool _catalogLoading = false;
   bool _loading = true;
   String _query = '';
   String? _error;
@@ -32061,14 +33236,24 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
   @override
   void initState() {
     super.initState();
-    _showInlineEmoji =
-        widget.inlineEmojiAllowed &&
+    _showInlineEmoji = widget.inlineEmojiAllowed &&
         (widget.initialInlineEmoji == true || !widget.stickersAllowed);
     _loadExpressionCatalog();
+    _catalogRefresh = Timer.periodic(const Duration(seconds: 15), (_) {
+      _loadExpressionCatalog(refresh: true);
+    });
   }
 
-  Future<void> _loadExpressionCatalog() async {
-    if (mounted) {
+  @override
+  void dispose() {
+    _catalogRefresh?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadExpressionCatalog({bool refresh = false}) async {
+    if (_catalogLoading) return;
+    _catalogLoading = true;
+    if (mounted && !refresh) {
       setState(() {
         _loading = true;
         _error = null;
@@ -32077,18 +33262,17 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
     try {
       Map<String, dynamic> payload;
       try {
-        final response = await http
-            .get(
-              Uri.parse('$kApi/expressions/catalog'),
-              headers: {'Authorization': 'Bearer ${widget.token}'},
-            )
-            .timeout(const Duration(seconds: 12));
+        final response = await http.get(
+          Uri.parse('$kApi/expressions/catalog'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        ).timeout(const Duration(seconds: 12));
         if (response.statusCode != 200) throw Exception('catalog unavailable');
         payload = jsonDecode(response.body) as Map<String, dynamic>;
         if ((payload['version'] as num? ?? 0) < 3) {
           throw Exception('old catalog');
         }
       } catch (_) {
+        if (refresh && (_items.isNotEmpty || _emojiItems.isNotEmpty)) return;
         final bundled = jsonDecode(
           await rootBundle.loadString('assets/stickers/user-catalog.json'),
         ) as Map<String, dynamic>;
@@ -32096,8 +33280,8 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
           'categories': (bundled['categories'] as List).map((raw) {
             final category = raw as Map;
             final labels = category['labels'] as List;
-            final removedIds = (category['removedIds'] as List? ?? const [])
-                .toSet();
+            final removedIds =
+                (category['removedIds'] as List? ?? const []).toSet();
             return {
               'id': category['id'],
               'items': List.generate(labels.length, (index) => index)
@@ -32105,8 +33289,9 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                   .map(
                     (index) => {
                       'label': labels[index],
-                      'url':
-                          '/betshuva-app/expression-library/${category['coloredPath'] ?? category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
+                      'url': category['id'] == 'user-emojis'
+                          ? '/betshuva-app/api/expressions/emoji/${index + 1}'
+                          : '/betshuva-app/expression-library/${category['coloredPath'] ?? category['path']}/${category['prefix']}-${(index + 1).toString().padLeft(2, '0')}.${category['extension']}',
                     },
                   )
                   .toList(),
@@ -32114,15 +33299,21 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
           }).toList(),
         };
       }
-      final items = (payload['categories'] as List? ?? const [])
-          .whereType<Map>()
-          .where((category) => category['id'] == 'user-stickers')
-          .expand(
-            (category) =>
-                (category['items'] as List? ?? const []).whereType<Map>(),
-          )
-          .map((item) {
+      List<Map<String, dynamic>> categoryItems(String categoryId) =>
+          (payload['categories'] as List? ?? const [])
+              .whereType<Map>()
+              .where((category) => category['id'] == categoryId)
+              .expand(
+                (category) =>
+                    (category['items'] as List? ?? const []).whereType<Map>(),
+              )
+              .map((item) {
             final expression = Map<String, dynamic>.from(item);
+            if (categoryId == 'user-stickers' &&
+                expression['libraryUrl'] is String) {
+              expression['url'] = expression['libraryUrl'];
+              return expression;
+            }
             final coloredUrl = expression['coloredUrl']?.toString();
             if (coloredUrl != null &&
                 inlineEmojiIdFromUrl(coloredUrl) != null &&
@@ -32131,16 +33322,24 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
               expression['url'] = coloredUrl;
             }
             return expression;
-          })
-          .toList();
+          }).toList();
+      final stickers = categoryItems('user-stickers');
+      final emojis = categoryItems('user-emojis');
       if (mounted) {
         setState(() {
-          _items = items;
+          _items = stickers;
+          // Compatibility with older servers that expose a single catalog.
+          _emojiItems = (payload['categories'] as List? ?? const [])
+                  .whereType<Map>()
+                  .any((category) => category['id'] == 'user-emojis')
+              ? emojis
+              : stickers;
         });
       }
     } catch (_) {
       if (mounted) setState(() => _error = 'לא ניתן לטעון את התמונות כרגע');
     } finally {
+      _catalogLoading = false;
       if (mounted) setState(() => _loading = false);
     }
   }
@@ -32156,7 +33355,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final visible = _items
+    final visible = (_showInlineEmoji ? _emojiItems : _items)
         .where(
           (item) => (item['label']?.toString() ?? '').contains(_query.trim()),
         )
@@ -32259,8 +33458,7 @@ class _ExpressionPickerSheetState extends State<_ExpressionPickerSheet> {
                                 _RemoteExpressionGrid(
                                   items: visible,
                                   inlineEmoji: _showInlineEmoji,
-                                  maxTileHeight:
-                                      height -
+                                  maxTileHeight: height -
                                       (_searchOpen
                                           ? math.min(36, height / 2)
                                           : 0),
@@ -32354,94 +33552,93 @@ class _RemoteExpressionGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SliverLayoutBuilder(
-    builder: (context, constraints) => SliverPadding(
-      padding: const EdgeInsets.all(4),
-      sliver: SliverGrid(
-        key: const ValueKey('expression-image-grid'),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: math.max(
-            1,
-            ((constraints.crossAxisExtent - 8) /
-                    ((inlineEmoji ? (kIsWeb ? 36 : 44) : 80) + 2))
-                .floor(),
-          ),
-          mainAxisExtent: math.min(
-            inlineEmoji ? (kIsWeb ? 36.0 : 44.0) : 80.0,
-            math.max(0.0, maxTileHeight - 8),
-          ),
-          mainAxisSpacing: 2,
-          crossAxisSpacing: 2,
-        ),
-        delegate: SliverChildBuilderDelegate((_, index) {
-          final item = items[index];
-          final rawUrl = item['url']?.toString() ?? '';
-          final url = rawUrl.isEmpty ? '' : _absoluteUrl(rawUrl);
-          final label = item['label']?.toString() ?? '';
-          final choicePrefix = inlineEmoji
-              ? _remoteExpressionPrefix
-              : _remoteStickerPrefix;
-          final image = vividInlineEmojiArtwork(
-            inlineEmojiIdFromUrl(rawUrl),
-            Image.network(
-              url,
-              width: inlineEmoji ? 24 * inlineEmojiScale : null,
-              height: inlineEmoji ? 24 * inlineEmojiScale : null,
-              fit: BoxFit.contain,
-              filterQuality: FilterQuality.medium,
-              errorBuilder: (_, __, ___) => Icon(
-                Icons.broken_image_outlined,
-                color: kSubtext,
-                size: inlineEmoji ? 24 * inlineEmojiScale : 24,
+        builder: (context, constraints) => SliverPadding(
+          padding: const EdgeInsets.all(4),
+          sliver: SliverGrid(
+            key: const ValueKey('expression-image-grid'),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: math.max(
+                1,
+                ((constraints.crossAxisExtent - 8) /
+                        ((inlineEmoji ? (kIsWeb ? 36 : 44) : 80) + 2))
+                    .floor(),
               ),
+              mainAxisExtent: math.min(
+                inlineEmoji ? (kIsWeb ? 36.0 : 44.0) : 80.0,
+                math.max(0.0, maxTileHeight - 8),
+              ),
+              mainAxisSpacing: 2,
+              crossAxisSpacing: 2,
             ),
-          );
-          if (inlineEmoji) {
-            return Semantics(
-              label: label,
-              button: true,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  key: ValueKey('expression-image-$url'),
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: url.isEmpty
-                      ? null
-                      : () => onSelected('$choicePrefix$url'),
-                  child: Center(child: ExcludeSemantics(child: image)),
+            delegate: SliverChildBuilderDelegate((_, index) {
+              final item = items[index];
+              final rawUrl = item['url']?.toString() ?? '';
+              final url = rawUrl.isEmpty ? '' : _absoluteUrl(rawUrl);
+              final label = item['label']?.toString() ?? '';
+              final choicePrefix =
+                  inlineEmoji ? _remoteExpressionPrefix : _remoteStickerPrefix;
+              final image = vividInlineEmojiArtwork(
+                inlineEmojiIdFromUrl(rawUrl),
+                Image.network(
+                  url,
+                  width: inlineEmoji ? 24 * inlineEmojiScale : null,
+                  height: inlineEmoji ? 24 * inlineEmojiScale : null,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.medium,
+                  errorBuilder: (_, __, ___) => Icon(
+                    Icons.broken_image_outlined,
+                    color: kSubtext,
+                    size: inlineEmoji ? 24 * inlineEmojiScale : 24,
+                  ),
                 ),
-              ),
-            );
-          }
-          return Semantics(
-            label: label,
-            button: true,
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                key: ValueKey('expression-image-$url'),
-                borderRadius: BorderRadius.circular(12),
-                onTap: url.isEmpty
-                    ? null
-                    : () => onSelected('$choicePrefix$url'),
-                child: Padding(
-                  padding: const EdgeInsets.all(2),
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        maxWidth: kIsWeb ? 75 : 150,
-                        maxHeight: kIsWeb ? 75 : 150,
+              );
+              if (inlineEmoji) {
+                return Semantics(
+                  label: label,
+                  button: true,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      key: ValueKey('expression-image-$url'),
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: url.isEmpty
+                          ? null
+                          : () => onSelected('$choicePrefix$url'),
+                      child: Center(child: ExcludeSemantics(child: image)),
+                    ),
+                  ),
+                );
+              }
+              return Semantics(
+                label: label,
+                button: true,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: ValueKey('expression-image-$url'),
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: url.isEmpty
+                        ? null
+                        : () => onSelected('$choicePrefix$url'),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(
+                            maxWidth: kIsWeb ? 75 : 150,
+                            maxHeight: kIsWeb ? 75 : 150,
+                          ),
+                          child: ExcludeSemantics(child: image),
+                        ),
                       ),
-                      child: ExcludeSemantics(child: image),
                     ),
                   ),
                 ),
-              ),
-            ),
-          );
-        }, childCount: items.length),
-      ),
-    ),
-  );
+              );
+            }, childCount: items.length),
+          ),
+        ),
+      );
 }
 
 // Legacy expression picker retained for messages created before the catalog API.
@@ -32498,7 +33695,6 @@ class _OriginalExpressionGrid extends StatelessWidget {
         ),
       );
 }
-
 
 class GroupsScreen extends StatefulWidget {
   final String token;
@@ -32721,7 +33917,8 @@ class _GroupsScreenState extends State<GroupsScreen> {
                         final lastMsg = g['last_message_type'] == 'reaction'
                             ? conversationReactionPreview(g)
                             : g['lastMsg'] as String? ??
-                                g['description'] as String? ?? '';
+                                g['description'] as String? ??
+                                '';
                         return Container(
                           color: widget.selectedGroupId == g['id']
                               ? const Color(0xFFE9EDEF)
@@ -32929,6 +34126,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   bool _loading = true;
   bool _isAdmin = false;
   bool _isTyping = false;
+  Timer? _typingTimer;
   bool _cameraCaptureOpen = false;
   String _typingName = '';
   late final void Function(dynamic) _typingSocketHandler;
@@ -32972,9 +34170,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         .toList();
     if (selected.isEmpty) return;
     final selectedKeys = selected.map(_selectionKey).toList();
-    final result =
-        await forwardChatMessages(context, widget.token, widget.socket, selected,
-            me: widget.me);
+    final result = await forwardChatMessages(
+        context, widget.token, widget.socket, selected,
+        me: widget.me);
     if (mounted && result.completedMessageIndexes.isNotEmpty) {
       setState(() {
         for (final index in result.completedMessageIndexes) {
@@ -33155,16 +34353,19 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void initState() {
     super.initState();
     _expressionPanel.addListener(_refreshExpressionPanel);
-    _scrollCtrl.openSearchMessage(widget.searchMessageId, widget.searchMessageAt);
+    _scrollCtrl.openSearchMessage(
+        widget.searchMessageId, widget.searchMessageAt);
     _loadUploadBatchNotices();
     _uploadNoticesSubscription = _uploadNotices.changes.listen((_) {
       if (mounted) _loadUploadBatchNotices();
     });
     _listenForConversationChanges();
-    _receivingFilterSubscription = receivingFilterChanges.stream.listen((token) {
+    _receivingFilterSubscription =
+        receivingFilterChanges.stream.listen((token) {
       if (token == widget.token) _refreshReceivingFilter();
     });
-    _receivingFilterSocketHandler = (_) => receivingFilterChanges.add(widget.token);
+    _receivingFilterSocketHandler =
+        (_) => receivingFilterChanges.add(widget.token);
     widget.socket?.on('filter:changed', _receivingFilterSocketHandler);
     if (widget.group['conversation_hidden'] == true) {
       reopenConversation(
@@ -33280,7 +34481,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         Uri.parse('$kApi/groups/$_groupId/filter-settings'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (!mounted || generation != _historyGeneration || response.statusCode != 200) return;
+      if (!mounted ||
+          generation != _historyGeneration ||
+          response.statusCode != 200) return;
       final body = jsonDecode(response.body);
       final raw = body is Map ? body['filter'] : null;
       if (raw is! Map) return;
@@ -33363,16 +34566,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final selected = await _chooseGroupInvitationFilter(
       context,
       token: widget.token,
-        groupFilter: _groupReceivingFilter ?? const <String, bool>{},
-      initialFilter:
-          _outgoingFilter ?? const <String, bool>{},
+      groupFilter: _groupReceivingFilter ?? const <String, bool>{},
+      initialFilter: _outgoingFilter ?? const <String, bool>{},
       counterpart: widget.group['name']?.toString() ?? 'הקבוצה',
       groupName: widget.group['name']?.toString(),
     );
     if (selected == null || !mounted) return;
-    final response = await saveReceivingFilter(context: context, api: kApi,
-      token: widget.token, path: '/groups/$_groupId/personal-filter',
-      body: {'filter': selected});
+    final response = await saveReceivingFilter(
+        context: context,
+        api: kApi,
+        token: widget.token,
+        path: '/groups/$_groupId/personal-filter',
+        body: {'filter': selected});
     if (response == null) return;
     if (!mounted) return;
     if (response.statusCode != 200) {
@@ -33498,7 +34703,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         : await _chooseGroupInvitationFilter(
             context,
             token: widget.token,
-        groupFilter: _groupReceivingFilter ?? const <String, bool>{},
+            groupFilter: _groupReceivingFilter ?? const <String, bool>{},
             initialFilter: _invitationPersonalFilter ?? const <String, bool>{},
             counterpart: widget.group['name']?.toString() ?? 'הקבוצה',
             groupName: widget.group['name']?.toString(),
@@ -34011,11 +35216,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
     final http.Response response;
     try {
-      response = await http.post(
-        Uri.parse('$kApi/contacts/save/$memberId'),
-        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-        body: jsonEncode({'source': 'in_app'}),
-      ).timeout(const Duration(seconds: 15));
+      response = await http
+          .post(
+            Uri.parse('$kApi/contacts/save/$memberId'),
+            headers: {
+              'Authorization': 'Bearer ${widget.token}',
+              'Content-Type': 'application/json'
+            },
+            body: jsonEncode({'source': 'in_app'}),
+          )
+          .timeout(const Duration(seconds: 15));
     } catch (_) {
       throw Exception('שגיאת חיבור. לחץ כדי לנסות שוב');
     }
@@ -34206,7 +35416,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_groupMessagesCacheKey(widget.me?['id'], _groupId));
     if (!mounted) return;
-    await Future.wait([_loadGroupReceivingFilter(), _loadMessages(silent: true)]);
+    await Future.wait(
+        [_loadGroupReceivingFilter(), _loadMessages(silent: true)]);
   }
 
   Future<void> _loadMessages({bool silent = false, bool poll = false}) {
@@ -34219,7 +35430,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     // Polls must not invalidate a slow response. Explicit refreshes still
     // start a fresh request after messages or their visibility change.
     late final Future<void> load;
-    load = _fetchMessages(silent: silent, generation: generation).whenComplete(() {
+    load =
+        _fetchMessages(silent: silent, generation: generation).whenComplete(() {
       if (identical(_historyLoad, load)) {
         _historyLoad = null;
         _historyLoadGeneration = null;
@@ -34230,13 +35442,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     return load;
   }
 
-  Future<void> _fetchMessages({required bool silent, required int generation}) async {
+  Future<void> _fetchMessages(
+      {required bool silent, required int generation}) async {
     final requestSerial = ++_historyRequestSerial;
     final cacheKey = _groupMessagesCacheKey(widget.me?['id'], _groupId);
     // Show cache immediately
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+      if (!mounted ||
+          generation != _historyGeneration ||
+          requestSerial != _historyRequestSerial) return;
       final cached = prefs.getString(cacheKey);
       if (!silent && cached != null && mounted) {
         final list = (jsonDecode(cached) as List)
@@ -34244,9 +35459,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             .where((message) => !_isVisualMediaMessage(message))
             .where((message) => conversationMessageAfter(message, _clearedAt))
             .toList();
-        final localUploads = _messages.where((message) =>
-            message['isUploadBatchNotice'] == true ||
-            message['status'] == 'uploading').toList();
+        final localUploads = _messages
+            .where((message) =>
+                message['isUploadBatchNotice'] == true ||
+                message['status'] == 'uploading')
+            .toList();
         setState(() {
           _messages
             ..clear()
@@ -34259,11 +35476,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     // Fetch from server and update
     try {
       final res = await http.get(
-        Uri.parse('$kApi/groups/$_groupId/messages').replace(
-            queryParameters: _scrollCtrl.queryParameters),
+        Uri.parse('$kApi/groups/$_groupId/messages')
+            .replace(queryParameters: _scrollCtrl.queryParameters),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       ).timeout(const Duration(seconds: 20));
-      if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+      if (!mounted ||
+          generation != _historyGeneration ||
+          requestSerial != _historyRequestSerial) return;
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as List;
         final normalized = data
@@ -34274,7 +35493,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         final fingerprint = jsonEncode(normalized);
         final reconcileUploads =
             chatUploadHistoryNeedsReconciliation(normalized, _messages);
-        if (silent && fingerprint == _serverMessagesFingerprint &&
+        if (silent &&
+            fingerprint == _serverMessagesFingerprint &&
             !reconcileUploads) return;
         _serverMessagesFingerprint = fingerprint;
         final initialHistory = _scrollCtrl.captureInitialHistory(normalized);
@@ -34294,7 +35514,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         if (!initialHistory) _scrollToBottom();
         // Save to cache
         final prefs = await SharedPreferences.getInstance();
-        if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+        if (!mounted ||
+            generation != _historyGeneration ||
+            requestSerial != _historyRequestSerial) return;
         final toCache = normalized.length > 50
             ? normalized.sublist(normalized.length - 50)
             : normalized;
@@ -34302,7 +35524,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       } else {
         if (res.statusCode == 403 || res.statusCode == 404) {
           await _clearGroupMessagesCache(widget.me?['id'], _groupId);
-          if (!mounted || generation != _historyGeneration || requestSerial != _historyRequestSerial) return;
+          if (!mounted ||
+              generation != _historyGeneration ||
+              requestSerial != _historyRequestSerial) return;
           setState(() {
             _messages.clear();
             _loading = false;
@@ -34312,7 +35536,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         }
       }
     } catch (_) {
-      if (mounted && generation == _historyGeneration && requestSerial == _historyRequestSerial) {
+      if (mounted &&
+          generation == _historyGeneration &&
+          requestSerial == _historyRequestSerial) {
         setState(() => _loading = false);
       }
     }
@@ -34334,7 +35560,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       'isMe': isMe,
       'isUnread': !isMe && map['is_read'] != true && map['is_read'] != 1,
       'isFile': isFile,
-      'status': _isScanStopped(map) ? 'stopped_scan' : map['message_status'] ?? 'sent',
+      'status': _isScanStopped(map)
+          ? 'stopped_scan'
+          : map['message_status'] ?? 'sent',
       if (map['scan_reason'] != null) 'scanReason': map['scan_reason'],
       if (map['scan_reason_code'] != null || map['reasonCode'] != null)
         'scanReasonCode': map['scan_reason_code'] ?? map['reasonCode'],
@@ -34390,7 +35618,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<bool> _markAsRead() async {
-    if (!mounted || _myStatus != 'member' ||
+    if (!mounted ||
+        _myStatus != 'member' ||
         !_reactionConversationIsActive(context)) return false;
     try {
       final response = await http.put(
@@ -34408,8 +35637,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void _setupSocket() {
     _reactionReadTracker = MessageReactionReadTracker(
       currentUserId: widget.me?['id']?.toString(),
-      kind: 'group', targetId: _groupId,
-      isActive: () => mounted && _myStatus == 'member' &&
+      kind: 'group',
+      targetId: _groupId,
+      isActive: () =>
+          mounted &&
+          _myStatus == 'member' &&
           _reactionConversationIsActive(context),
       markRead: _markAsRead,
     );
@@ -34425,7 +35657,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.on('group:deleted', _groupDeletedSocketHandler);
     _groupPhoneSharingSocketHandler = (_) {
       if (!mounted) return;
-      setState(() { for (final member in _members) {member['phone']=null;member['phone_visibility']='hidden';} });
+      setState(() {
+        for (final member in _members) {
+          member['phone'] = null;
+          member['phone_visibility'] = 'hidden';
+        }
+      });
       _loadMembers();
     };
     widget.socket?.on('contact:phone-sharing', _groupPhoneSharingSocketHandler);
@@ -34441,7 +35678,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           data['filter_hidden'] == true) {
         setState(() => _messages.removeWhere((message) =>
             message['id'] == data['id'] ||
-            (fileUrl != null && message['fileUrl'] == fileUrl &&
+            (fileUrl != null &&
+                message['fileUrl'] == fileUrl &&
                 message['status'] == 'pending_scan')));
         _serverMessagesFingerprint = null;
         _loadMessages(silent: true);
@@ -34529,7 +35767,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             const ['pending_scan', 'uploading', 'rejected_scan']
                 .contains(message['status'])));
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(_isVideoModeration(data) ? blockedVideoMessage
+            content: Text(_isVideoModeration(data)
+                ? blockedVideoMessage
                 : _senderFilterRejectionMessage(data)),
             backgroundColor: Colors.red));
         return;
@@ -34568,9 +35807,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _loadMessages(silent: true);
       }
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(_isScanStopped(data) ? _scanStoppedNotice(data)
-            : data['reason']?.toString() ??
-                'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
+        content: Text(
+            _isScanStopped(data)
+                ? _scanStoppedNotice(data)
+                : data['reason']?.toString() ??
+                    'הסריקה בוטלה אוטומטית לאחר המתנה ממושכת',
             textDirection: TextDirection.rtl),
       ));
     };
@@ -34603,21 +35844,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   .contains(message['status'])));
         }
       }
-      ScaffoldMessenger.of(context).showSnackBar(_contentWarningSnackBar(
-          _isVideoModeration(data) ? blockedVideoMessage
+      ScaffoldMessenger.of(context)
+          .showSnackBar(_contentWarningSnackBar(_isVideoModeration(data)
+              ? blockedVideoMessage
               : _isSenderFilterRejection(data)
-              ? _senderFilterRejectionMessage(data)
-              : data['reason']?.toString() ?? 'ההודעה נחסמה'));
+                  ? _senderFilterRejectionMessage(data)
+                  : data['reason']?.toString() ?? 'ההודעה נחסמה'));
     };
     widget.socket?.on('message:rejected', _messageRejectedSocketHandler);
 
     _typingSocketHandler = (data) {
       if (data['groupId'] == _groupId && mounted) {
-        setState(() {
-          _isTyping = true;
-          _typingName = data['fromName'] as String? ?? '';
-        });
-        Future.delayed(const Duration(seconds: 3), () {
+        _typingTimer?.cancel();
+        final typingName = data['fromName'] as String? ?? '';
+        if (!_isTyping || _typingName != typingName) {
+          setState(() {
+            _isTyping = true;
+            _typingName = typingName;
+          });
+        }
+        _typingTimer = Timer(const Duration(seconds: 3), () {
           if (mounted) setState(() => _isTyping = false);
         });
       }
@@ -34679,6 +35925,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.off('filter:changed', _receivingFilterSocketHandler);
     widget.socket?.off('conversation:changed', _conversationChangedHandler);
     _clipboardImagePasteListener.dispose();
+    _typingTimer?.cancel();
     _recordTimer?.cancel();
     _messageRefreshTimer?.cancel();
     _recordDeadlineTimer?.cancel();
@@ -34693,7 +35940,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     widget.socket?.off('group:typing', _typingSocketHandler);
     widget.socket?.off('group:viewed', _groupViewedSocketHandler);
     widget.socket?.off('group:member_joined', _groupMemberJoinedSocketHandler);
-    widget.socket?.off('contact:phone-sharing', _groupPhoneSharingSocketHandler);
+    widget.socket
+        ?.off('contact:phone-sharing', _groupPhoneSharingSocketHandler);
     widget.socket?.off('message:edited', _messageEditedSocketHandler);
     widget.socket?.off('message:deleted', _messageDeletedSocketHandler);
     widget.socket?.off('group:deleted', _groupDeletedSocketHandler);
@@ -34718,8 +35966,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _recordTimer?.cancel();
     _recordDeadlineTimer?.cancel();
     if (mounted) setState(() => _isRecording = false);
-    try { await _audioRecorder.cancel(); }
-    finally { _voiceSubmissionInProgress = false; }
+    try {
+      await _audioRecorder.cancel();
+    } finally {
+      _voiceSubmissionInProgress = false;
+    }
   }
 
   Future<void> _toggleVoiceRecording() async {
@@ -34779,7 +36030,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       }
       final directory = kIsWeb ? null : await getTemporaryDirectory();
       _voiceFileName = captureFileNames.create(
-        kind: 'audio', extension: extension, creatorId: creatorId,
+        kind: 'audio',
+        extension: extension,
+        creatorId: creatorId,
       );
       final path = directory == null ? '' : '${directory.path}/$_voiceFileName';
       await _audioRecorder.start(
@@ -34788,7 +36041,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               numChannels: 1,
               sampleRate: 16000,
               bitRate: 32000),
-          path: path, api: kApi, token: widget.token, name: _voiceFileName);
+          path: path,
+          api: kApi,
+          token: widget.token,
+          name: _voiceFileName);
       if (!await _audioRecorder.isRecording()) {
         throw Exception('המיקרופון לא התחיל להקליט');
       }
@@ -34799,7 +36055,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       });
       _recordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (!mounted) return;
-        setState(() => _recordSeconds = math.min(timer.tick, _maxVoiceRecordingDuration.inSeconds));
+        setState(() => _recordSeconds =
+            math.min(timer.tick, _maxVoiceRecordingDuration.inSeconds));
       });
       _recordDeadlineTimer = Timer(_maxVoiceRecordingDuration, () {
         if (!mounted || !_isRecording) return;
@@ -34887,7 +36144,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _scrollToBottom();
   }
 
-  void _showMessageOptions(Map<String, dynamic> msg, {BuildContext? anchorContext}) {
+  void _showMessageOptions(Map<String, dynamic> msg,
+      {BuildContext? anchorContext}) {
     final isMe = msg['isMe'] == true;
     final isText = msg['fileUrl'] == null;
     showMessageOptionsMenu(
@@ -34901,7 +36159,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           CompactMessageMenuItem(
             leading: const Icon(Icons.info_outline, color: kPrimary),
             title: Text(isFilterBlockReason(msg['scanReason']?.toString())
-                ? 'פרטי הסינון' : 'פרטי החסימה'),
+                ? 'פרטי הסינון'
+                : 'פרטי החסימה'),
             onTap: () {
               Navigator.pop(context);
               showScanExplanation(context, msg);
@@ -34916,7 +36175,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 me: widget.me);
           },
         ),
-        if (canAddChatImageToListing(msg, currentUserId: widget.me?['id']?.toString()))
+        if (canAddChatImageToListing(msg,
+            currentUserId: widget.me?['id']?.toString()))
           CompactMessageMenuItem(
             leading: const Icon(Icons.post_add_outlined, color: kPrimary),
             title: const Text('הוסף למודעה'),
@@ -34945,16 +36205,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         if (msg['fileType'] == 'image' &&
             msg['fileUrl'] != null &&
             msg['status'] != 'pending_scan' &&
-            (msg['status'] != 'rejected_scan' || msg['forwardAllowed'] == true) &&
+            (msg['status'] != 'rejected_scan' ||
+                msg['forwardAllowed'] == true) &&
             msg['id']?.toString().startsWith('temp_') != true)
           CompactMessageMenuItem(
-            leading:
-                const Icon(Icons.account_circle_outlined, color: kPrimary),
+            leading: const Icon(Icons.account_circle_outlined, color: kPrimary),
             title: const Text('הגדר כתמונת פרופיל'),
             onTap: () {
               Navigator.pop(context);
-              _setMessageImageAsProfile(
-                  context, widget.token, msg, widget.me);
+              _setMessageImageAsProfile(context, widget.token, msg, widget.me);
             },
           ),
         if (!isMe &&
@@ -34988,8 +36247,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ),
         CompactMessageMenuItem(
           leading: const Icon(Icons.delete_outline),
-          title: Text(
-              _isLocalOnlyChatMessage(msg) ? 'הסר את ההודעה' : 'מחק אצלי'),
+          title:
+              Text(_isLocalOnlyChatMessage(msg) ? 'הסר את ההודעה' : 'מחק אצלי'),
           onTap: () {
             Navigator.pop(context);
             _deleteGroupMessage(msg, forEveryone: false);
@@ -34998,8 +36257,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         if (isMe && !_isLocalOnlyChatMessage(msg))
           CompactMessageMenuItem(
             leading: const Icon(Icons.delete_outline, color: Colors.red),
-            title: const Text('מחק אצל כולם',
-                style: TextStyle(color: Colors.red)),
+            title:
+                const Text('מחק אצל כולם', style: TextStyle(color: Colors.red)),
             onTap: () {
               Navigator.pop(context);
               _deleteGroupMessage(msg, forEveryone: true);
@@ -35241,12 +36500,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           'image',
           true,
         );
-        http
-            .post(
-              Uri.parse('$kApi/gifs/${gif['id']}/use'),
-              headers: {'Authorization': 'Bearer ${widget.token}'},
-            )
-            .ignore();
+        http.post(
+          Uri.parse('$kApi/gifs/${gif['id']}/use'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        ).ignore();
         return;
       }
       if (choice.startsWith(_stickerPrefix)) {
@@ -35302,11 +36559,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final editing = _editingMsg;
     try {
       await sendSeparateComposerText(_msgCtrl, text,
-        canRestore: () => mounted && widget.token == token && widget.me?['id'] == account && _groupId == group,
-        isolateContext: () => setState(() { _editingMsg = null; }),
-        restoreContext: () => setState(() { _editingMsg ??= editing; }),
-        send: () => _send());
-    } finally { _sendingSeparateSharedText = false; }
+          canRestore: () =>
+              mounted &&
+              widget.token == token &&
+              widget.me?['id'] == account &&
+              _groupId == group,
+          isolateContext: () => setState(() {
+                _editingMsg = null;
+              }),
+          restoreContext: () => setState(() {
+                _editingMsg ??= editing;
+              }),
+          send: () => _send());
+    } finally {
+      _sendingSeparateSharedText = false;
+    }
   }
 
   Future<void> _showAttachMenu() async {
@@ -35326,7 +36593,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       );
       if (!mounted || action == null) return;
       final allowed = switch (action) {
-        ChatAttachmentAction.photo || ChatAttachmentAction.paste => _groupAllowsImages,
+        ChatAttachmentAction.photo ||
+        ChatAttachmentAction.paste =>
+          _groupAllowsImages,
         ChatAttachmentAction.video => _groupAllowsVideo,
         ChatAttachmentAction.capture => _groupAllowsImages || _groupAllowsVideo,
         ChatAttachmentAction.upload => true,
@@ -35350,18 +36619,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         case ChatAttachmentAction.scan:
           await _scanDocument();
         case ChatAttachmentAction.contact:
-          final contact = await _pickGroupSharedContact(context, widget.token, _members);
+          final contact =
+              await _pickGroupSharedContact(context, widget.token, _members);
           if (contact == null || !mounted) return;
           await _sendSeparateSharedText(_sharedContactText(contact));
         case ChatAttachmentAction.location:
-          final location = await showLocationShareDialog(context, api: kApi, isGroup: true);
-          if (location != null && mounted) await _sendSeparateSharedText(location);
+          final location =
+              await showLocationShareDialog(context, api: kApi, isGroup: true);
+          if (location != null && mounted)
+            await _sendSeparateSharedText(location);
         case ChatAttachmentAction.myContact:
-          final contact = await _confirmMyContactShare(context, widget.token, isGroup: true);
+          final contact = await _confirmMyContactShare(context, widget.token,
+              isGroup: true);
           if (contact == null || !mounted) return;
           await _sendSeparateSharedText(_sharedContactText(contact));
         case ChatAttachmentAction.paste:
-          await pasteChatImage(context, _clipboardImagePasteListener.pasteImage);
+          await pasteChatImage(
+              context, _clipboardImagePasteListener.pasteImage);
       }
     } finally {
       _attachmentMenuOpen = false;
@@ -35376,18 +36650,30 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     XFile? captured;
     try {
       captured = kIsWeb
-          ? await captureWebCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
-              imagesAllowed: _groupAllowsImages, videoAllowed: _groupAllowsVideo)
-          : await captureNativeCamera(context, api: kApi, token: widget.token, creatorId: creatorId,
+          ? await captureWebCamera(context,
+              api: kApi,
+              token: widget.token,
+              creatorId: creatorId,
+              imagesAllowed: _groupAllowsImages,
+              videoAllowed: _groupAllowsVideo)
+          : await captureNativeCamera(context,
+              api: kApi,
+              token: widget.token,
+              creatorId: creatorId,
               maxDuration: _maxVideoDuration,
-              imagesAllowed: _groupAllowsImages, videoAllowed: _groupAllowsVideo);
+              imagesAllowed: _groupAllowsImages,
+              videoAllowed: _groupAllowsVideo);
     } finally {
       _cameraCaptureOpen = false;
     }
-    if (captured == null || !mounted) { await RecordingUpload.discard(captured); return; }
+    if (captured == null || !mounted) {
+      await RecordingUpload.discard(captured);
+      return;
+    }
     final video = captured.mimeType?.startsWith('video/') == true;
     if (video && !await _videoWithinDurationLimit(context, captured)) {
-      await RecordingUpload.discard(captured); return;
+      await RecordingUpload.discard(captured);
+      return;
     }
     if (!mounted) return;
     final name = !kIsWeb && !video
@@ -35446,8 +36732,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     await _uploadGroupFile(pdf, pdf.name, 'document');
   }
 
-  Future<int> _uploadGroupImageBatch(List<XFile> files,
-      _ChatUploadDestination destination, {ChatUploadBatchOrder? batchOrder}) async {
+  Future<int> _uploadGroupImageBatch(
+      List<XFile> files, _ChatUploadDestination destination,
+      {ChatUploadBatchOrder? batchOrder}) async {
     if (files.isEmpty) return 0;
     final completed = ValueNotifier<int>(0);
     final startedAt = DateTime.now();
@@ -35481,8 +36768,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         file: file,
         fileName: file.name,
         token: destination.token,
-        fields: {'groupId': destination.targetId,
-          'clientUploadId': uploadMessageIds[files.indexOf(file)]},
+        fields: {
+          'groupId': destination.targetId,
+          'clientUploadId': uploadMessageIds[files.indexOf(file)]
+        },
       ),
       completed,
       onResult: (index, file, result) async {
@@ -35496,7 +36785,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       },
     );
     completed.dispose();
-    final failed = results.where((r) => r.outcome == _FileUploadOutcome.failed).length;
+    final failed =
+        results.where((r) => r.outcome == _FileUploadOutcome.failed).length;
     if (!mounted) return failed;
     // Reconcile the whole batch with the server. Concurrent scan responses can
     // arrive in a different order, and the server is the source of truth for
@@ -35506,17 +36796,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   ChatUploadNotices get _uploadNotices => ChatUploadNotices(
-    api: kApi, token: widget.token, account: widget.me?['id']?.toString() ?? '',
-    kind: 'group', target: _groupId);
+      api: kApi,
+      token: widget.token,
+      account: widget.me?['id']?.toString() ?? '',
+      kind: 'group',
+      target: _groupId);
 
   Future<void> _loadUploadBatchNotices() async {
     try {
       final notices = await _uploadNotices.load();
       if (!mounted) return;
       setState(() {
-        final merged = mergeChatUploadHistory(_messages,
-            notices.where((m) => conversationMessageAfter(m, _clearedAt)).toList());
-        _messages..clear()..addAll(merged);
+        final merged = mergeChatUploadHistory(
+            _messages,
+            notices
+                .where((m) => conversationMessageAfter(m, _clearedAt))
+                .toList());
+        _messages
+          ..clear()
+          ..addAll(merged);
       });
     } catch (_) {}
   }
@@ -35534,7 +36832,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (mounted) {
       setState(() {
         final merged = mergeChatUploadHistory(_messages, [notice]);
-        _messages..clear()..addAll(merged);
+        _messages
+          ..clear()
+          ..addAll(merged);
       });
       _scrollToBottom();
     }
@@ -35546,23 +36846,29 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _attachmentPickerOpen = true;
     List<PlatformFile>? pickedFiles;
     try {
-      pickedFiles = pastedFiles ?? (kIsWeb ? await pickWebChatAttachments() : (await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: chatAttachmentExtensions,
-        allowMultiple: true,
-        withData: false,
-      ))?.files);
+      pickedFiles = pastedFiles ??
+          (kIsWeb
+              ? await pickWebChatAttachments()
+              : (await FilePicker.platform.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: chatAttachmentExtensions,
+                  allowMultiple: true,
+                  withData: false,
+                ))
+                  ?.files);
       if (!mounted || pickedFiles == null || pickedFiles.isEmpty) return;
       if (pickedFiles.length > maxChatAttachments) {
         showChatUploadLimitExceeded(context, pickedFiles.length);
         return;
       }
       final files = pickedFiles;
-      if (!await confirmChatUploadBatch(context, files.length) || !mounted) return;
+      if (!await confirmChatUploadBatch(context, files.length) || !mounted)
+        return;
       if (files.every((file) => chatAttachmentType(file.name) == 'image')) {
         if (!await _prepareGroupUpload('image')) return;
         if (!mounted) return;
-        final images = await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
+        final images =
+            await _deduplicatePickedImages(files.map((f) => f.xFile).toList());
         if (!mounted) return;
         final destination = _uploadDestination;
         final notices = _uploadNotices;
@@ -35571,8 +36877,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         await runChatUploadBatch(
           count: images.length,
           failedCount: () => failed,
-          onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
-          upload: () async { failed = await _uploadGroupImageBatch(images, destination, batchOrder: batchOrder); },
+          onNotice: (text) => _showUploadBatchNotice(text,
+              store: notices, batchOrder: batchOrder),
+          upload: () async {
+            failed = await _uploadGroupImageBatch(images, destination,
+                batchOrder: batchOrder);
+          },
         );
         return;
       }
@@ -35581,11 +36891,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final prepared = <(PlatformFile, String)>[];
       final permissions = <String, bool>{};
       for (final file in files) {
-        if (await _handleSharedDataAttachment(context, widget.token, file, _sendSeparateSharedText, isGroup: true)) continue;
+        if (await _handleSharedDataAttachment(
+            context, widget.token, file, _sendSeparateSharedText,
+            isGroup: true)) continue;
         if (!mounted) return;
         final type = chatAttachmentType(file.name,
             bytes: file.name.toLowerCase().endsWith('.webm')
-                ? await _attachmentHeader(file) : null);
+                ? await _attachmentHeader(file)
+                : null);
         if (!mounted) return;
         if (type == null) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -35593,7 +36906,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ));
           continue;
         }
-        if (type == 'video' && !await _videoWithinDurationLimit(context, file.xFile)) continue;
+        if (type == 'video' &&
+            !await _videoWithinDurationLimit(context, file.xFile)) continue;
         if (!mounted) return;
         final allowed = permissions[type] ??= await _prepareGroupUpload(type);
         if (!allowed) continue;
@@ -35607,12 +36921,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       await runChatUploadBatch(
         count: files.length,
         failedCount: () => failed,
-        onNotice: (text) => _showUploadBatchNotice(text, store: notices, batchOrder: batchOrder),
+        onNotice: (text) => _showUploadBatchNotice(text,
+            store: notices, batchOrder: batchOrder),
         upload: () async {
           for (final (file, type) in prepared) {
             await _uploadGroupFile(file, file.name, type,
-                preparedDestination: destination, batchOrder: batchOrder,
-                onComplete: (hasFailed) { if (hasFailed) failed++; });
+                preparedDestination: destination,
+                batchOrder: batchOrder, onComplete: (hasFailed) {
+              if (hasFailed) failed++;
+            });
           }
         },
       );
@@ -35634,12 +36951,20 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final creatorId = _captureCreatorId(context, widget.me);
     if (creatorId == null) return;
     final video = kIsWeb
-        ? await captureWebVideo(context, api: kApi, token: widget.token, creatorId: creatorId)
-        : await captureNativeVideo(context, api: kApi, token: widget.token,
-            maxDuration: _maxVideoDuration, creatorId: creatorId);
-    if (video == null || !mounted) { await RecordingUpload.discard(video); return; }
+        ? await captureWebVideo(context,
+            api: kApi, token: widget.token, creatorId: creatorId)
+        : await captureNativeVideo(context,
+            api: kApi,
+            token: widget.token,
+            maxDuration: _maxVideoDuration,
+            creatorId: creatorId);
+    if (video == null || !mounted) {
+      await RecordingUpload.discard(video);
+      return;
+    }
     if (!await _videoWithinDurationLimit(context, video)) {
-      await RecordingUpload.discard(video); return;
+      await RecordingUpload.discard(video);
+      return;
     }
     if (!mounted) return;
     await _uploadGroupFile(video, video.name, 'video',
@@ -35694,8 +37019,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       });
       _scrollToBottom();
     }
-    final navigator =
-        showProgress && mounted ? Navigator.of(context, rootNavigator: true) : null;
+    final navigator = showProgress && mounted
+        ? Navigator.of(context, rootNavigator: true)
+        : null;
     final dialogFuture = showProgress && mounted
         ? showDialog<void>(
             context: context,
@@ -35721,8 +37047,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       file: file,
       fileName: fileName,
       token: destination.token,
-      fields: {'groupId': destination.targetId, ...extraFields,
-        'clientUploadId': uploadMessageId},
+      fields: {
+        'groupId': destination.targetId,
+        ...extraFields,
+        'clientUploadId': uploadMessageId
+      },
     );
     if (navigator != null && navigator.mounted && navigator.canPop()) {
       navigator.pop();
@@ -35732,8 +37061,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       setState(() =>
           _messages.removeWhere((message) => message['id'] == uploadMessageId));
     }
-    await _applyGroupUploadResult(result, fileName, fileType,
-        (fileType != 'image' && fileType != 'video') || isClipboardPaste || isLibrarySticker,
+    await _applyGroupUploadResult(
+        result,
+        fileName,
+        fileType,
+        (fileType != 'image' && fileType != 'video') ||
+            isClipboardPaste ||
+            isLibrarySticker,
         destination: destination);
     batchOrder?.recordResult(result.data);
     onComplete?.call(result.outcome == _FileUploadOutcome.failed);
@@ -35743,7 +37077,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       String fileName, String fileType, bool showNotice,
       {_ChatUploadDestination? destination}) async {
     final uploadDestination = destination ?? _uploadDestination;
-    if (!mounted && result.outcome != _FileUploadOutcome.approved &&
+    if (!mounted &&
+        result.outcome != _FileUploadOutcome.approved &&
         result.outcome != _FileUploadOutcome.scanBot) {
       return;
     }
@@ -35810,13 +37145,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         });
         _scrollToBottom();
         if (showNotice) {
-          _showGroupBlockedDialog(fileType == 'video' ? blockedVideoMessage
+          _showGroupBlockedDialog(fileType == 'video'
+              ? blockedVideoMessage
               : data['reason'] as String? ?? 'התמונה לא נשלחה');
         }
         return;
       case _FileUploadOutcome.pending:
         final upload = <String, dynamic>{
-          'clientUploadId': data['clientUploadId'], 'fileUrl': fileUrl,
+          'clientUploadId': data['clientUploadId'],
+          'fileUrl': fileUrl,
         };
         if (hasResolvedChatUpload(_messages, upload)) return;
         setState(() {
@@ -35857,7 +37194,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         try {
           final response = await http
               .post(
-                Uri.parse('$kApi/groups/${uploadDestination.targetId}/messages'),
+                Uri.parse(
+                    '$kApi/groups/${uploadDestination.targetId}/messages'),
                 headers: {
                   'Authorization': 'Bearer ${uploadDestination.token}',
                   'Content-Type': 'application/json',
@@ -35892,7 +37230,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           }
           return;
         }
-        if (sendData['id'] != null) data['_sentMessageId'] = sendData['id'].toString();
+        if (sendData['id'] != null)
+          data['_sentMessageId'] = sendData['id'].toString();
         if (!mounted) return;
         final messageId =
             sendData['id'] ?? _newUploadMessageId('temp_group_file_');
@@ -35934,11 +37273,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   void _showGroupBlockedDialog(String reason) {
     if (!mounted) return;
     if (reason == blockedVideoMessage) {
-      showDialog<void>(context: context, builder: (context) => AlertDialog(
-        content: const Text(blockedVideoMessage, textAlign: TextAlign.right),
-        actions: [TextButton(onPressed: () => Navigator.pop(context),
-            child: const Text('סגירה'))],
-      ));
+      showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+                content:
+                    const Text(blockedVideoMessage, textAlign: TextAlign.right),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('סגירה'))
+                ],
+              ));
       return;
     }
     showDialog(
@@ -36173,8 +37518,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           ..files.add(http.MultipartFile.fromBytes('file', bytes,
               filename: picked.name,
               contentType: _mimeFromFileName(picked.name)));
-        final streamed =
-            await _sendMediaUpload(request);
+        final streamed = await _sendMediaUpload(request);
         final body = await streamed.stream.bytesToString();
         if (!mounted) return;
         if (streamed.statusCode != 200) {
@@ -36493,18 +37837,26 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> _changeGroupPhoneSharing() async {
     await _loadMembers();
     if (!mounted) return;
-    final share = await _chooseGroupPhoneSharing(context, initial: widget.group['share_phone'] == true);
+    final share = await _chooseGroupPhoneSharing(context,
+        initial: widget.group['share_phone'] == true);
     if (share == null || !mounted) return;
     try {
-      final response = await http.put(Uri.parse('$kApi/groups/$_groupId/phone-sharing'),
-        headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-        body: jsonEncode({'share_phone': share})).timeout(const Duration(seconds: 12));
+      final response = await http
+          .put(Uri.parse('$kApi/groups/$_groupId/phone-sharing'),
+              headers: {
+                'Authorization': 'Bearer ${widget.token}',
+                'Content-Type': 'application/json'
+              },
+              body: jsonEncode({'share_phone': share}))
+          .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) throw StateError('group sharing failed');
       if (!mounted) return;
       setState(() => widget.group['share_phone'] = share);
       await _loadMembers();
     } catch (_) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('עדכון שיתוף המספר נכשל. נסה שוב.')));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('עדכון שיתוף המספר נכשל. נסה שוב.')));
     }
   }
 
@@ -36768,7 +38120,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             width: 760,
             child: SingleChildScrollView(
               child: _InvitationFilterComparisonTable(
-                      token: widget.token,
+                token: widget.token,
                 groupName: widget.group['name']?.toString(),
                 groupFilter: groupDraft,
                 personalFilter: personalDraft,
@@ -36793,24 +38145,30 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                       setDialogState(() => saving = true);
                       try {
                         if (groupDirty) {
-                          final response = await saveReceivingFilter(context: dialogContext,
-                            api: kApi, token: widget.token,
-                            path: '/groups/$_groupId/filter-settings',
-                            body: {'filter': groupDraft});
+                          final response = await saveReceivingFilter(
+                              context: dialogContext,
+                              api: kApi,
+                              token: widget.token,
+                              path: '/groups/$_groupId/filter-settings',
+                              body: {'filter': groupDraft});
                           if (response == null) {
-                            if (dialogContext.mounted) setDialogState(() => saving = false);
+                            if (dialogContext.mounted)
+                              setDialogState(() => saving = false);
                             return;
                           }
                           if (response.statusCode != 200) throw Exception();
                         }
                         if (personalDirty) {
                           if (!dialogContext.mounted) return;
-                          final response = await saveReceivingFilter(context: dialogContext,
-                            api: kApi, token: widget.token,
-                            path: '/groups/$_groupId/personal-filter',
-                            body: {'filter': personalDraft});
+                          final response = await saveReceivingFilter(
+                              context: dialogContext,
+                              api: kApi,
+                              token: widget.token,
+                              path: '/groups/$_groupId/personal-filter',
+                              body: {'filter': personalDraft});
                           if (response == null) {
-                            if (dialogContext.mounted) setDialogState(() => saving = false);
+                            if (dialogContext.mounted)
+                              setDialogState(() => saving = false);
                             return;
                           }
                           if (response.statusCode != 200) throw Exception();
@@ -36906,8 +38264,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Widget _acceptedFilterMessage() {
     if (_outgoingFilter == null) {
-      return const Padding(padding: EdgeInsets.all(12),
-        child: Text('טוען את הסינון הנוכחי…'));
+      return const Padding(
+          padding: EdgeInsets.all(12), child: Text('טוען את הסינון הנוכחי…'));
     }
     final filter = _outgoingFilter!;
     return Align(
@@ -36952,7 +38310,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 ),
                 const SizedBox(height: 10),
                 _InvitationFilterComparisonTable(
-                      token: widget.token,
+                  token: widget.token,
                   groupName: widget.group['name']?.toString(),
                   groupFilter: _groupReceivingFilter,
                   personalFilter: filter,
@@ -37012,1557 +38370,1446 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         widget.group['description']?.toString().trim() ?? '';
     final chat = Scaffold(
       backgroundColor: kChatBg,
-      appBar: _expressionPanel.isOpen &&
+      appBar: (_expressionPanel.isOpen ||
+                  MediaQuery.sizeOf(context).height -
+                          MediaQuery.viewInsetsOf(context).bottom <
+                      180) &&
               MediaQuery.viewInsetsOf(context).bottom > 0 &&
-              MediaQuery.sizeOf(context).height - MediaQuery.viewInsetsOf(context).bottom < 250
+              MediaQuery.sizeOf(context).height -
+                      MediaQuery.viewInsetsOf(context).bottom <
+                  250
           ? null
           : AppBar(
-        backgroundColor: kPrimary,
-        leading: _selectedMessageKeys.isNotEmpty
-            ? IconButton(
-                tooltip: 'ביטול הבחירה',
-                onPressed: () => setState(_selectedMessageKeys.clear),
-                icon: const Icon(Icons.close),
-              )
-            : BackButton(
-                color: Colors.white,
-                onPressed: widget.onClose ?? () => Navigator.pop(context)),
-        title: _selectedMessageKeys.isNotEmpty
-            ? Text('${_selectedMessageKeys.length} פריטים נבחרו')
-            : Row(
-                children: [
-                  Semantics(
-                    button: true,
-                    label: 'פתיחת פרטי הקבוצה',
-                    child: GestureDetector(
-                      onTap: () => _handleGroupMenuAction('info'),
-                      child: Tooltip(
-                        message: 'פרטי הקבוצה',
-                        child: UserAvatar(
-                          radius: 19,
-                          picUrl: widget.group['profile_pic_url'] as String?,
-                          name: widget.group['name'] as String? ?? 'קבוצה',
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+              backgroundColor: kPrimary,
+              leading: _selectedMessageKeys.isNotEmpty
+                  ? IconButton(
+                      tooltip: 'ביטול הבחירה',
+                      onPressed: () => setState(_selectedMessageKeys.clear),
+                      icon: const Icon(Icons.close),
+                    )
+                  : BackButton(
+                      color: Colors.white,
+                      onPressed:
+                          widget.onClose ?? () => Navigator.pop(context)),
+              title: _selectedMessageKeys.isNotEmpty
+                  ? Text('${_selectedMessageKeys.length} פריטים נבחרו')
+                  : Row(
                       children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                widget.group['name'] as String,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontSize: 16, fontWeight: FontWeight.bold),
+                        Semantics(
+                          button: true,
+                          label: 'פתיחת פרטי הקבוצה',
+                          child: GestureDetector(
+                            onTap: () => _handleGroupMenuAction('info'),
+                            child: Tooltip(
+                              message: 'פרטי הקבוצה',
+                              child: UserAvatar(
+                                radius: 19,
+                                picUrl:
+                                    widget.group['profile_pic_url'] as String?,
+                                name:
+                                    widget.group['name'] as String? ?? 'קבוצה',
                               ),
                             ),
-                          ],
+                          ),
                         ),
-                        Row(mainAxisSize: MainAxisSize.min, children: [
-                          Text(
-                              _isTyping
-                                  ? '$_typingName מקליד...'
-                                  : '${widget.group['member_count'] ?? ''} חברים',
-                              style: const TextStyle(
-                                  fontSize: 12, color: Colors.white70)),
-                          const SizedBox(width: 5),
-                          _groupFilterStatusButton(),
-                        ]),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      widget.group['name'] as String,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                                Text(
+                                    _isTyping
+                                        ? '$_typingName מקליד...'
+                                        : '${widget.group['member_count'] ?? ''} חברים',
+                                    style: const TextStyle(
+                                        fontSize: 12, color: Colors.white70)),
+                                const SizedBox(width: 5),
+                                _groupFilterStatusButton(),
+                              ]),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
+              actions: [
+                if (_selectedMessageKeys.isNotEmpty)
+                  IconButton(
+                    tooltip: 'העבר את הפריטים שנבחרו',
+                    onPressed: _forwardSelectedMessages,
+                    icon: const Icon(Icons.forward),
                   ),
-                ],
-              ),
-        actions: [
-          if (_selectedMessageKeys.isNotEmpty)
-            IconButton(
-              tooltip: 'העבר את הפריטים שנבחרו',
-              onPressed: _forwardSelectedMessages,
-              icon: const Icon(Icons.forward),
-            ),
-          if (_selectedMessageKeys.isEmpty)
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert),
-              tooltip: 'אפשרויות קבוצה',
-              position: PopupMenuPosition.under,
-              constraints: const BoxConstraints(minWidth: 210, maxWidth: 250),
-              onSelected: _handleGroupMenuAction,
-              itemBuilder: (_) => [
-                const PopupMenuItem(
-                    value: 'info',
-                    height: 40,
-                    child: _CompactMenuItem(Icons.info_outline, 'פרטי הקבוצה')),
-                const PopupMenuItem(
-                    value: 'search',
-                    height: 40,
-                    child: _CompactMenuItem(Icons.search, 'חיפוש בהודעות')),
-                const PopupMenuItem(
-                    value: 'education',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.fact_check_outlined, 'אישורים, חתימות וסקרים')),
-                const PopupMenuItem(
-                    value: 'mute',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.notifications_off_outlined, 'השתקת התראות')),
-                if (_isAdmin)
-                  const PopupMenuItem(
-                      value: 'photo',
-                      height: 40,
-                      child: _CompactMenuItem(
-                          Icons.add_a_photo_outlined, 'תמונת הקבוצה')),
-                const PopupMenuItem(value: 'group_phone', height: 40,
-                  child: _CompactMenuItem(Icons.phone_outlined, 'שיתוף המספר שלי')),
-                if (_isAdmin)
-                  const PopupMenuItem(
-                      value: 'add',
-                      height: 40,
-                      child: _CompactMenuItem(
-                          Icons.person_add_outlined, 'הוסף חברים')),
-                if (_isAdmin)
-                  const PopupMenuItem(
-                      value: 'members',
-                      height: 40,
-                      child: _CompactMenuItem(
-                          Icons.groups_outlined, 'ניהול חברים')),
-                if (_isAdmin)
-                  const PopupMenuItem(
-                      value: 'filter',
-                      height: 40,
-                      child: _CompactMenuItem(
-                          Icons.shield_outlined, 'הגדרות סינון')),
-                const PopupMenuItem(
-                    value: 'clear_conversation',
-                    height: 40,
-                    child: _CompactMenuItem(
-                        Icons.cleaning_services_outlined, 'ניקוי שיחה')),
-                const PopupMenuItem(
-                    value: 'delete_conversation',
-                    height: 40,
-                    child: _CompactMenuItem(Icons.delete_outline, 'מחיקת שיחה',
-                        color: Colors.red)),
-                const PopupMenuDivider(height: 8),
-                if (!_isAdmin)
-                  const PopupMenuItem(
-                      value: 'report',
-                      height: 40,
-                      child: _CompactMenuItem(
-                          Icons.flag_outlined, 'דיווח על הקבוצה',
-                          color: Colors.orange)),
-                if (_isAdmin)
-                  const PopupMenuItem(
-                      value: 'delete',
-                      height: 40,
-                      child: _CompactMenuItem(
-                          Icons.delete_outline, 'מחיקת הקבוצה',
-                          color: Colors.red)),
-                const PopupMenuItem(
-                    value: 'leave',
-                    height: 40,
-                    child: _CompactMenuItem(Icons.exit_to_app, 'יציאה מהקבוצה',
-                        color: Colors.red)),
+                if (_selectedMessageKeys.isEmpty)
+                  PopupMenuButton<String>(
+                    icon: const Icon(Icons.more_vert),
+                    tooltip: 'אפשרויות קבוצה',
+                    position: PopupMenuPosition.under,
+                    constraints:
+                        const BoxConstraints(minWidth: 210, maxWidth: 250),
+                    onSelected: _handleGroupMenuAction,
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                          value: 'info',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.info_outline, 'פרטי הקבוצה')),
+                      const PopupMenuItem(
+                          value: 'search',
+                          height: 40,
+                          child:
+                              _CompactMenuItem(Icons.search, 'חיפוש בהודעות')),
+                      const PopupMenuItem(
+                          value: 'education',
+                          height: 40,
+                          child: _CompactMenuItem(Icons.fact_check_outlined,
+                              'אישורים, חתימות וסקרים')),
+                      const PopupMenuItem(
+                          value: 'mute',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.notifications_off_outlined,
+                              'השתקת התראות')),
+                      if (_isAdmin)
+                        const PopupMenuItem(
+                            value: 'photo',
+                            height: 40,
+                            child: _CompactMenuItem(
+                                Icons.add_a_photo_outlined, 'תמונת הקבוצה')),
+                      const PopupMenuItem(
+                          value: 'group_phone',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.phone_outlined, 'שיתוף המספר שלי')),
+                      if (_isAdmin)
+                        const PopupMenuItem(
+                            value: 'add',
+                            height: 40,
+                            child: _CompactMenuItem(
+                                Icons.person_add_outlined, 'הוסף חברים')),
+                      if (_isAdmin)
+                        const PopupMenuItem(
+                            value: 'members',
+                            height: 40,
+                            child: _CompactMenuItem(
+                                Icons.groups_outlined, 'ניהול חברים')),
+                      if (_isAdmin)
+                        const PopupMenuItem(
+                            value: 'filter',
+                            height: 40,
+                            child: _CompactMenuItem(
+                                Icons.shield_outlined, 'הגדרות סינון')),
+                      const PopupMenuItem(
+                          value: 'clear_conversation',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.cleaning_services_outlined, 'ניקוי שיחה')),
+                      const PopupMenuItem(
+                          value: 'delete_conversation',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.delete_outline, 'מחיקת שיחה',
+                              color: Colors.red)),
+                      const PopupMenuDivider(height: 8),
+                      if (!_isAdmin)
+                        const PopupMenuItem(
+                            value: 'report',
+                            height: 40,
+                            child: _CompactMenuItem(
+                                Icons.flag_outlined, 'דיווח על הקבוצה',
+                                color: Colors.orange)),
+                      if (_isAdmin)
+                        const PopupMenuItem(
+                            value: 'delete',
+                            height: 40,
+                            child: _CompactMenuItem(
+                                Icons.delete_outline, 'מחיקת הקבוצה',
+                                color: Colors.red)),
+                      const PopupMenuItem(
+                          value: 'leave',
+                          height: 40,
+                          child: _CompactMenuItem(
+                              Icons.exit_to_app, 'יציאה מהקבוצה',
+                              color: Colors.red)),
+                    ],
+                  ),
               ],
             ),
-        ],
-      ),
-      body: LayoutBuilder(builder: (context, constraints) => Column(
-        children: [
-          // ── Pending banner ──────────────────────────────────────────
-          if (_myStatus == 'pending')
-            Expanded(
-              child: Scrollbar(
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  primary: false,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  child: Align(
-                    alignment: Alignment.topRight,
-                    child: FractionallySizedBox(
-                      widthFactor:
-                          MediaQuery.sizeOf(context).width >= 900 ? 2 / 3 : 1,
-                      child: Container(
-                        width: double.infinity,
-                        color: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            LayoutBuilder(
-                              builder: (context, constraints) {
-                                final invitationDetails = Column(
+      body: LayoutBuilder(
+          builder: (context, constraints) => Column(
+                children: [
+                  // ── Pending banner ──────────────────────────────────────────
+                  if (_myStatus == 'pending')
+                    Expanded(
+                      child: Scrollbar(
+                        thumbVisibility: true,
+                        child: SingleChildScrollView(
+                          primary: false,
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          child: Align(
+                            alignment: Alignment.topRight,
+                            child: FractionallySizedBox(
+                              widthFactor:
+                                  MediaQuery.sizeOf(context).width >= 900
+                                      ? 2 / 3
+                                      : 1,
+                              child: Container(
+                                width: double.infinity,
+                                color: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 12),
+                                child: Column(
                                   crossAxisAlignment:
                                       CrossAxisAlignment.stretch,
                                   children: [
-                                    Text(
-                                      inviterName.isEmpty
-                                          ? 'הוזמנת להצטרף לקבוצה זו'
-                                          : 'הוזמנת על ידי $inviterName להצטרף לקבוצה זו',
-                                      style: const TextStyle(
-                                        color: kPrimary,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
-                                      ),
-                                      textDirection: TextDirection.rtl,
-                                      textAlign: TextAlign.right,
-                                    ),
-                                    if (groupDescription.isNotEmpty) ...[
-                                      const SizedBox(height: 5),
-                                      Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          const Icon(Icons.info_outline,
-                                              size: 17, color: kPrimary),
-                                          const SizedBox(width: 6),
-                                          Expanded(
-                                            child: Text(
-                                              groupDescription,
+                                    LayoutBuilder(
+                                      builder: (context, constraints) {
+                                        final invitationDetails = Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.stretch,
+                                          children: [
+                                            Text(
+                                              inviterName.isEmpty
+                                                  ? 'הוזמנת להצטרף לקבוצה זו'
+                                                  : 'הוזמנת על ידי $inviterName להצטרף לקבוצה זו',
+                                              style: const TextStyle(
+                                                color: kPrimary,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14,
+                                              ),
                                               textDirection: TextDirection.rtl,
                                               textAlign: TextAlign.right,
-                                              style: const TextStyle(
-                                                fontSize: 12,
-                                                color: kTextDark,
-                                                height: 1.4,
-                                              ),
                                             ),
+                                            if (groupDescription
+                                                .isNotEmpty) ...[
+                                              const SizedBox(height: 5),
+                                              Row(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  const Icon(Icons.info_outline,
+                                                      size: 17,
+                                                      color: kPrimary),
+                                                  const SizedBox(width: 6),
+                                                  Expanded(
+                                                    child: Text(
+                                                      groupDescription,
+                                                      textDirection:
+                                                          TextDirection.rtl,
+                                                      textAlign:
+                                                          TextAlign.right,
+                                                      style: const TextStyle(
+                                                        fontSize: 12,
+                                                        color: kTextDark,
+                                                        height: 1.4,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                            const SizedBox(height: 8),
+                                            Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.start,
+                                              children: [
+                                                ElevatedButton(
+                                                  onPressed: _processingInvite
+                                                      ? null
+                                                      : () => _acceptPending(
+                                                          useCurrentFilter:
+                                                              true),
+                                                  style:
+                                                      ElevatedButton.styleFrom(
+                                                          backgroundColor:
+                                                              kPrimary),
+                                                  child: _processingInvite
+                                                      ? const SizedBox(
+                                                          width: 20,
+                                                          height: 20,
+                                                          child:
+                                                              CircularProgressIndicator(
+                                                                  strokeWidth:
+                                                                      2,
+                                                                  color: Colors
+                                                                      .white))
+                                                      : const Text('אשר והצטרף',
+                                                          style: TextStyle(
+                                                              color: Colors
+                                                                  .white)),
+                                                ),
+                                                const SizedBox(width: 8),
+                                                TextButton(
+                                                  onPressed: _declinePending,
+                                                  style: TextButton.styleFrom(
+                                                      foregroundColor:
+                                                          Colors.red),
+                                                  child: const Text('דחה'),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        );
+                                        const guide = Padding(
+                                          padding:
+                                              EdgeInsets.symmetric(vertical: 2),
+                                          child: _AvielEmptyChat(
+                                            asset:
+                                                'assets/guide/safe-information-ai.png',
+                                            text:
+                                                'אין הודעות עדיין — האירו את הדרך',
                                           ),
-                                        ],
-                                      ),
-                                    ],
-                                    const SizedBox(height: 8),
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.start,
-                                      children: [
-                                        ElevatedButton(
-                                          onPressed: _processingInvite
-                                              ? null
-                                              : () => _acceptPending(
-                                                  useCurrentFilter: true),
-                                          style: ElevatedButton.styleFrom(
-                                              backgroundColor: kPrimary),
-                                          child: _processingInvite
-                                              ? const SizedBox(
-                                                  width: 20,
-                                                  height: 20,
-                                                  child:
-                                                      CircularProgressIndicator(
-                                                          strokeWidth: 2,
-                                                          color: Colors.white))
-                                              : const Text('אשר והצטרף',
-                                                  style: TextStyle(
-                                                      color: Colors.white)),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        TextButton(
-                                          onPressed: _declinePending,
-                                          style: TextButton.styleFrom(
-                                              foregroundColor: Colors.red),
-                                          child: const Text('דחה'),
-                                        ),
-                                      ],
+                                        );
+                                        if (constraints.maxWidth < 600) {
+                                          return Column(children: [
+                                            invitationDetails,
+                                            const SizedBox(height: 8),
+                                            guide,
+                                          ]);
+                                        }
+                                        return Row(
+                                          textDirection: TextDirection.rtl,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.center,
+                                          children: [
+                                            Expanded(
+                                                flex: 2,
+                                                child: invitationDetails),
+                                            const SizedBox(width: 16),
+                                            const Expanded(child: guide),
+                                          ],
+                                        );
+                                      },
                                     ),
-                                  ],
-                                );
-                                const guide = Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 2),
-                                  child: _AvielEmptyChat(
-                                    asset:
-                                        'assets/guide/safe-information-ai.png',
-                                    text: 'אין הודעות עדיין — האירו את הדרך',
-                                  ),
-                                );
-                                if (constraints.maxWidth < 600) {
-                                  return Column(children: [
-                                    invitationDetails,
                                     const SizedBox(height: 8),
-                                    guide,
-                                  ]);
-                                }
-                                return Row(
-                                  textDirection: TextDirection.rtl,
-                                  crossAxisAlignment: CrossAxisAlignment.center,
-                                  children: [
-                                    Expanded(flex: 2, child: invitationDetails),
-                                    const SizedBox(width: 16),
-                                    const Expanded(child: guide),
+                                    if (_invitationFilterError != null)
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(12),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                          border: Border.all(
+                                              color: Colors.red.shade200),
+                                        ),
+                                        child: Column(children: [
+                                          Text(
+                                            _invitationFilterError!,
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(
+                                                color: Colors.red.shade700),
+                                          ),
+                                          const SizedBox(height: 6),
+                                          TextButton.icon(
+                                            onPressed: _loadInvitationFilters,
+                                            icon: const Icon(Icons.refresh),
+                                            label: const Text('נסה שוב'),
+                                          ),
+                                        ]),
+                                      )
+                                    else
+                                      _InvitationFilterComparisonTable(
+                                        token: widget.token,
+                                        groupName:
+                                            widget.group['name']?.toString(),
+                                        groupFilter: _groupReceivingFilter,
+                                        personalFilter:
+                                            _invitationPersonalFilter,
+                                        onPersonalFilterChanged: (filter) =>
+                                            setState(() =>
+                                                _invitationPersonalFilter =
+                                                    filter),
+                                      ),
                                   ],
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 8),
-                            if (_invitationFilterError != null)
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(10),
-                                  border:
-                                      Border.all(color: Colors.red.shade200),
                                 ),
-                                child: Column(children: [
-                                  Text(
-                                    _invitationFilterError!,
-                                    textAlign: TextAlign.center,
-                                    style:
-                                        TextStyle(color: Colors.red.shade700),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  TextButton.icon(
-                                    onPressed: _loadInvitationFilters,
-                                    icon: const Icon(Icons.refresh),
-                                    label: const Text('נסה שוב'),
-                                  ),
-                                ]),
-                              )
-                            else
-                              _InvitationFilterComparisonTable(
-                      token: widget.token,
-                                groupName: widget.group['name']?.toString(),
-                                groupFilter: _groupReceivingFilter,
-                                personalFilter: _invitationPersonalFilter,
-                                onPersonalFilterChanged: (filter) => setState(
-                                    () => _invitationPersonalFilter = filter),
                               ),
-                          ],
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ),
-              ),
-            ),
-          if (_myStatus != 'pending')
-            Expanded(
-              child: _loading
-                  ? const Center(
-                      child: CircularProgressIndicator(color: kPrimary))
-                  : _messages.isEmpty &&
-                          !(_myStatus == 'member' &&
-                              _acceptedFilterNotice != null)
-                      ? const _AvielEmptyChat(
-                          asset: 'assets/guide/safe-information-ai.png',
-                          text: 'אין הודעות עדיין — האירו את הדרך')
-                      : ChatHistoryList(
-                          controller: _scrollCtrl,
-                          anchorIndex: _scrollCtrl.anchorIndex(_messages) +
-                              (_myStatus == 'member' && _acceptedFilterNotice != null ? 1 : 0),
-                          padding: const EdgeInsets.all(10),
-                          itemCount: _messages.length +
-                              (_myStatus == 'member' &&
-                                      _acceptedFilterNotice != null
-                                  ? 1
-                                  : 0),
-                          itemBuilder: (_, i) {
-                            final hasFilterNotice = _myStatus == 'member' &&
-                                _acceptedFilterNotice != null;
-                            if (hasFilterNotice && i == 0) {
-                              return _acceptedFilterMessage();
-                            }
-                            final messageIndex = i - (hasFilterNotice ? 1 : 0);
-                            final msg = _messages[messageIndex];
-                          if (msg['isUploadBatchNotice'] == true) {
-                            return ChatUploadBatchNotice(
-                                key: ValueKey(msg['id']), text: msg['text'] as String,
-                                summary: chatUploadBatchSummary(msg, _messages));
-                          }
-                            final isMe = msg['isMe'] == true;
-                            final sender = _voiceMessageSender(msg, isMe);
-                            final senderDisplayName =
-                                sender?['name']?.toString().trim().isNotEmpty ==
-                                        true
-                                    ? sender!['name'].toString().trim()
-                                    : (msg['senderName']
+                  if (_myStatus != 'pending')
+                    Expanded(
+                      child: _loading
+                          ? const Center(
+                              child: CircularProgressIndicator(color: kPrimary))
+                          : _messages.isEmpty &&
+                                  !(_myStatus == 'member' &&
+                                      _acceptedFilterNotice != null)
+                              ? const _AvielEmptyChat(
+                                  asset: 'assets/guide/safe-information-ai.png',
+                                  text: 'אין הודעות עדיין — האירו את הדרך')
+                              : ChatHistoryList(
+                                  controller: _scrollCtrl,
+                                  anchorIndex:
+                                      _scrollCtrl.anchorIndex(_messages) +
+                                          (_myStatus == 'member' &&
+                                                  _acceptedFilterNotice != null
+                                              ? 1
+                                              : 0),
+                                  padding: const EdgeInsets.all(10),
+                                  itemCount: _messages.length +
+                                      (_myStatus == 'member' &&
+                                              _acceptedFilterNotice != null
+                                          ? 1
+                                          : 0),
+                                  itemBuilder: (_, i) {
+                                    final hasFilterNotice =
+                                        _myStatus == 'member' &&
+                                            _acceptedFilterNotice != null;
+                                    if (hasFilterNotice && i == 0) {
+                                      return _acceptedFilterMessage();
+                                    }
+                                    final messageIndex =
+                                        i - (hasFilterNotice ? 1 : 0);
+                                    final msg = _messages[messageIndex];
+                                    if (msg['isUploadBatchNotice'] == true) {
+                                      return ChatUploadBatchNotice(
+                                          key: ValueKey(msg['id']),
+                                          text: msg['text'] as String,
+                                          summary: chatUploadBatchSummary(
+                                              msg, _messages));
+                                    }
+                                    final isMe = msg['isMe'] == true;
+                                    final sender =
+                                        _voiceMessageSender(msg, isMe);
+                                    final senderDisplayName = sender?['name']
                                                 ?.toString()
                                                 .trim()
                                                 .isNotEmpty ==
                                             true
-                                        ? msg['senderName'].toString().trim()
-                                        : isMe
-                                            ? 'אני'
-                                            : 'חבר קבוצה');
-                            final senderAvatarUrl =
-                                sender?['profile_pic_url']?.toString();
-                            Widget withSender(Widget child) => Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                _ChatSenderLabel(
-                                  key: ValueKey('message-sender-${_selectionKey(msg)}'),
-                                  name: senderDisplayName,
-                                  avatarUrl: senderAvatarUrl,
-                                ),
-                                child,
-                              ],
-                            );
+                                        ? sender!['name'].toString().trim()
+                                        : (msg['senderName']
+                                                    ?.toString()
+                                                    .trim()
+                                                    .isNotEmpty ==
+                                                true
+                                            ? msg['senderName']
+                                                .toString()
+                                                .trim()
+                                            : isMe
+                                                ? 'אני'
+                                                : 'חבר קבוצה');
+                                    final senderAvatarUrl =
+                                        sender?['profile_pic_url']?.toString();
+                                    Widget withSender(Widget child) => Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.end,
+                                          children: [
+                                            _ChatSenderLabel(
+                                              key: ValueKey(
+                                                  'message-sender-${_selectionKey(msg)}'),
+                                              name: senderDisplayName,
+                                              avatarUrl: senderAvatarUrl,
+                                            ),
+                                            child,
+                                          ],
+                                        );
 
-                            if (msg['fileDeleted'] == true) {
-                              return withSender(Padding(
-                                key: ValueKey('deleted-media-${msg['id']}'),
-                                padding: const EdgeInsets.all(12),
-                                child: const Text('הקובץ נמחק',
-                                    style: TextStyle(color: kSubtext)),
-                              ));
-                            }
-                            if (_isScanStopped(msg)) {
-                              return withSender(_ScanStoppedCard(message: msg));
-                            }
-                            if (isPendingOwnUpload(msg)) {
-                              return withSender(Align(
-                                alignment: Alignment.centerRight,
-                                child: _pendingOwnUploadCard(msg),
-                              ));
-                            }
-                            if (msg['filterHidden'] == true) {
-                              return withSender(Align(alignment: Alignment.centerRight,
-                                child: FilterHiddenImage(
-                                  key: ValueKey('hidden-${msg['id']}'),
-                                  api: kApi, token: widget.token,
-                                  messageId: msg['id'].toString(),
-                                  fileName: msg['scanFileName']?.toString(),
-                                  fileType: msg['fileType']?.toString(),
-                                  hiddenReason: msg['hiddenReason']?.toString(),
-                                  status: (msg['moderationStatus'] ?? msg['status'])
-                                      ?.toString(),
-                                  reason: msg['scanReason']?.toString(),
-                                  contentPurged: msg['contentPurged'] == true,
-                                  onRestored: () => _loadMessages(silent: true),
-                                )));
-                            }
-                            final groupText = msg['text'] as String? ?? '';
-                            final uploadStatus = msg['status']?.toString();
-                            final uploadFileType = _normalizeIncomingFileType(
-                              msg['fileType'] as String?,
-                              fileUrl: msg['fileUrl'] as String?,
-                              fileName: msg['fileName'] as String?,
-                            );
-                            final imageMaxSize = chatImageMaxSize(
-                              group: true,
-                              fileName: msg['fileName'] as String?,
-                            );
-                            final avielSticker = _avielStickerById(
-                                msg['stickerId'] ??
-                                    (uploadFileType == 'sticker'
-                                        ? groupText
-                                        : null));
-                            final isPdfFile = msg['fileUrl'] != null &&
-                                uploadFileType == 'document' &&
-                                (((msg['fileName'] as String?) ?? '')
-                                        .toLowerCase()
-                                        .endsWith('.pdf') ||
-                                    Uri.tryParse(msg['fileUrl'] as String)
-                                            ?.path
-                                            .toLowerCase()
-                                            .endsWith('.pdf') ==
-                                        true);
-                            final isOfficeFile = msg['fileUrl'] != null &&
-                                uploadFileType == 'document' &&
-                                _isOfficePreviewFile(
-                                    msg['fileName']?.toString() ??
-                                        Uri.tryParse(msg['fileUrl'].toString())
-                                            ?.path);
-                            final isVisualUploadState =
-                                (uploadFileType == 'image' ||
-                                        uploadFileType == 'video' ||
-                                        uploadFileType == 'audio' ||
-                                        (uploadFileType == 'document' && uploadStatus == 'uploading')) &&
-                                    (uploadStatus == 'uploading' ||
-                                        uploadStatus == 'pending_scan' ||
-                                        uploadStatus == 'failed' ||
-                                        uploadStatus == 'rejected_scan');
-                            final isDocumentModerationState =
-                                uploadFileType == 'document' &&
-                                    (uploadStatus == 'pending_scan' ||
-                                        uploadStatus == 'rejected_scan');
-                            final sharedContact = msg['fileUrl'] == null
-                                ? _sharedContactFromText(groupText)
-                                : null;
-                            final sharedUrl = msg['fileUrl'] == null
-                                ? _firstHttpUrl(groupText)
-                                : null;
-                            final isEducationAnnouncement =
-                                (msg['text'] as String? ?? '')
-                                    .startsWith('📋 ');
-                            final isFilterUpdateAnnouncement =
-                                groupText.startsWith('🛡️ סינון הקבוצה עודכן');
-                            final filterUpdateDetails =
-                                isFilterUpdateAnnouncement
-                                    ? groupText
-                                        .split('\n')
-                                        .skip(1)
-                                        .join('\n')
-                                        .trim()
-                                    : '';
-                            final educationStatus =
-                                msg['educationResponseStatus']?.toString();
-                            final educationFormClosed =
-                                msg['educationFormStatus'] == 'closed';
-                            final educationStatusLabel = educationFormClosed
-                                ? 'הטופס נסגר'
-                                : _isAdmin
-                                    ? 'ניהול מסמך'
-                                    : educationStatus == 'declined'
-                                        ? 'לא אושר'
-                                        : educationStatus == 'approved' ||
-                                                educationStatus == 'completed'
-                                            ? 'בוצע'
-                                            : 'ממתין לפעולה';
-                            final educationStatusColor = educationFormClosed
-                                ? Colors.blueGrey.shade700
-                                : _isAdmin
-                                    ? kPrimary
-                                    : educationStatus == 'declined'
-                                        ? Colors.red.shade700
-                                        : educationStatus == 'approved' ||
-                                                educationStatus == 'completed'
-                                            ? Colors.green.shade700
-                                            : Colors.orange.shade800;
-                            final firstUnreadIndex = _messages.indexWhere(
-                                (message) => message['isUnread'] == true);
-                            final showDate = messageIndex == 0 ||
-                                !_sameMessageDay(
-                                    msg, _messages[messageIndex - 1]);
-                            return Column(
-                              textDirection: TextDirection.rtl,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (showDate)
-                                  _DateDivider(label: _messageDateLabel(msg)),
-                                if (firstUnreadIndex == messageIndex)
-                                  const _UnreadMessagesDivider(),
-                                _ChatSenderLabel(
-                                  key: ValueKey('message-sender-${_selectionKey(msg)}'),
-                                  name: senderDisplayName,
-                                  avatarUrl: senderAvatarUrl,
-                                ),
-                                Row(
-                                  textDirection: TextDirection.rtl,
-                                  crossAxisAlignment: CrossAxisAlignment.center,
-                                  children: [
-                                    Flexible(
-                                        child: MessageHover(
-                                            reactionsOnChild: !isVisualUploadState && msg['isFile'] == true &&
-                                                msg['fileUrl'] != null && const ['image', 'video'].contains(uploadFileType),
-                                            sideReactions: MessageReactionSummary(api: kApi, token: widget.token, message: msg),
-                                                      actions: MessageActionBar(api: kApi, token: widget.token,
-                                              message: msg, onOptions: (anchor) => _showMessageOptions(msg, anchorContext: anchor)),
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                if (isVisualUploadState)
-                                                  _MessageSelectionCard(
-                                                    key: ValueKey(
-                                                        'message-selection-${_selectionKey(msg)}'),
-                                                    active: _selectedMessageKeys
-                                                        .isNotEmpty,
-                                                    selected:
-                                                        _selectedMessageKeys
-                                                            .contains(
-                                                                _selectionKey(
-                                                                    msg)),
-                                                    onToggle: () =>
-                                                        _toggleMessageSelection(
-                                                            msg),
-                                                    child: Padding(
-                                                      padding:
-                                                          const EdgeInsets.only(
-                                                              bottom: 6),
-                                                      child: uploadStatus ==
-                                                                  'uploading' ||
-                                                              uploadStatus ==
-                                                                  'pending_scan'
-                                                          ? _UploadProcessingCard(
-                                                              fileName: msg[
-                                                                          'fileName']
-                                                                      ?.toString() ??
-                                                                  (uploadFileType ==
-                                                                          'video'
-                                                                      ? 'וידאו'
-                                                                      : uploadFileType ==
-                                                                              'audio'
-                                                                          ? 'הקלטה'
-                                                                          : 'תמונה'),
-                                                              fileType:
-                                                                  uploadFileType ??
-                                                                      'image',
-                                                              scanning:
-                                                                  uploadStatus ==
-                                                                      'pending_scan',
-                                                              startedAt: DateTime.tryParse(msg[
-                                                                              'uploadStartedAt']
-                                                                          ?.toString() ??
-                                                                      msg['createdAt']
-                                                                          ?.toString() ??
-                                                                      '') ??
-                                                                  DateTime
-                                                                      .now(),
-                                                            )
-                                                          : _UploadResultCard(
-                                                              isVideo:
-                                                                  uploadFileType ==
-                                                                      'video',
-                                                              classification: msg[
-                                                                          'classification']
-                                                                      is Map
-                                                                  ? Map<String,
-                                                                          dynamic>.from(
-                                                                      msg['classification'])
-                                                                  : null,
-                                                              blocked:
-                                                                  uploadStatus ==
-                                                                      'rejected_scan',
-                                                              showBlockedArtwork:
-                                                                  uploadFileType !=
-                                                                      'image',
-                                                              onMoreActions: () =>
-                                                                  _showMessageOptions(
-                                                                      msg),
-                                                              blockedPreviewUrl:
-                                                                  msg['blockedPreviewUrl']
-                                                                      ?.toString(),
-                                                              authToken:
-                                                                  widget.token,
-                                                              previewExpiresAt:
-                                                                  DateTime.tryParse(
-                                                                      msg['previewExpiresAt']
-                                                                              ?.toString() ??
-                                                                          ''),
-                                                              title: uploadStatus ==
-                                                                      'rejected_scan'
-                                                                  ? uploadFileType ==
-                                                                          'audio'
-                                                                      ? 'ההקלטה נחסמה ולא נשלחה'
-                                                                      : uploadFileType ==
-                                                                              'video'
-                                                                          ? blockedVideoMessage
-                                                                          : _imageBlockTitle(msg[
-                                                                              'scanReason'])
-                                                                  : uploadFileType ==
-                                                                          'audio'
-                                                                      ? 'העלאת ההקלטה נכשלה'
-                                                                      : uploadFileType ==
-                                                                              'video'
-                                                                          ? 'העלאת הווידאו נכשלה'
-                                                                          : 'העלאת התמונה נכשלה',
-                                                              reason: uploadStatus ==
-                                                                      'rejected_scan'
-                                                                  ? msg['scanReason']
-                                                                          ?.toString() ??
-                                                                      (uploadFileType ==
-                                                                              'audio'
-                                                                          ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
-                                                                          : uploadFileType ==
-                                                                                  'video'
-                                                                              ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
-                                                                              : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
-                                                                  : msg['uploadError']
-                                                                          ?.toString() ??
-                                                                      (uploadFileType ==
-                                                                              'audio'
-                                                                          ? 'אירעה שגיאה בזמן העלאת ההקלטה'
-                                                                          : uploadFileType == 'video'
-                                                                              ? 'אירעה שגיאה בזמן העלאת הווידאו'
-                                                                              : 'אירעה שגיאה בזמן העלאת התמונה'),
-                                                              contentPurged:
-                                                                  msg['contentPurged'] ==
-                                                                      true,
-                                                              imageUrl: uploadStatus ==
-                                                                      'rejected_scan'
-                                                                  ? msg['fileUrl']
-                                                                      as String?
-                                                                  : null,
-                                                              fileName: msg[
-                                                                      'fileName']
-                                                                  as String?,
-                                                              recipientName: uploadStatus ==
-                                                                          'rejected_scan' &&
-                                                                      msg['forwardAllowed'] ==
-                                                                          true
-                                                                  ? 'קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}'
-                                                                  : null,
-                                                              destinationFilterRejected:
-                                                                  msg['forwardAllowed'] ==
-                                                                      true,
-                                                              onlyYouText:
-                                                                  'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
-                                                            ),
-                                                    ),
-                                                  )
-                                                else if (isDocumentModerationState)
-                                                  Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                            bottom: 6),
-                                                    child:
-                                                        _DocumentModerationCard(
-                                                      fileName: msg['fileName']
-                                                              ?.toString() ??
-                                                          'מסמך',
-                                                      blocked: uploadStatus ==
-                                                          'rejected_scan',
-                                                      reason: msg['scanReason']
-                                                          ?.toString(),
-                                                    ),
-                                                  )
-                                                else
-                                                  GestureDetector(
-                                                    behavior:
-                                                        HitTestBehavior.opaque,
-                                                    onTap: _selectedMessageKeys
-                                                            .isNotEmpty
-                                                        ? () =>
-                                                            _toggleMessageSelection(
-                                                                msg)
-                                                        : isFilterUpdateAnnouncement
-                                                            ? _updateMyGroupFilter
-                                                            : isEducationAnnouncement
-                                                                ? () =>
-                                                                    _openEducationAnnouncement(
-                                                                        msg)
-                                                                : !kIsWeb &&
-                                                                        msg['fileUrl'] ==
-                                                                            null
-                                                                    ? () => _copyMessageText(
-                                                                        context,
-                                                                        msg)
-                                                                    : null,
-                                                    onDoubleTap:
-                                                        !isEducationAnnouncement &&
-                                                                kIsWeb &&
-                                                                msg['fileUrl'] ==
-                                                                    null
-                                                            ? () =>
-                                                                _copyMessageText(
-                                                                    context,
-                                                                    msg)
-                                                            : null,
-                                                    onLongPress: isFilterUpdateAnnouncement
-                                                        ? null
-                                                        : () => _selectedMessageKeys
-                                                                .isNotEmpty
-                                                            ? _toggleMessageSelection(
-                                                                msg)
-                                                            : _showMessageOptions(
-                                                                msg),
-                                                    child: Stack(
+                                    if (msg['fileDeleted'] == true) {
+                                      return withSender(Padding(
+                                        key: ValueKey(
+                                            'deleted-media-${msg['id']}'),
+                                        padding: const EdgeInsets.all(12),
+                                        child: const Text('הקובץ נמחק',
+                                            style: TextStyle(color: kSubtext)),
+                                      ));
+                                    }
+                                    if (_isScanStopped(msg)) {
+                                      return withSender(
+                                          _ScanStoppedCard(message: msg));
+                                    }
+                                    if (isPendingOwnUpload(msg)) {
+                                      return withSender(Align(
+                                        alignment: Alignment.centerRight,
+                                        child: _pendingOwnUploadCard(msg),
+                                      ));
+                                    }
+                                    if (msg['filterHidden'] == true) {
+                                      return withSender(Align(
+                                          alignment: Alignment.centerRight,
+                                          child: FilterHiddenImage(
+                                            key:
+                                                ValueKey('hidden-${msg['id']}'),
+                                            api: kApi,
+                                            token: widget.token,
+                                            messageId: msg['id'].toString(),
+                                            fileName:
+                                                msg['scanFileName']?.toString(),
+                                            fileType:
+                                                msg['fileType']?.toString(),
+                                            hiddenReason:
+                                                msg['hiddenReason']?.toString(),
+                                            status: (msg['moderationStatus'] ??
+                                                    msg['status'])
+                                                ?.toString(),
+                                            reason:
+                                                msg['scanReason']?.toString(),
+                                            contentPurged:
+                                                msg['contentPurged'] == true,
+                                            onRestored: () =>
+                                                _loadMessages(silent: true),
+                                          )));
+                                    }
+                                    final groupText =
+                                        msg['text'] as String? ?? '';
+                                    final uploadStatus =
+                                        msg['status']?.toString();
+                                    final uploadFileType =
+                                        _normalizeIncomingFileType(
+                                      msg['fileType'] as String?,
+                                      fileUrl: msg['fileUrl'] as String?,
+                                      fileName: msg['fileName'] as String?,
+                                    );
+                                    final imageMaxSize = chatImageMaxSize(
+                                      group: true,
+                                      fileName: msg['fileName'] as String?,
+                                    );
+                                    final avielSticker = _avielStickerById(
+                                        msg['stickerId'] ??
+                                            (uploadFileType == 'sticker'
+                                                ? groupText
+                                                : null));
+                                    final isPdfFile = msg['fileUrl'] != null &&
+                                        uploadFileType == 'document' &&
+                                        (((msg['fileName'] as String?) ?? '')
+                                                .toLowerCase()
+                                                .endsWith('.pdf') ||
+                                            Uri.tryParse(msg['fileUrl']
+                                                        as String)
+                                                    ?.path
+                                                    .toLowerCase()
+                                                    .endsWith('.pdf') ==
+                                                true);
+                                    final isOfficeFile = msg['fileUrl'] !=
+                                            null &&
+                                        uploadFileType == 'document' &&
+                                        _isOfficePreviewFile(msg['fileName']
+                                                ?.toString() ??
+                                            Uri.tryParse(
+                                                    msg['fileUrl'].toString())
+                                                ?.path);
+                                    final isVisualUploadState =
+                                        (uploadFileType == 'image' ||
+                                                uploadFileType == 'video' ||
+                                                uploadFileType == 'audio' ||
+                                                (uploadFileType == 'document' &&
+                                                    uploadStatus ==
+                                                        'uploading')) &&
+                                            (uploadStatus == 'uploading' ||
+                                                uploadStatus ==
+                                                    'pending_scan' ||
+                                                uploadStatus == 'failed' ||
+                                                uploadStatus ==
+                                                    'rejected_scan');
+                                    final isDocumentModerationState =
+                                        uploadFileType == 'document' &&
+                                            (uploadStatus == 'pending_scan' ||
+                                                uploadStatus ==
+                                                    'rejected_scan');
+                                    final sharedContact = msg['fileUrl'] == null
+                                        ? _sharedContactFromText(groupText)
+                                        : null;
+                                    final sharedUrl = msg['fileUrl'] == null
+                                        ? _firstHttpUrl(groupText)
+                                        : null;
+                                    final isEducationAnnouncement =
+                                        (msg['text'] as String? ?? '')
+                                            .startsWith('📋 ');
+                                    final isFilterUpdateAnnouncement = groupText
+                                        .startsWith('🛡️ סינון הקבוצה עודכן');
+                                    final filterUpdateDetails =
+                                        isFilterUpdateAnnouncement
+                                            ? groupText
+                                                .split('\n')
+                                                .skip(1)
+                                                .join('\n')
+                                                .trim()
+                                            : '';
+                                    final educationStatus =
+                                        msg['educationResponseStatus']
+                                            ?.toString();
+                                    final educationFormClosed =
+                                        msg['educationFormStatus'] == 'closed';
+                                    final educationStatusLabel =
+                                        educationFormClosed
+                                            ? 'הטופס נסגר'
+                                            : _isAdmin
+                                                ? 'ניהול מסמך'
+                                                : educationStatus == 'declined'
+                                                    ? 'לא אושר'
+                                                    : educationStatus ==
+                                                                'approved' ||
+                                                            educationStatus ==
+                                                                'completed'
+                                                        ? 'בוצע'
+                                                        : 'ממתין לפעולה';
+                                    final educationStatusColor =
+                                        educationFormClosed
+                                            ? Colors.blueGrey.shade700
+                                            : _isAdmin
+                                                ? kPrimary
+                                                : educationStatus == 'declined'
+                                                    ? Colors.red.shade700
+                                                    : educationStatus ==
+                                                                'approved' ||
+                                                            educationStatus ==
+                                                                'completed'
+                                                        ? Colors.green.shade700
+                                                        : Colors
+                                                            .orange.shade800;
+                                    final firstUnreadIndex =
+                                        _messages.indexWhere((message) =>
+                                            message['isUnread'] == true);
+                                    final showDate = messageIndex == 0 ||
+                                        !_sameMessageDay(
+                                            msg, _messages[messageIndex - 1]);
+                                    return Column(
+                                      textDirection: TextDirection.rtl,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        if (showDate)
+                                          _DateDivider(
+                                              label: _messageDateLabel(msg)),
+                                        if (firstUnreadIndex == messageIndex)
+                                          const _UnreadMessagesDivider(),
+                                        _ChatSenderLabel(
+                                          key: ValueKey(
+                                              'message-sender-${_selectionKey(msg)}'),
+                                          name: senderDisplayName,
+                                          avatarUrl: senderAvatarUrl,
+                                        ),
+                                        Row(
+                                          textDirection: TextDirection.rtl,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.center,
+                                          children: [
+                                            Flexible(
+                                                child: MessageHover(
+                                                    reactionsOnChild:
+                                                        !isVisualUploadState &&
+                                                            msg['isFile'] ==
+                                                                true &&
+                                                            msg['fileUrl'] !=
+                                                                null &&
+                                                            const [
+                                                              'image',
+                                                              'video'
+                                                            ].contains(
+                                                                uploadFileType),
+                                                    sideReactions:
+                                                        MessageReactionSummary(
+                                                            api: kApi,
+                                                            token: widget.token,
+                                                            message: msg),
+                                                    actions: MessageActionBar(
+                                                        api: kApi,
+                                                        token: widget.token,
+                                                        message: msg,
+                                                        onOptions: (anchor) =>
+                                                            _showMessageOptions(
+                                                                msg,
+                                                                anchorContext:
+                                                                    anchor)),
+                                                    child: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
                                                       children: [
-                                                        IgnorePointer(
-                                                          ignoring:
-                                                              _selectedMessageKeys
-                                                                  .isNotEmpty,
-                                                          child: Container(
-                                                            margin:
+                                                        if (isVisualUploadState)
+                                                          _MessageSelectionCard(
+                                                            key: ValueKey(
+                                                                'message-selection-${_selectionKey(msg)}'),
+                                                            active:
+                                                                _selectedMessageKeys
+                                                                    .isNotEmpty,
+                                                            selected: _selectedMessageKeys
+                                                                .contains(
+                                                                    _selectionKey(
+                                                                        msg)),
+                                                            onToggle: () =>
+                                                                _toggleMessageSelection(
+                                                                    msg),
+                                                            child: Padding(
+                                                              padding:
+                                                                  const EdgeInsets
+                                                                      .only(
+                                                                      bottom:
+                                                                          6),
+                                                              child: uploadStatus ==
+                                                                          'uploading' ||
+                                                                      uploadStatus ==
+                                                                          'pending_scan'
+                                                                  ? _UploadProcessingCard(
+                                                                      fileName: msg['fileName']
+                                                                              ?.toString() ??
+                                                                          (uploadFileType == 'video'
+                                                                              ? 'וידאו'
+                                                                              : uploadFileType == 'audio'
+                                                                                  ? 'הקלטה'
+                                                                                  : 'תמונה'),
+                                                                      fileType:
+                                                                          uploadFileType ??
+                                                                              'image',
+                                                                      scanning:
+                                                                          uploadStatus ==
+                                                                              'pending_scan',
+                                                                      startedAt: DateTime.tryParse(msg['uploadStartedAt']?.toString() ??
+                                                                              msg['createdAt']?.toString() ??
+                                                                              '') ??
+                                                                          DateTime.now(),
+                                                                    )
+                                                                  : _UploadResultCard(
+                                                                      isVideo:
+                                                                          uploadFileType ==
+                                                                              'video',
+                                                                      classification: msg['classification']
+                                                                              is Map
+                                                                          ? Map<
+                                                                              String,
+                                                                              dynamic>.from(msg['classification'])
+                                                                          : null,
+                                                                      blocked:
+                                                                          uploadStatus ==
+                                                                              'rejected_scan',
+                                                                      showBlockedArtwork:
+                                                                          uploadFileType !=
+                                                                              'image',
+                                                                      onMoreActions:
+                                                                          () =>
+                                                                              _showMessageOptions(msg),
+                                                                      blockedPreviewUrl:
+                                                                          msg['blockedPreviewUrl']
+                                                                              ?.toString(),
+                                                                      authToken:
+                                                                          widget
+                                                                              .token,
+                                                                      previewExpiresAt:
+                                                                          DateTime.tryParse(msg['previewExpiresAt']?.toString() ??
+                                                                              ''),
+                                                                      title: uploadStatus ==
+                                                                              'rejected_scan'
+                                                                          ? uploadFileType == 'audio'
+                                                                              ? 'ההקלטה נחסמה ולא נשלחה'
+                                                                              : uploadFileType == 'video'
+                                                                                  ? blockedVideoMessage
+                                                                                  : _imageBlockTitle(msg['scanReason'])
+                                                                          : uploadFileType == 'audio'
+                                                                              ? 'העלאת ההקלטה נכשלה'
+                                                                              : uploadFileType == 'video'
+                                                                                  ? 'העלאת הווידאו נכשלה'
+                                                                                  : 'העלאת התמונה נכשלה',
+                                                                      reason: uploadStatus ==
+                                                                              'rejected_scan'
+                                                                          ? msg['scanReason']?.toString() ??
+                                                                              (uploadFileType == 'audio'
+                                                                                  ? 'ההקלטה לא עברה את בדיקת התוכן ולכן לא נשלחה'
+                                                                                  : uploadFileType == 'video'
+                                                                                      ? 'הווידאו אינו תואם את הגדרות הסינון ולכן לא נשלח'
+                                                                                      : 'התמונה אינה תואמת את הגדרות הסינון ולכן לא נשלחה')
+                                                                          : msg['uploadError']?.toString() ??
+                                                                              (uploadFileType == 'audio'
+                                                                                  ? 'אירעה שגיאה בזמן העלאת ההקלטה'
+                                                                                  : uploadFileType == 'video'
+                                                                                      ? 'אירעה שגיאה בזמן העלאת הווידאו'
+                                                                                      : 'אירעה שגיאה בזמן העלאת התמונה'),
+                                                                      contentPurged:
+                                                                          msg['contentPurged'] ==
+                                                                              true,
+                                                                      imageUrl: uploadStatus ==
+                                                                              'rejected_scan'
+                                                                          ? msg['fileUrl']
+                                                                              as String?
+                                                                          : null,
+                                                                      fileName:
+                                                                          msg['fileName']
+                                                                              as String?,
+                                                                      recipientName: uploadStatus == 'rejected_scan' &&
+                                                                              msg['forwardAllowed'] == true
+                                                                          ? 'קבוצת ${widget.group['name']?.toString() ?? 'הקבוצה'}'
+                                                                          : null,
+                                                                      destinationFilterRejected:
+                                                                          msg['forwardAllowed'] ==
+                                                                              true,
+                                                                      onlyYouText:
+                                                                          'התמונה מוצגת רק לך ולא נשלחה לשאר חברי הקבוצה',
+                                                                    ),
+                                                            ),
+                                                          )
+                                                        else if (isDocumentModerationState)
+                                                          Padding(
+                                                            padding:
                                                                 const EdgeInsets
                                                                     .only(
                                                                     bottom: 6),
-                                                            padding: msg['isFile'] ==
-                                                                        true ||
-                                                                    avielSticker !=
-                                                                        null
-                                                                ? EdgeInsets
-                                                                    .zero
-                                                                : const EdgeInsets
-                                                                    .symmetric(
-                                                                    horizontal:
-                                                                        8,
-                                                                    vertical:
-                                                                        5),
-                                                            constraints:
-                                                                BoxConstraints(
-                                                              maxWidth: msg[
-                                                                          'fileUrl'] !=
-                                                                      null
-                                                                  ? math.min(
-                                                                      330,
-                                                                      MediaQuery.of(context)
-                                                                              .size
-                                                                              .width *
-                                                                          0.86)
-                                                                  : MediaQuery.of(
-                                                                              context)
-                                                                          .size
-                                                                          .width *
-                                                                      0.75,
+                                                            child:
+                                                                _DocumentModerationCard(
+                                                              fileName:
+                                                                  msg['fileName']
+                                                                          ?.toString() ??
+                                                                      'מסמך',
+                                                              blocked:
+                                                                  uploadStatus ==
+                                                                      'rejected_scan',
+                                                              reason: msg[
+                                                                      'scanReason']
+                                                                  ?.toString(),
                                                             ),
-                                                            decoration: msg['isFile'] ==
-                                                                        true ||
-                                                                    avielSticker !=
+                                                          )
+                                                        else
+                                                          GestureDetector(
+                                                            behavior:
+                                                                HitTestBehavior
+                                                                    .opaque,
+                                                            onTap: _selectedMessageKeys
+                                                                    .isNotEmpty
+                                                                ? () =>
+                                                                    _toggleMessageSelection(
+                                                                        msg)
+                                                                : isFilterUpdateAnnouncement
+                                                                    ? _updateMyGroupFilter
+                                                                    : isEducationAnnouncement
+                                                                        ? () => _openEducationAnnouncement(
+                                                                            msg)
+                                                                        : !kIsWeb &&
+                                                                                msg['fileUrl'] == null
+                                                                            ? () => _copyMessageText(context, msg)
+                                                                            : null,
+                                                            onDoubleTap: !isEducationAnnouncement &&
+                                                                    kIsWeb &&
+                                                                    msg['fileUrl'] ==
                                                                         null
+                                                                ? () =>
+                                                                    _copyMessageText(
+                                                                        context,
+                                                                        msg)
+                                                                : null,
+                                                            onLongPress: isFilterUpdateAnnouncement
                                                                 ? null
-                                                                : BoxDecoration(
-                                                                    color:
-                                                                        kIncoming,
-                                                                    borderRadius:
-                                                                        BorderRadius
-                                                                            .circular(6),
-                                                                    border: _selectedMessageKeys.contains(_selectionKey(
-                                                                            msg))
-                                                                        ? Border.all(
-                                                                            color:
-                                                                                kPrimary,
-                                                                            width:
-                                                                                3)
-                                                                        : null,
-                                                                    boxShadow: [
-                                                                      BoxShadow(
-                                                                        color: Colors
-                                                                            .black
-                                                                            .withValues(alpha: 0.05),
-                                                                        blurRadius:
-                                                                            3,
-                                                                      )
-                                                                    ],
-                                                                  ),
-                                                            child: Column(
-                                                              mainAxisSize:
-                                                                  MainAxisSize
-                                                                      .min,
-                                                              textDirection:
-                                                                  TextDirection
-                                                                      .rtl,
-                                                              crossAxisAlignment:
-                                                                  CrossAxisAlignment
-                                                                      .start,
+                                                                : () => _selectedMessageKeys
+                                                                        .isNotEmpty
+                                                                    ? _toggleMessageSelection(
+                                                                        msg)
+                                                                    : _showMessageOptions(
+                                                                        msg),
+                                                            child: Stack(
                                                               children: [
-                                                                if (msg['isFile'] ==
-                                                                        true &&
-                                                                    msg['fileUrl'] !=
-                                                                        null)
-                                                                  ChatFileName(
-                                                                    key: ValueKey(
-                                                                        'group-filename-${msg['fileUrl']}'),
-                                                                    api: kApi,
-                                                                    token: widget
-                                                                        .token,
-                                                                    url: msg[
-                                                                            'fileUrl']
-                                                                        as String,
-                                                                    filename: msg[
-                                                                            'fileName']
-                                                                        as String?,
-                                                                    editable: isMe &&
-                                                                        uploadStatus !=
-                                                                            'blocked_content',
-                                                                    onRenamed: (name) =>
-                                                                        setState(() =>
-                                                                            msg['fileName'] =
-                                                                                name),
-                                                                  ),
-                                                                if (uploadStatus ==
-                                                                        'blocked_content' &&
-                                                                    uploadFileType !=
-                                                                        'image')
-                                                                  const Center(
-                                                                      child:
-                                                                          _SystemContentWarningArtwork())
-                                                                else if (uploadStatus ==
-                                                                    'blocked_content')
-                                                                  const SizedBox
-                                                                      .shrink()
-                                                                else if (avielSticker !=
-                                                                    null)
-                                                                  Semantics(
-                                                                    image: true,
-                                                                    label:
-                                                                        'מדבקת עוזר AI: ${avielSticker.label}',
-                                                                    child: Image.asset(
-                                                                        avielSticker
-                                                                            .asset,
-                                                                        width:
-                                                                            180,
-                                                                        height:
-                                                                            180,
-                                                                        fit: BoxFit
-                                                                            .contain),
-                                                                  )
-                                                                else if (msg[
-                                                                            'fileUrl'] !=
-                                                                        null &&
-                                                                    _normalizeIncomingFileType(
-                                                                            msg['fileType']
-                                                                                as String?,
-                                                                            fileUrl: msg['fileUrl']
-                                                                                as String?,
-                                                                            fileName: msg['fileName']
-                                                                                as String?) ==
-                                                                        'audio')
-                                                                  Column(
+                                                                IgnorePointer(
+                                                                  ignoring:
+                                                                      _selectedMessageKeys
+                                                                          .isNotEmpty,
+                                                                  child:
+                                                                      Container(
+                                                                    margin: const EdgeInsets
+                                                                        .only(
+                                                                        bottom:
+                                                                            6),
+                                                                    padding: msg['isFile'] == true ||
+                                                                            avielSticker !=
+                                                                                null
+                                                                        ? EdgeInsets
+                                                                            .zero
+                                                                        : const EdgeInsets
+                                                                            .symmetric(
+                                                                            horizontal:
+                                                                                8,
+                                                                            vertical:
+                                                                                5),
+                                                                    constraints:
+                                                                        BoxConstraints(
+                                                                      maxWidth: msg['fileUrl'] !=
+                                                                              null
+                                                                          ? math.min(
+                                                                              330,
+                                                                              MediaQuery.of(context).size.width *
+                                                                                  0.86)
+                                                                          : MediaQuery.of(context).size.width *
+                                                                              0.75,
+                                                                    ),
+                                                                    decoration: msg['isFile'] ==
+                                                                                true ||
+                                                                            avielSticker !=
+                                                                                null
+                                                                        ? null
+                                                                        : BoxDecoration(
+                                                                            color:
+                                                                                kIncoming,
+                                                                            borderRadius:
+                                                                                BorderRadius.circular(6),
+                                                                            border: _selectedMessageKeys.contains(_selectionKey(msg))
+                                                                                ? Border.all(color: kPrimary, width: 3)
+                                                                                : null,
+                                                                            boxShadow: [
+                                                                              BoxShadow(
+                                                                                color: Colors.black.withValues(alpha: 0.05),
+                                                                                blurRadius: 3,
+                                                                              )
+                                                                            ],
+                                                                          ),
+                                                                    child:
+                                                                        Column(
+                                                                      mainAxisSize:
+                                                                          MainAxisSize
+                                                                              .min,
+                                                                      textDirection:
+                                                                          TextDirection
+                                                                              .rtl,
                                                                       crossAxisAlignment:
                                                                           CrossAxisAlignment
-                                                                              .end,
+                                                                              .start,
                                                                       children: [
-                                                                        VoiceMessagePlayer(
-                                                                            showFileName:
-                                                                                false,
-                                                                            token: widget
-                                                                                .token,
-                                                                            fileName: msg['fileName']
-                                                                                ?.toString(),
-                                                                            url: msg['fileUrl']
-                                                                                as String,
-                                                                            isMe:
-                                                                                isMe,
-                                                                            senderAvatarUrl: _voiceMessageSender(msg, isMe)?['profile_pic_url']
-                                                                                ?.toString(),
-                                                                            senderName: _voiceMessageSender(msg, isMe)?['name']?.toString() ??
-                                                                                msg['senderName']?.toString() ??
-                                                                                '',
-                                                                            initialDurationSeconds: (msg['audioDurationSeconds'] as num?)?.toDouble()),
-                                                                        _AudioScanBadge(),
-                                                                      ])
-                                                                else if (msg[
-                                                                            'fileUrl'] !=
-                                                                        null &&
-                                                                    _normalizeIncomingFileType(
-                                                                            msg['fileType']
-                                                                                as String?,
-                                                                            fileUrl: msg['fileUrl']
-                                                                                as String?,
-                                                                            fileName:
-                                                                                msg['fileName'] as String?) ==
-                                                                        'video')
-                                                                  MessageObjectReactions(child: Stack(
-                                                                    children: [
-                                                                      if (kIsWeb)
-                                                                        NativeWebVideoPlayer(
-                                                                          progressApi:
-                                                                              kApi,
-                                                                          token:
-                                                                              widget.token,
-                                                                          key: ValueKey(
-                                                                              'group-video-${msg['fileUrl']}'),
-                                                                          url: _absoluteMediaUrl(msg['fileUrl']
-                                                                              as String),
-                                                                          onOptions: () =>
-                                                                              _showMessageOptions(msg),
-                                                                        )
-                                                                      else
-                                                                        _ChatVideoPlayer(
-                                                                          url: msg['fileUrl']
-                                                                              as String,
-                                                                        ),
-                                                                      Positioned(
-                                                                        right:
-                                                                            7,
-                                                                        top: 7,
-                                                                        child:
-                                                                            _ImageClassificationBadges(
-                                                                          message:
-                                                                              msg,
-                                                                        ),
-                                                                      ),
-                                                                      Positioned(
-                                                                        left: 7,
-                                                                        bottom:
-                                                                            7,
-                                                                        child:
-                                                                            _ImageStatusBadge(
-                                                                          message:
-                                                                              msg,
-                                                                          isMe:
-                                                                              isMe,
-                                                                        ),
-                                                                      ),
-                                                                    ],
-                                                                  ))
-                                                                else if (msg[
-                                                                            'fileUrl'] !=
-                                                                        null &&
-                                                                    _normalizeIncomingFileType(
-                                                                            msg['fileType']
-                                                                                as String?,
-                                                                            fileUrl: msg['fileUrl']
-                                                                                as String?,
-                                                                            fileName:
-                                                                                msg['fileName'] as String?) ==
-                                                                        'image')
-                                                                  GestureDetector(
-                                                                    onTap: () => Navigator.push(
-                                                                        context,
-                                                                        MaterialPageRoute(
-                                                                            builder: (_) => ImagePreviewScreen(
-                                                                                filterToken: widget.token,
-                                                                                currentUserId: widget.me?['id']?.toString(),
-                                                                                url: msg['fileUrl'] as String,
-                                                                                filename: msg['fileName'] as String?,
-                                                                                urls: _conversationImageMessages(_messages).map((item) => item['fileUrl'] as String).toList(),
-                                                                                filenames: _conversationImageMessages(_messages).map((item) => item['fileName'] as String?).toList(),
-                                                                                dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(),
-                                                                                messages: _conversationImageMessages(_messages),
-                                                                                onMessageOptions: _showMessageOptions,
-                                                                                initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
-                                                                    child:
-                                                                        MessageObjectReactions(child: Stack(
-                                                                      children: [
-                                                                        ClipRRect(
-                                                                          borderRadius:
-                                                                              BorderRadius.circular(8),
-                                                                          child:
-                                                                              _PersistentMediaImage(
+                                                                        if (msg['isFile'] ==
+                                                                                true &&
+                                                                            msg['fileUrl'] !=
+                                                                                null)
+                                                                          ChatFileName(
                                                                             key:
-                                                                                ValueKey('group-image-${msg['id']}'),
+                                                                                ValueKey('group-filename-${msg['fileUrl']}'),
+                                                                            api:
+                                                                                kApi,
+                                                                            token:
+                                                                                widget.token,
                                                                             url:
                                                                                 msg['fileUrl'] as String,
-                                                                            onDisplayed: () => reportFilterDisplay(
-                                                                                api: kApi,
-                                                                                token: widget.token,
-                                                                                messageId: msg['id']?.toString() ?? '',
-                                                                                event: 'displayed'),
-                                                                            width:
-                                                                                imageMaxSize.width,
-                                                                            height:
-                                                                                imageMaxSize.height,
-                                                                            fitNaturalBounds: true,
-                                                                            fit:
-                                                                                BoxFit.contain,
-                                                                            loadingBuilder: (_) => Container(
-                                                                                width: 200,
-                                                                                height: 160,
-                                                                                color: kBorder,
-                                                                                child: const Center(child: CircularProgressIndicator(color: kPrimary, strokeWidth: 2))),
-                                                                            errorBuilder: (_) => Container(
-                                                                                width: 200,
-                                                                                height: 160,
-                                                                                color: kBorder,
-                                                                                child: const Icon(Icons.broken_image, color: kSubtext)),
+                                                                            filename:
+                                                                                msg['fileName'] as String?,
+                                                                            editable:
+                                                                                isMe && uploadStatus != 'blocked_content',
+                                                                            onRenamed: (name) =>
+                                                                                setState(() => msg['fileName'] = name),
                                                                           ),
-                                                                        ),
-                                                                        Positioned(
-                                                                          left:
-                                                                              7,
-                                                                          bottom:
-                                                                              7,
-                                                                          child: _ImageStatusBadge(
-                                                                              message: msg,
-                                                                              isMe: isMe),
-                                                                        ),
-                                                                        Positioned(
-                                                                          right:
-                                                                              7,
-                                                                          top:
-                                                                              7,
-                                                                          child:
-                                                                              _ImageClassificationBadges(message: msg),
-                                                                        ),
-                                                                      ],
-                                                                    )),
-                                                                  )
-                                                                else if (msg[
-                                                                        'fileUrl'] !=
-                                                                    null)
-                                                                  InkWell(
-                                                                    onTap: () => isPdfFile
-                                                                        ? widget.onDocumentOpen != null
-                                                                            ? widget.onDocumentOpen!(msg['fileUrl'] as String, msg['fileName'] as String?, true)
-                                                                            : _openPdfInsideApp(context, msg['fileUrl'] as String, msg['fileName'] as String?)
-                                                                        : isOfficeFile
-                                                                            ? widget.onDocumentOpen != null
-                                                                                ? widget.onDocumentOpen!(msg['fileUrl'] as String, msg['fileName'] as String?, false)
-                                                                                : _openOfficeInsideApp(context, msg['fileUrl'] as String, msg['fileName'] as String?, widget.token)
-                                                                            : _downloadChatFile(context, msg['fileUrl'] as String, msg['fileName'] as String?),
-                                                                    borderRadius:
-                                                                        BorderRadius
-                                                                            .circular(8),
-                                                                    child:
-                                                                        Padding(
-                                                                      padding: const EdgeInsets
-                                                                          .symmetric(
-                                                                          vertical:
-                                                                              4),
-                                                                      child:
+                                                                        if (uploadStatus ==
+                                                                                'blocked_content' &&
+                                                                            uploadFileType !=
+                                                                                'image')
+                                                                          const Center(
+                                                                              child: _SystemContentWarningArtwork())
+                                                                        else if (uploadStatus ==
+                                                                            'blocked_content')
+                                                                          const SizedBox
+                                                                              .shrink()
+                                                                        else if (avielSticker !=
+                                                                            null)
+                                                                          Semantics(
+                                                                            image:
+                                                                                true,
+                                                                            label:
+                                                                                'מדבקת עוזר AI: ${avielSticker.label}',
+                                                                            child: Image.asset(avielSticker.asset,
+                                                                                width: 180,
+                                                                                height: 180,
+                                                                                fit: BoxFit.contain),
+                                                                          )
+                                                                        else if (msg['fileUrl'] !=
+                                                                                null &&
+                                                                            _normalizeIncomingFileType(msg['fileType'] as String?, fileUrl: msg['fileUrl'] as String?, fileName: msg['fileName'] as String?) ==
+                                                                                'audio')
                                                                           Column(
-                                                                        mainAxisSize:
-                                                                            MainAxisSize.min,
-                                                                        crossAxisAlignment:
-                                                                            CrossAxisAlignment.end,
-                                                                        children: [
-                                                                          if (isPdfFile) ...[
-                                                                            _PdfFirstPagePreview(url: msg['fileUrl'] as String),
-                                                                            const SizedBox(height: 6),
-                                                                          ] else if (isOfficeFile) ...[
-                                                                            _OfficeDocumentPreview(
-                                                                                fileUrl: msg['fileUrl'] as String,
-                                                                                fileName: msg['fileName']?.toString() ?? 'מסמך',
-                                                                                token: widget.token),
-                                                                            const SizedBox(height: 6),
-                                                                          ],
-                                                                          MessageDetails(
-                                                                              enabled: isPdfFile || isOfficeFile,
+                                                                              crossAxisAlignment: CrossAxisAlignment.end,
+                                                                              children: [
+                                                                                VoiceMessagePlayer(showFileName: false, token: widget.token, fileName: msg['fileName']?.toString(), url: msg['fileUrl'] as String, isMe: isMe, senderAvatarUrl: _voiceMessageSender(msg, isMe)?['profile_pic_url']?.toString(), senderName: _voiceMessageSender(msg, isMe)?['name']?.toString() ?? msg['senderName']?.toString() ?? '', initialDurationSeconds: (msg['audioDurationSeconds'] as num?)?.toDouble()),
+                                                                                _AudioScanBadge(),
+                                                                              ])
+                                                                        else if (msg['fileUrl'] !=
+                                                                                null &&
+                                                                            _normalizeIncomingFileType(msg['fileType'] as String?, fileUrl: msg['fileUrl'] as String?, fileName: msg['fileName'] as String?) ==
+                                                                                'video')
+                                                                          MessageObjectReactions(
+                                                                              child: Stack(
+                                                                            children: [
+                                                                              if (kIsWeb)
+                                                                                NativeWebVideoPlayer(
+                                                                                  progressApi: kApi,
+                                                                                  token: widget.token,
+                                                                                  key: ValueKey('group-video-${msg['fileUrl']}'),
+                                                                                  url: _absoluteMediaUrl(msg['fileUrl'] as String),
+                                                                                  onOptions: () => _showMessageOptions(msg),
+                                                                                )
+                                                                              else
+                                                                                _ChatVideoPlayer(
+                                                                                  url: msg['fileUrl'] as String,
+                                                                                ),
+                                                                              Positioned(
+                                                                                right: 7,
+                                                                                top: 7,
+                                                                                child: _ImageClassificationBadges(
+                                                                                  message: msg,
+                                                                                ),
+                                                                              ),
+                                                                              Positioned(
+                                                                                left: 7,
+                                                                                bottom: 7,
+                                                                                child: _ImageStatusBadge(
+                                                                                  message: msg,
+                                                                                  isMe: isMe,
+                                                                                ),
+                                                                              ),
+                                                                            ],
+                                                                          ))
+                                                                        else if (msg['fileUrl'] !=
+                                                                                null &&
+                                                                            _normalizeIncomingFileType(msg['fileType'] as String?, fileUrl: msg['fileUrl'] as String?, fileName: msg['fileName'] as String?) ==
+                                                                                'image')
+                                                                          GestureDetector(
+                                                                            onTap: () =>
+                                                                                Navigator.push(context, MaterialPageRoute(builder: (_) => ImagePreviewScreen(filterToken: widget.token, currentUserId: widget.me?['id']?.toString(), url: msg['fileUrl'] as String, filename: msg['fileName'] as String?, urls: _conversationImageMessages(_messages).map((item) => item['fileUrl'] as String).toList(), filenames: _conversationImageMessages(_messages).map((item) => item['fileName'] as String?).toList(), dates: _conversationImageMessages(_messages).map((item) => _imageSentAtLabel(item)).toList(), messages: _conversationImageMessages(_messages), onMessageOptions: _showMessageOptions, initialIndex: _conversationImageIndex(_conversationImageMessages(_messages), msg)))),
+                                                                            child: MessageObjectReactions(
+                                                                                child: Stack(
+                                                                              children: [
+                                                                                ClipRRect(
+                                                                                  borderRadius: BorderRadius.circular(8),
+                                                                                  child: _PersistentMediaImage(
+                                                                                    key: ValueKey('group-image-${msg['id']}'),
+                                                                                    url: msg['fileUrl'] as String,
+                                                                                    onDisplayed: () => reportFilterDisplay(api: kApi, token: widget.token, messageId: msg['id']?.toString() ?? '', event: 'displayed'),
+                                                                                    width: imageMaxSize.width,
+                                                                                    height: imageMaxSize.height,
+                                                                                    fitNaturalBounds: true,
+                                                                                    fit: BoxFit.contain,
+                                                                                    loadingBuilder: (_) => Container(width: 200, height: 160, color: kBorder, child: const Center(child: CircularProgressIndicator(color: kPrimary, strokeWidth: 2))),
+                                                                                    errorBuilder: (_) => Container(width: 200, height: 160, color: kBorder, child: const Icon(Icons.broken_image, color: kSubtext)),
+                                                                                  ),
+                                                                                ),
+                                                                                Positioned(
+                                                                                  left: 7,
+                                                                                  bottom: 7,
+                                                                                  child: _ImageStatusBadge(message: msg, isMe: isMe),
+                                                                                ),
+                                                                                Positioned(
+                                                                                  right: 7,
+                                                                                  top: 7,
+                                                                                  child: _ImageClassificationBadges(message: msg),
+                                                                                ),
+                                                                              ],
+                                                                            )),
+                                                                          )
+                                                                        else if (msg['fileUrl'] !=
+                                                                            null)
+                                                                          InkWell(
+                                                                            onTap: () => isPdfFile
+                                                                                ? widget.onDocumentOpen != null
+                                                                                    ? widget.onDocumentOpen!(msg['fileUrl'] as String, msg['fileName'] as String?, true)
+                                                                                    : _openPdfInsideApp(context, msg['fileUrl'] as String, msg['fileName'] as String?)
+                                                                                : isOfficeFile
+                                                                                    ? widget.onDocumentOpen != null
+                                                                                        ? widget.onDocumentOpen!(msg['fileUrl'] as String, msg['fileName'] as String?, false)
+                                                                                        : _openOfficeInsideApp(context, msg['fileUrl'] as String, msg['fileName'] as String?, widget.token)
+                                                                                    : _downloadChatFile(context, msg['fileUrl'] as String, msg['fileName'] as String?),
+                                                                            borderRadius:
+                                                                                BorderRadius.circular(8),
+                                                                            child:
+                                                                                Padding(
+                                                                              padding: const EdgeInsets.symmetric(vertical: 4),
+                                                                              child: Column(
+                                                                                mainAxisSize: MainAxisSize.min,
+                                                                                crossAxisAlignment: CrossAxisAlignment.end,
+                                                                                children: [
+                                                                                  if (isPdfFile) ...[
+                                                                                    _PdfFirstPagePreview(url: msg['fileUrl'] as String),
+                                                                                    const SizedBox(height: 6),
+                                                                                  ] else if (isOfficeFile) ...[
+                                                                                    _OfficeDocumentPreview(fileUrl: msg['fileUrl'] as String, fileName: msg['fileName']?.toString() ?? 'מסמך', token: widget.token),
+                                                                                    const SizedBox(height: 6),
+                                                                                  ],
+                                                                                  MessageDetails(
+                                                                                      enabled: isPdfFile || isOfficeFile,
+                                                                                      child: Row(
+                                                                                        mainAxisSize: MainAxisSize.min,
+                                                                                        children: [
+                                                                                          Icon(
+                                                                                              isPdfFile
+                                                                                                  ? Icons.picture_as_pdf_outlined
+                                                                                                  : isOfficeFile
+                                                                                                      ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true ? Icons.table_chart_outlined : Icons.description_outlined)
+                                                                                                      : Icons.insert_drive_file,
+                                                                                              size: 16,
+                                                                                              color: isPdfFile ? Colors.red : kSubtext),
+                                                                                          const SizedBox(width: 4),
+                                                                                          Flexible(child: const Text('פתיחת הקובץ', style: TextStyle(fontSize: 13))),
+                                                                                          const SizedBox(width: 10),
+                                                                                          const Icon(Icons.download, size: 19, color: kPrimary),
+                                                                                          const SizedBox(width: 3),
+                                                                                          const Text('הורדה', style: TextStyle(fontSize: 12, color: kPrimary, fontWeight: FontWeight.w600)),
+                                                                                        ],
+                                                                                      )),
+                                                                                ],
+                                                                              ),
+                                                                            ),
+                                                                          )
+                                                                        else if (isFilterUpdateAnnouncement)
+                                                                          InkWell(
+                                                                            onTap:
+                                                                                _updateMyGroupFilter,
+                                                                            borderRadius:
+                                                                                BorderRadius.circular(8),
+                                                                            child:
+                                                                                Padding(
+                                                                              padding: const EdgeInsets.symmetric(vertical: 4),
+                                                                              child: Column(
+                                                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                                                children: [
+                                                                                  const Row(
+                                                                                    mainAxisSize: MainAxisSize.min,
+                                                                                    children: [
+                                                                                      Icon(Icons.shield_outlined, color: kPrimary, size: 21),
+                                                                                      SizedBox(width: 8),
+                                                                                      Text(
+                                                                                        'סינון הקבוצה עודכן',
+                                                                                        style: TextStyle(
+                                                                                          fontSize: 15,
+                                                                                          fontWeight: FontWeight.w800,
+                                                                                        ),
+                                                                                      ),
+                                                                                    ],
+                                                                                  ),
+                                                                                  const SizedBox(height: 5),
+                                                                                  Text(
+                                                                                    filterUpdateDetails.isEmpty ? 'מדיניות התוכן של הקבוצה השתנתה.' : filterUpdateDetails,
+                                                                                    textAlign: TextAlign.right,
+                                                                                    textDirection: TextDirection.rtl,
+                                                                                    style: const TextStyle(fontSize: 12, color: kTextDark, height: 1.5),
+                                                                                  ),
+                                                                                  const SizedBox(height: 7),
+                                                                                  Row(
+                                                                                    mainAxisSize: MainAxisSize.min,
+                                                                                    children: [
+                                                                                      const Icon(Icons.tune_rounded, size: 17, color: kPrimary),
+                                                                                      const SizedBox(width: 4),
+                                                                                      const Text(
+                                                                                        'עדכון הסינון האישי שלי',
+                                                                                        style: TextStyle(
+                                                                                          color: kPrimary,
+                                                                                          fontWeight: FontWeight.bold,
+                                                                                          decoration: TextDecoration.underline,
+                                                                                        ),
+                                                                                      ),
+                                                                                    ],
+                                                                                  ),
+                                                                                ],
+                                                                              ),
+                                                                            ),
+                                                                          )
+                                                                        else if (isEducationAnnouncement)
+                                                                          InkWell(
+                                                                            onTap: () =>
+                                                                                _openEducationAnnouncement(msg),
+                                                                            borderRadius:
+                                                                                BorderRadius.circular(8),
+                                                                            child:
+                                                                                Padding(
+                                                                              padding: const EdgeInsets.symmetric(vertical: 4),
+                                                                              child: Column(
+                                                                                crossAxisAlignment: CrossAxisAlignment.end,
+                                                                                children: [
+                                                                                  Row(
+                                                                                    mainAxisSize: MainAxisSize.min,
+                                                                                    children: [
+                                                                                      const Icon(Icons.fact_check_outlined, color: kPrimary),
+                                                                                      const SizedBox(width: 8),
+                                                                                      Flexible(
+                                                                                        child: Text(
+                                                                                          msg['text'] as String? ?? '',
+                                                                                          style: const TextStyle(fontSize: 15, height: 1.4, fontWeight: FontWeight.w600),
+                                                                                          textDirection: TextDirection.rtl,
+                                                                                        ),
+                                                                                      ),
+                                                                                    ],
+                                                                                  ),
+                                                                                  const SizedBox(height: 8),
+                                                                                  Row(
+                                                                                    mainAxisSize: MainAxisSize.min,
+                                                                                    children: [
+                                                                                      const Icon(Icons.touch_app, size: 17, color: kPrimary),
+                                                                                      const SizedBox(width: 4),
+                                                                                      const Text('לחץ לפתיחת המסמך', style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold)),
+                                                                                      const SizedBox(width: 12),
+                                                                                      Container(
+                                                                                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                                                                                        decoration: BoxDecoration(
+                                                                                          color: educationStatusColor.withValues(alpha: .12),
+                                                                                          borderRadius: BorderRadius.circular(14),
+                                                                                        ),
+                                                                                        child: Text(
+                                                                                          educationStatusLabel,
+                                                                                          style: TextStyle(
+                                                                                            color: educationStatusColor,
+                                                                                            fontWeight: FontWeight.bold,
+                                                                                            fontSize: 12,
+                                                                                          ),
+                                                                                        ),
+                                                                                      ),
+                                                                                    ],
+                                                                                  ),
+                                                                                ],
+                                                                              ),
+                                                                            ),
+                                                                          )
+                                                                        else if (sharedContact !=
+                                                                            null)
+                                                                          _SharedContactCard(
+                                                                            sharedContact,
+                                                                            token:
+                                                                                widget.token,
+                                                                            me: widget.me,
+                                                                          )
+                                                                        else
+                                                                          InlineEmojiText(
+                                                                            msg['text'] as String? ??
+                                                                                '',
+                                                                            messageEmojis:
+                                                                                true,
+                                                                            style:
+                                                                                const TextStyle(fontSize: 15, height: 1.4),
+                                                                            textDirection:
+                                                                                TextDirection.rtl,
+                                                                          ),
+                                                                        if (sharedUrl !=
+                                                                            null) ...[
+                                                                          const SizedBox(
+                                                                              height: 8),
+                                                                          _WebsiteLinkPreview(
+                                                                              sharedUrl,
+                                                                              widget.token),
+                                                                        ],
+                                                                        if (isMe &&
+                                                                            msg['deliverySummary']
+                                                                                is Map)
+                                                                          _GroupDeliverySummary(
+                                                                            Map<String, dynamic>.from(msg['deliverySummary']
+                                                                                as Map),
+                                                                          ),
+                                                                        if (uploadFileType !=
+                                                                                'image' &&
+                                                                            uploadFileType !=
+                                                                                'video')
+                                                                          Align(
+                                                                              alignment: Alignment.centerLeft,
+                                                                              widthFactor: 1,
                                                                               child: Row(
                                                                                 mainAxisSize: MainAxisSize.min,
                                                                                 children: [
-                                                                                  Icon(
-                                                                                      isPdfFile
-                                                                                          ? Icons.picture_as_pdf_outlined
-                                                                                          : isOfficeFile
-                                                                                              ? (msg['fileName']?.toString().toLowerCase().endsWith('.xlsx') == true ? Icons.table_chart_outlined : Icons.description_outlined)
-                                                                                              : Icons.insert_drive_file,
-                                                                                      size: 16,
-                                                                                      color: isPdfFile ? Colors.red : kSubtext),
-                                                                                  const SizedBox(width: 4),
-                                                                                  Flexible(child: const Text('פתיחת הקובץ', style: TextStyle(fontSize: 13))),
-                                                                                  const SizedBox(width: 10),
-                                                                                  const Icon(Icons.download, size: 19, color: kPrimary),
-                                                                                  const SizedBox(width: 3),
-                                                                                  const Text('הורדה', style: TextStyle(fontSize: 12, color: kPrimary, fontWeight: FontWeight.w600)),
+                                                                                  if (msg['isEdited'] == true) const Text('נערך · ', style: TextStyle(fontSize: 10, color: kSubtext, fontStyle: FontStyle.italic)),
+                                                                                  Text(msg['time'] as String? ?? '', style: const TextStyle(fontSize: 11, color: kSubtext)),
+                                                                                  if (isMe) ...[
+                                                                                    const SizedBox(width: 3),
+                                                                                    Icon(msg['status'] == 'read' || msg['status'] == 'delivered' ? Icons.done_all : Icons.done, size: 14, color: kPrimary),
+                                                                                  ],
                                                                                 ],
                                                                               )),
-                                                                        ],
-                                                                      ),
+                                                                      ],
                                                                     ),
-                                                                  )
-                                                                else if (isFilterUpdateAnnouncement)
-                                                                  InkWell(
-                                                                    onTap:
-                                                                        _updateMyGroupFilter,
-                                                                    borderRadius:
-                                                                        BorderRadius
-                                                                            .circular(8),
-                                                                    child:
-                                                                        Padding(
-                                                                      padding: const EdgeInsets
-                                                                          .symmetric(
-                                                                          vertical:
-                                                                              4),
-                                                                      child:
-                                                                          Column(
-                                                                        crossAxisAlignment:
-                                                                            CrossAxisAlignment.start,
-                                                                        children: [
-                                                                          const Row(
-                                                                            mainAxisSize:
-                                                                                MainAxisSize.min,
-                                                                            children: [
-                                                                              Icon(Icons.shield_outlined, color: kPrimary, size: 21),
-                                                                              SizedBox(width: 8),
-                                                                              Text(
-                                                                                'סינון הקבוצה עודכן',
-                                                                                style: TextStyle(
-                                                                                  fontSize: 15,
-                                                                                  fontWeight: FontWeight.w800,
-                                                                                ),
-                                                                              ),
-                                                                            ],
-                                                                          ),
-                                                                          const SizedBox(
-                                                                              height: 5),
-                                                                          Text(
-                                                                            filterUpdateDetails.isEmpty
-                                                                                ? 'מדיניות התוכן של הקבוצה השתנתה.'
-                                                                                : filterUpdateDetails,
-                                                                            textAlign:
-                                                                                TextAlign.right,
-                                                                            textDirection:
-                                                                                TextDirection.rtl,
-                                                                            style: const TextStyle(
-                                                                                fontSize: 12,
-                                                                                color: kTextDark,
-                                                                                height: 1.5),
-                                                                          ),
-                                                                          const SizedBox(
-                                                                              height: 7),
-                                                                          Row(
-                                                                            mainAxisSize:
-                                                                                MainAxisSize.min,
-                                                                            children: [
-                                                                              const Icon(Icons.tune_rounded, size: 17, color: kPrimary),
-                                                                              const SizedBox(width: 4),
-                                                                              const Text(
-                                                                                'עדכון הסינון האישי שלי',
-                                                                                style: TextStyle(
-                                                                                  color: kPrimary,
-                                                                                  fontWeight: FontWeight.bold,
-                                                                                  decoration: TextDecoration.underline,
-                                                                                ),
-                                                                              ),
-                                                                            ],
-                                                                          ),
-                                                                        ],
-                                                                      ),
-                                                                    ),
-                                                                  )
-                                                                else if (isEducationAnnouncement)
-                                                                  InkWell(
-                                                                    onTap: () =>
-                                                                        _openEducationAnnouncement(
-                                                                            msg),
-                                                                    borderRadius:
-                                                                        BorderRadius
-                                                                            .circular(8),
-                                                                    child:
-                                                                        Padding(
-                                                                      padding: const EdgeInsets
-                                                                          .symmetric(
-                                                                          vertical:
-                                                                              4),
-                                                                      child:
-                                                                          Column(
-                                                                        crossAxisAlignment:
-                                                                            CrossAxisAlignment.end,
-                                                                        children: [
-                                                                          Row(
-                                                                            mainAxisSize:
-                                                                                MainAxisSize.min,
-                                                                            children: [
-                                                                              const Icon(Icons.fact_check_outlined, color: kPrimary),
-                                                                              const SizedBox(width: 8),
-                                                                              Flexible(
-                                                                                child: Text(
-                                                                                  msg['text'] as String? ?? '',
-                                                                                  style: const TextStyle(fontSize: 15, height: 1.4, fontWeight: FontWeight.w600),
-                                                                                  textDirection: TextDirection.rtl,
-                                                                                ),
-                                                                              ),
-                                                                            ],
-                                                                          ),
-                                                                          const SizedBox(
-                                                                              height: 8),
-                                                                          Row(
-                                                                            mainAxisSize:
-                                                                                MainAxisSize.min,
-                                                                            children: [
-                                                                              const Icon(Icons.touch_app, size: 17, color: kPrimary),
-                                                                              const SizedBox(width: 4),
-                                                                              const Text('לחץ לפתיחת המסמך', style: TextStyle(color: kPrimary, fontWeight: FontWeight.bold)),
-                                                                              const SizedBox(width: 12),
-                                                                              Container(
-                                                                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                                                                                decoration: BoxDecoration(
-                                                                                  color: educationStatusColor.withValues(alpha: .12),
-                                                                                  borderRadius: BorderRadius.circular(14),
-                                                                                ),
-                                                                                child: Text(
-                                                                                  educationStatusLabel,
-                                                                                  style: TextStyle(
-                                                                                    color: educationStatusColor,
-                                                                                    fontWeight: FontWeight.bold,
-                                                                                    fontSize: 12,
-                                                                                  ),
-                                                                                ),
-                                                                              ),
-                                                                            ],
-                                                                          ),
-                                                                        ],
-                                                                      ),
-                                                                    ),
-                                                                  )
-                                                                else if (sharedContact !=
-                                                                    null)
-                                                                  _SharedContactCard(
-                                                                    sharedContact,
-                                                                    token: widget
-                                                                        .token,
-                                                                    me: widget
-                                                                        .me,
-                                                                  )
-                                                                else
-                                                                  InlineEmojiText(
-                                                                    msg['text']
-                                                                            as String? ??
-                                                                        '',
-                                                                    messageEmojis: true,
-                                                                    style: const TextStyle(
-                                                                        fontSize:
-                                                                            15,
-                                                                        height:
-                                                                            1.4),
-                                                                    textDirection:
-                                                                        TextDirection
-                                                                            .rtl,
                                                                   ),
-                                                                if (sharedUrl !=
-                                                                    null) ...[
-                                                                  const SizedBox(
-                                                                      height:
-                                                                          8),
-                                                                  _WebsiteLinkPreview(
-                                                                      sharedUrl,
-                                                                      widget
-                                                                          .token),
-                                                                ],
-                                                                if (isMe &&
-                                                                    msg['deliverySummary']
-                                                                        is Map)
-                                                                  _GroupDeliverySummary(
-                                                                    Map<String,
-                                                                        dynamic>.from(msg[
-                                                                            'deliverySummary']
-                                                                        as Map),
+                                                                ),
+                                                                if (_selectedMessageKeys
+                                                                    .isNotEmpty)
+                                                                  Positioned(
+                                                                    top: 6,
+                                                                    right: 6,
+                                                                    child: Icon(
+                                                                      _selectedMessageKeys.contains(_selectionKey(
+                                                                              msg))
+                                                                          ? Icons
+                                                                              .check_circle
+                                                                          : Icons
+                                                                              .radio_button_unchecked,
+                                                                      color: _selectedMessageKeys
+                                                                              .contains(_selectionKey(msg))
+                                                                          ? kPrimary
+                                                                          : kSubtext,
+                                                                      size: 26,
+                                                                    ),
                                                                   ),
-                                                                if (uploadFileType !=
-                                                                        'image' &&
-                                                                    uploadFileType !=
-                                                                        'video')
-                                                                  Align(
-                                                                      alignment:
-                                                                          Alignment
-                                                                              .centerLeft,
-                                                                      widthFactor:
-                                                                          1,
-                                                                      child:
-                                                                          Row(
-                                                                        mainAxisSize:
-                                                                            MainAxisSize.min,
-                                                                        children: [
-                                                                          if (msg['isEdited'] ==
-                                                                              true)
-                                                                            const Text('נערך · ',
-                                                                                style: TextStyle(fontSize: 10, color: kSubtext, fontStyle: FontStyle.italic)),
-                                                                          Text(
-                                                                              msg['time'] as String? ?? '',
-                                                                              style: const TextStyle(fontSize: 11, color: kSubtext)),
-                                                                          if (isMe) ...[
-                                                                            const SizedBox(width: 3),
-                                                                            Icon(msg['status'] == 'read' || msg['status'] == 'delivered' ? Icons.done_all : Icons.done,
-                                                                                size: 14,
-                                                                                color: kPrimary),
-                                                                          ],
-                                                                        ],
-                                                                      )),
                                                               ],
                                                             ),
-                                                          ),
-                                                        ),
-                                                        if (_selectedMessageKeys
-                                                            .isNotEmpty)
-                                                          Positioned(
-                                                            top: 6,
-                                                            right: 6,
-                                                            child: Icon(
-                                                              _selectedMessageKeys.contains(
-                                                                      _selectionKey(
-                                                                          msg))
-                                                                  ? Icons
-                                                                      .check_circle
-                                                                  : Icons
-                                                                      .radio_button_unchecked,
-                                                              color: _selectedMessageKeys
-                                                                      .contains(
-                                                                          _selectionKey(
-                                                                              msg))
-                                                                  ? kPrimary
-                                                                  : kSubtext,
-                                                              size: 26,
-                                                            ),
-                                                          ),
+                                                          ), // GestureDetector
                                                       ],
-                                                    ),
-                                                  ), // GestureDetector
-                                              ],
-                                            ))),
-                                  ],
+                                                    ))),
+                                          ],
+                                        ),
+                                      ],
+                                    );
+                                  },
                                 ),
-                              ],
-                            );
-                          },
-                        ),
-            ),
-          // Edit mode bar (group)
-          if (_editingMsg != null)
-            Container(
-              color: const Color(0xFFFFF8E1),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  Container(
-                      width: 3,
-                      height: 36,
-                      color: Colors.orange,
-                      margin: const EdgeInsets.only(left: 8)),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('עריכת הודעה',
-                            style: TextStyle(
-                                color: Colors.orange,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold)),
-                        InlineEmojiText(_editingMsg!['text'] as String? ?? '',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style:
-                                const TextStyle(fontSize: 13, color: kSubtext)),
-                      ],
                     ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () => setState(() {
-                      _editingMsg = null;
-                      _msgCtrl.clear();
-                    }),
-                  ),
-                ],
-              ),
-            ),
-          if (_isTyping && _myStatus == 'member')
-            Container(
-              width: double.infinity,
-              color: kBg,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Text('$_typingName מקליד...',
-                  style: const TextStyle(
-                      fontSize: 12,
-                      color: kSubtext,
-                      fontStyle: FontStyle.italic),
-                  textDirection: TextDirection.rtl),
-            ),
-          if (_myStatus == 'member' && !_canSendToGroup)
-            Container(
-              width: double.infinity,
-              color: kCard,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              child: const Text(
-                'רק מנהלי הקבוצה רשאים לשלוח הודעות',
-                textAlign: TextAlign.center,
-                textDirection: TextDirection.rtl,
-                style: TextStyle(color: kSubtext, fontWeight: FontWeight.w600),
-              ),
-            )
-          else if (_myStatus == 'member')
-            Container(
-              color: kCard,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 900),
-                  child: _isRecording
-                    ? VoiceRecordingBar(timeLabel: _voiceRecordingTime(_recordSeconds),
-                        onSend: _toggleVoiceRecording, onCancel: _cancelVoiceRecording)
-                    : Row(
-                    children: [
-                      IconButton(
-                        tooltip:
-                            _isRecording ? 'סיים ושלח' : 'הקלט הודעה קולית',
-                        onPressed: _toggleVoiceRecording,
-                        icon: Icon(_isRecording ? Icons.stop_circle : Icons.mic,
-                            size: 19,
-                            color: _isRecording ? Colors.red : kPrimary),
-                        padding: const EdgeInsets.all(8),
-                        style: const ButtonStyle(
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                        constraints: const BoxConstraints.tightFor(
-                            width: 36, height: 36),
-                      ),
-                      IconButton(
-                        key: const ValueKey('chat-inline-emoji-shortcut'),
-                        tooltip: 'אימוג׳י',
-                        icon: const Icon(Icons.emoji_emotions_outlined,
-                            size: 19, color: kPrimary),
-                        onPressed: () => _showGroupExpressions(inlineEmoji: true),
-                        padding: const EdgeInsets.all(8),
-                        style: const ButtonStyle(
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                        constraints: const BoxConstraints.tightFor(
-                            width: 36, height: 36),
-                      ),
-                      IconButton(
-                        key: const ValueKey('chat-stickers-shortcut'),
-                        tooltip: 'מדבקות',
-                        icon: const Icon(Icons.sticky_note_2_outlined,
-                            size: 18, color: kPrimary),
-                        onPressed: () => _showGroupExpressions(inlineEmoji: false),
-                        padding: const EdgeInsets.all(8),
-                        style: const ButtonStyle(
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                        constraints: const BoxConstraints.tightFor(
-                            width: 36, height: 36),
-                      ),
-                      IconButton(
-                        key: _attachmentAnchorKey,
-                        tooltip: 'צירוף קובץ',
-                        icon: const Icon(Icons.attach_file,
-                            size: 18, color: kSubtext),
-                        onPressed: _showAttachMenu,
-                        padding: const EdgeInsets.all(8),
-                        style: const ButtonStyle(
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                        constraints: const BoxConstraints.tightFor(
-                            width: 36, height: 36),
-                      ),
-                      Expanded(
-                        child: Focus(
-                          onKeyEvent: (_, event) =>
-                              _handleMessageInputNavigation(
-                                  _msgCtrl, _msgHistory, event,
-                                  onWebEnter: _send),
-                          child: ValueListenableBuilder<TextEditingValue>(
-                            valueListenable: _msgCtrl,
-                            builder: (context, value, _) => TextField(
-                              controller: _msgCtrl,
-                              focusNode: _msgFocusNode,
-                              contextMenuBuilder: (context, state) => buildImagePasteMenu(
-                                  context, state, _clipboardImagePasteListener.pasteImage),
-                              textDirection: inlineEmojiDraftDirection(value.text),
-                              textAlign: TextAlign.right,
-                              minLines: 1,
-                              maxLines: 4,
-                              textInputAction: TextInputAction.newline,
-                              decoration: InputDecoration(
-                                hintText: 'הודעה לקבוצה...',
-                                hintTextDirection: TextDirection.rtl,
-                                contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 10),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(24),
-                                  borderSide: BorderSide.none,
-                                ),
-                                filled: true,
-                                fillColor: kBg,
-                              ),
-                              onTap: _expressionPanel.close,
-                              onChanged: (_) {
-                                _keyboardClick.click();
-                                widget.socket?.emit('group:typing', {'groupId': _groupId});
-                              },
-                              onSubmitted: (_) => _send(),
+                  // Edit mode bar (group)
+                  if (_editingMsg != null)
+                    Container(
+                      color: const Color(0xFFFFF8E1),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                      child: Row(
+                        children: [
+                          Container(
+                              width: 3,
+                              height: 36,
+                              color: Colors.orange,
+                              margin: const EdgeInsets.only(left: 8)),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('עריכת הודעה',
+                                    style: TextStyle(
+                                        color: Colors.orange,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold)),
+                                InlineEmojiText(
+                                    _editingMsg!['text'] as String? ?? '',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 13, color: kSubtext)),
+                              ],
                             ),
                           ),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      if (_isRecording)
-                        Text(
-                          'זמן הקלטה: ${_voiceRecordingTime(_recordSeconds)}\nעד שעתיים',
-                          style:
-                              const TextStyle(color: Colors.red, fontSize: 12),
-                        ),
-                      GestureDetector(
-                        onTap: _send,
-                        child: Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: kPrimary,
-                            borderRadius: BorderRadius.circular(22),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => setState(() {
+                              _editingMsg = null;
+                              _msgCtrl.clear();
+                            }),
                           ),
-                          child: const Icon(Icons.send,
-                              color: Colors.white, size: 20),
+                        ],
+                      ),
+                    ),
+                  if (_myStatus == 'member')
+                    Container(
+                      key: const ValueKey('group-typing-indicator'),
+                      width: double.infinity,
+                      color: kBg,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 4),
+                      child: Text(_isTyping ? '$_typingName מקליד...' : ' ',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: kSubtext,
+                              fontStyle: FontStyle.italic),
+                          textDirection: TextDirection.rtl),
+                    ),
+                  if (_myStatus == 'member' && !_canSendToGroup)
+                    Container(
+                      width: double.infinity,
+                      color: kCard,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 14),
+                      child: const Text(
+                        'רק מנהלי הקבוצה רשאים לשלוח הודעות',
+                        textAlign: TextAlign.center,
+                        textDirection: TextDirection.rtl,
+                        style: TextStyle(
+                            color: kSubtext, fontWeight: FontWeight.w600),
+                      ),
+                    )
+                  else if (_myStatus == 'member')
+                    Container(
+                      color: kCard,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 900),
+                          child: _isRecording
+                              ? VoiceRecordingBar(
+                                  timeLabel:
+                                      _voiceRecordingTime(_recordSeconds),
+                                  onSend: _toggleVoiceRecording,
+                                  onCancel: _cancelVoiceRecording)
+                              : _ChatComposerBar(
+                                  compact: constraints.maxHeight < 180,
+                                  controller: _msgCtrl,
+                                  input: Focus(
+                                    onKeyEvent: (_, event) =>
+                                        _handleMessageInputNavigation(
+                                            _msgCtrl, _msgHistory, event,
+                                            onWebEnter: _send),
+                                    child: ValueListenableBuilder<
+                                        TextEditingValue>(
+                                      valueListenable: _msgCtrl,
+                                      builder: (context, value, _) => TextField(
+                                        controller: _msgCtrl,
+                                        focusNode: _msgFocusNode,
+                                        contextMenuBuilder: (context, state) =>
+                                            buildImagePasteMenu(
+                                                context,
+                                                state,
+                                                _clipboardImagePasteListener
+                                                    .pasteImage),
+                                        textDirection:
+                                            inlineEmojiDraftDirection(
+                                                value.text),
+                                        textAlign: TextAlign.right,
+                                        minLines: 1,
+                                        maxLines: 4,
+                                        textInputAction:
+                                            TextInputAction.newline,
+                                        decoration: InputDecoration(
+                                          hintText: 'הודעה לקבוצה...',
+                                          hintTextDirection: TextDirection.rtl,
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                  horizontal: 16, vertical: 10),
+                                          border: OutlineInputBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(24),
+                                            borderSide: BorderSide.none,
+                                          ),
+                                          filled: true,
+                                          fillColor: kBg,
+                                        ),
+                                        onTap: _expressionPanel.close,
+                                        onChanged: (_) {
+                                          _keyboardClick.click();
+                                          widget.socket?.emit('group:typing',
+                                              {'groupId': _groupId});
+                                        },
+                                        onSubmitted: (_) => _send(),
+                                      ),
+                                    ),
+                                  ),
+                                  attachmentKey: _attachmentAnchorKey,
+                                  onAttach: _showAttachMenu,
+                                  onRecord: _toggleVoiceRecording,
+                                  onSend: _send,
+                                  onStickers: () =>
+                                      _showGroupExpressions(inlineEmoji: false),
+                                  onEmoji: () =>
+                                      _showGroupExpressions(inlineEmoji: true),
+                                  canSendText: true,
+                                ),
                         ),
                       ),
-                    ],
+                    ),
+                  _ExpressionPanel(
+                    controller: _expressionPanel,
+                    maxHeight: math.max(
+                        0.0,
+                        math.min(
+                            constraints.maxHeight * 0.6,
+                            constraints.maxHeight -
+                                (constraints.maxHeight < 180 ? 116 : 124))),
                   ),
-                ),
-              ),
-            ),
-          _ExpressionPanel(
-            controller: _expressionPanel,
-            maxHeight: math.max(0.0, math.min(constraints.maxHeight * 0.6, constraints.maxHeight - 100)),
-          ),
-        ],
-      )),
+                ],
+              )),
     );
     final width = MediaQuery.sizeOf(context).width;
     if (width >= 900 && !widget.embedded) {
@@ -38772,8 +40019,12 @@ class _ContentFilterSettingsScreenState
               ? (_inherit ? {'inherit': true} : {'filter': _filter})
               : {..._filter, 'enforceGeneralFilter': _enforceGeneralFilter};
       if (_isContact) body.addAll(_phoneChoice.confirmationPayload);
-      final response = await saveReceivingFilter(context: context, api: kApi,
-          token: widget.token, path: path, body: body);
+      final response = await saveReceivingFilter(
+          context: context,
+          api: kApi,
+          token: widget.token,
+          path: path,
+          body: body);
       if (response == null) return;
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode != 200) throw Exception(data['error'] ?? 'שגיאה');
@@ -39210,162 +40461,183 @@ class _ContentFilterSettingsScreenState
             : Center(
                 child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 760),
-                child: ListView(children: [FilterPinGate(api: kApi, token: widget.token, child: Column(children: [
-                  if ((_isContact || _isGroup) && _enforceGeneralFilter)
-                    const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Text(
-                            'אכיפת הסינון הכללי פעילה. סוגי תוכן שחסומים בו יישארו חסומים גם כאן.')),
-                  if (_isGroup) _groupOverview(),
-                  if (_isContact && _isPersonalPhoneContact(widget.contactId, widget.currentUserId))
-                    Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                      child: PhoneSharingPanel(api: kApi, token: widget.token,
-                        contactId: widget.contactId!, controller: _phoneChoice,
-                        contactName: widget.contactName ?? 'איש הקשר', compact: true,
-                        initialChoice: _requiresPhoneChoice,
-                        onChanged: () { if (mounted) setState(() {}); })),
-                  if (_isContact || _isGroup) ...[
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-                      child: Card(
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          side: const BorderSide(color: kBorder),
-                        ),
-                        child: ListTile(
-                          leading:
-                              const Icon(Icons.sync_rounded, color: kPrimary),
-                          title: const Text('השתמש בסינון הכללי',
-                              style: TextStyle(fontWeight: FontWeight.w700)),
-                          subtitle: Text(_isGroup
-                              ? 'כל עוד לא מוגדר סינון פרטני, הקבוצה יורשת את הסינון הכללי'
-                              : 'כל עוד לא מוגדר סינון פרטני, השיחה יורשת את הסינון הכללי'),
-                          trailing: _filterSwitch(
-                            value: _inherit,
-                            onChanged: (value) =>
-                                setState(() => _inherit = value),
-                          ),
-                          onTap: () => setState(() => _inherit = !_inherit),
-                        ),
-                      ),
-                    ),
-                  ],
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
-                    child: Column(children: [
-                      if (_isGroup) ...[
-                        Container(
-                          width: double.infinity,
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 11),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE8F4FD),
-                            borderRadius: BorderRadius.circular(13),
-                            border: Border.all(color: kBorder),
-                          ),
-                          child: Row(children: [
-                            const Icon(Icons.groups_outlined,
-                                color: kPrimary, size: 21),
-                            const SizedBox(width: 9),
-                            Expanded(
+                child: ListView(children: [
+                  FilterPinGate(
+                      api: kApi,
+                      token: widget.token,
+                      child: Column(children: [
+                        if ((_isContact || _isGroup) && _enforceGeneralFilter)
+                          const Padding(
+                              padding: EdgeInsets.all(16),
                               child: Text(
-                                'שם הקבוצה: $_groupName',
-                                textAlign: TextAlign.right,
-                                textDirection: TextDirection.rtl,
-                                style: const TextStyle(
-                                  color: kPrimary,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w800,
+                                  'אכיפת הסינון הכללי פעילה. סוגי תוכן שחסומים בו יישארו חסומים גם כאן.')),
+                        if (_isGroup) _groupOverview(),
+                        if (_isContact &&
+                            _isPersonalPhoneContact(
+                                widget.contactId, widget.currentUserId))
+                          Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 4),
+                              child: PhoneSharingPanel(
+                                  api: kApi,
+                                  token: widget.token,
+                                  contactId: widget.contactId!,
+                                  controller: _phoneChoice,
+                                  contactName: widget.contactName ?? 'איש הקשר',
+                                  compact: true,
+                                  initialChoice: _requiresPhoneChoice,
+                                  onChanged: () {
+                                    if (mounted) setState(() {});
+                                  })),
+                        if (_isContact || _isGroup) ...[
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                            child: Card(
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                                side: const BorderSide(color: kBorder),
+                              ),
+                              child: ListTile(
+                                leading: const Icon(Icons.sync_rounded,
+                                    color: kPrimary),
+                                title: const Text('השתמש בסינון הכללי',
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.w700)),
+                                subtitle: Text(_isGroup
+                                    ? 'כל עוד לא מוגדר סינון פרטני, הקבוצה יורשת את הסינון הכללי'
+                                    : 'כל עוד לא מוגדר סינון פרטני, השיחה יורשת את הסינון הכללי'),
+                                trailing: _filterSwitch(
+                                  value: _inherit,
+                                  onChanged: (value) =>
+                                      setState(() => _inherit = value),
                                 ),
+                                onTap: () =>
+                                    setState(() => _inherit = !_inherit),
                               ),
                             ),
+                          ),
+                        ],
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+                          child: Column(children: [
+                            if (_isGroup) ...[
+                              Container(
+                                width: double.infinity,
+                                margin: const EdgeInsets.only(bottom: 12),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 11),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE8F4FD),
+                                  borderRadius: BorderRadius.circular(13),
+                                  border: Border.all(color: kBorder),
+                                ),
+                                child: Row(children: [
+                                  const Icon(Icons.groups_outlined,
+                                      color: kPrimary, size: 21),
+                                  const SizedBox(width: 9),
+                                  Expanded(
+                                    child: Text(
+                                      'שם הקבוצה: $_groupName',
+                                      textAlign: TextAlign.right,
+                                      textDirection: TextDirection.rtl,
+                                      style: const TextStyle(
+                                        color: kPrimary,
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ),
+                                ]),
+                              ),
+                            ],
+                            Row(children: [
+                              Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: kPrimary.withValues(alpha: 0.10),
+                                  borderRadius: BorderRadius.circular(11),
+                                ),
+                                child: const Icon(Icons.shield_outlined,
+                                    color: kPrimary),
+                              ),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('סוגי תוכן מותרים',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16)),
+                                    Text('גלול למטה כדי לראות את כל האפשרויות',
+                                        style: TextStyle(
+                                            color: kSubtext, fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                            ]),
                           ]),
                         ),
-                      ],
-                      Row(children: [
-                        Container(
-                          width: 38,
-                          height: 38,
-                          decoration: BoxDecoration(
-                            color: kPrimary.withValues(alpha: 0.10),
-                            borderRadius: BorderRadius.circular(11),
+                        if (_isGroup && !_inherit)
+                          const Padding(
+                            padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
+                            child: Text(
+                              'הגדרת הקבוצה קובעת מה ניתן לשלוח לכל הקבוצה. בנוסף, כל חבר ממשיך להיות מוגן לפי הסינון האישי שלו; ההגדרה המחמירה מביניהן היא שקובעת.',
+                              style: TextStyle(color: kSubtext),
+                            ),
                           ),
-                          child: const Icon(Icons.shield_outlined,
-                              color: kPrimary),
+                        _option('men', 'גברים', 'תמונות שסווגו כתמונות גברים',
+                            Icons.man),
+                        _option('women', 'נשים', 'תמונות שסווגו כתמונות נשים',
+                            Icons.woman),
+                        _option('children', 'ילדים',
+                            'תמונות שסווגו כתמונות ילדים', Icons.child_care),
+                        _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
+                            Icons.videocam_outlined),
+                        if (!_isContact && !_isGroup)
+                          Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: _GeneralFilterEnforcementCard(
+                                value: _enforceGeneralFilter,
+                                onChanged: _saving
+                                    ? null
+                                    : (value) => setState(
+                                        () => _enforceGeneralFilter = value),
+                              )),
+                        const Padding(
+                          padding: EdgeInsets.all(18),
+                          child: Text(
+                              'כל התמונות עוברות בדיקת תוכן לא ראוי תמיד, ללא קשר לבחירות כאן.',
+                              style: TextStyle(color: kSubtext)),
                         ),
-                        const SizedBox(width: 10),
-                        const Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('סוגי תוכן מותרים',
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16)),
-                              Text('גלול למטה כדי לראות את כל האפשרויות',
-                                  style:
-                                      TextStyle(color: kSubtext, fontSize: 12)),
-                            ],
+                        Padding(
+                          padding: const EdgeInsets.all(18),
+                          child: FilledButton.icon(
+                            onPressed: _saving ? null : _save,
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(52),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(15)),
+                              textStyle: const TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w700),
+                            ),
+                            icon: _saving
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2))
+                                : const Icon(Icons.save),
+                            label: Text(_isContact
+                                ? _phoneChoice.confirmationLabel(
+                                    saveLabel: 'שמור הגדרות')
+                                : 'שמור הגדרות'),
                           ),
                         ),
-                      ]),
-                    ]),
-                  ),
-                  if (_isGroup && !_inherit)
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(18, 8, 18, 12),
-                      child: Text(
-                        'הגדרת הקבוצה קובעת מה ניתן לשלוח לכל הקבוצה. בנוסף, כל חבר ממשיך להיות מוגן לפי הסינון האישי שלו; ההגדרה המחמירה מביניהן היא שקובעת.',
-                        style: TextStyle(color: kSubtext),
-                      ),
-                    ),
-                  _option(
-                      'men', 'גברים', 'תמונות שסווגו כתמונות גברים', Icons.man),
-                  _option('women', 'נשים', 'תמונות שסווגו כתמונות נשים',
-                      Icons.woman),
-                  _option('children', 'ילדים', 'תמונות שסווגו כתמונות ילדים',
-                      Icons.child_care),
-                  _option('video', 'וידאו', 'סרטונים שעברו סריקה וסיווג',
-                      Icons.videocam_outlined),
-                  if (!_isContact && !_isGroup)
-                    Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: _GeneralFilterEnforcementCard(
-                          value: _enforceGeneralFilter,
-                          onChanged: _saving
-                              ? null
-                              : (value) =>
-                                  setState(() => _enforceGeneralFilter = value),
-                        )),
-                  const Padding(
-                    padding: EdgeInsets.all(18),
-                    child: Text(
-                        'כל התמונות עוברות בדיקת תוכן לא ראוי תמיד, ללא קשר לבחירות כאן.',
-                        style: TextStyle(color: kSubtext)),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: FilledButton.icon(
-                      onPressed: _saving ? null : _save,
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(52),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(15)),
-                        textStyle: const TextStyle(
-                            fontSize: 15, fontWeight: FontWeight.w700),
-                      ),
-                      icon: _saving
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.save),
-                      label: Text(_isContact ? _phoneChoice.confirmationLabel(saveLabel: 'שמור הגדרות') : 'שמור הגדרות'),
-                    ),
-                  ),
-                ])),]),
+                      ])),
+                ]),
               )),
       ),
     );
@@ -39379,7 +40651,11 @@ class PersonalMediaScreen extends StatefulWidget {
   final VoidCallback? onClose;
   final bool initialCleanup;
   const PersonalMediaScreen(
-      {super.key, required this.token, this.embedded = false, this.onClose, this.initialCleanup = false});
+      {super.key,
+      required this.token,
+      this.embedded = false,
+      this.onClose,
+      this.initialCleanup = false});
 
   @override
   State<PersonalMediaScreen> createState() => _PersonalMediaScreenState();
@@ -39461,22 +40737,23 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   }
 
   Widget _hiddenMediaPreview(Map<String, dynamic> item, {bool small = false}) {
-    final message = _isScanStopped(item) ? _scanStoppedNotice(item) : hiddenImageMessage(
-      fileType: item['fileType']?.toString(),
-      hiddenReason: item['hiddenReason']?.toString(),
-      status: item['moderationStatus']?.toString(),
-      reason: item['scanReason']?.toString(),
-      contentPurged: item['contentPurged'] == true,
-    );
+    final message = _isScanStopped(item)
+        ? _scanStoppedNotice(item)
+        : hiddenImageMessage(
+            fileType: item['fileType']?.toString(),
+            hiddenReason: item['hiddenReason']?.toString(),
+            status: item['moderationStatus']?.toString(),
+            reason: item['scanReason']?.toString(),
+            contentPurged: item['contentPurged'] == true,
+          );
     final hiddenByFilter = isContentFilterHiddenImage(
       hiddenReason: item['hiddenReason']?.toString(),
       status: item['moderationStatus']?.toString(),
       contentPurged: item['contentPurged'] == true,
     );
     final placeholder = Tooltip(
-      message: hiddenByFilter
-          ? '$message. אפשר להחזיר אותה מתוך השיחה.'
-          : message,
+      message:
+          hiddenByFilter ? '$message. אפשר להחזיר אותה מתוך השיחה.' : message,
       child: Container(
         color: const Color(0xFFF0F5F9),
         alignment: Alignment.center,
@@ -39565,7 +40842,11 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.initialCleanup) { _cleanupMode = true; _sort = 'date_asc'; _selecting = true; }
+    if (widget.initialCleanup) {
+      _cleanupMode = true;
+      _sort = 'date_asc';
+      _selecting = true;
+    }
     _receivingFilterSubscription = receivingFilterChanges.stream.listen((
       token,
     ) {
@@ -40080,7 +41361,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     );
   }
 
-  Future<void> _delete(Map<String, dynamic> item) => _confirmDeleteItems([item]);
+  Future<void> _delete(Map<String, dynamic> item) =>
+      _confirmDeleteItems([item]);
 
   Future<void> _confirmDeleteItems(List<Map<String, dynamic>> items) async {
     if (_deleting || _forwarding || _selectingAll || items.isEmpty) return;
@@ -40088,7 +41370,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     final chosen = items.map(Map<String, dynamic>.from).toList();
     List<String> copyIds(Map<String, dynamic> item) =>
         (item['duplicateIds'] as List? ?? [item['id']])
-            .map((id) => id.toString()).toSet().toList();
+            .map((id) => id.toString())
+            .toSet()
+            .toList();
     setState(() => _deleting = true);
     try {
       final result = await confirmPersonalMediaDeletion(
@@ -40104,7 +41388,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
           final oldId = item['id'].toString();
           final selected = _selectedItems.remove(oldId);
           final remaining = copyIds(item)
-              .where((id) => !result.deletedIds.contains(id)).toList();
+              .where((id) => !result.deletedIds.contains(id))
+              .toList();
           if (selected != null && remaining.isNotEmpty) {
             _selectedItems[remaining.first] = {
               ...selected,
@@ -40118,8 +41403,10 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       });
       await _refresh();
       if (!mounted || token != widget.token) return;
-      final errors = result.failed.map((row) =>
-          row['error']?.toString() ?? 'מחיקת הקובץ נכשלה').toSet().toList();
+      final errors = result.failed
+          .map((row) => row['error']?.toString() ?? 'מחיקת הקובץ נכשלה')
+          .toSet()
+          .toList();
       final count = result.deletedIds.length;
       final notice = count == 0
           ? (errors.firstOrNull ?? 'לא נמחקו קבצים')
@@ -40127,7 +41414,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
               '${result.deletedBytes > 0 ? ' ופונו ${_size(result.deletedBytes)}' : ''}'
               '${result.cleanupPendingCount > 0 ? '. פינוי האחסון והגיבוי של ${result.cleanupPendingCount} קבצים יושלם בהמשך' : ''}'
               '${errors.isEmpty ? '' : '. ${result.failed.length} קבצים לא נמחקו: ${errors.first}'}';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(notice)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(notice)));
     } finally {
       if (mounted && token == widget.token) setState(() => _deleting = false);
     }
@@ -40188,9 +41476,11 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
 
   Future<String?> _rename(Map<String, dynamic> item) async {
     final id = item['id'].toString();
-    if (_busyMediaIds.contains(id) || _forwarding || _deleting || _selectingAll) return null;
+    if (_busyMediaIds.contains(id) || _forwarding || _deleting || _selectingAll)
+      return null;
     final token = widget.token;
-    final current = _items.where((row) => row['id'].toString() == id).firstOrNull ?? item;
+    final current =
+        _items.where((row) => row['id'].toString() == id).firstOrNull ?? item;
     final oldName = current['name']?.toString() ?? '';
     final name = await showMediaRenameDialog(context, filename: oldName);
     if (name == null || name == oldName || !mounted || token != widget.token) {
@@ -40444,9 +41734,10 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontSize: 11,
-                                  color: (item['referenceCount'] as num? ?? 0) == 0
-                                      ? Colors.green.shade700
-                                      : Colors.orange.shade800,
+                                  color:
+                                      (item['referenceCount'] as num? ?? 0) == 0
+                                          ? Colors.green.shade700
+                                          : Colors.orange.shade800,
                                 ),
                               ),
                             ),
@@ -40973,7 +42264,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                       ),
                     ]),
                     Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 10),
                       child: _renameName(item, fontSize: 12, maxLines: 2),
                     ),
                     _tableText(
@@ -41196,8 +42488,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                   _load(reset: true);
                 },
                 icon: const Icon(Icons.cleaning_services_outlined, size: 19),
-                label: Text(
-                    '${_summary['deletableCount'] ?? 0} קבצים ללא שימוש'),
+                label:
+                    Text('${_summary['deletableCount'] ?? 0} קבצים ללא שימוש'),
               ),
             ],
           ],
@@ -41438,36 +42730,36 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       ].where((active) => active).length;
 
   Widget _mediaSearchField() => TextField(
-              key: const ValueKey('media-search'),
-              controller: _searchCtrl,
-              textInputAction: TextInputAction.search,
-              style: const TextStyle(color: kTextDark),
-              onSubmitted: (_) {
-                _filterDebounce?.cancel();
-                _load(reset: true);
-              },
-              onChanged: (_) {
-                setState(() {});
-                _debouncedLoad();
-              },
-              decoration: InputDecoration(
-                hintText: 'חיפוש קובץ לפי שם…',
-                labelText: 'חיפוש קבצים במדיה שלי',
-                prefixIcon: const Icon(Icons.search, color: kPrimary),
-                suffixIcon: _searchCtrl.text.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: 'נקה חיפוש',
-                        onPressed: () {
-                          setState(_searchCtrl.clear);
-                          _load(reset: true);
-                        },
-                        icon: const Icon(Icons.close),
-                      ),
-                filled: true,
-                fillColor: const Color(0xFFF7FAFE),
-              ),
-            );
+        key: const ValueKey('media-search'),
+        controller: _searchCtrl,
+        textInputAction: TextInputAction.search,
+        style: const TextStyle(color: kTextDark),
+        onSubmitted: (_) {
+          _filterDebounce?.cancel();
+          _load(reset: true);
+        },
+        onChanged: (_) {
+          setState(() {});
+          _debouncedLoad();
+        },
+        decoration: InputDecoration(
+          hintText: 'חיפוש קובץ לפי שם…',
+          labelText: 'חיפוש קבצים במדיה שלי',
+          prefixIcon: const Icon(Icons.search, color: kPrimary),
+          suffixIcon: _searchCtrl.text.isEmpty
+              ? null
+              : IconButton(
+                  tooltip: 'נקה חיפוש',
+                  onPressed: () {
+                    setState(_searchCtrl.clear);
+                    _load(reset: true);
+                  },
+                  icon: const Icon(Icons.close),
+                ),
+          filled: true,
+          fillColor: const Color(0xFFF7FAFE),
+        ),
+      );
 
   Widget _toolsPanel(double width) => Container(
         padding: const EdgeInsets.all(14),
@@ -41679,10 +42971,18 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                 ? AspectRatio(
                     aspectRatio: 16 / 9,
                     child: kIsWeb
-                        ? NativeWebVideoPlayer(url: _absoluteMediaUrl(url), progressApi: kApi, token: widget.token)
+                        ? NativeWebVideoPlayer(
+                            url: _absoluteMediaUrl(url),
+                            progressApi: kApi,
+                            token: widget.token)
                         : _ChatVideoPlayer(url: url),
                   )
-                : VoiceMessagePlayer(url: url, fileName: name, token: widget.token, isMe: true, senderName: name),
+                : VoiceMessagePlayer(
+                    url: url,
+                    fileName: name,
+                    token: widget.token,
+                    isMe: true,
+                    senderName: name),
           ),
           actions: [
             TextButton(
@@ -41705,7 +43005,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         .toSet()
         .toList();
     if (names.isEmpty) {
-      return (item['referenceCount'] as num? ?? 0) == 0 ? 'ללא שיוך לשיחה' : 'קובץ בשימוש';
+      return (item['referenceCount'] as num? ?? 0) == 0
+          ? 'ללא שיוך לשיחה'
+          : 'קובץ בשימוש';
     }
     return names.length == 1
         ? names.first
@@ -41811,9 +43113,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         child: Checkbox(
           key: ValueKey('media-select-${item['id']}'),
           value: _selectedItems.containsKey(item['id'].toString()),
-          onChanged:
-              !_deleting && !_forwarding && !_selectingAll
-                  ? (_) => _toggleSelected(item) : null,
+          onChanged: !_deleting && !_forwarding && !_selectingAll
+              ? (_) => _toggleSelected(item)
+              : null,
         ),
       );
 
@@ -41849,7 +43151,9 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
         key: ValueKey('media-delete-${item['id']}'),
         tooltip: 'מחיקת קובץ',
         visualDensity: VisualDensity.compact,
-        onPressed: _deleting || _forwarding || _selectingAll ||
+        onPressed: _deleting ||
+                _forwarding ||
+                _selectingAll ||
                 _busyMediaIds.contains(item['id'].toString())
             ? null
             : () => _delete(item),
@@ -41861,22 +43165,29 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       );
 
   Widget _renameName(Map<String, dynamic> item,
-      {double fontSize = 13, int maxLines = 1}) => Tooltip(
+          {double fontSize = 13, int maxLines = 1}) =>
+      Tooltip(
         message: 'לחץ לשינוי שם הקובץ',
         child: InkWell(
           key: ValueKey('media-rename-${item['id']}'),
-          onTap: _deleting || _forwarding || _selectingAll ||
+          onTap: _deleting ||
+                  _forwarding ||
+                  _selectingAll ||
                   _busyMediaIds.contains(item['id'].toString())
-              ? null : () => _rename(item),
+              ? null
+              : () => _rename(item),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(children: [
-              Expanded(child: Text(
+              Expanded(
+                  child: Text(
                 item['name']?.toString() ?? 'קובץ',
                 maxLines: maxLines,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontWeight: FontWeight.w600,
-                    color: kTextDark, fontSize: fontSize),
+                style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: kTextDark,
+                    fontSize: fontSize),
               )),
               const SizedBox(width: 4),
               const Icon(Icons.edit_outlined, size: 14, color: kSubtext),
@@ -42076,11 +43387,12 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       );
 
   Future<void> _selectAll() async {
-    if (_selectingAll || _deleting || _forwarding || _loading || _loadingMore) return;
+    if (_selectingAll || _deleting || _forwarding || _loading || _loadingMore)
+      return;
     final token = widget.token;
     final generation = ++_selectionGeneration;
-    bool current() => mounted && token == widget.token &&
-        generation == _selectionGeneration;
+    bool current() =>
+        mounted && token == widget.token && generation == _selectionGeneration;
     setState(() => _selectingAll = true);
     try {
       while (current() && _items.length < _total) {
@@ -42098,7 +43410,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
       setState(() {
         _selecting = true;
         for (final item in _items) {
-          _selectedItems[item['id'].toString()] = Map<String, dynamic>.from(item);
+          _selectedItems[item['id'].toString()] =
+              Map<String, dynamic>.from(item);
         }
       });
     } finally {
@@ -42120,10 +43433,18 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
     );
     final selectAll = OutlinedButton.icon(
       key: const ValueKey('media-select-all'),
-      onPressed: _deleting || _forwarding || _selectingAll ||
-              _loading || _loadingMore || _total == 0 ? null : _selectAll,
+      onPressed: _deleting ||
+              _forwarding ||
+              _selectingAll ||
+              _loading ||
+              _loadingMore ||
+              _total == 0
+          ? null
+          : _selectAll,
       icon: _selectingAll
-          ? const SizedBox(width: 16, height: 16,
+          ? const SizedBox(
+              width: 16,
+              height: 16,
               child: CircularProgressIndicator(strokeWidth: 2))
           : const Icon(Icons.select_all, size: 18),
       label: Text(_selectingAll ? 'טוען קבצים…' : 'בחר הכול'),
@@ -42282,7 +43603,10 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
             ),
             FilledButton.icon(
               key: const ValueKey('media-forward-selected'),
-              onPressed: forwardable.isEmpty || _deleting || _forwarding || _selectingAll
+              onPressed: forwardable.isEmpty ||
+                      _deleting ||
+                      _forwarding ||
+                      _selectingAll
                   ? null
                   : () => _sendItems(forwardable),
               icon: const Icon(Icons.forward, size: 19),
@@ -42295,9 +43619,10 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
               style: OutlinedButton.styleFrom(
                 foregroundColor: const Color(0xFFAF5157),
               ),
-              onPressed: chosen.isEmpty || _deleting || _forwarding || _selectingAll
-                  ? null
-                  : () => _confirmDeleteItems(chosen),
+              onPressed:
+                  chosen.isEmpty || _deleting || _forwarding || _selectingAll
+                      ? null
+                      : () => _confirmDeleteItems(chosen),
               icon: _deleting
                   ? const SizedBox(
                       width: 17,
@@ -42312,7 +43637,8 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
             TextButton(
               key: const ValueKey('media-clear-selection'),
               onPressed: _deleting || _forwarding || _selectingAll
-                  ? null : () => setState(_selectedItems.clear),
+                  ? null
+                  : () => setState(_selectedItems.clear),
               child: const Text('נקה בחירה'),
             ),
           ],
@@ -42374,8 +43700,10 @@ class _PersonalMediaScreenState extends State<PersonalMediaScreen> {
                           children: [
                             _summaryPanel(compact),
                             if (_cleanupMode)
-                              const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Text(
-                                'בחרו קבצים ישנים למחיקה. אפשר למיין גם לפי הגודל. לפני המחיקה יוצג פירוט לאישור; לא מוחקים דבר אוטומטית.')),
+                              const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 8),
+                                  child: Text(
+                                      'בחרו קבצים ישנים למחיקה. אפשר למיין גם לפי הגודל. לפני המחיקה יוצג פירוט לאישור; לא מוחקים דבר אוטומטית.')),
                             if (_catalogError != null)
                               Padding(
                                 padding: const EdgeInsets.only(top: 6),
@@ -42968,8 +44296,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
       final uri = Uri.parse(body['authorizationUrl'] as String);
       final opened = await launchUrl(uri,
-          mode: LaunchMode.externalApplication,
-          webOnlyWindowName: '_self');
+          mode: LaunchMode.externalApplication, webOnlyWindowName: '_self');
       if (!opened) throw Exception('לא ניתן לפתוח את Google');
     } catch (error) {
       if (mounted) {
@@ -43302,8 +44629,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _shareLocation() async {
-    final approved = await requestGeocodingConsent(
-        context, GeocodingPurpose.nearby);
+    final approved =
+        await requestGeocodingConsent(context, GeocodingPurpose.nearby);
     if (!approved || !mounted) return;
     try {
       var permission = await Geolocator.checkPermission();
@@ -43710,12 +45037,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Column(
                     children: [
                       ListTile(
-                        leading: const Icon(Icons.contact_phone_outlined, color: kSubtext),
+                        leading: const Icon(Icons.contact_phone_outlined,
+                            color: kSubtext),
                         title: const Text('שיתוף מספר הטלפון'),
                         subtitle: const Text('בקשות והרשאות שנתתי לחברים'),
-                        trailing: const Icon(Icons.chevron_left, color: kSubtext),
-                        onTap: () => Navigator.push(context, MaterialPageRoute(
-                          builder: (_) => PhoneSharingPrivacyScreen(api: kApi, token: widget.token))),
+                        trailing:
+                            const Icon(Icons.chevron_left, color: kSubtext),
+                        onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => PhoneSharingPrivacyScreen(
+                                    api: kApi, token: widget.token))),
                       ),
                       const Divider(height: 1, indent: 16),
                       ListTile(
@@ -44101,8 +45433,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ..files.add(http.MultipartFile.fromBytes('file', bytes,
             filename: picked.name,
             contentType: _mimeFromFileName(picked.name)));
-      final streamed =
-          await _sendMediaUpload(request);
+      final streamed = await _sendMediaUpload(request);
       final body = await streamed.stream.bytesToString();
       if (!mounted) return;
       if (streamed.statusCode == 200) {
@@ -44612,14 +45943,20 @@ class _AdminScreenState extends State<AdminScreen>
           IconButton(
             tooltip: 'אודיט מערכת',
             icon: const Icon(Icons.account_tree_outlined),
-            onPressed: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => SystemAuditScreen(api: kApi, token: widget.token))),
+            onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) =>
+                        SystemAuditScreen(api: kApi, token: widget.token))),
           ),
           IconButton(
             tooltip: 'היסטוריית סינון ותמונות',
             icon: const Icon(Icons.history),
-            onPressed: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => FilterAuditScreen(api: kApi, token: widget.token))),
+            onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) =>
+                        FilterAuditScreen(api: kApi, token: widget.token))),
           ),
         ],
         bottom: TabBar(
@@ -45028,7 +46365,6 @@ class _AdminClassificationStatsViewState
                       ? 'הוסף אמת מאומתת'
                       : 'עדכן אמת מאומתת'),
                 ),
-
               ]),
             ),
           ],
@@ -47651,8 +48987,7 @@ class _EducationFormDetailsScreenState
           .replaceAll(RegExp(r'[^\w\u0590-\u05FF-]+'), '_');
       final fileName =
           '${title.toLowerCase().startsWith('betshuva-') ? title : 'betshuva-$title'}.pdf';
-      await Printing.sharePdf(
-          bytes: await document.save(), filename: fileName);
+      await Printing.sharePdf(bytes: await document.save(), filename: fileName);
     } catch (e) {
       if (mounted) {
         setState(() => _error = 'הפקת קובץ ה־PDF נכשלה');

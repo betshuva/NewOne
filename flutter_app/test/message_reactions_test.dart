@@ -279,10 +279,10 @@ void main() {
       final image = find.byKey(ValueKey('inline-custom-emoji-$id'));
       expect(image, findsOneWidget);
       expect(tester.getSize(image).width, closeTo(20, .001));
-      expect(tester.getSize(image).height, closeTo(20, .001));
+      expect(tester.getSize(image).height, closeTo(20 * inlineEmojiScale, .001));
       final url = (tester.widget<Image>(image).image as NetworkImage).url;
       expect(url,
-          'https://betshuva.com/betshuva-app/expression-library/user-20261008-color/sticker-${id.toString().padLeft(2, '0')}.png');
+          'https://betshuva.com/betshuva-app/api/expressions/emoji/$id');
     }
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());

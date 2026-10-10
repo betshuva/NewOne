@@ -46,10 +46,27 @@ test('push labels have a readable fallback without the optional catalog', () => 
   const helper = fs.readFileSync(require.resolve('../server/inline-custom-emoji'), 'utf8');
   const exports = vm.runInNewContext(`${helper}; module.exports`, {
     module: { exports: {} },
-    require() { throw new Error('artwork catalog missing'); },
+    require(name) { if (name.startsWith('node:')) return require(name);
+      throw new Error('artwork catalog missing'); },
   });
   assert.equal(exports.inlineEmojiPlainText('שלום [[bt-emoji:150]]'), 'שלום [אימוג׳י]');
   assert.equal(exports.inlineEmojiPlainText('[[bt-emoji:151]]'), '[[bt-emoji:151]]');
+});
+
+test('new server emoji tokens use registered labels and preserve unknown tokens', () => {
+  const helper = fs.readFileSync(require.resolve('../server/inline-custom-emoji'), 'utf8');
+  const exports = vm.runInNewContext(`${helper}; module.exports`, {
+    module: { exports: {} }, __dirname,
+    require(name) {
+      if (name === 'node:fs') return { readFileSync: () => JSON.stringify({
+        items: [{ id: 151, label: 'חיוך חדש' }, { id: 1000, label: 'לב חדש' }],
+      }) };
+      return require(name);
+    },
+  });
+  assert.equal(exports.inlineEmojiPlainText('שלום [[bt-emoji:151]]'), 'שלום [חיוך חדש]');
+  assert.equal(exports.inlineEmojiModerationText('a[[bt-emoji:1000]]b'), 'a b');
+  assert.equal(exports.inlineEmojiModerationText('[[bt-emoji:152]]'), '[[bt-emoji:152]]');
 });
 
 test('actual moderation still recognizes harmful phrases around inline images', () => {

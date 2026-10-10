@@ -1,0 +1,250 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": 1,
+      "file": "sticker-01.png",
+      "label": "שמחה"
+    },
+    {
+      "id": 2,
+      "file": "sticker-02.png",
+      "label": "צחוק"
+    },
+    {
+      "id": 3,
+      "file": "sticker-03.png",
+      "label": "חיוך"
+    },
+    {
+      "id": 4,
+      "file": "sticker-04.png",
+      "label": "קריצה"
+    },
+    {
+      "id": 5,
+      "file": "sticker-05.png",
+      "label": "נשיקה"
+    },
+    {
+      "id": 6,
+      "file": "sticker-06.png",
+      "label": "שלווה"
+    },
+    {
+      "id": 7,
+      "file": "sticker-07.png",
+      "label": "אהבה"
+    },
+    {
+      "id": 8,
+      "file": "sticker-08.png",
+      "label": "התרגשות"
+    },
+    {
+      "id": 9,
+      "file": "sticker-09.png",
+      "label": "עיניים נוצצות"
+    },
+    {
+      "id": 10,
+      "file": "sticker-10.png",
+      "label": "הפתעה"
+    },
+    {
+      "id": 11,
+      "file": "sticker-11.png",
+      "label": "ספק"
+    },
+    {
+      "id": 12,
+      "file": "sticker-12.png",
+      "label": "מחשבה"
+    },
+    {
+      "id": 13,
+      "file": "sticker-13.png",
+      "label": "רוגע"
+    },
+    {
+      "id": 14,
+      "file": "sticker-14.png",
+      "label": "דאגה"
+    },
+    {
+      "id": 15,
+      "file": "sticker-15.png",
+      "label": "בכי"
+    },
+    {
+      "id": 16,
+      "file": "sticker-16.png",
+      "label": "תסכול"
+    },
+    {
+      "id": 17,
+      "file": "sticker-17.png",
+      "label": "לב ורוד"
+    },
+    {
+      "id": 18,
+      "file": "sticker-18.png",
+      "label": "לבבות"
+    },
+    {
+      "id": 19,
+      "file": "sticker-19.png",
+      "label": "כל הכבוד"
+    },
+    {
+      "id": 20,
+      "file": "sticker-20.png",
+      "label": "מצוין"
+    },
+    {
+      "id": 21,
+      "file": "sticker-21.png",
+      "label": "מחיאות כפיים"
+    },
+    {
+      "id": 22,
+      "file": "sticker-22.png",
+      "label": "תודה"
+    },
+    {
+      "id": 23,
+      "file": "sticker-23.png",
+      "label": "שלום"
+    },
+    {
+      "id": 24,
+      "file": "sticker-24.png",
+      "label": "כוח"
+    },
+    {
+      "id": 25,
+      "file": "sticker-25.png",
+      "label": "אישור"
+    },
+    {
+      "id": 26,
+      "file": "sticker-26.png",
+      "label": "נצנוצים"
+    },
+    {
+      "id": 27,
+      "file": "sticker-27.png",
+      "label": "כוכב"
+    },
+    {
+      "id": 28,
+      "file": "sticker-28.png",
+      "label": "זיקוקים"
+    },
+    {
+      "id": 29,
+      "file": "sticker-29.png",
+      "label": "בלון"
+    },
+    {
+      "id": 30,
+      "file": "sticker-30.png",
+      "label": "מתנה"
+    },
+    {
+      "id": 31,
+      "file": "sticker-31.png",
+      "label": "חגיגה"
+    },
+    {
+      "id": 32,
+      "file": "sticker-32.png",
+      "label": "דגלונים"
+    },
+    {
+      "id": 33,
+      "file": "sticker-33.png",
+      "label": "שמש"
+    },
+    {
+      "id": 34,
+      "file": "sticker-34.png",
+      "label": "זריחה"
+    },
+    {
+      "id": 35,
+      "file": "sticker-35.png",
+      "label": "ירח"
+    },
+    {
+      "id": 36,
+      "file": "sticker-36.png",
+      "label": "לילה"
+    },
+    {
+      "id": 37,
+      "file": "sticker-37.png",
+      "label": "ענן"
+    },
+    {
+      "id": 38,
+      "file": "sticker-38.png",
+      "label": "ענף"
+    },
+    {
+      "id": 39,
+      "file": "sticker-39.png",
+      "label": "פרח"
+    },
+    {
+      "id": 40,
+      "file": "sticker-40.png",
+      "label": "עלים"
+    },
+    {
+      "id": 41,
+      "file": "sticker-41.png",
+      "label": "בית"
+    },
+    {
+      "id": 42,
+      "file": "sticker-42.png",
+      "label": "דלת פתוחה"
+    },
+    {
+      "id": 43,
+      "file": "sticker-43.png",
+      "label": "חלון"
+    },
+    {
+      "id": 44,
+      "file": "sticker-44.png",
+      "label": "פנס"
+    },
+    {
+      "id": 45,
+      "file": "sticker-45.png",
+      "label": "דרך"
+    },
+    {
+      "id": 46,
+      "file": "sticker-46.png",
+      "label": "קפה"
+    },
+    {
+      "id": 47,
+      "file": "sticker-47.png",
+      "label": "ספר"
+    },
+    {
+      "id": 48,
+      "file": "sticker-48.png",
+      "label": "לב וענף"
+    },
+    {
+      "id": 49,
+      "file": "sticker-49.png",
+      "label": "שבת שלום"
+    }
+  ]
+}

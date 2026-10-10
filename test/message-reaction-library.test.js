@@ -79,7 +79,7 @@ test('reaction library contains exactly six legacy reactions and the 150 immutab
   assert.equal(new Set(ALLOWED_REACTIONS).size, 156);
   assert.ok(Object.isFrozen(REACTIONS) && Object.isFrozen(ALLOWED_REACTIONS));
   assert.deepEqual(ALLOWED_REACTIONS.slice(6), Array.from({ length: 150 }, (_, index) => token(index + 1)));
-  const bundled = require('../flutter_app/assets/stickers/user-catalog.json').categories[0];
+  const bundled = require('../flutter_app/assets/stickers/user-catalog.json').categories.find(category => category.id === 'user-stickers');
   const hosted = require('../expression-library/catalog.json').categories.find(category => category.id === 'user-stickers');
   assert.deepEqual(bundled.labels, hosted.labels, 'notification labels and bundled artwork IDs must agree');
   assert.equal(inlineEmojiPlainText(token(1)), '[שמחה]');

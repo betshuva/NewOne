@@ -9,23 +9,41 @@ void main() {
   testWidgets(
       'sticker labels and rename controls are hidden without an owner lookup',
       (tester) async {
-    final client = MockClient(
-        (_) async => throw StateError('Sticker name lookup must not run'));
+    var lookups = 0;
+    final client = MockClient((_) async {
+      lookups++;
+      throw StateError('Sticker name lookup must not run');
+    });
     await http.runWithClient(() async {
-      await tester.pumpWidget(const MaterialApp(
-          home: Scaffold(
-              body: ChatFileName(
-                  api: 'https://example.test/api',
-                  token: 'owner',
-                  url: '/uploads/sticker.png',
-                  filename: 'betshuva-sticker-01.png',
-                  editable: true))));
-      await tester.pumpAndSettle();
-      expect(find.text('betshuva-sticker-01.png'), findsNothing);
-      expect(find.byIcon(Icons.edit_outlined), findsNothing);
-      expect(find.byType(InkWell), findsNothing);
-      await tester.pumpWidget(const SizedBox.shrink());
+      for (final filename in [
+        'betshuva-sticker-01.png',
+        'betshuva-sticker-sticker-22.png',
+        'betshuva-sticker-sticker-95.png',
+        'betshuva-sticker-sticker-145.png',
+        'betshuva-sticker-שבת שלום.webp',
+        'betshuva-sticker-new.gif',
+        'betshuva-sticker-new.jpg',
+        'BETSHUVA-STICKER-new.JPEG',
+      ]) {
+        for (final editable in [true, false]) {
+          await tester.pumpWidget(MaterialApp(
+              home: Scaffold(
+                  body: ChatFileName(
+                      api: 'https://example.test/api',
+                      token: 'owner',
+                      url: '/uploads/sticker.png',
+                      filename: filename,
+                      editable: editable))));
+          await tester.pumpAndSettle();
+          expect(find.text(filename), findsNothing);
+          expect(find.byIcon(Icons.edit_outlined), findsNothing);
+          expect(find.byType(InkWell), findsNothing);
+          await tester.pumpWidget(const SizedBox.shrink());
+        }
+      }
+      expect(lookups, 0);
     }, () => client);
+    client.close();
   });
   testWidgets('chat rename saves the owner filename and survives reopening',
       (tester) async {

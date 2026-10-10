@@ -22,7 +22,8 @@ const _group = {
 };
 const _uploadedUrl = '/api/uploads/emoji-test-sticker.png';
 const _draft = 'טיוטה שנשמרת';
-final _keyboardWavBytes = base64Decode('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');
+final _keyboardWavBytes = base64Decode(
+    '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');
 final _pngBytes = base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH9sAAAAASUVORK5CYII=');
 final _labels = List.generate(150, (index) => 'אימוג׳י לבדיקה ${index + 1}');
@@ -114,6 +115,9 @@ class _ChatHarness {
   final int uploadStatus;
   final bool coloredArtwork;
   final bool removedArtwork;
+  final bool splitCatalog;
+  int liveEmojiCount = 49;
+  int liveStickerCount = 150;
   final List<Map<String, dynamic>>? history;
   final requests = <http.Request>[];
   final messageEmojiBundle = _MessageEmojiBundle();
@@ -131,6 +135,7 @@ class _ChatHarness {
       this.uploadStatus = 200,
       this.coloredArtwork = false,
       this.removedArtwork = false,
+      this.splitCatalog = false,
       this.history});
 
   late final client = MockClient((request) async {
@@ -151,6 +156,33 @@ class _ChatHarness {
       body = {'id': 'emoji-sent-message', 'status': 'sent'};
     } else if (path.endsWith('/expressions/catalog')) {
       final catalog = _catalog;
+      if (splitCatalog) {
+        catalog['version'] = 4;
+        catalog['categories'] = [
+          {
+            'id': 'user-emojis',
+            'items': List.generate(
+                liveEmojiCount,
+                (index) => {
+                      'label': 'אימוג׳י שרת ${index + 1}',
+                      'url':
+                          '/betshuva-app/api/expressions/emoji/${index < 49 ? index + 1 : index + 102}',
+                    })
+          },
+          {
+            'id': 'user-stickers',
+            'items': List.generate(
+                liveStickerCount,
+                (index) => {
+                      'label': 'מדבקה שרת ${index + 1}',
+                      'url':
+                          '/betshuva-app/expression-library/user-20260907/sticker-01.png',
+                      'libraryUrl':
+                          '/betshuva-app/expression-library/stickers/new-${index + 1}.png',
+                    })
+          },
+        ];
+      }
       if (removedArtwork) {
         for (final category in catalog['categories'] as List) {
           (category['items'] as List).removeWhere((item) {
@@ -347,7 +379,11 @@ Future<void> _ensureDoneVisible(WidgetTester tester) async {
 }
 
 Future<void> _enterSearch(WidgetTester tester, String query) async {
+  await tester.pumpAndSettle();
   if (_search.evaluate().isEmpty) {
+    await tester
+        .ensureVisible(find.byKey(const ValueKey('expression-search-toggle')));
+    await tester.pump();
     await tester.tap(find.byKey(const ValueKey('expression-search-toggle')));
     await tester.pumpAndSettle();
   }
@@ -355,9 +391,12 @@ Future<void> _enterSearch(WidgetTester tester, String query) async {
 }
 
 bool _pickerShowsStickers(WidgetTester tester) =>
-    tester.widget<Image>(
-      find.descendant(of: _grid, matching: find.byType(Image)).first,
-    ).width == null;
+    tester
+        .widget<Image>(
+          find.descendant(of: _grid, matching: find.byType(Image)).first,
+        )
+        .width ==
+    null;
 
 Finder get _stickerShortcut =>
     find.byKey(const ValueKey('chat-stickers-shortcut'));
@@ -368,9 +407,14 @@ void _expectFlatImages(WidgetTester tester,
     {int count = 150, bool stickers = false}) {
   expect(find.descendant(of: _picker, matching: find.byType(TabBar)),
       findsNothing);
-  expect(find.descendant(of: _picker, matching: find.byType(ChoiceChip)), findsNothing);
-  expect(find.descendant(of: _picker, matching: find.byType(Text)), findsNothing);
-  expect(find.descendant(of: _picker, matching: find.text(stickers ? 'אימוג׳י' : 'מדבקות')), findsNothing);
+  expect(find.descendant(of: _picker, matching: find.byType(ChoiceChip)),
+      findsNothing);
+  expect(
+      find.descendant(of: _picker, matching: find.byType(Text)), findsNothing);
+  expect(
+      find.descendant(
+          of: _picker, matching: find.text(stickers ? 'אימוג׳י' : 'מדבקות')),
+      findsNothing);
   expect(find.descendant(of: _picker, matching: find.text('של בתשובה')),
       findsNothing);
   expect(find.descendant(of: _picker, matching: find.text('רגילים')),
@@ -388,18 +432,30 @@ void _expectFlatImages(WidgetTester tester,
 }
 
 Future<void> _openPicker(WidgetTester tester,
-    {bool stickers = false, bool defaultStickers = true, int count = 150}) async {
+    {bool stickers = false,
+    bool defaultStickers = true,
+    int count = 150}) async {
   await _openShortcut(tester, stickers: stickers, count: count);
 }
 
 Future<void> _openShortcut(WidgetTester tester,
     {required bool stickers, int count = 150}) async {
+  final composer = find.byType(TextField).first;
+  final controller = tester.widget<TextField>(composer).controller!;
+  final original = controller.value;
+  final emptyDraft = inlineEmojiPlainText(original.text).trim().isEmpty;
+  if (emptyDraft) {
+    controller.text = 'בדיקה';
+  }
+  await tester.pump();
   await tester.tap(stickers ? _stickerShortcut : _inlineEmojiShortcut);
+  if (emptyDraft) controller.value = original;
   await tester
       .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
   await tester.pumpAndSettle();
   for (var attempt = 0; _grid.evaluate().isEmpty && attempt < 8; attempt++) {
-    await tester.drag(find.descendant(of: _picker, matching: find.byType(CustomScrollView)),
+    await tester.drag(
+        find.descendant(of: _picker, matching: find.byType(CustomScrollView)),
         const Offset(0, -60));
     await tester.pumpAndSettle();
   }
@@ -416,13 +472,16 @@ void _expectComposerShortcuts(WidgetTester tester) {
   expect((stickerButton.icon as Icon).icon, Icons.sticky_note_2_outlined);
   expect((emojiButton.icon as Icon).icon, Icons.emoji_emotions_outlined);
 
-  final microphoneX = tester.getCenter(find.byIcon(Icons.mic)).dx;
-  final attachmentX = tester.getCenter(find.byIcon(Icons.attach_file)).dx;
-  final left = microphoneX < attachmentX ? microphoneX : attachmentX;
-  final right = microphoneX > attachmentX ? microphoneX : attachmentX;
+  final input = find.byType(TextField).first;
+  final attachment = find.byIcon(Icons.attach_file);
+  final send = find.byIcon(Icons.send);
+  expect(find.byIcon(Icons.mic), findsNothing);
+  expect(
+      tester.getCenter(attachment).dx, greaterThan(tester.getCenter(input).dx));
+  expect(tester.getCenter(send).dx, lessThan(tester.getCenter(input).dx));
   for (final shortcut in [_stickerShortcut, _inlineEmojiShortcut]) {
-    expect(tester.getCenter(shortcut).dx, greaterThan(left));
-    expect(tester.getCenter(shortcut).dx, lessThan(right));
+    expect(tester.getRect(shortcut).top,
+        greaterThanOrEqualTo(tester.getRect(input).bottom));
   }
 }
 
@@ -450,8 +509,10 @@ Future<void> _selectEmoji(WidgetTester tester, int id,
   }
   expect(_picker, findsOneWidget);
   if (find.byType(SnackBar).evaluate().isNotEmpty) {
-    final close = find.descendant(of: _picker, matching: find.byIcon(Icons.close));
-    final scrollable = find.descendant(of: _picker, matching: find.byType(Scrollable)).first;
+    final close =
+        find.descendant(of: _picker, matching: find.byIcon(Icons.close));
+    final scrollable =
+        find.descendant(of: _picker, matching: find.byType(Scrollable)).first;
     tester.state<ScrollableState>(scrollable).position.jumpTo(0);
     await tester.pumpAndSettle();
     await tester.tap(close);
@@ -485,17 +546,26 @@ void _expectSmallEmoji(WidgetTester tester, Finder scope, int id) {
 }
 
 TextSelection _logicalSelection(TextEditingController controller) {
-  int offset(int index) => index < 0 ? index : inlineEmojiPlainText(controller.text.substring(0, index)).length;
-  return TextSelection(baseOffset: offset(controller.selection.baseOffset), extentOffset: offset(controller.selection.extentOffset));
+  int offset(int index) => index < 0
+      ? index
+      : inlineEmojiPlainText(controller.text.substring(0, index)).length;
+  return TextSelection(
+      baseOffset: offset(controller.selection.baseOffset),
+      extentOffset: offset(controller.selection.extentOffset));
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
     if (!kIsWeb) {
-      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      for (final channel in ['xyz.luan/audioplayers.global', 'xyz.luan/audioplayers.global/events']) {
-        messenger.setMockMethodCallHandler(MethodChannel(channel), (_) async => null);
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      for (final channel in [
+        'xyz.luan/audioplayers.global',
+        'xyz.luan/audioplayers.global/events'
+      ]) {
+        messenger.setMockMethodCallHandler(
+            MethodChannel(channel), (_) async => null);
       }
       // Initialize the plugin outside the per-widget fake clock so later tests
       // do not await a completed future owned by an earlier clock.
@@ -506,17 +576,24 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     _keyboardAudioCalls.clear();
     if (!kIsWeb) {
-      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      for (final channel in ['xyz.luan/audioplayers.global', 'xyz.luan/audioplayers.global/events']) {
-        messenger.setMockMethodCallHandler(MethodChannel(channel), (_) async => null);
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      for (final channel in [
+        'xyz.luan/audioplayers.global',
+        'xyz.luan/audioplayers.global/events'
+      ]) {
+        messenger.setMockMethodCallHandler(
+            MethodChannel(channel), (_) async => null);
       }
-      messenger.setMockMethodCallHandler(const MethodChannel('xyz.luan/audioplayers'), (call) async {
+      messenger.setMockMethodCallHandler(
+          const MethodChannel('xyz.luan/audioplayers'), (call) async {
         _keyboardAudioCalls.add(call);
         final playerId = (call.arguments as Map)['playerId'] as String;
         final channel = 'xyz.luan/audioplayers/events/$playerId';
         if (call.method == 'create') {
           _keyboardAudioChannels.add(channel);
-          messenger.setMockMethodCallHandler(MethodChannel(channel), (_) async => null);
+          messenger.setMockMethodCallHandler(
+              MethodChannel(channel), (_) async => null);
         }
         final event = switch (call.method) {
           'setSourceBytes' => {'event': 'audio.onPrepared', 'value': true},
@@ -529,8 +606,11 @@ void main() {
         }
         if (call.method == 'resume') {
           Timer(const Duration(milliseconds: 25), () {
-            messenger.handlePlatformMessage(channel,
-                const StandardMethodCodec().encodeSuccessEnvelope({'event': 'audio.onComplete'}), (_) {});
+            messenger.handlePlatformMessage(
+                channel,
+                const StandardMethodCodec()
+                    .encodeSuccessEnvelope({'event': 'audio.onComplete'}),
+                (_) {});
           });
         }
         return call.method == 'getCurrentPosition' ? 0 : null;
@@ -568,7 +648,8 @@ void main() {
   });
   tearDown(() {
     if (!kIsWeb) {
-      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
       for (final channel in _keyboardAudioChannels) {
         messenger.setMockMethodCallHandler(MethodChannel(channel), null);
       }
@@ -602,7 +683,8 @@ void main() {
       final grid = tester.widget<SliverGrid>(_grid).gridDelegate
           as SliverGridDelegateWithFixedCrossAxisCount;
       expect(grid.crossAxisCount, greaterThan(5));
-      expect(find.descendant(of: _picker, matching: find.byType(Text)), findsNothing);
+      expect(find.descendant(of: _picker, matching: find.byType(Text)),
+          findsNothing);
       app.expectNothingSent();
       await app.dispose(tester);
     }, () => app.client);
@@ -611,7 +693,50 @@ void main() {
   for (final isGroup in [false, true]) {
     final chatKind = isGroup ? 'group' : 'private';
 
-    testWidgets('$chatKind composer stays above the picker and respects a moved caret',
+    testWidgets(
+        '$chatKind switches recording and send without moving the composer',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        final action = find.byKey(const ValueKey('chat-composer-action'));
+        final tools = find.byKey(const ValueKey('chat-composer-shortcuts'));
+        final inputRect = tester.getRect(app.composer);
+        final toolsRect = tester.getRect(tools);
+        final actionRect = tester.getRect(action);
+        expect(find.byIcon(Icons.mic), findsOneWidget);
+        expect(find.byIcon(Icons.send), findsNothing);
+        expect(_stickerShortcut, findsNothing);
+        expect(_inlineEmojiShortcut, findsNothing);
+        expect(tester.widget<IconButton>(action).onPressed, isNotNull);
+        await tester.enterText(app.composer, 'שלום');
+        await tester.pump();
+        _expectComposerShortcuts(tester);
+        expect(tester.getRect(app.composer), inputRect);
+        expect(tester.getRect(tools), toolsRect);
+        expect(tester.getRect(action), actionRect);
+        await tester.tap(action);
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage('שלום');
+        expect(app.controller(tester).text, isEmpty);
+        expect(find.byIcon(Icons.mic), findsOneWidget);
+        expect(_stickerShortcut, findsNothing);
+        expect(_inlineEmojiShortcut, findsNothing);
+        expect(tester.getRect(app.composer), inputRect);
+        await tester.enterText(app.composer, 'נמחק');
+        await tester.pump();
+        expect(find.byIcon(Icons.send), findsOneWidget);
+        app.controller(tester).clear();
+        await tester.pump();
+        expect(find.byIcon(Icons.mic), findsOneWidget);
+        expect(_stickerShortcut, findsNothing);
+        expect(tester.getRect(tools), toolsRect);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
+    testWidgets(
+        '$chatKind composer stays above the picker and respects a moved caret',
         (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
@@ -621,8 +746,14 @@ void main() {
         await tester.enterText(app.composer, 'שלום');
         await tester.pump();
         await _openShortcut(tester, stickers: false);
-        final clicksAfterTyping = _keyboardAudioCalls.where((call) => call.method == 'resume').length;
-        if (!kIsWeb) expect(clicksAfterTyping, greaterThan(0), reason: _keyboardAudioCalls.map((call) => call.method).toList().toString());
+        final clicksAfterTyping =
+            _keyboardAudioCalls.where((call) => call.method == 'resume').length;
+        if (!kIsWeb)
+          expect(clicksAfterTyping, greaterThan(0),
+              reason: _keyboardAudioCalls
+                  .map((call) => call.method)
+                  .toList()
+                  .toString());
         final panel = find.byKey(const ValueKey('expression-picker-panel'));
         expect(tester.getRect(app.composer).bottom,
             lessThanOrEqualTo(tester.getRect(panel).top));
@@ -632,13 +763,20 @@ void main() {
         await tester.pumpAndSettle();
         expect(inlineEmojiPlainText(controller.text),
             'ש${inlineEmojiCharacter(1)}לום');
-        expect(find.byKey(const ValueKey('inline-custom-emoji-1')), findsOneWidget);
+        expect(find.byKey(const ValueKey('inline-custom-emoji-1')),
+            findsOneWidget);
         expect(_picker, findsOneWidget);
         if (!kIsWeb) {
-          expect(_keyboardAudioCalls.where((call) => call.method == 'resume').length,
+          expect(
+              _keyboardAudioCalls
+                  .where((call) => call.method == 'resume')
+                  .length,
               greaterThan(clicksAfterTyping));
-          expect(_keyboardAudioCalls.where((call) => call.method == 'setAudioContext')
-              .every((call) => (call.arguments as Map)['audioFocus'] == 0), isTrue);
+          expect(
+              _keyboardAudioCalls
+                  .where((call) => call.method == 'setAudioContext')
+                  .every((call) => (call.arguments as Map)['audioFocus'] == 0),
+              isTrue);
         }
         app.expectNothingSent();
         await tester.tap(app.composer);
@@ -660,6 +798,7 @@ void main() {
         await tester.tap(_imageTile(1));
         await tester.pumpAndSettle();
         final first = inlineEmojiPlainText(app.controller(tester).text);
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage(encodeInlineEmojiText(first));
@@ -670,7 +809,7 @@ void main() {
         expect(inlineEmojiPlainText(app.controller(tester).text),
             inlineEmojiCharacter(2));
         await _ensureDoneVisible(tester);
-    await tester.tap(_done);
+        await tester.tap(_done);
         await tester.pumpAndSettle();
         expect(_picker, findsNothing);
         await app.dispose(tester);
@@ -678,10 +817,13 @@ void main() {
     });
 
     for (final catalogStatus in [200, 503]) {
-      testWidgets('$chatKind removed choices retain original IDs with catalog $catalogStatus',
+      testWidgets(
+          '$chatKind removed choices retain original IDs with catalog $catalogStatus',
           (tester) async {
         final app = _ChatHarness(
-          isGroup: isGroup, catalogStatus: catalogStatus, removedArtwork: true,
+          isGroup: isGroup,
+          catalogStatus: catalogStatus,
+          removedArtwork: true,
         );
         await http.runWithClient(() async {
           await app.mount(tester);
@@ -705,43 +847,63 @@ void main() {
       });
     }
 
-    testWidgets('$chatKind emoji-only draft adds each choice on the left before and after send', (tester) async {
+    testWidgets(
+        '$chatKind emoji-only draft adds each choice on the left before and after send',
+        (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
         await app.mount(tester);
         await _openShortcut(tester, stickers: false);
         double? firstChoiceX;
-        for (final id in [1,2,3]) {
+        for (final id in [1, 2, 3]) {
           await tester.tap(_imageTile(id));
           await tester.pumpAndSettle();
-          final x = tester.getCenter(find.byKey(const ValueKey('inline-custom-emoji-1'))).dx;
+          final x = tester
+              .getCenter(find.byKey(const ValueKey('inline-custom-emoji-1')))
+              .dx;
           firstChoiceX ??= x;
           expect(x, closeTo(firstChoiceX, 0.01));
         }
         await _ensureDoneVisible(tester);
-    await tester.tap(_done);
+        await tester.tap(_done);
         await tester.pumpAndSettle();
-        expect(tester.widget<TextField>(app.composer).textDirection, TextDirection.rtl);
-        final positions = [for (final id in [1,2,3]) tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx];
+        expect(tester.widget<TextField>(app.composer).textDirection,
+            TextDirection.rtl);
+        final positions = [
+          for (final id in [1, 2, 3])
+            tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx
+        ];
         expect(positions[0], greaterThan(positions[1]));
         expect(positions[1], greaterThan(positions[2]));
-        final editable = tester.state<EditableTextState>(find.descendant(of:app.composer,matching:find.byType(EditableText)));
+        final editable = tester.state<EditableTextState>(find.descendant(
+            of: app.composer, matching: find.byType(EditableText)));
         final controller = app.controller(tester);
-        final caret = editable.renderEditable.getLocalRectForCaret(TextPosition(offset: controller.selection.extentOffset)).left;
+        final caret = editable.renderEditable
+            .getLocalRectForCaret(
+                TextPosition(offset: controller.selection.extentOffset))
+            .left;
         expect(caret, lessThan(positions.last));
         app.expectNothingSent();
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
-        app.expectOneTextMessage('[[bt-emoji:003]][[bt-emoji:002]][[bt-emoji:001]]');
-        final sentPositions = [for (final id in [1,2,3]) tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx];
+        app.expectOneTextMessage(
+            '[[bt-emoji:003]][[bt-emoji:002]][[bt-emoji:001]]');
+        final sentPositions = [
+          for (final id in [1, 2, 3])
+            tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx
+        ];
         expect(sentPositions[0], greaterThan(sentPositions[1]));
         expect(sentPositions[1], greaterThan(sentPositions[2]));
-        expect(tester.widget<TextField>(app.composer).textDirection, TextDirection.rtl);
+        expect(tester.widget<TextField>(app.composer).textDirection,
+            TextDirection.rtl);
         await app.dispose(tester);
       }, () => app.client);
     });
 
-    testWidgets('$chatKind repeated emoji selections keep the picker open and append in order', (tester) async {
+    testWidgets(
+        '$chatKind repeated emoji selections keep the picker open and append in order',
+        (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
         await app.mount(tester);
@@ -756,22 +918,45 @@ void main() {
         }
         await tester.pumpAndSettle();
         expect(_picker, findsOneWidget);
-        expect(tester.widget<EditableText>(find.descendant(of: _search, matching: find.byType(EditableText))).controller.text, 'אימוג׳י לבדיקה');
-        final text = '${_draft.substring(0, 3)}${inlineEmojiCharacter(3)}${inlineEmojiCharacter(2)}${inlineEmojiCharacter(1)}${_draft.substring(3)}';
+        expect(
+            tester
+                .widget<EditableText>(find.descendant(
+                    of: _search, matching: find.byType(EditableText)))
+                .controller
+                .text,
+            'אימוג׳י לבדיקה');
+        final text =
+            '${_draft.substring(0, 3)}${inlineEmojiCharacter(3)}${inlineEmojiCharacter(2)}${inlineEmojiCharacter(1)}${_draft.substring(3)}';
         expect(inlineEmojiPlainText(controller.text), text);
-        expect(tester.widget<TextField>(app.composer).textDirection, TextDirection.rtl);
-        final positions = [for (final id in [1,2,3]) tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx];
+        expect(tester.widget<TextField>(app.composer).textDirection,
+            TextDirection.rtl);
+        final positions = [
+          for (final id in [1, 2, 3])
+            tester.getCenter(find.byKey(ValueKey('inline-custom-emoji-$id'))).dx
+        ];
         expect(positions[0], greaterThan(positions[1]));
         expect(positions[1], greaterThan(positions[2]));
-        final editable = tester.state<EditableTextState>(find.descendant(of: app.composer, matching: find.byType(EditableText))).renderEditable;
+        final editable = tester
+            .state<EditableTextState>(find.descendant(
+                of: app.composer, matching: find.byType(EditableText)))
+            .renderEditable;
         final runStart = controller.text.indexOf('\u2066') + 1;
-        final caret = [for (var i = 0; i <= 3; i++) editable.getLocalRectForCaret(TextPosition(offset: runStart + i,
-          affinity: i == 3 ? TextAffinity.upstream : TextAffinity.downstream)).left];
+        final caret = [
+          for (var i = 0; i <= 3; i++)
+            editable
+                .getLocalRectForCaret(TextPosition(
+                    offset: runStart + i,
+                    affinity: i == 3
+                        ? TextAffinity.upstream
+                        : TextAffinity.downstream))
+                .left
+        ];
         for (var i = 0; i < 3; i++) expect(caret[i], lessThan(caret[i + 1]));
         app.expectNothingSent();
         await _ensureDoneVisible(tester);
-    await tester.tap(_done);
+        await tester.tap(_done);
         await tester.pumpAndSettle();
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage(encodeInlineEmojiText(text));
@@ -779,19 +964,24 @@ void main() {
       }, () => app.client);
     });
 
-    testWidgets('$chatKind repeated stickers send separately in order and preserve the draft', (tester) async {
+    testWidgets(
+        '$chatKind repeated stickers send separately in order and preserve the draft',
+        (tester) async {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
         await app.mount(tester);
         await tester.enterText(app.composer, _draft);
         final controller = app.controller(tester);
-        controller.selection = const TextSelection(baseOffset: 5, extentOffset: 2);
+        controller.selection =
+            const TextSelection(baseOffset: 5, extentOffset: 2);
         final before = controller.value;
         await _openShortcut(tester, stickers: true);
         for (final id in [1, 2, 3]) {
           // Scroll the next row into view without waiting for queued uploads.
           await tester.scrollUntilVisible(_imageTile(id), 60,
-              scrollable: find.descendant(of: _picker, matching: find.byType(Scrollable)).first);
+              scrollable: find
+                  .descendant(of: _picker, matching: find.byType(Scrollable))
+                  .first);
           await tester.pump();
           await tester.tap(_imageTile(id));
         }
@@ -800,12 +990,19 @@ void main() {
         await tester.tap(_done);
         for (var i = 0; i < 30; i++) {
           await tester.pump(const Duration(milliseconds: 100));
-          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 30)));
         }
         expect(app.uploads, hasLength(3));
         expect(app.sentHttpMessages, hasLength(3));
-        final files = app.sentHttpMessages.map((request) => jsonDecode(request.body)['fileName']).toList();
-        expect(files, ['betshuva-sticker-01.png', 'betshuva-sticker-02.png', 'betshuva-sticker-03.png']);
+        final files = app.sentHttpMessages
+            .map((request) => jsonDecode(request.body)['fileName'])
+            .toList();
+        expect(files, [
+          'betshuva-sticker-01.png',
+          'betshuva-sticker-02.png',
+          'betshuva-sticker-03.png'
+        ]);
         expect(controller.value, before);
         expect(_picker, findsNothing);
         await app.dispose(tester);
@@ -818,8 +1015,9 @@ void main() {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
         await app.mount(tester);
-        _expectComposerShortcuts(tester);
         await tester.enterText(app.composer, _draft);
+        await tester.pump();
+        _expectComposerShortcuts(tester);
         final controller = app.controller(tester);
         controller.selection = const TextSelection.collapsed(offset: 3);
         final before = controller.value;
@@ -839,8 +1037,10 @@ void main() {
         final text =
             '${_draft.substring(0, 3)}${inlineEmojiCharacter(2)}${_draft.substring(3)}';
         expect(inlineEmojiPlainText(controller.text), text);
-        expect(_logicalSelection(controller), const TextSelection.collapsed(offset: 4));
+        expect(_logicalSelection(controller),
+            const TextSelection.collapsed(offset: 4));
         app.expectNothingSent();
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage(encodeInlineEmojiText(text));
@@ -876,11 +1076,13 @@ void main() {
       final app = _ChatHarness(isGroup: isGroup);
       await http.runWithClient(() async {
         await app.mount(tester);
+        await tester.enterText(app.composer, 'בדיקה');
+        await tester.pump();
         _expectComposerShortcuts(tester);
         expect(tester.takeException(), isNull);
         expect(tester.getSize(app.composer).width, greaterThanOrEqualTo(80));
         for (final tool in [
-          find.byIcon(Icons.mic),
+          find.byIcon(Icons.send),
           _inlineEmojiShortcut,
           _stickerShortcut,
           find.byIcon(Icons.attach_file),
@@ -892,8 +1094,10 @@ void main() {
         await _openPicker(tester);
         final tile = _imageTile(1);
         final image = find.descendant(of: tile, matching: find.byType(Image));
-        expect(tester.getSize(tile).width, greaterThanOrEqualTo(kIsWeb ? 36 : 44));
-        expect(tester.getSize(tile).height, greaterThanOrEqualTo(kIsWeb ? 36 : 44));
+        expect(
+            tester.getSize(tile).width, greaterThanOrEqualTo(kIsWeb ? 36 : 44));
+        expect(tester.getSize(tile).height,
+            greaterThanOrEqualTo(kIsWeb ? 36 : 44));
         if (kIsWeb) {
           expect(tester.getSize(image).width, closeTo(26.4, 0.001));
           expect(tester.getSize(image).height, closeTo(26.4, 0.001));
@@ -911,6 +1115,8 @@ void main() {
             isGroup: isGroup, allowText: stickers, allowImages: !stickers);
         await http.runWithClient(() async {
           await app.mount(tester);
+          app.controller(tester).text = 'בדיקה';
+          await tester.pump();
           await tester.tap(stickers ? _stickerShortcut : _inlineEmojiShortcut);
           await tester.pumpAndSettle();
           expect(_picker, findsNothing,
@@ -977,8 +1183,10 @@ void main() {
         expect(_imageTile(1, colored: true), findsOneWidget);
         await _selectEmoji(tester, 1, colored: true);
 
-        expect(inlineEmojiPlainText(controller.text), 'שלום ${inlineEmojiCharacter(1)}😀 סוף');
+        expect(inlineEmojiPlainText(controller.text),
+            'שלום ${inlineEmojiCharacter(1)}😀 סוף');
         app.expectNothingSent();
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage('שלום [[bt-emoji:001]]😀 סוף');
@@ -1068,11 +1276,13 @@ void main() {
         await _selectEmoji(tester, 1);
         final raw = 'שלום ${inlineEmojiCharacter(1)}abc עולם';
         expect(inlineEmojiPlainText(controller.text), raw);
-        expect(_logicalSelection(controller), const TextSelection.collapsed(offset: 6));
+        expect(_logicalSelection(controller),
+            const TextSelection.collapsed(offset: 6));
         app.expectNothingSent();
         _expectSmallEmoji(tester, app.composer, 1);
         expect(encodeInlineEmojiText(raw), 'שלום [[bt-emoji:001]]abc עולם');
 
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage('שלום [[bt-emoji:001]]abc עולם');
@@ -1129,10 +1339,12 @@ void main() {
 
         expect(inlineEmojiPlainText(controller.text),
             'שלום ${inlineEmojiCharacter(3)}abc ${inlineEmojiCharacter(1)} סוף');
-        expect(_logicalSelection(controller), const TextSelection.collapsed(offset: 6));
+        expect(_logicalSelection(controller),
+            const TextSelection.collapsed(offset: 6));
         _expectSmallEmoji(tester, app.composer, 1);
         app.expectNothingSent();
 
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage(
@@ -1161,7 +1373,7 @@ void main() {
         await _openPicker(tester);
         await _openInlineTab(tester);
         await _ensureDoneVisible(tester);
-    await tester.tap(_done);
+        await tester.tap(_done);
         await tester.pumpAndSettle();
         await _openShortcut(tester, stickers: true);
         _expectFlatImages(tester, stickers: true);
@@ -1180,11 +1392,12 @@ void main() {
 
         expect(inlineEmojiPlainText(controller.text),
             '${draft.substring(0, start)}${inlineEmojiCharacter(3)}${draft.substring(end)}');
-        expect(
-            _logicalSelection(controller), TextSelection.collapsed(offset: start + 1));
+        expect(_logicalSelection(controller),
+            TextSelection.collapsed(offset: start + 1));
         _expectSmallEmoji(tester, app.composer, 2);
         app.expectNothingSent();
 
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage('לפני [[bt-emoji:002]] [[bt-emoji:003]] אחרי');
@@ -1211,8 +1424,8 @@ void main() {
         final first =
             '${draft.substring(0, start)}${inlineEmojiCharacter(2)}${draft.substring(end)}';
         expect(inlineEmojiPlainText(controller.text), first);
-        expect(
-            _logicalSelection(controller), TextSelection.collapsed(offset: start + 1));
+        expect(_logicalSelection(controller),
+            TextSelection.collapsed(offset: start + 1));
         app.expectNothingSent();
 
         await _openPicker(tester);
@@ -1222,8 +1435,8 @@ void main() {
         final expected =
             '${draft.substring(0, start)}${inlineEmojiCharacter(150)}${inlineEmojiCharacter(2)}${draft.substring(end)}';
         expect(inlineEmojiPlainText(controller.text), expected);
-        expect(
-            _logicalSelection(controller), TextSelection.collapsed(offset: start + 2));
+        expect(_logicalSelection(controller),
+            TextSelection.collapsed(offset: start + 2));
         _expectSmallEmoji(tester, app.composer, 2);
         _expectSmallEmoji(tester, app.composer, 150);
         app.expectNothingSent();
@@ -1260,14 +1473,17 @@ void main() {
         final controller = app.controller(tester);
         final raw = 'עריכה ${inlineEmojiCharacter(1)} המשך';
         expect(inlineEmojiPlainText(controller.text), raw);
-        controller.selection = TextSelection.collapsed(offset: controller.text.length);
+        controller.selection =
+            TextSelection.collapsed(offset: controller.text.length);
         await _openPicker(tester);
         await _selectEmoji(tester, 2);
-        expect(inlineEmojiPlainText(controller.text), '$raw${inlineEmojiCharacter(2)}');
+        expect(inlineEmojiPlainText(controller.text),
+            '$raw${inlineEmojiCharacter(2)}');
         app.expectNothingSent();
         expect(app.requests.where((request) => request.method == 'PATCH'),
             isEmpty);
 
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         final patches =
@@ -1292,6 +1508,7 @@ void main() {
       await http.runWithClient(() async {
         await app.mount(tester);
         await tester.enterText(app.composer, '😀');
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         final messages = isGroup
@@ -1325,7 +1542,8 @@ void main() {
       await _enterSearch(tester, _labels.last);
       await tester.pumpAndSettle();
       await _selectEmoji(tester, 150, colored: true);
-      expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(150));
+      expect(inlineEmojiPlainText(app.controller(tester).text),
+          inlineEmojiCharacter(150));
       app.expectNothingSent();
       await app.dispose(tester);
     }, () => app.client);
@@ -1361,6 +1579,8 @@ void main() {
           await tester.pumpAndSettle();
           final available = policy.allowText || policy.allowImages;
           if (!available) {
+            app.controller(tester).text = 'בדיקה';
+            await tester.pump();
             for (final shortcut in [
               (finder: _stickerShortcut, label: 'מדבקות'),
               (finder: _inlineEmojiShortcut, label: 'אימוג׳י בתוך הטקסט'),
@@ -1383,12 +1603,14 @@ void main() {
             if (policy.allowText) {
               await _openInlineTab(tester);
               await _selectEmoji(tester, 1);
-              expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(1));
+              expect(inlineEmojiPlainText(app.controller(tester).text),
+                  inlineEmojiCharacter(1));
               app.expectNothingSent();
             } else {
               await _selectEmoji(tester, 1);
               app.expectOneSticker();
-              expect(inlineEmojiPlainText(app.controller(tester).text), isEmpty);
+              expect(
+                  inlineEmojiPlainText(app.controller(tester).text), isEmpty);
             }
           }
           await app.dispose(tester);
@@ -1411,13 +1633,63 @@ void main() {
         await _enterSearch(tester, _labels.last);
         await tester.pumpAndSettle();
         await _selectEmoji(tester, 150);
-        expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(150));
+        expect(inlineEmojiPlainText(app.controller(tester).text),
+            inlineEmojiCharacter(150));
         app.expectNothingSent();
         _expectSmallEmoji(tester, app.composer, 150);
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         app.expectOneTextMessage('[[bt-emoji:150]]');
         _expectSmallEmoji(tester, find.byType(InlineEmojiText), 150);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+  }
+
+  for (final isGroup in [false, true]) {
+    testWidgets(
+        'split server libraries refresh additions and send new emoji and stickers ($isGroup)',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup, splitCatalog: true);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await _openPicker(tester, count: 49);
+        app.liveEmojiCount = 50;
+        app.liveStickerCount = 151;
+        await tester.pump(const Duration(seconds: 16));
+        await tester.pumpAndSettle();
+        expect(
+            tester.widget<SliverGrid>(_grid).delegate.estimatedChildCount, 50);
+        await _enterSearch(tester, 'אימוג׳י שרת 50');
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey(
+            'expression-image-https://betshuva.com/betshuva-app/api/expressions/emoji/151')));
+        await tester.pumpAndSettle();
+        expect(encodeInlineEmojiText(app.controller(tester).text),
+            '[[bt-emoji:151]]');
+        await tester.pump();
+        await tester.tap(find.byIcon(Icons.send));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage('[[bt-emoji:151]]');
+        await _ensureDoneVisible(tester);
+        await tester.tap(_done);
+        await tester.pumpAndSettle();
+        await _openPicker(tester, stickers: true, count: 151);
+        await _enterSearch(tester, 'מדבקה שרת 151');
+        await tester.pumpAndSettle();
+        final uploadsBefore =
+            app.requests.where((r) => r.url.path.endsWith('/upload')).length;
+        await tester.tap(find.byKey(const ValueKey(
+            'expression-image-https://betshuva.com/betshuva-app/expression-library/stickers/new-151.png')));
+        for (var i = 0; i < 8; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 30)));
+        }
+        expect(app.requests.where((r) => r.url.path.endsWith('/upload')).length,
+            uploadsBefore + 1);
+        expect(tester.takeException(), isNull);
         await app.dispose(tester);
       }, () => app.client);
     });
@@ -1451,7 +1723,10 @@ void main() {
             lessThanOrEqualTo(viewport.size.height - viewport.keyboard));
         await _openInlineTab(tester);
         final standardScroll = find
-            .descendant(of: _picker, matching: find.byType(Scrollable))
+            .descendant(
+                of: find.descendant(
+                    of: _picker, matching: find.byType(CustomScrollView)),
+                matching: find.byType(Scrollable))
             .first;
         await _enterSearch(tester, _labels.first);
         await tester.pumpAndSettle();
@@ -1470,10 +1745,11 @@ void main() {
         await tester.pumpAndSettle();
         expect(_picker, findsOneWidget);
         await _ensureDoneVisible(tester);
-    await tester.tap(_done);
+        await tester.tap(_done);
         await tester.pumpAndSettle();
         expect(_picker, findsNothing);
-        expect(inlineEmojiPlainText(app.controller(tester).text), inlineEmojiCharacter(1));
+        expect(inlineEmojiPlainText(app.controller(tester).text),
+            inlineEmojiCharacter(1));
         app.expectNothingSent();
         await app.dispose(tester);
       }, () => app.client);

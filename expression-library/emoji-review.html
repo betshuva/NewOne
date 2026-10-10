@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>בחירת אימוג׳ים למחיקה — בתשובה</title>
+  <style>
+    @font-face { font-family:BetshuvaHebrew; src:url('../assets/assets/fonts/NotoSansHebrew.ttf') format('truetype'); font-display:swap; }
+    :root { color-scheme:light; --blue:#176fa6; --ink:#123b57; --line:#d8e4eb; --bg:#f4f8fa; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:BetshuvaHebrew,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+    main { width:min(1180px,calc(100% - 28px)); margin:28px auto 60px; }
+    h1 { margin:0 0 10px; font-size:clamp(26px,5vw,40px); }
+    header p { margin:6px 0; line-height:1.6; }
+    a { color:var(--blue); }
+    .toolbar { position:sticky; top:0; z-index:1; display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:14px 0; background:var(--bg); }
+    .toolbar strong { margin-inline-end:auto; }
+    button { border:1px solid var(--line); border-radius:9px; padding:11px 14px; font:inherit; cursor:pointer; background:#fff; color:var(--blue); }
+    #copy { background:var(--blue); color:white; border-color:var(--blue); }
+    button:disabled { opacity:.5; cursor:default; }
+    button:focus-visible,a:focus-visible,input:focus-visible { outline:3px solid #f2b544; outline-offset:3px; }
+    #status { min-height:24px; margin:2px 0 12px; }
+    #selection { display:block; width:100%; min-height:110px; max-height:240px; resize:vertical; border:1px solid var(--line); border-radius:10px; padding:12px; margin:0 0 18px; font:14px BetshuvaHebrew,Arial,sans-serif; line-height:1.6; background:#fff; color:var(--ink); }
+    #selection[hidden] { display:none; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:14px; }
+    article { overflow:hidden; border:2px solid var(--line); border-radius:14px; background:white; scroll-margin-top:110px; }
+    article.selected { border-color:#ba3c35; background:#fff6f5; }
+    article:target { box-shadow:0 0 0 3px #f2b544; }
+    .preview { display:flex; align-items:center; justify-content:center; height:150px; padding:10px; background:#fff; }
+    .preview img { width:100%; height:100%; object-fit:contain; }
+    .vivid { filter:url(#vivid-emoji); }
+    .content { padding:10px; }
+    h2 { min-height:40px; margin:0 0 8px; font-size:16px; line-height:1.4; }
+    .mark { display:flex; align-items:center; gap:8px; padding:10px 0; cursor:pointer; }
+    .mark input { width:20px; height:20px; margin:0; accent-color:#ba3c35; flex-shrink:0; }
+    .links { display:flex; flex-wrap:wrap; gap:8px 12px; font-size:13px; }
+    .filter-definitions { position:absolute; width:0; height:0; overflow:hidden; }
+    @media(max-width:380px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } .preview { height:130px; } .toolbar { gap:8px; } button { padding:10px; } }
+  </style>
+</head>
+<body>
+  <svg class="filter-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <filter id="vivid-emoji" color-interpolation-filters="sRGB">
+      <feColorMatrix type="matrix" values="1.3845664 -0.2403072 -0.0242592 0 -0.12 -0.0714336 1.2156928 -0.0242592 0 -0.12 -0.0714336 -0.2403072 1.4317408 0 -0.12 0 0 0 1 0"/>
+    </filter>
+  </svg>
+  <main>
+    <header>
+      <h1>איזה אימוג׳ים תרצה למחוק?</h1>
+      <p>כל האימוג׳ים של בתשובה בדף אחד. סמן את הרצויים, לחץ על „העתק רשימה” ושלח את הרשימה בצ׳אט.</p>
+      <p>הסימונים נשמרים בדפדפן הזה. הדף מכין רשימת בקשות למחיקה.</p>
+      <a href="/betshuva-app/">חזרה לאתר בתשובה</a>
+    </header>
+    <div class="toolbar">
+      <strong id="count" aria-live="polite">טוען את האימוג׳ים…</strong>
+      <button id="copy" type="button" disabled>העתק רשימה</button>
+      <button id="clear" type="button" disabled>נקה סימונים</button>
+    </div>
+    <p id="status" role="status"></p>
+    <textarea id="selection" aria-label="רשימת האימוג׳ים שסומנו למחיקה" readonly hidden></textarea>
+    <section class="grid" id="gallery" aria-label="כל האימוג׳ים"></section>
+  </main>
+  <script>
+    'use strict';
+    const storageKey = 'betshuva-emoji-review-user-20260907';
+    const gallery = document.querySelector('#gallery');
+    const count = document.querySelector('#count');
+    const copyButton = document.querySelector('#copy');
+    const clearButton = document.querySelector('#clear');
+    const status = document.querySelector('#status');
+    const selection = document.querySelector('#selection');
+    const selected = new Set();
+    let entries = [];
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      if (Array.isArray(saved)) {
+        for (const id of saved) {
+          if (Number.isInteger(id) && id >= 1 && id <= 150) selected.add(id);
+        }
+      }
+    } catch (_) { /* Selection still works when browser storage is unavailable. */ }
+
+    function updateSelection() {
+      const chosen = entries.filter(entry => selected.has(entry.id));
+      count.textContent = `סומנו ${chosen.length} מתוך ${entries.length}`;
+      copyButton.disabled = clearButton.disabled = chosen.length === 0;
+      selection.hidden = chosen.length === 0;
+      selection.value = chosen.length === 0 ? '' :
+        'האימוג׳ים שבחרתי למחיקה:\n' + chosen.map(entry =>
+          `${entry.number} — ${entry.label}\n${entry.link}`).join('\n\n');
+      for (const card of gallery.children) {
+        const checked = selected.has(Number(card.dataset.id));
+        card.classList.toggle('selected', checked);
+        card.querySelector('input').checked = checked;
+      }
+      try { localStorage.setItem(storageKey, JSON.stringify([...selected])); }
+      catch (_) { /* Keep the visible list available for manual copying. */ }
+    }
+
+    copyButton.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(selection.value);
+        status.textContent = 'הרשימה הועתקה. אפשר להדביק אותה בצ׳אט.';
+      } catch (_) {
+        selection.focus();
+        selection.select();
+        status.textContent = 'הרשימה מסומנת בתיבה. העתק אותה ושלח בצ׳אט.';
+      }
+    });
+    clearButton.addEventListener('click', () => {
+      selected.clear();
+      updateSelection();
+      status.textContent = 'הסימונים נוקו.';
+    });
+
+    async function loadCatalog() {
+      try {
+        const response = await fetch('catalog.json', {cache:'no-store'});
+        if (!response.ok) throw new Error('Catalog unavailable');
+        const catalog = await response.json();
+        const category = catalog.categories.find(item => item.id === 'user-stickers');
+        if (!category || !Array.isArray(category.labels) || category.labels.length !== 150) {
+          throw new Error('Invalid catalog');
+        }
+        const folder = category.coloredPath || category.path;
+        if (!/^[a-z0-9-]+$/.test(folder)) throw new Error('Invalid artwork folder');
+        const removedIds = new Set(category.removedIds || []);
+        entries = category.labels.map((label, index) => {
+          const id = index + 1;
+          const number = String(id).padStart(3, '0');
+          return {id, number, label:String(label),
+            image:`${folder}/sticker-${String(id).padStart(2, '0')}.png`,
+            link:new URL(`#emoji-${number}`, location.href).href};
+        }).filter(entry => !removedIds.has(entry.id));
+        const availableIds = new Set(entries.map(entry => entry.id));
+        for (const id of selected) {
+          if (!availableIds.has(id)) selected.delete(id);
+        }
+        const fragment = document.createDocumentFragment();
+        for (const entry of entries) {
+          const card = document.createElement('article');
+          card.id = `emoji-${entry.number}`;
+          card.dataset.id = entry.id;
+          const preview = document.createElement('a');
+          preview.className = 'preview';
+          preview.href = entry.image;
+          preview.target = '_blank';
+          preview.rel = 'noopener';
+          preview.setAttribute('aria-label', `פתח תמונה: ${entry.number} — ${entry.label}`);
+          const image = document.createElement('img');
+          image.src = entry.image;
+          image.alt = entry.label;
+          image.loading = 'lazy';
+          image.width = image.height = 130;
+          if (entry.id >= 49 && entry.id <= 148) image.className = 'vivid';
+          preview.append(image);
+          const content = document.createElement('div');
+          content.className = 'content';
+          const title = document.createElement('h2');
+          title.textContent = `${entry.number} — ${entry.label}`;
+          const mark = document.createElement('label');
+          mark.className = 'mark';
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.setAttribute('aria-label', `סמן למחיקה: ${entry.number} — ${entry.label}`);
+          checkbox.addEventListener('change', () => {
+            if (checkbox.checked) selected.add(entry.id);
+            else selected.delete(entry.id);
+            updateSelection();
+            status.textContent = '';
+          });
+          mark.append(checkbox, document.createTextNode('סמן למחיקה'));
+          const links = document.createElement('div');
+          links.className = 'links';
+          const directLink = document.createElement('a');
+          directLink.href = entry.image;
+          directLink.target = '_blank';
+          directLink.rel = 'noopener';
+          directLink.textContent = 'פתח תמונה';
+          const cardLink = document.createElement('a');
+          cardLink.href = entry.link;
+          cardLink.textContent = 'קישור לאימוג׳י';
+          links.append(directLink, cardLink);
+          content.append(title, mark, links);
+          card.append(preview, content);
+          fragment.append(card);
+        }
+        gallery.replaceChildren(fragment);
+        updateSelection();
+        if (/^#emoji-\d{3}$/.test(location.hash)) {
+          document.querySelector(location.hash)?.scrollIntoView();
+        }
+      } catch (_) {
+        count.textContent = 'לא ניתן לטעון את האימוג׳ים כרגע';
+        status.textContent = 'רענן את הדף כדי לנסות שוב.';
+      }
+    }
+    loadCatalog();
+  </script>
+</body>
+</html>

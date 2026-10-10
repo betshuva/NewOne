@@ -549,8 +549,6 @@ async function readPreviewHtml(response, maxBytes = 1_500_000) {
   }
   return Buffer.concat(chunks).toString('utf8');
 }
-const EXPRESSION_CATALOG_PATH = path.join(BUILTIN_EXPRESSION_ROOT, 'catalog.json');
-const EXPRESSION_PUBLIC_BASE = '/betshuva-app/expression-library';
 let builtinExpressionHashesPromise = null;
 let builtinExpressionHashesExpiresAt = 0;
 
@@ -560,7 +558,7 @@ async function listExpressionFiles(directory) {
     if (entry.name === 'catalog.json') continue;
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listExpressionFiles(target));
-    else if (/\.(png|gif|webp)$/i.test(entry.name)) files.push(target);
+    else if (entry.isFile() && /\.(png|gif|webp|jpe?g)$/i.test(entry.name)) files.push(target);
   }
   return files;
 }
@@ -585,46 +583,12 @@ async function getBuiltinExpressionHashes() {
   return builtinExpressionHashesPromise;
 }
 
+const expressionLibrary = require('./expression-catalog').createExpressionLibrary(BUILTIN_EXPRESSION_ROOT, {
+  onChange: () => { builtinExpressionHashesExpiresAt = 0; },
+});
+
 async function getExpressionCatalog() {
-  const source = JSON.parse(await fs.readFile(EXPRESSION_CATALOG_PATH, 'utf8'));
-  const categories = [];
-  for (const category of source.categories || []) {
-    const folder = String(category.path || '');
-    const coloredFolder = String(category.coloredPath || '');
-    const prefix = String(category.prefix || '');
-    const extension = String(category.extension || '').toLowerCase();
-    if (!/^[a-z0-9-]+$/i.test(folder) || !/^[a-z0-9-]+$/i.test(prefix) ||
-        !['png', 'gif', 'webp'].includes(extension)) continue;
-    const items = [];
-    const removedIds = new Set(category.removedIds || []);
-    for (let index = 0; index < (category.labels || []).length; index++) {
-      if (removedIds.has(index + 1)) continue;
-      const fileName = `${prefix}-${String(index + 1).padStart(2, '0')}.${extension}`;
-      try {
-        await fs.access(path.join(BUILTIN_EXPRESSION_ROOT, folder, fileName));
-        let coloredUrl;
-        if (/^[a-z0-9-]+$/i.test(coloredFolder)) {
-          try {
-            await fs.access(path.join(BUILTIN_EXPRESSION_ROOT, coloredFolder, fileName));
-            coloredUrl = `${EXPRESSION_PUBLIC_BASE}/${coloredFolder}/${fileName}`;
-          } catch (_) { /* Older clients and incomplete refreshes retain original artwork. */ }
-        }
-        items.push({
-          id: `${category.id}-${index + 1}`,
-          label: String(category.labels[index] || ''),
-          url: `${EXPRESSION_PUBLIC_BASE}/${folder}/${fileName}`,
-          ...(coloredUrl ? { coloredUrl } : {}),
-          animated: extension === 'gif',
-        });
-      } catch (_) { /* A missing file is omitted without breaking the catalog. */ }
-    }
-    if (items.length) categories.push({
-      id: String(category.id || folder),
-      title: String(category.title || folder),
-      items,
-    });
-  }
-  return { version: source.version || 1, updatedAt: source.updatedAt, categories };
+  return expressionLibrary.catalog();
 }
 
 async function isTrustedBuiltinExpression(file) {
@@ -8685,9 +8649,22 @@ app.post('/api/fcm-token', auth, async (req, res) => {
 });
 
 // ── File Upload ───────────────────────────────────────────────────
+app.get('/api/expressions/emoji/:id', async (req, res) => {
+  try {
+    if (!/^[1-9][0-9]{0,3}$/.test(req.params.id)) return res.sendStatus(404);
+    const file = await expressionLibrary.emojiFile(Number(req.params.id));
+    if (!file) return res.sendStatus(404);
+    res.set('Cache-Control', 'no-cache');
+    res.sendFile(file);
+  } catch (error) {
+    console.error('emoji artwork:', error.message);
+    res.sendStatus(500);
+  }
+});
+
 app.get('/api/expressions/catalog', auth, async (_req, res) => {
   try {
-    res.set('Cache-Control', 'private, max-age=60, must-revalidate');
+    res.set('Cache-Control', 'no-store');
     res.json(await getExpressionCatalog());
   } catch (error) {
     console.error('expression catalog:', error.message);

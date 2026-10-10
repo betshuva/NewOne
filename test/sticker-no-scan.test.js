@@ -39,14 +39,15 @@ test('actual published sticker bytes are recognized without invoking a scanner',
  const catalog=JSON.parse(fs.readFileSync(path.join(root,'catalog.json'),'utf8'));
  const category=catalog.categories[0];
  const bytes=fs.readFileSync(path.join(root,category.path,`${category.prefix}-01.${category.extension}`));
- const hashSource=source.slice(source.indexOf('const EXPRESSION_PUBLIC_BASE ='),source.indexOf('// ── Firebase Cloud Messaging'));
+ const hashSource=source.slice(source.indexOf('let builtinExpressionHashesPromise ='),source.indexOf('// ── Firebase Cloud Messaging'));
  const scan=vm.runInNewContext(hashSource+scanSource+';scanImage',{
+  require: name => name === './expression-catalog' ? require('../server/expression-catalog') : require(name),
   fs:fs.promises,path,crypto:require('node:crypto'),BUILTIN_EXPRESSION_ROOT:root,
   isPotentiallyAnimatedImage:()=>{throw Error('unexpected image analysis');},
   scanStaticImage:()=>{throw Error('unexpected content scan');},
  });
  assert.equal((await scan(bytes)).scanSkipped,true);
- const coloredBytes=fs.readFileSync(path.join(root,category.coloredPath,`${category.prefix}-01.${category.extension}`));
+ const coloredBytes=fs.readFileSync(path.join(root,'user-20260907',`${category.prefix}-01.${category.extension}`));
  assert.notDeepEqual(coloredBytes,bytes);
  assert.equal((await scan(coloredBytes)).scanSkipped,true);
 });

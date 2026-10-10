@@ -36,6 +36,9 @@ http.Response _staleResponse(http.Request request,
       'filter': {..._blocked, 'text': receivingTextAllowed}
     });
   }
+  if (path.endsWith('/filter-pin') || path.endsWith('/filter-pin/enter')) {
+    return _json({'configured': false, 'unlocked': true});
+  }
   if (path.endsWith('/filter-settings')) {
     return _json({'filter': _blocked, 'requiresChoice': true});
   }
@@ -127,6 +130,7 @@ void main() {
         receivingFilterChanges.add('token');
         await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField), 'הודעת ניסיון');
+        await tester.pump();
         await tester.tap(find.byIcon(Icons.send));
         await tester.pumpAndSettle();
         expect(find.textContaining('בחירת התוכן שאקבל'), findsNothing);
@@ -190,7 +194,11 @@ void main() {
       expect(find.text('שמור'), findsOneWidget);
       final save = find.ancestor(
           of: find.text('שמור'), matching: find.byType(FilledButton));
-      await tester.tap(find.text('חסום').first);
+      final toggle = find.ancestor(
+          of: find.text('חסום').first, matching: find.byType(InkWell));
+      await tester.ensureVisible(toggle);
+      await tester.pumpAndSettle();
+      await tester.tap(toggle);
       await tester.pumpAndSettle();
       expect(find.text('מותר'), findsOneWidget);
       expect(find.text('חסום'), findsNWidgets(3));
@@ -209,6 +217,7 @@ void main() {
       await tester.pumpWidget(_chat('friend', 'חבר'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'הודעת ניסיון');
+      await tester.pump();
       await tester.tap(find.byIcon(Icons.send));
       await tester.pumpAndSettle();
       expect(find.text('בחירת התוכן שאקבל מחבר'), findsOneWidget);

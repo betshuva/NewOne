@@ -26,11 +26,12 @@ class _ChatFileNameState extends State<ChatFileName> {
   bool get _isSticker {
     final name = widget.filename ?? '';
     final path = Uri.tryParse(widget.url)?.path ?? '';
-    return RegExp(r'^betshuva-sticker-[0-9]+\.png$', caseSensitive: false)
-            .hasMatch(name) ||
+    final stickerName = RegExp(
+        r'^betshuva-sticker-[^/\\]+\.(png|gif|webp|jpe?g)$',
+        caseSensitive: false);
+    return stickerName.hasMatch(name) ||
         path.contains('/expression-library/') ||
-        RegExp(r'(^|/)betshuva-sticker-[0-9]+\.png$', caseSensitive: false)
-            .hasMatch(path);
+        stickerName.hasMatch(path.split('/').last);
   }
 
   bool _saving = false;
