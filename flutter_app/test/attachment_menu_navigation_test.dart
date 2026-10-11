@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'helpers/attachment_picker.dart';
 import 'package:betshuva/main.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 // ignore: depend_on_referenced_packages
 import 'package:camera_platform_interface/camera_platform_interface.dart'
     show CameraPlatform;
@@ -17,6 +19,7 @@ void main() {
   FilePicker.platform = AttachmentPicker([]);
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
+    if (kIsWeb) return;
     final font = FontLoader('NotoSansHebrew')
       ..addFont(rootBundle.load('assets/fonts/NotoSansHebrew.ttf'));
     await font.load();
@@ -60,6 +63,8 @@ void main() {
           await tester.tap(find.byIcon(Icons.attach_file));
           await tester.pumpAndSettle();
           expect(find.text('העלאת קבצים'), findsOneWidget);
+          expect(find.text('הקבצים עוברים סינון לפני השליחה'), findsNothing);
+          expect(find.text('אישור, חתימה או סקר'), findsNothing);
           expect(find.text('צילום מסך'), findsNothing);
           expect(find.text('מדבקות ואימוג׳י'), findsNothing);
           final anchor = tester.getRect(find.byIcon(Icons.attach_file));
@@ -143,5 +148,128 @@ void main() {
                   : '{}',
               200)));
     }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  }
+
+  for (final isAdmin in [false, true]) {
+    testWidgets(
+        'compact group menu separates form actions for admins ($isAdmin)',
+        (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final group = <String, dynamic>{
+        'id': 'forms-group',
+        'name': 'קבוצה לבדיקה',
+        'role': isAdmin ? 'admin' : 'member',
+        'status': 'member',
+        'send_permission': 'all',
+        'member_count': 1,
+      };
+      await http.runWithClient(() async {
+        await tester.pumpWidget(MaterialApp(
+          theme: ThemeData(useMaterial3: true, fontFamily: 'NotoSansHebrew'),
+          home: GroupChatScreen(
+              token: 'token',
+              me: const {'id': 'current-user', 'name': 'משתמש'},
+              group: group,
+              socket: null),
+        ));
+        await tester.pumpAndSettle();
+        final state = tester.state(find.byType(GroupChatScreen));
+        await tester.tap(find.byIcon(Icons.attach_file));
+        await tester.pumpAndSettle();
+        expect(find.text('הקבצים עוברים סינון לפני השליחה'), findsNothing);
+        expect(
+            tester
+                .getSize(find.byKey(const ValueKey('chat-attachment-menu')))
+                .height,
+            // Chrome tests use a wider fallback font instead of NotoSansHebrew.
+            lessThanOrEqualTo(kIsWeb ? 340 : 300));
+        final entry = find.text('אישור, חתימה או סקר');
+        expect(entry, isAdmin ? findsOneWidget : findsNothing);
+        if (isAdmin) {
+          await tester.tap(entry);
+          await tester.pumpAndSettle();
+          expect(find.byType(CreateEducationFormScreen), findsNothing);
+          for (final label in ['אישור', 'חתימה', 'סקר']) {
+            expect(find.text(label), findsOneWidget);
+          }
+          // Returning from the submenu must preserve the root attachment menu.
+          await tester.tap(find.text('אישור, חתימה או סקר'));
+          await tester.pumpAndSettle();
+          expect(find.text('העלאת קבצים'), findsOneWidget);
+          for (final choice in [
+            ('אישור', 'approval', 'יצירת אישור'),
+            ('חתימה', 'signature', 'יצירת בקשת חתימה'),
+            ('סקר', 'survey', 'יצירת סקר'),
+          ]) {
+            await tester.tap(find.text('אישור, חתימה או סקר'));
+            await tester.pumpAndSettle();
+            await tester.tap(find.text(choice.$1));
+            await tester.pumpAndSettle();
+            expect(find.byKey(const ValueKey('chat-attachment-menu')),
+                findsNothing);
+            final creator = find.byType(CreateEducationFormScreen);
+            expect(creator, findsOneWidget);
+            final screen = tester.widget<CreateEducationFormScreen>(creator);
+            expect(screen.initialType, choice.$2);
+            expect(screen.lockType, isTrue);
+            expect(find.text(choice.$3), findsOneWidget);
+            expect(find.byType(SegmentedButton<String>), findsNothing);
+            expect(find.text('צירוף מסמך לחתימה *'),
+                choice.$2 == 'signature' ? findsOneWidget : findsNothing);
+            if (choice.$2 == 'survey') {
+              await tester.scrollUntilVisible(find.text('סקר אנונימי'), 150,
+                  scrollable: find
+                      .descendant(
+                          of: find.descendant(
+                              of: creator, matching: find.byType(ListView)),
+                          matching: find.byType(Scrollable))
+                      .first);
+              await tester.pumpAndSettle();
+            }
+            expect(find.text('סקר אנונימי'),
+                choice.$2 == 'survey' ? findsOneWidget : findsNothing);
+            Navigator.of(tester.element(creator)).pop();
+            await tester.pumpAndSettle();
+            expect(tester.state(find.byType(GroupChatScreen)), same(state));
+            if (choice.$2 != 'survey') {
+              await tester.tap(find.byIcon(Icons.attach_file));
+              await tester.pumpAndSettle();
+            }
+          }
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpAndSettle();
+      },
+          () => MockClient((request) async {
+                final path = request.url.path;
+                Object data = {};
+                if (path.endsWith('/groups')) {
+                  data = [group];
+                } else if (path.endsWith('/messages') ||
+                    path.contains('/messages/') ||
+                    path.endsWith('/members') ||
+                    path.endsWith('/upload-batch-notices')) {
+                  data = [];
+                } else if (path.endsWith('/filter-settings')) {
+                  data = {
+                    'filter': {
+                      'text': true,
+                      'video': true,
+                      'nonHumanImages': true,
+                      'men': true,
+                      'women': true,
+                      'children': true
+                    },
+                    'requiresChoice': false
+                  };
+                } else if (path.endsWith('/forms-group')) {
+                  data = {...group, 'members': []};
+                }
+                return http.Response(jsonEncode(data), 200, headers: {
+                  'content-type': 'application/json; charset=utf-8'
+                });
+              }));
+    });
   }
 }

@@ -3,9 +3,12 @@ import 'dart:async';
 
 import 'package:betshuva/inline_custom_emoji.dart';
 import 'package:betshuva/main.dart';
+import 'package:betshuva/location_message_preview.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, TargetPlatform;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -28,6 +31,7 @@ final _pngBytes = base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH9sAAAAASUVORK5CYII=');
 final _labels = List.generate(150, (index) => 'אימוג׳י לבדיקה ${index + 1}');
 var _bundledCatalogReads = 0;
+var _keyboardSoundAssetReads = 0;
 final _keyboardAudioCalls = <MethodCall>[];
 final _keyboardAudioChannels = <String>{};
 var _bundledColoredArtwork = false;
@@ -116,6 +120,8 @@ class _ChatHarness {
   final bool coloredArtwork;
   final bool removedArtwork;
   final bool splitCatalog;
+  final bool adminInvites;
+  final pendingInviteIds = <String>{'invited-user'};
   int liveEmojiCount = 49;
   int liveStickerCount = 150;
   final List<Map<String, dynamic>>? history;
@@ -136,6 +142,7 @@ class _ChatHarness {
       this.coloredArtwork = false,
       this.removedArtwork = false,
       this.splitCatalog = false,
+      this.adminInvites = false,
       this.history});
 
   late final client = MockClient((request) async {
@@ -201,14 +208,25 @@ class _ChatHarness {
       }
       return http.Response(jsonEncode(catalog), catalogStatus,
           headers: {'content-type': 'application/json; charset=utf-8'});
+    } else if (adminInvites && path.endsWith('/users/directory')) {
+      body = [
+        {'id': 'existing-member', 'name': 'חבר קיים'},
+        {'id': 'invited-user', 'name': 'מוזמן קודם'},
+        {'id': 'new-invite-user', 'name': 'משתמש חדש'},
+      ];
+    } else if (adminInvites && request.method == 'POST' && path.endsWith('/members')) {
+      pendingInviteIds.add(jsonDecode(request.body)['userId'] as String);
+      body = {'ok': true};
     } else if (path.endsWith('/groups')) {
-      body = [_group];
+      body = [{..._group, if (adminInvites) 'role': 'admin'}];
     } else if (path.endsWith('/groups/emoji-test-group')) {
-      body = {
+      body = <String, dynamic>{
         'members': [
-          {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה', 'role': 'member'},
+          {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה', 'role': adminInvites ? 'admin' : 'member'},
+          if (adminInvites) {'id': 'existing-member', 'name': 'חבר קיים', 'role': 'member'},
         ],
       };
+      if (adminInvites) body['pending_invite_ids'] = pendingInviteIds.toList();
     } else if (path.contains('/messages/') || path.endsWith('/messages')) {
       body = history ??
           (withHistory
@@ -338,7 +356,7 @@ class _ChatHarness {
               ? GroupChatScreen(
                   token: 'emoji-test-token',
                   me: const {'id': 'emoji-test-user', 'name': 'משתמש לבדיקה'},
-                  group: Map<String, dynamic>.from(_group),
+                  group: Map<String, dynamic>.from({..._group, if (adminInvites) 'role': 'admin'}),
                   socket: socket,
                   embedded: true,
                 )
@@ -444,9 +462,7 @@ Future<void> _openShortcut(WidgetTester tester,
   final controller = tester.widget<TextField>(composer).controller!;
   final original = controller.value;
   final emptyDraft = inlineEmojiPlainText(original.text).trim().isEmpty;
-  if (emptyDraft) {
-    controller.text = 'בדיקה';
-  }
+  if (emptyDraft) controller.text = 'בדיקה';
   await tester.pump();
   await tester.tap(stickers ? _stickerShortcut : _inlineEmojiShortcut);
   if (emptyDraft) controller.value = original;
@@ -462,7 +478,7 @@ Future<void> _openShortcut(WidgetTester tester,
   _expectFlatImages(tester, stickers: stickers, count: count);
 }
 
-void _expectComposerShortcuts(WidgetTester tester) {
+void _expectComposerShortcuts(WidgetTester tester, {bool hasText = true}) {
   expect(_stickerShortcut, findsOneWidget);
   expect(_inlineEmojiShortcut, findsOneWidget);
   final stickerButton = tester.widget<IconButton>(_stickerShortcut);
@@ -474,8 +490,8 @@ void _expectComposerShortcuts(WidgetTester tester) {
 
   final input = find.byType(TextField).first;
   final attachment = find.byIcon(Icons.attach_file);
-  final send = find.byIcon(Icons.send);
-  expect(find.byIcon(Icons.mic), findsNothing);
+  final send = find.byIcon(hasText ? Icons.send : Icons.mic);
+  expect(find.byIcon(hasText ? Icons.mic : Icons.send), findsNothing);
   expect(
       tester.getCenter(attachment).dx, greaterThan(tester.getCenter(input).dx));
   expect(tester.getCenter(send).dx, lessThan(tester.getCenter(input).dx));
@@ -575,6 +591,7 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     _keyboardAudioCalls.clear();
+    _keyboardSoundAssetReads = 0;
     if (!kIsWeb) {
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -627,6 +644,7 @@ void main() {
     messenger.setMockMessageHandler('flutter/assets', (message) {
       final key = const StringCodec().decodeMessage(message);
       if (key == 'assets/sounds/keyboard-click.wav') {
+        _keyboardSoundAssetReads++;
         return Future.value(ByteData.sublistView(_keyboardWavBytes));
       }
       if (key == 'assets/stickers/user-catalog.json') {
@@ -693,6 +711,194 @@ void main() {
   for (final isGroup in [false, true]) {
     final chatKind = isGroup ? 'group' : 'private';
 
+    for (final state in ['incoming', 'read', 'failed']) {
+      testWidgets('$chatKind sender header contains time and status once ($state)',
+          (tester) async {
+        tester.view.physicalSize = const Size(320, 740);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final isMe = state != 'incoming';
+        final app = _ChatHarness(isGroup: isGroup, history: [
+          {
+            'id': 'compact-header-message',
+            'sender_id': isMe ? 'emoji-test-user' : 'emoji-test-recipient',
+            'sender_name': 'שם משתמש ארוך מאוד לבדיקת מסך צר',
+            'type': 'text',
+            'body': 'הודעה קומפקטית',
+            'created_at': '2026-09-17T14:09:00Z',
+            'message_status': state,
+            'is_edited': isMe,
+          },
+        ]);
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          final header = find.byWidgetPredicate((widget) =>
+              widget.key is ValueKey &&
+              (widget.key! as ValueKey).value.toString()
+                  .startsWith('message-sender-'));
+          expect(header, findsOneWidget);
+          final time = find.descendant(
+              of: header,
+              matching: find.byWidgetPredicate((widget) =>
+                  widget is Text &&
+                  RegExp(r'^\d{2}:\d{2}$').hasMatch(widget.data ?? '')));
+          expect(time, findsOneWidget);
+          expect(find.text(tester.widget<Text>(time).data!), findsOneWidget);
+          final headerRect = tester.getRect(header);
+          expect(headerRect.height, lessThanOrEqualTo(30));
+          expect(tester.getRect(time).bottom,
+              lessThanOrEqualTo(headerRect.bottom));
+          expect(tester.getRect(time).bottom,
+              lessThan(tester.getRect(find.text('הודעה קומפקטית')).top));
+          expect(find.descendant(of: header, matching: find.text('נערך')),
+              isMe ? findsOneWidget : findsNothing);
+          expect(find.descendant(of: header,
+              matching: find.byIcon(state == 'failed'
+                  ? (isGroup ? Icons.error_outline : Icons.done)
+                  : Icons.done_all)),
+              isMe ? findsOneWidget : findsNothing);
+          expect(tester.takeException(), isNull);
+          await app.dispose(tester);
+        }, () => app.client);
+      });
+    }
+
+    if (isGroup) {
+      testWidgets('group marks prior invitations and refreshes after inviting a new user',
+          (tester) async {
+        final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        const contactsChannel = MethodChannel('github.com/QuisApp/flutter_contacts');
+        messenger.setMockMethodCallHandler(contactsChannel, (_) async => false);
+        addTearDown(() => messenger.setMockMethodCallHandler(contactsChannel, null));
+        final app = _ChatHarness(isGroup: true, adminInvites: true);
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          final menu = tester.widget<PopupMenuButton<String>>(find.byType(PopupMenuButton<String>).first);
+          menu.onSelected!('add');
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+          await tester.pumpAndSettle();
+          expect(find.text('כבר חבר בקבוצה'), findsOneWidget);
+          expect(find.text('הוזמן – ממתין לאישור'), findsOneWidget);
+          for (final name in ['חבר קיים', 'מוזמן קודם']) {
+            final row = find.ancestor(of: find.text(name), matching: find.byType(ListTile));
+            final checkbox = tester.widget<Checkbox>(find.descendant(of: row,
+                matching: find.byType(Checkbox)));
+            expect(checkbox.value, isTrue);
+            expect(checkbox.onChanged, isNull);
+            await tester.tap(find.text(name));
+          }
+          expect(find.text('בחר חברים'), findsOneWidget);
+          await tester.tap(find.text('משתמש חדש'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('הוסף 1 נבחרים'));
+          await tester.pumpAndSettle();
+          final posts = app.requests.where((r) => r.method == 'POST' && r.url.path.endsWith('/members')).toList();
+          expect(posts, hasLength(1));
+          expect(jsonDecode(posts.single.body), {'userId': 'new-invite-user'});
+          menu.onSelected!('add');
+          await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+          await tester.pumpAndSettle();
+          expect(find.text('הוזמן – ממתין לאישור'), findsNWidgets(2));
+          expect(find.text('בחר חברים'), findsOneWidget);
+          await tester.tap(find.text('ביטול'));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          await app.dispose(tester);
+        }, () => app.client);
+      });
+    }
+
+    testWidgets('$chatKind displays a shared location map instead of the raw URL',
+        (tester) async {
+      final url = Uri.https('www.google.com', '/maps/search/',
+          {'api': '1', 'query': 'רחובות'}).toString();
+      final app = _ChatHarness(isGroup: isGroup, history: [
+        {
+          'id': 'location-preview-message',
+          'sender_id': 'emoji-test-user',
+          'sender_name': 'משתמש לבדיקה',
+          'type': 'text',
+          'body': 'רחובות\n$url',
+          'created_at': '2026-09-17T14:09:00Z',
+        },
+      ]);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        expect(find.byType(LocationMessagePreview), findsOneWidget);
+        expect(find.text('רחובות'), findsOneWidget);
+        expect(find.text('www.google.com'), findsNothing);
+        expect(find.byWidgetPredicate((widget) => widget is InlineEmojiText &&
+            widget.text.contains('https://www.google.com')), findsNothing);
+        await tester.ensureVisible(find.text('רחובות'));
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('רחובות'));
+        // Web chat also recognizes double-click-to-copy; let its timer expire.
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.pumpAndSettle();
+        expect(find.text('Google Maps'), findsOneWidget);
+        expect(find.text('Waze'), findsOneWidget);
+        await tester.tapAt(const Offset(5, 5));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
+    testWidgets('$chatKind removes blank lines without merging content or losing emoji',
+        (tester) async {
+      final app = _ChatHarness(isGroup: isGroup);
+      await http.runWithClient(() async {
+        await app.mount(tester);
+        await tester.enterText(app.composer,
+            '\n שלום\r\n \t\r\n  שורה שנייה\n\n${inlineEmojiCharacter(1)}\n ');
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('chat-composer-action')));
+        await tester.pumpAndSettle();
+        app.expectOneTextMessage('שלום\n  שורה שנייה\n[[bt-emoji:001]]');
+        expect(app.controller(tester).text, isEmpty);
+        await app.dispose(tester);
+      }, () => app.client);
+    });
+
+    for (final stickers in [false, true]) {
+      testWidgets('$chatKind opens ${stickers ? 'stickers' : 'emoji'} with a mouse and an empty draft',
+          (tester) async {
+        final app = _ChatHarness(isGroup: isGroup);
+        await http.runWithClient(() async {
+          await app.mount(tester);
+          await tester.runAsync(() => Future<void>.delayed(
+              const Duration(milliseconds: 100)));
+          await tester.pumpAndSettle();
+          await tester.tap(app.composer, kind: PointerDeviceKind.mouse);
+          await tester.pumpAndSettle();
+          expect(app.controller(tester).text, isEmpty);
+          final shortcut = stickers ? _stickerShortcut : _inlineEmojiShortcut;
+          final gesture = await tester.startGesture(tester.getCenter(shortcut),
+              kind: PointerDeviceKind.mouse);
+          await tester.pump();
+          expect(shortcut, findsOneWidget);
+          expect(tester.widget<TextField>(app.composer).focusNode!.hasFocus,
+              isTrue, reason: 'Focus must survive the mouse press on the shortcut');
+          await gesture.up();
+          for (var attempt = 0; _picker.evaluate().isEmpty && attempt < 8;
+              attempt++) {
+            await tester.runAsync(() => Future<void>.delayed(
+                const Duration(milliseconds: 100)));
+            await tester.pumpAndSettle();
+          }
+          expect(_picker, findsOneWidget,
+              reason: 'panel=${find.byKey(const ValueKey('expression-picker-panel')).evaluate().length}; '
+                  'requests=${app.requests.map((r) => r.url.path).toList()}');
+          expect(_pickerShowsStickers(tester), stickers);
+          expect(app.controller(tester).text, isEmpty);
+          app.expectNothingSent();
+          await app.dispose(tester);
+        }, () => app.client);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.linux));
+    }
+
     testWidgets(
         '$chatKind switches recording and send without moving the composer',
         (tester) async {
@@ -709,6 +915,17 @@ void main() {
         expect(_stickerShortcut, findsNothing);
         expect(_inlineEmojiShortcut, findsNothing);
         expect(tester.widget<IconButton>(action).onPressed, isNotNull);
+        await tester.tap(app.composer);
+        await tester.pump();
+        expect(app.controller(tester).text, isEmpty);
+        _expectComposerShortcuts(tester, hasText: false);
+        expect(find.byIcon(Icons.mic), findsOneWidget);
+        expect(tester.getRect(app.composer), inputRect);
+        expect(tester.getRect(tools), toolsRect);
+        tester.widget<TextField>(app.composer).focusNode!.unfocus();
+        await tester.pump();
+        expect(_stickerShortcut, findsNothing);
+        expect(_inlineEmojiShortcut, findsNothing);
         await tester.enterText(app.composer, 'שלום');
         await tester.pump();
         _expectComposerShortcuts(tester);
@@ -720,8 +937,12 @@ void main() {
         app.expectOneTextMessage('שלום');
         expect(app.controller(tester).text, isEmpty);
         expect(find.byIcon(Icons.mic), findsOneWidget);
-        expect(_stickerShortcut, findsNothing);
-        expect(_inlineEmojiShortcut, findsNothing);
+        if (tester.widget<TextField>(app.composer).focusNode!.hasFocus) {
+          _expectComposerShortcuts(tester, hasText: false);
+        } else {
+          expect(_stickerShortcut, findsNothing);
+          expect(_inlineEmojiShortcut, findsNothing);
+        }
         expect(tester.getRect(app.composer), inputRect);
         await tester.enterText(app.composer, 'נמחק');
         await tester.pump();
@@ -729,7 +950,7 @@ void main() {
         app.controller(tester).clear();
         await tester.pump();
         expect(find.byIcon(Icons.mic), findsOneWidget);
-        expect(_stickerShortcut, findsNothing);
+        _expectComposerShortcuts(tester, hasText: false);
         expect(tester.getRect(tools), toolsRect);
         await app.dispose(tester);
       }, () => app.client);
@@ -748,6 +969,7 @@ void main() {
         await _openShortcut(tester, stickers: false);
         final clicksAfterTyping =
             _keyboardAudioCalls.where((call) => call.method == 'resume').length;
+        if (kIsWeb) expect(_keyboardSoundAssetReads, 0);
         if (!kIsWeb)
           expect(clicksAfterTyping, greaterThan(0),
               reason: _keyboardAudioCalls
@@ -766,6 +988,7 @@ void main() {
         expect(find.byKey(const ValueKey('inline-custom-emoji-1')),
             findsOneWidget);
         expect(_picker, findsOneWidget);
+        if (kIsWeb) expect(_keyboardSoundAssetReads, 0);
         if (!kIsWeb) {
           expect(
               _keyboardAudioCalls

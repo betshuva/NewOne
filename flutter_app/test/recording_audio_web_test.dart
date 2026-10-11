@@ -58,8 +58,10 @@ void main() {
     await Future<void>.delayed(const Duration(seconds: 6));
     expect(remote.length, greaterThan(0));
     expect(recorder!.recording, true);
+    expect(recorder.level, greaterThan(0.1));
     expect(sends, 0);
     final path = await recorder.stop();
+    expect(recorder.level, 0);
     final file = XFile(path!, mimeType: 'audio/webm');
     final response = await RecordingUpload.upload(
         file: file,

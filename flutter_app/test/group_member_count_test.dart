@@ -34,6 +34,15 @@ http.Response _json(Object data) => http.Response(
       headers: {'content-type': 'application/json; charset=utf-8'},
     );
 
+bool _isPinAccessRequest(http.Request request) =>
+    request.method == 'POST' &&
+    (request.url.path.endsWith('/filter-pin/enter') ||
+        request.url.path.endsWith('/filter-pin/leave')) &&
+    request.body == '{}' &&
+    request.headers['Authorization'] == 'Bearer test-token' &&
+    RegExp(r'^[0-9a-f]{32}$')
+        .hasMatch(request.headers['X-Filter-Pin-Scope'] ?? '');
+
 class _GroupServer {
   List<Map<String, dynamic>> members = [_me, _member];
   bool stringCount = false;
@@ -81,6 +90,15 @@ class _GroupServer {
     }
     if (path.endsWith('/receiving-filter')) {
       return _json({'filter': _filter});
+    }
+    if (path.endsWith('/filter-pin')) {
+      expect(request.method, 'GET');
+      return _json({'configured': false, 'unlocked': true});
+    }
+    if (path.endsWith('/filter-pin/enter') ||
+        path.endsWith('/filter-pin/leave')) {
+      expect(_isPinAccessRequest(request), isTrue);
+      return _json({'configured': false, 'unlocked': true});
     }
     return _json({});
   }
@@ -130,9 +148,11 @@ Future<void> _withGroup(
       expect(
         server.requests.where((request) => request.method != 'GET'),
         everyElement(predicate<http.Request>((request) =>
-            request.method == 'PUT' &&
-            request.url.path.endsWith('/groups/$_groupId/read'))),
-        reason: 'Only the mocked mark-as-read operation may write.',
+            (request.method == 'PUT' &&
+                request.url.path.endsWith('/groups/$_groupId/read')) ||
+            _isPinAccessRequest(request))),
+        reason:
+            'Only mark-as-read and authenticated PIN scope enter/leave may write.',
       );
     } finally {
       if (server.detailGate case final gate? when !gate.isCompleted) {
@@ -165,7 +185,12 @@ Future<void> _openSettings(WidgetTester tester) async {
 }
 
 Future<void> _openManagement(WidgetTester tester) async {
-  await tester.tap(find.text('ניהול'));
+  final management = find.descendant(
+      of: find.byType(ContentFilterSettingsScreen),
+      matching: find.text('ניהול'));
+  await tester.ensureVisible(management);
+  await tester.pumpAndSettle();
+  await tester.tap(management);
   await tester.pumpAndSettle();
   expect(find.byType(AlertDialog), findsOneWidget);
 }

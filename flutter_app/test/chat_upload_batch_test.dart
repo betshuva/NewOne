@@ -55,6 +55,38 @@ void main() {
     expect(find.text(text),findsNothing);
     expect(find.text(summary),findsOneWidget);
     expect(tester.widget<Text>(find.text(summary)).style?.color,const Color(0xFFFFB74D));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('upload notices expire after five minutes without removing files',
+      (tester) async {
+    final createdAt = DateTime.now();
+    const start = 'מעלה 1 קבצים';
+    const summary = 'סיכום: נשלחו 1 · נחסמו 0';
+    await tester.pumpWidget(MaterialApp(home: Column(children: [
+      ChatUploadBatchNotice(text: start, createdAt: createdAt),
+      const Text('image.png'),
+      ChatUploadBatchNotice(text: 'סוף העלאת 1 קבצים',
+          summary: summary, createdAt: createdAt),
+    ])));
+    await tester.pump(const Duration(minutes: 4, seconds: 59));
+    expect(find.text(start), findsOneWidget);
+    expect(find.text(summary), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text(start), findsNothing);
+    expect(find.text(summary), findsNothing);
+    expect(find.text('image.png'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('expired upload notices stay hidden when reopening the chat',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(home: ChatUploadBatchNotice(
+      text: 'מעלה 1 קבצים',
+      createdAt: DateTime.now().subtract(const Duration(minutes: 6)),
+    )));
+    expect(find.byType(Text), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets(

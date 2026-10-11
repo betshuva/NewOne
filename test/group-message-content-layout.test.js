@@ -19,7 +19,8 @@ test('normal group messages render outside the blocked-content branch', () => {
   assert.match(branch,
     /else if \(uploadStatus ==\s*'blocked_content'\)\s*const SizedBox\s*\.shrink\(\)\s*else if \(avielSticker !=\s*null\)/);
   assert.match(branch, /else if \(sharedContact !=\s*null\)/);
-  assert.match(branch, /else\s*InlineEmojiText\(\s*msg\['text'\]/);
+  assert.match(branch,
+    /else\s*InlineEmojiText\(\s*locationMessageDisplayText\(groupText\)/);
 });
 
 test('group message bubbles size themselves to their content', () => {

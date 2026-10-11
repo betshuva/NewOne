@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'audio_visualizer.dart';
 
 /// Recording replaces text entry, keeping both actions reachable on phones.
 class VoiceRecordingBar extends StatelessWidget {
   const VoiceRecordingBar(
       {super.key,
       required this.timeLabel,
+      this.level,
       required this.onSend,
       required this.onCancel});
   final String timeLabel;
+  final ValueListenable<double>? level;
   final VoidCallback onSend, onCancel;
 
   @override
@@ -19,12 +23,22 @@ class VoiceRecordingBar extends StatelessWidget {
               onPressed: onSend,
               icon: const Icon(Icons.stop_circle, color: Colors.red)),
           Expanded(
-              child: Text('זמן הקלטה: $timeLabel · עד שעתיים',
-                  textDirection: TextDirection.rtl,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.red, fontSize: 12))),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (level != null)
+              ValueListenableBuilder<double>(
+                  valueListenable: level!,
+                  builder: (context, value, _) => AudioVisualizer(
+                      key: const ValueKey('recording-level'),
+                      value: value,
+                      recording: true,
+                      color: Colors.red)),
+            Text('זמן הקלטה: $timeLabel · עד שעתיים',
+                textDirection: TextDirection.rtl,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.red, fontSize: 12)),
+          ])),
           IconButton(
               tooltip: 'בטל הקלטה',
               onPressed: onCancel,

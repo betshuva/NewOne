@@ -1,0 +1,122 @@
+{
+  "tool": "built-in image_gen",
+  "date": "2026-10-11",
+  "referenceImages": [
+    "expression-library/emojis/sticker-01.png",
+    "expression-library/emojis/sticker-16.png"
+  ],
+  "items": [
+    {
+      "name": "מבוכה",
+      "slug": "embarrassment",
+      "expression": "EMBARRASSMENT: sheepish awkward smile, sideways glance, raised inner eyebrows, blushing cheeks and tiny sweat droplet",
+      "prompt": "Round warm golden yellow emoji matching sticker-01 and sticker-16; watercolor texture, dark outlines, pink cheeks, embarrassment expression, transparent background, one centered face, no text.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-323d5ada-273b-4210-ae7a-5466073d1829.png"
+    },
+    {
+      "name": "ביישנות",
+      "slug": "shyness",
+      "expression": "SHY bashful sweet closed-mouth smile, gaze downward, softly lowered eyebrows, strong pink blush",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: SHY bashful sweet closed-mouth smile, gaze downward, softly lowered eyebrows, strong pink blush. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-bb2e6e05-d51d-4212-ab85-b8c73dd9af15.png"
+    },
+    {
+      "name": "גאווה",
+      "slug": "pride",
+      "expression": "PRIDE quietly proud satisfied confident closed-mouth smile, chin slightly lifted, relaxed half-closed eyes, no accessories",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: PRIDE quietly proud satisfied confident closed-mouth smile, chin slightly lifted, relaxed half-closed eyes, no accessories. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-d7c6396e-e9f1-43f7-9f74-824c9176cf6b.png"
+    },
+    {
+      "name": "הקלה",
+      "slug": "relief",
+      "expression": "RELIEF after worry passes, closed relaxed eyes, raised inner brows relaxing, small open mouth exhaling and a tiny pale breath puff beside mouth",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: RELIEF after worry passes, closed relaxed eyes, raised inner brows relaxing, small open mouth exhaling and a tiny pale breath puff beside mouth. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-2dfbdb23-c728-4313-a6d8-597c81566c65.png"
+    },
+    {
+      "name": "געגוע",
+      "slug": "longing",
+      "expression": "LONGING wistful tender gaze upward to one side, gentle sad small smile, raised inner eyebrows, one tiny pink heart near cheek",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: LONGING wistful tender gaze upward to one side, gentle sad small smile, raised inner eyebrows, one tiny pink heart near cheek. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-df7803b4-c907-4b0a-ac34-7915a9266fe2.png"
+    },
+    {
+      "name": "אכזבה",
+      "slug": "disappointment",
+      "expression": "DISAPPOINTMENT lowered eyelids looking down, drooping eyebrows, softly downturned closed mouth, no tears",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: DISAPPOINTMENT lowered eyelids looking down, drooping eyebrows, softly downturned closed mouth, no tears. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-44c49fc8-d44b-4013-8989-0d901971cade.png"
+    },
+    {
+      "name": "עלבון",
+      "slug": "hurt",
+      "expression": "HURT FEELINGS wounded pout, glistening eyes looking aside, inner eyebrows raised, small trembling downturned mouth, one tiny tear",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: HURT FEELINGS wounded pout, glistening eyes looking aside, inner eyebrows raised, small trembling downturned mouth, one tiny tear. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-e26208d9-0600-4709-bb28-6ad95f3b0269.png"
+    },
+    {
+      "name": "כעס",
+      "slug": "anger",
+      "expression": "ANGER clearly furrowed inward-slanted eyebrows, intense open eyes, frowning mouth, faint red flush but golden face, no symbols",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: ANGER clearly furrowed inward-slanted eyebrows, intense open eyes, frowning mouth, faint red flush but golden face, no symbols. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-8d811fb5-d14d-42ab-aacb-17a530a9593e.png"
+    },
+    {
+      "name": "בלבול",
+      "slug": "confusion",
+      "expression": "CONFUSION one eyebrow raised and the other lowered, pupils looking in different directions subtly, crooked small wavy mouth, no question marks",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: CONFUSION one eyebrow raised and the other lowered, pupils looking in different directions subtly, crooked small wavy mouth, no question marks. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-8d6e33a3-85bc-4119-b606-4407c50d6a69.png"
+    },
+    {
+      "name": "סקרנות",
+      "slug": "curiosity",
+      "expression": "CURIOSITY alert inquisitive wide eyes glancing sideways, raised brows, small interested parted mouth, friendly attentive expression",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: CURIOSITY alert inquisitive wide eyes glancing sideways, raised brows, small interested parted mouth, friendly attentive expression. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-2dd4c214-8dc3-4d8a-a41b-a2da56438808.png"
+    },
+    {
+      "name": "עייפות",
+      "slug": "tiredness",
+      "expression": "TIREDNESS heavy droopy eyelids, small dark under-eye bags, broad yawning oval mouth, no text or Z symbols",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: TIREDNESS heavy droopy eyelids, small dark under-eye bags, broad yawning oval mouth, no text or Z symbols. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-87361a58-3ab8-4512-96db-daedcfd9672b.png"
+    },
+    {
+      "name": "שעמום",
+      "slug": "boredom",
+      "expression": "BOREDOM nearly closed half-lidded eyes looking sideways, flat low eyebrows, straight small unimpressed mouth",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: BOREDOM nearly closed half-lidded eyes looking sideways, flat low eyebrows, straight small unimpressed mouth. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-d86e4ac8-fb57-49f4-9e52-a28d38326f07.png"
+    },
+    {
+      "name": "פחד",
+      "slug": "fear",
+      "expression": "FEAR wide round startled eyes, eyebrows high and drawn together, small trembling open mouth, subtle cool blush at outer face, no hands",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: FEAR wide round startled eyes, eyebrows high and drawn together, small trembling open mouth, subtle cool blush at outer face, no hands. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-fef0078a-a715-49df-9427-f519810d961b.png"
+    },
+    {
+      "name": "נחישות",
+      "slug": "determination",
+      "expression": "DETERMINATION focused eyebrows angled gently downward, confident forward gaze, lips pressed in a firm resolute small smile, warm encouraging energy",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: DETERMINATION focused eyebrows angled gently downward, confident forward gaze, lips pressed in a firm resolute small smile, warm encouraging energy. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-ffddd983-d03c-4246-b636-444b3b404446.png"
+    },
+    {
+      "name": "צחוק עם דמעות",
+      "slug": "laughing-tears",
+      "expression": "LAUGHING WITH TEARS, eyes tightly curved shut in joyful laughter, broad open laughing mouth with pink tongue, a clear bright blue joyful tear at each outer eye",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: LAUGHING WITH TEARS, eyes tightly curved shut in joyful laughter, broad open laughing mouth with pink tongue, a clear bright blue joyful tear at each outer eye. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-e381d484-0f31-47a8-ad38-c312804c0588.png"
+    },
+    {
+      "name": "חיוך נרגש עם דמעה",
+      "slug": "moved-smile",
+      "expression": "TOUCHED AND MOVED, warm gentle closed-mouth smile, shining kind eyes, raised tender inner eyebrows, one single bright blue tear rolling down one cheek",
+      "prompt": "Use case: stylized-concept. Asset type: single chat emoji. Create ONE new emoji matching the reference artwork: round warm golden-yellow face, softly textured hand painted watercolor shading, thin dark brown outline, bold simple dark facial features, soft pink cheek blush. Expression: TOUCHED AND MOVED, warm gentle closed-mouth smile, shining kind eyes, raised tender inner eyebrows, one single bright blue tear rolling down one cheek. Transparent background. One face only centered in a square with small transparent margins, face fills 85 percent. No words, letters, numbers, watermark, frame, body or background. Closely preserve reference rendering, warm palette, face proportions and readable expressive features. Produce original new expression.",
+      "source": "/home/yaniv/.codex/generated_images/01a1297c-7382-7742-92d9-c8ba8b843c35/exec-06adcae2-d664-485c-822c-e332f86f590f.png"
+    }
+  ]
+}

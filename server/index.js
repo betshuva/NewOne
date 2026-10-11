@@ -1,3 +1,6 @@
+const { SCHEMA: EDUCATION_EDIT_SCHEMA, registerEducationFormEditing } = require('./education-form-edit');
+const { SCHEMA: EDUCATION_SURVEY_SCHEMA, registerEducationSurveyManagement } = require('./education-survey-management');
+const { normalizeQuestionSelection, normalizeSurveyAnswers } = require('./education-survey-questions');
 const { SCHEMA: FILTER_PIN_SCHEMA, registerFilterPin, requireFilterPin, filterPinQuery, resolveFriendAcceptanceFilter } = require('./filter-pin');
 const { attachmentUpload, cleanAttachment, resumableAttachments } = require('./attachment-upload');
 const storageQuota = require('./storage-quota');
@@ -10,6 +13,7 @@ require('dotenv').config();
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.turn') });
 const express = require('express');
 const { publicStatic } = require('./public-static');
+const { SCHEMA: GROUP_INVITE_LINK_SCHEMA, registerGroupInviteLinks } = require('./group-invite-links');
 const { trustedProxyAddress, securityHeaders } = require('./http-security');
 const { verifySession, signSession, sessionCurrent } = require('./session-security');
 const { parseBirthDate, validateRegistrationAge, accountAgeError, requestAgeError } = require('./adult-access-policy');
@@ -949,7 +953,8 @@ function createRateLimiter({ windowMs, max, message, keyGenerator,
       console.warn('[rate-limit]', JSON.stringify({
         limiter: name,
         method: req.method,
-        path: req.originalUrl?.split('?')[0] || req.path,
+        path: (req.originalUrl?.split('?')[0] || req.path)
+          .replace(/(\/group-invites\/)[^/]+/, '$1:token'),
         authenticated: Boolean(req.user?.id),
         retryAfter: retryAfterSeconds,
       }));
@@ -1019,6 +1024,10 @@ const inviteRateLimit = createRateLimiter({
   windowMs: 60 * 60 * 1000,
   max: 10,
   message: 'נשלחו יותר מדי הזמנות. נסה שוב מאוחר יותר',
+});
+const groupInviteLinkRateLimit = createRateLimiter({
+  name: 'group-invite-link', windowMs: 60 * 1000, max: 120,
+  message: 'בוצעו יותר מדי בקשות להזמנה. נסו שוב בעוד דקה',
 });
 const reportRateLimit = createRateLimiter({
   windowMs: 60 * 60 * 1000,
@@ -2706,6 +2715,7 @@ async function migrateDatabase() {
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE group_members ADD COLUMN IF NOT EXISTS filter_override JSONB`);
+    await pool.query(GROUP_INVITE_LINK_SCHEMA);
     await pool.query(`UPDATE groups g SET is_self=TRUE
       WHERE g.is_self=FALSE AND TRIM(g.name) IN ('עצמי', 'הקבוצה העצמית שלי')
         AND (SELECT COUNT(*) FROM group_members gm
@@ -2745,6 +2755,8 @@ async function migrateDatabase() {
         status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
+    await pool.query(EDUCATION_EDIT_SCHEMA);
+    await pool.query(EDUCATION_SURVEY_SCHEMA);
     await pool.query(`CREATE INDEX IF NOT EXISTS education_forms_group_idx
       ON education_forms(group_id, created_at DESC)`);
     await pool.query(`
@@ -9357,6 +9369,16 @@ app.post('/api/upload', auth, uploadRateLimit, reserveMultipartStorage, cleanAtt
 });
 
 // ── Groups: list mine ─────────────────────────────────────────────
+registerGroupInviteLinks(app, { auth: authWithDbCheck, getPool, secret: JWT_SECRET,
+  rateLimit: groupInviteLinkRateLimit,
+  onJoin(req, group) {
+    req.app.get('io').to(`group:${group.id}`).emit('group:member_joined', {
+      groupId: group.id, userId: req.user.id, name: req.user.name,
+    });
+    logActivity(req.user.id, 'join_group_link', { groupId: group.id }, req.ip);
+  },
+});
+
 app.get('/api/groups', auth, async (req, res) => {
   if (req.user.isTeen) return res.json([]);
   try {
@@ -9474,19 +9496,24 @@ app.get('/api/groups/:id', auth, async (req, res) => {
     if (!mem.rows.length)
       return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
 
-    const [grp, members] = await Promise.all([
+    const isAdmin = mem.rows[0].role === 'admin';
+    const [grp, members, invitations] = await Promise.all([
       pool.query('SELECT * FROM groups WHERE id=$1', [req.params.id]),
       pool.query(
         `SELECT u.id, u.name, u.profile_pic_url, gm.role, gm.joined_at, gm.last_viewed_at
          FROM group_members gm JOIN users u ON u.id=gm.user_id
          WHERE gm.group_id=$1 AND gm.status='member'
          ORDER BY gm.role DESC, u.name`, [req.params.id]),
+      isAdmin ? pool.query(
+        `SELECT user_id FROM group_members WHERE group_id=$1 AND status='pending'`,
+        [req.params.id]) : Promise.resolve({ rows: [] }),
     ]);
     const [group, ...visibleMembers] = await projectProfileImages(pool, req.user.id,
       [grp.rows[0], ...members.rows]);
     res.set('Cache-Control', 'no-store');
-    res.json({ ...group, members: await projectContactPhones(pool,req.user.id,visibleMembers),
-      myRole: mem.rows[0].role, share_phone: mem.rows[0].share_phone });
+    res.json({ ...group, viewer_id: req.user.id, members: await projectContactPhones(pool,req.user.id,visibleMembers),
+      myRole: mem.rows[0].role, share_phone: mem.rows[0].share_phone,
+      ...(isAdmin ? { pending_invite_ids: invitations.rows.map(row => row.user_id) } : {}) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -9881,14 +9908,17 @@ app.get('/api/groups/:id/messages', auth, async (req, res) => {
 });
 
 // ── Groups: educational approvals, signatures and surveys ────────
+registerEducationFormEditing(app, { auth, getPool, io, sendPush });
+registerEducationSurveyManagement(app, { auth, getPool, io });
 app.get('/api/groups/:id/education-forms', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const access = await pool.query(
-      `SELECT role FROM group_members
+      `SELECT role,status FROM group_members
        WHERE group_id=$1 AND user_id=$2 AND status='member'`,
       [req.params.id, req.user.id]);
     if (!access.rows.length) return res.status(403).json({ error: 'לא חבר פעיל בקבוצה' });
+    const isAdmin = access.rows[0].status === 'member' && access.rows[0].role === 'admin';
     const result = await pool.query(
       `SELECT f.*,
               creator.name AS creator_name,
@@ -9903,12 +9933,12 @@ app.get('/api/groups/:id/education-forms', auth, async (req, res) => {
        LEFT JOIN education_form_responses mine
          ON mine.form_id=f.id AND mine.user_id=$2
        WHERE f.group_id=$1 AND (
-         $3 OR f.created_by=$2 OR EXISTS(
+         $3 OR ($4 AND f.created_by=$2) OR EXISTS(
            SELECT 1 FROM education_form_recipients recipient
            WHERE recipient.form_id=f.id AND recipient.user_id=$2))
        ORDER BY (f.status='open') DESC, f.created_at DESC`,
-      [req.params.id, req.user.id, access.rows[0].role === 'admin']);
-    res.json({ forms: result.rows, isAdmin: access.rows[0].role === 'admin' });
+      [req.params.id, req.user.id, isAdmin, access.rows[0].status === 'member']);
+    res.json({ forms: result.rows, isAdmin });
   } catch (e) {
     console.error('education forms list:', e.message);
     res.status(500).json({ error: 'טעינת האישורים והסקרים נכשלה' });
@@ -9928,12 +9958,19 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
     return res.status(400).json({ error: 'תיאור הטופס ארוך מדי' });
   if (formType === 'survey' && (!questions.length || questions.length > 20))
     return res.status(400).json({ error: 'בסקר יש להוסיף בין שאלה אחת ל־20 שאלות' });
-  const cleanQuestions = questions.map((question) => ({
-    text: String(question.text || '').trim().slice(0, 300),
-    options: Array.isArray(question.options)
-      ? question.options.map(value => String(value).trim().slice(0, 150)).filter(Boolean).slice(0, 12)
-      : [],
-  })).filter(question => question.text && question.options.length >= 2);
+  let cleanQuestions;
+  try {
+    cleanQuestions = questions.map((question) => {
+      const selection = normalizeQuestionSelection(question);
+      return {
+        text: String(question.text || '').trim().slice(0, 300),
+        options: Array.isArray(question.options)
+          ? question.options.map(value => String(value).trim().slice(0, 150)).filter(Boolean).slice(0, 12)
+          : [],
+        ...selection,
+      };
+    }).filter(question => question.text && question.options.length >= 2);
+  } catch (e) { return res.status(400).json({ error: e.message }); }
   if (formType === 'survey' && cleanQuestions.length !== questions.length)
     return res.status(400).json({ error: 'כל שאלת סקר חייבת לכלול לפחות שתי אפשרויות' });
   const fileUrl = formType === 'survey' ? null : String(req.body.fileUrl || '').trim() || null;
@@ -9953,6 +9990,26 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
        WHERE g.id=$1 AND gm.user_id=$2 AND gm.role='admin' AND gm.status='member'`,
       [req.params.id, req.user.id]);
     if (!admin.rows.length) return res.status(403).json({ error: 'רק מנהל קבוצה יכול ליצור טופס' });
+    if (req.body.recipientIds !== undefined && !Array.isArray(req.body.recipientIds))
+      return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
+    const selectedIds = Array.isArray(req.body.recipientIds) ? req.body.recipientIds : null;
+    if (selectedIds && (!selectedIds.length || selectedIds.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))))
+      return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
+    const members = await pool.query(
+      `SELECT user_id,status FROM group_members
+       WHERE group_id=$1 AND status IN ('member','pending') AND user_id<>$2
+         AND ($3::uuid[] IS NULL OR user_id=ANY($3::uuid[]))`,
+      [req.params.id, req.user.id, selectedIds]);
+    if (selectedIds && members.rows.length !== new Set(selectedIds).size)
+      return res.status(400).json({ error: 'יש לבחור חברים או מוזמנים לקבוצה' });
+    if (fileUrl) {
+      const allowedFile = await pool.query(`SELECT 1 FROM stored_files WHERE public_url=$1
+        AND moderation_status='approved' AND content_purged_at IS NULL
+        AND ((context_type='group' AND context_id=$2) OR user_id=$3)`,
+      [fileUrl, req.params.id, req.user.id]);
+      if (!allowedFile.rows.length)
+        return res.status(400).json({ error: 'יש לבחור קובץ מאושר שהועלה לאתר' });
+    }
     const inserted = await pool.query(
       `INSERT INTO education_forms
        (group_id,created_by,form_type,title,description,file_url,file_name,questions,anonymous,due_at)
@@ -9961,10 +10018,6 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
        fileUrl, fileName,
        JSON.stringify(formType === 'survey' ? cleanQuestions : []),
        formType === 'survey' && req.body.anonymous === true, dueAt]);
-    const members = await pool.query(
-      `SELECT user_id FROM group_members
-       WHERE group_id=$1 AND status='member' AND user_id<>$2`,
-      [req.params.id, req.user.id]);
     if (members.rows.length) {
       await pool.query(
         `INSERT INTO education_form_recipients(form_id,user_id,notified_at)
@@ -9972,7 +10025,7 @@ app.post('/api/groups/:id/education-forms', auth, async (req, res) => {
         [inserted.rows[0].id, members.rows.map(row => row.user_id)]);
     }
     const kind = formType === 'survey' ? 'סקר חדש' : formType === 'signature' ? 'מסמך חדש לחתימה' : 'אישור חדש';
-    for (const row of members.rows) {
+    for (const row of members.rows.filter(row => row.status === 'member')) {
       sendPush(row.user_id, admin.rows[0].name, `${kind}: ${title}`, {
         type: 'education_form', groupId: req.params.id, formId: inserted.rows[0].id,
       });
@@ -10005,7 +10058,8 @@ app.get('/api/education-forms/:id', auth, async (req, res) => {
   try {
     const pool = await getPool();
     const formResult = await pool.query(
-      `SELECT f.*, g.name AS group_name, gm.role AS my_role,
+      `SELECT f.*, g.name AS group_name, CASE WHEN gm.status='member' THEN gm.role ELSE 'member' END AS my_role,
+              gm.status AS membership_status,
               viewer.name AS current_user_name,
               mine.response_status AS my_response_status,
               mine.answers AS my_answers, mine.signer_name AS my_signer_name,
@@ -10017,7 +10071,7 @@ app.get('/api/education-forms/:id', auth, async (req, res) => {
        LEFT JOIN education_form_responses mine ON mine.form_id=f.id AND mine.user_id=$2
        LEFT JOIN education_response_change_requests change_request
          ON change_request.form_id=f.id AND change_request.user_id=$2
-       WHERE f.id=$1 AND (gm.role='admin' OR f.created_by=$2 OR EXISTS(
+       WHERE f.id=$1 AND ((gm.status='member' AND (gm.role='admin' OR f.created_by=$2)) OR EXISTS(
          SELECT 1 FROM education_form_recipients recipient
          WHERE recipient.form_id=f.id AND recipient.user_id=$2))`, [req.params.id, req.user.id]);
     if (!formResult.rows.length) return res.status(404).json({ error: 'הטופס לא נמצא' });
@@ -10027,11 +10081,14 @@ app.get('/api/education-forms/:id', auth, async (req, res) => {
     if (form.my_role === 'admin') {
       const newMembers = await pool.query(
         `SELECT COUNT(*)::int AS count FROM group_members gm
-         WHERE gm.group_id=$1 AND gm.status='member' AND gm.user_id<>$2
+         WHERE gm.group_id=$1 AND gm.status IN ('member','pending') AND gm.user_id<>$2
            AND NOT EXISTS(SELECT 1 FROM education_form_recipients recipient
              WHERE recipient.form_id=$3 AND recipient.user_id=gm.user_id)`,
         [form.group_id, form.created_by, form.id]);
       form.new_member_count = newMembers.rows[0].count;
+      form.revisions = (await pool.query(`SELECT id,created_at,snapshot->>'title' AS title,
+        jsonb_array_length(responses) AS response_count FROM education_form_revisions
+        WHERE form_id=$1 ORDER BY created_at DESC`, [form.id])).rows;
       participants = (await pool.query(
         `SELECT u.id,u.name,
                 r.response_status,r.submitted_at,r.signer_name,
@@ -10066,6 +10123,7 @@ app.post('/api/education-forms/:id/change-request', auth, async (req, res) => {
        FROM education_forms f JOIN groups g ON g.id=f.group_id
        JOIN education_form_recipients recipient ON recipient.form_id=f.id AND recipient.user_id=$2
        JOIN education_form_responses response ON response.form_id=f.id AND response.user_id=$2
+       JOIN group_members gm ON gm.group_id=f.group_id AND gm.user_id=$2 AND gm.status='member'
        WHERE f.id=$1 AND f.status='open'`, [req.params.id, req.user.id]);
     const form = found.rows[0];
     if (!form) return res.status(404).json({ error: 'לא נמצאה תשובה שניתן לבקש לשנות' });
@@ -10148,35 +10206,40 @@ app.post('/api/education-forms/:id/respond', auth, async (req, res) => {
   const responseStatus = String(req.body.status || '');
   if (!['approved', 'declined', 'completed'].includes(responseStatus))
     return res.status(400).json({ error: 'התשובה אינה תקינה' });
+  let client, committed = false;
   try {
-    const pool = await getPool();
-    const found = await pool.query(
-      `SELECT f.*,gm.role FROM education_forms f
+    client = await (await getPool()).connect();
+    await client.query('BEGIN');
+    const found = await client.query(
+      `SELECT f.*,CASE WHEN gm.status='member' THEN gm.role ELSE 'member' END AS role FROM education_forms f
        JOIN group_members gm ON gm.group_id=f.group_id
        WHERE f.id=$1 AND gm.user_id=$2 AND gm.status='member'
-         AND (gm.role='admin' OR f.created_by=$2 OR EXISTS(
+         AND ((gm.status='member' AND (gm.role='admin' OR f.created_by=$2)) OR EXISTS(
            SELECT 1 FROM education_form_recipients recipient
-           WHERE recipient.form_id=f.id AND recipient.user_id=$2))`,
+           WHERE recipient.form_id=f.id AND recipient.user_id=$2)) FOR SHARE OF f`,
       [req.params.id, req.user.id]);
     const form = found.rows[0];
     if (!form) return res.status(404).json({ error: 'הטופס לא נמצא' });
+    if (!req.body.expectedUpdatedAt ||
+        new Date(req.body.expectedUpdatedAt).getTime() !== new Date(form.updated_at).getTime())
+      return res.status(409).json({ error: 'הטופס עודכן. רענן ומלא את הגרסה החדשה' });
     if (form.status !== 'open' || (form.due_at && new Date(form.due_at) < new Date()))
       return res.status(409).json({ error: 'הטופס כבר נסגר' });
-    const answers = req.body.answers && typeof req.body.answers === 'object' ? req.body.answers : {};
+    let answers = req.body.answers && typeof req.body.answers === 'object' ? req.body.answers : {};
     const signerName = String(req.body.signerName || '').trim();
     const signatureData = Array.isArray(req.body.signatureData) ? req.body.signatureData.slice(0, 2000) : null;
     if (form.form_type === 'signature' && (!signerName || !signatureData || signatureData.length < 2))
       return res.status(400).json({ error: 'יש להזין שם מלא ולחתום בתוך המסגרת' });
     if (form.form_type === 'survey') {
       const questions = Array.isArray(form.questions) ? form.questions : [];
-      if (questions.some((_, index) => !String(answers[index] ?? answers[String(index)] ?? '').trim()))
-        return res.status(400).json({ error: 'יש לענות על כל שאלות הסקר' });
+      try { answers = normalizeSurveyAnswers(questions, answers); }
+      catch (e) { return res.status(400).json({ error: e.message }); }
     }
     const version = crypto.createHash('sha256').update(JSON.stringify({
       title: form.title, description: form.description, fileUrl: form.file_url,
       questions: form.questions, createdAt: form.created_at,
     })).digest('hex');
-    const saved = await pool.query(
+    const saved = await client.query(
       `INSERT INTO education_form_responses
        (form_id,user_id,response_status,answers,signer_name,signature_data,document_version)
        VALUES($1,$2,$3,$4,$5,$6,$7)
@@ -10186,6 +10249,8 @@ app.post('/api/education-forms/:id/respond', auth, async (req, res) => {
        signatureData ? JSON.stringify(signatureData) : null, version]);
     if (!saved.rows.length)
       return res.status(409).json({ error: 'התגובה כבר נשלחה ולא ניתן לשנות אותה' });
+    await client.query('COMMIT');
+    committed = true;
     logActivity(req.user.id, 'education_form_respond', {
       groupId: form.group_id, formId: form.id, status: responseStatus,
     }, req.ip);
@@ -10196,6 +10261,8 @@ app.post('/api/education-forms/:id/respond', auth, async (req, res) => {
   } catch (e) {
     console.error('education form response:', e.message);
     res.status(500).json({ error: 'שמירת התשובה נכשלה' });
+  } finally {
+    if (client) { if (!committed) await client.query('ROLLBACK').catch(() => {}); client.release(); }
   }
 });
 
@@ -10249,19 +10316,29 @@ app.post('/api/education-forms/:id/assign-new-members', auth, async (req, res) =
     const form = formResult.rows[0];
     if (!form) return res.status(403).json({ error: 'אין הרשאה לשלוח לחברים חדשים' });
     if (form.status !== 'open') return res.status(409).json({ error: 'הטופס סגור' });
+    if (req.body.recipientIds !== undefined && !Array.isArray(req.body.recipientIds))
+      return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
+    const selectedIds = Array.isArray(req.body.recipientIds) ? req.body.recipientIds : null;
+    if (selectedIds && (!selectedIds.length || selectedIds.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))))
+      return res.status(400).json({ error: 'רשימת הנמענים אינה תקינה' });
     const newMembers = await pool.query(
-      `SELECT gm.user_id FROM group_members gm
-       WHERE gm.group_id=$1 AND gm.status='member' AND gm.user_id<>$2
+      `SELECT gm.user_id,gm.status FROM group_members gm
+       WHERE gm.group_id=$1 AND gm.status IN ('member','pending') AND gm.user_id<>$2
+         AND ($4::uuid[] IS NULL OR gm.user_id=ANY($4::uuid[]))
          AND NOT EXISTS(SELECT 1 FROM education_form_recipients recipient
            WHERE recipient.form_id=$3 AND recipient.user_id=gm.user_id)`,
-      [form.group_id, form.created_by, form.id]);
+      [form.group_id, form.created_by, form.id, selectedIds]);
     if (newMembers.rows.length) {
-      await pool.query(
+      const assigned = await pool.query(
         `INSERT INTO education_form_recipients(form_id,user_id,notified_at)
-         SELECT $1,unnest($2::uuid[]),now() ON CONFLICT DO NOTHING`,
+         SELECT $1,unnest($2::uuid[]),now() ON CONFLICT DO NOTHING RETURNING user_id`,
         [form.id, newMembers.rows.map(row => row.user_id)]);
+      const activeIds = new Set(newMembers.rows.filter(row => row.status === 'member').map(row => row.user_id));
+      newMembers.rows = assigned.rows;
+      newMembers.rowCount = assigned.rowCount;
+      if (!assigned.rows.length) return res.json({ ok: true, sent: 0 });
       const kind = form.form_type === 'survey' ? 'סקר' : form.form_type === 'signature' ? 'מסמך לחתימה' : 'אישור';
-      for (const row of newMembers.rows) {
+      for (const row of newMembers.rows.filter(row => activeIds.has(row.user_id))) {
         sendPush(row.user_id, form.group_name, `${kind} שנשלח לפני הצטרפותך: ${form.title}`, {
           type: 'education_form', groupId: form.group_id, formId: form.id,
         });
@@ -10317,6 +10394,9 @@ app.post('/api/education-forms/:id/republish', auth, async (req, res) => {
     });
     const pending = await pool.query(
       `SELECT recipient.user_id FROM education_form_recipients recipient
+       JOIN education_forms f ON f.id=recipient.form_id
+       JOIN group_members gm ON gm.group_id=f.group_id AND gm.user_id=recipient.user_id
+         AND gm.status='member'
        LEFT JOIN education_form_responses response
          ON response.form_id=recipient.form_id AND response.user_id=recipient.user_id
        WHERE recipient.form_id=$1 AND response.user_id IS NULL`, [form.id]);
@@ -10585,7 +10665,8 @@ app.post('/api/groups/:id/join', auth, async (req, res) => {
       pendingRow.rows[0].content_filter, req.body?.filter);
     // Only an existing invitation can become an active membership.
     await filterPinQuery(pool, req, 
-      `UPDATE group_members SET status='member', filter_override=$3, share_phone=$4
+      `UPDATE group_members SET status='member', joined_at=COALESCE(pending_since,joined_at),
+         filter_override=$3, share_phone=$4
        WHERE group_id=$1 AND user_id=$2 AND status='pending'`,
       [req.params.id, req.user.id, JSON.stringify(personalFilter), req.body.share_phone !== false]);
     req.app.get('io').to(`group:${req.params.id}`).emit('contact:phone-sharing',{userId:req.user.id});

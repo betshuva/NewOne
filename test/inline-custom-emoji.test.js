@@ -18,13 +18,18 @@ const moderateChatText = vm.runInNewContext(
   { inlineEmojiModerationText },
 );
 
-test('only exact catalog IDs 001 through 150 are decorative moderation tokens', () => {
+test('legacy and registered emoji IDs are decorative moderation tokens', () => {
   for (let id = 1; id <= 150; id++) {
     const marker = `[[bt-emoji:${String(id).padStart(3, '0')}]]`;
     assert.equal(inlineEmojiModerationText(`a${marker}b`), 'a b');
   }
+  for (const item of require('../expression-library/emoji-registry.json').items) {
+    const marker = `[[bt-emoji:${String(item.id).padStart(3, '0')}]]`;
+    assert.equal(inlineEmojiModerationText(`a${marker}b`), 'a b');
+    assert.equal(inlineEmojiPlainText(marker), `[${item.label}]`);
+  }
   for (const text of [
-    '[[bt-emoji:000]]', '[[bt-emoji:151]]', '[[bt-emoji:999]]',
+    '[[bt-emoji:000]]', '[[bt-emoji:6401]]', '[[bt-emoji:999]]',
     '[[bt-emoji:1]]', '[[bt-emoji:0001]]', '[[BT-EMOJI:001]]',
     '[[bt-emoji:001]', '[bt-emoji:001]]', '[[bt-emoji: 001]]',
     '[[bt-emoji:../file.png]]', '[[bt-emoji:https://example.test/file.png]]',
@@ -46,7 +51,9 @@ test('push labels have a readable fallback without the optional catalog', () => 
   const helper = fs.readFileSync(require.resolve('../server/inline-custom-emoji'), 'utf8');
   const exports = vm.runInNewContext(`${helper}; module.exports`, {
     module: { exports: {} },
-    require(name) { if (name.startsWith('node:')) return require(name);
+    require(name) {
+      if (name === 'node:fs') return { readFileSync() { throw new Error('registry missing'); } };
+      if (name.startsWith('node:')) return require(name);
       throw new Error('artwork catalog missing'); },
   });
   assert.equal(exports.inlineEmojiPlainText('שלום [[bt-emoji:150]]'), 'שלום [אימוג׳י]');

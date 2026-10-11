@@ -12,6 +12,9 @@ enum ChatAttachmentAction {
   contact,
   myContact,
   location,
+  approvalForm,
+  signatureForm,
+  surveyForm,
   paste
 }
 
@@ -23,6 +26,7 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
   required bool textAllowed,
   required String blockedLabel,
   bool allowPaste = false,
+  bool allowEducationForms = false,
 }) {
   final overlay = Navigator.of(context, rootNavigator: true)
       .overlay!
@@ -57,6 +61,7 @@ Future<ChatAttachmentAction?> showChatAttachmentMenu({
           textAllowed: textAllowed,
           blockedLabel: blockedLabel,
           allowPaste: allowPaste,
+          allowEducationForms: allowEducationForms,
         ),
       ),
     )),
@@ -113,8 +118,13 @@ class _AttachmentMenu extends StatefulWidget {
       required this.videoAllowed,
       required this.textAllowed,
       required this.blockedLabel,
+      required this.allowEducationForms,
       required this.allowPaste});
-  final bool imagesAllowed, videoAllowed, textAllowed, allowPaste;
+  final bool imagesAllowed,
+      videoAllowed,
+      textAllowed,
+      allowPaste,
+      allowEducationForms;
   final String blockedLabel;
 
   @override
@@ -134,7 +144,7 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
   }) =>
       ListTile(
         dense: true,
-        minTileHeight: 48,
+        minTileHeight: 40,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14),
         horizontalTitleGap: 12,
         leading: Icon(icon, color: allowed ? color : Colors.grey, size: 21),
@@ -184,7 +194,10 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                       minTileHeight: 44,
                       leading: const Icon(Icons.arrow_forward,
                           size: 20, textDirection: TextDirection.ltr),
-                      title: Text('שיתוף איש קשר',
+                      title: Text(
+                          _section == 'forms'
+                              ? 'אישור, חתימה או סקר'
+                              : 'שיתוף איש קשר',
                           style: const TextStyle(
                               fontSize: 14, fontWeight: FontWeight.w600)),
                       onTap: () => setState(() => _section = null),
@@ -201,6 +214,10 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                         Colors.orange,
                         action: ChatAttachmentAction.scan,
                         allowed: widget.textAllowed),
+                    if (widget.allowEducationForms)
+                      _item('אישור, חתימה או סקר', Icons.fact_check_outlined,
+                          Colors.indigo,
+                          section: 'forms', allowed: widget.textAllowed),
                     _item('שיתוף איש קשר', Icons.contact_phone_outlined,
                         Colors.teal,
                         section: 'contact'),
@@ -212,13 +229,16 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
                       _item('הדבק תמונה', Icons.paste, Colors.blue,
                           action: ChatAttachmentAction.paste,
                           allowed: widget.imagesAllowed),
-                    const Divider(height: 8),
-                    const Padding(
-                      padding:
-                          EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                      child: Text('הקבצים עוברים סינון לפני השליחה',
-                          style: TextStyle(fontSize: 11, color: Colors.grey)),
-                    ),
+                  ] else if (_section == 'forms') ...[
+                    _item('אישור', Icons.fact_check_outlined, Colors.indigo,
+                        action: ChatAttachmentAction.approvalForm,
+                        allowed: widget.textAllowed),
+                    _item('חתימה', Icons.draw_outlined, Colors.indigo,
+                        action: ChatAttachmentAction.signatureForm,
+                        allowed: widget.textAllowed),
+                    _item('סקר', Icons.poll_outlined, Colors.indigo,
+                        action: ChatAttachmentAction.surveyForm,
+                        allowed: widget.textAllowed),
                   ] else ...[
                     _item('שתף איש קשר', Icons.contact_phone_outlined,
                         Colors.teal,

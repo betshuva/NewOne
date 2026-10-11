@@ -9,7 +9,7 @@ const publicFiles = new Set([
   '/', '/index.html', '/home.html', '/privacy.html', '/terms.html',
   '/delete-account.html', '/child-safety.html', '/accessibility.html',
   '/open-source-licenses.html', '/admin.html', '/admin-audit.html', '/admin-gmail.html', '/admin-storage.html',
-  '/admin-members.html', '/admin-reports.html', '/admin-scans.html', '/groups.html', '/invite-v2.html', '/public-users.html',
+  '/admin-members.html', '/admin-reports.html', '/admin-scans.html', '/groups.html', '/invite-v2.html', '/group-invite.html', '/public-users.html',
   '/play-store-description.html', '/image-links.html', '/logo.html',
   '/demo-conversations.html', '/qa-tests.html', '/favicon.png', '/manifest.json', '/version.json',
   '/flutter.js', '/flutter_bootstrap.js', '/flutter_service_worker.js',
@@ -33,6 +33,11 @@ function publishedPath(urlPath) {
 
 function publicStatic(root) {
   const serve = express.static(root, { dotfiles: 'deny', setHeaders(res, file) {
+    if (file === path.join(root, 'group-invite.html')) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    }
     if (file.startsWith(path.join(root, 'uploads') + path.sep)) {
       // Uploaded active content must never execute with the application's origin.
       res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; frame-ancestors 'self'");

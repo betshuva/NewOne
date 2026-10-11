@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
@@ -7,6 +9,9 @@ import 'recording_audio_web_stub.dart'
     if (dart.library.html) 'recording_audio_web.dart';
 
 class ProgressiveAudioRecorder {
+  final level = ValueNotifier<double>(0);
+  Timer? _levelTimer;
+  bool _readingLevel = false;
   final _native = AudioRecorder();
   WebRecordingAudio? _web;
   RecordingUpload? _stage;
@@ -29,6 +34,7 @@ class ProgressiveAudioRecorder {
       _web = await startWebRecordingAudio(api: api, token: token, name: name);
       if (_web != null) {
         if (_disposed) await cancel();
+        if (!_disposed) _startLevelMeter();
         return;
       }
     }
@@ -42,9 +48,36 @@ class ProgressiveAudioRecorder {
       _stage = RecordingUpload.file(
           api: api, token: token, name: name, mime: 'audio/wav', path: path);
     }
+    _startLevelMeter();
+  }
+
+  void _startLevelMeter() {
+    _levelTimer?.cancel();
+    _levelTimer = Timer.periodic(const Duration(milliseconds: 80), (_) async {
+      if (_disposed || _readingLevel) return;
+      _readingLevel = true;
+      try {
+        final value = _web?.level ??
+            (math.pow(10, (await _native.getAmplitude()).current / 20) * 4)
+                .clamp(0.0, 1.0)
+                .toDouble();
+        if (!_disposed && _levelTimer != null) level.value = value;
+      } catch (_) {
+        // Unsupported meters leave the recording controls usable.
+      } finally {
+        _readingLevel = false;
+      }
+    });
+  }
+
+  void _stopLevelMeter() {
+    _levelTimer?.cancel();
+    _levelTimer = null;
+    if (!_disposed) level.value = 0;
   }
 
   Future<String?> stop() async {
+    _stopLevelMeter();
     final web = _web;
     _web = null;
     final path = web != null ? await web.stop() : await _native.stop();
@@ -60,6 +93,7 @@ class ProgressiveAudioRecorder {
   }
 
   Future<void> cancel() async {
+    _stopLevelMeter();
     final web = _web;
     _web = null;
     await web?.cancel();
@@ -77,5 +111,6 @@ class ProgressiveAudioRecorder {
     _disposed = true;
     await cancel();
     await _native.dispose();
+    level.dispose();
   }
 }

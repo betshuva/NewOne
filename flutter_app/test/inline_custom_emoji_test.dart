@@ -6,6 +6,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:betshuva/inline_custom_emoji.dart';
 
 void main() {
+  test('greeting illustration contrast applies on every platform', () {
+    const child = SizedBox();
+    expect(vividInlineEmojiArtwork(49, child), isA<ColorFiltered>());
+    expect(vividInlineEmojiArtwork(148, child), isA<ColorFiltered>());
+    expect(vividInlineEmojiArtwork(1, child), same(child));
+    expect(vividInlineEmojiArtwork(149, child), same(child));
+    expect(vividInlineEmojiArtwork(null, child), same(child));
+  });
   testWidgets('Hebrew composer isolates Unicode emoji in selection order',
       (tester) async {
     final controller =

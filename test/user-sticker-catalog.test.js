@@ -8,13 +8,31 @@ const sharp = require('sharp');
 const { createExpressionLibrary } = require('../server/expression-catalog');
 const root = path.resolve(__dirname, '..');
 
-test('server and bundled catalogs separate 49 emojis from all 150 stickers', async () => {
+test('live catalog has 65 emojis while bundled catalog preserves the initial 49 emojis', async () => {
   const catalog = await createExpressionLibrary(path.join(root, 'expression-library')).catalog();
   assert.equal(catalog.version, 4);
   const emojis = catalog.categories.find(c => c.id === 'user-emojis').items;
   const stickers = catalog.categories.find(c => c.id === 'user-stickers').items;
-  assert.equal(emojis.length, 49); assert.equal(stickers.length, 150);
-  assert.equal(emojis[48].emojiId, 49);
+  assert.equal(emojis.length, 65); assert.equal(stickers.length, 150);
+  assert.deepEqual(emojis.slice(0, 16).map(item => item.emojiId),
+    Array.from({ length: 16 }, (_, index) => index + 1));
+  assert.deepEqual(emojis.slice(16, 32).map(item => item.emojiId),
+    [159, 152, 154, 156, 155, 151, 163, 158, 153, 161, 162, 166, 164, 160, 165, 157]);
+  assert.deepEqual(emojis.slice(32).map(item => item.emojiId),
+    Array.from({ length: 33 }, (_, index) => index + 17));
+  const added = emojis.filter(item => item.emojiId > 150);
+  assert.equal(added.length, 16);
+  assert.equal(new Set(added.map(item => item.emojiId)).size, 16);
+  for (const item of added) {
+    const file = await createExpressionLibrary(path.join(root, 'expression-library')).emojiFile(item.emojiId);
+    const metadata = await sharp(file).metadata();
+    assert.equal(metadata.format, 'png');
+    assert.ok(metadata.hasAlpha, item.label);
+    const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    assert.equal(data[info.channels - 1], 0, `${item.label}: transparent corner`);
+    const center = (Math.floor(info.height / 2) * info.width + Math.floor(info.width / 2)) * info.channels;
+    assert.ok(data[center + info.channels - 1] >= 240, `${item.label}: visible face`);
+  }
   assert.equal(stickers[149].id, 'user-stickers-150');
   for (const item of stickers) {
     const metadata = await sharp(path.join(root, item.libraryUrl.replace('/betshuva-app/', ''))).metadata();

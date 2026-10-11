@@ -2,7 +2,9 @@
 // ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:async';
 import 'dart:html' as html;
+import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:web_audio' as audio;
 import 'package:image_picker/image_picker.dart';
 import 'recording_audio_web_types.dart';
 import 'recording_upload.dart';
@@ -50,6 +52,15 @@ class _WebAudio implements WebRecordingAudio {
       if (!stopped.isCompleted) stopped.complete();
     });
     recorder.start(1000);
+    try {
+      final context = _audioContext = audio.AudioContext();
+      final analyser = _analyser = context.createAnalyser()..fftSize = 256;
+      _samples = Float32List(analyser.fftSize!);
+      _source = context.createMediaStreamSource(stream)..connectNode(analyser);
+      unawaited(context.resume().catchError((_) {}));
+    } catch (_) {
+      // Meter availability must not interrupt the recording itself.
+    }
   }
   final html.MediaStream stream;
   final String name;
@@ -58,9 +69,30 @@ class _WebAudio implements WebRecordingAudio {
   late final html.MediaRecorder recorder;
   late final RecordingUpload stage;
   bool failed = false;
+  audio.AudioContext? _audioContext;
+  audio.AnalyserNode? _analyser;
+  audio.MediaStreamAudioSourceNode? _source;
+  Float32List? _samples;
+  @override
+  double get level {
+    final analyser = _analyser;
+    final samples = _samples;
+    if (!recording || analyser == null || samples == null) return 0;
+    analyser.getFloatTimeDomainData(samples);
+    final energy = samples.fold<double>(0, (sum, value) => sum + value * value);
+    return (math.sqrt(energy / samples.length) * 4).clamp(0.0, 1.0);
+  }
+
   @override
   bool get recording => recorder.state == 'recording';
   void _stopTracks() {
+    _source?.disconnect();
+    _source = null;
+    _analyser = null;
+    _samples = null;
+    final context = _audioContext;
+    _audioContext = null;
+    if (context != null) unawaited(context.close().catchError((_) {}));
     for (final track in stream.getTracks()) {
       track.stop();
     }

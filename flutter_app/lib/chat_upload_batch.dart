@@ -109,14 +109,58 @@ String? chatUploadBatchSummary(
   ].join(' · ');
 }
 
-class ChatUploadBatchNotice extends StatelessWidget {
+class ChatUploadBatchNotice extends StatefulWidget {
   final String text;
   final String? summary;
-  const ChatUploadBatchNotice({super.key, required this.text, this.summary});
+  final DateTime? createdAt;
+  const ChatUploadBatchNotice(
+      {super.key, required this.text, this.summary, this.createdAt});
+
+  @override
+  State<ChatUploadBatchNotice> createState() => _ChatUploadBatchNoticeState();
+}
+
+class _ChatUploadBatchNoticeState extends State<ChatUploadBatchNotice> {
+  Timer? _expiryTimer;
+  bool _expired = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleExpiry();
+  }
+
+  @override
+  void didUpdateWidget(ChatUploadBatchNotice oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.createdAt != widget.createdAt) _scheduleExpiry();
+  }
+
+  void _scheduleExpiry() {
+    _expiryTimer?.cancel();
+    final remaining = (widget.createdAt ?? DateTime.now())
+        .add(const Duration(minutes: 5))
+        .difference(DateTime.now());
+    _expired = remaining <= Duration.zero;
+    if (!_expired) {
+      _expiryTimer = Timer(remaining, () {
+        if (mounted) setState(() => _expired = true);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _expiryTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final display = text.startsWith('מעלה ') ? text : summary;
+    if (_expired) return const SizedBox.shrink();
+    final display = widget.text.startsWith('מעלה ')
+        ? widget.text
+        : widget.summary;
     if (display == null) return const SizedBox.shrink();
     return Padding(
         padding: const EdgeInsets.symmetric(vertical: 10),

@@ -43,6 +43,9 @@ class MainActivity: FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        flutterEngine.platformViewsController.registry.registerViewFactory(
+            "com.betshuva.app/location-map", LocationMapPreviewFactory()
+        )
         mediaBridge = NativeMediaBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         contactsPermissionChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.betshuva.app/contacts")
         contactsPermissionChannel?.setMethodCallHandler { call, result ->

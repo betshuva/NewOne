@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="הזמנה להצטרפות לקבוצה בבתשובה. אפשר להתחיל ישר מהדפדפן.">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta property="og:locale" content="he_IL">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="בתשובה">
+  <meta property="og:title" content="ממשיכים את הקבוצה בבתשובה">
+  <meta property="og:description" content="הצטרפו לקבוצה — אפשר להתחיל ישר מהדפדפן.">
+  <title>הזמנה לקבוצה בבתשובה</title>
+  <link rel="icon" href="/betshuva-app/favicon.png">
+  <style>
+    :root{color-scheme:light;--blue:#1b6ca8;--dark:#10283b;--muted:#526a7c;--border:#dce8f1}
+    *{box-sizing:border-box}
+    [hidden]{display:none!important}
+    body{margin:0;min-height:100vh;min-height:100svh;background:#edf5fc;color:var(--dark);font-family:Arial,sans-serif;display:flex;flex-direction:column;align-items:center;padding:32px 16px}
+    .brand{color:var(--blue);font-size:26px;font-weight:bold;text-decoration:none;margin-bottom:26px}
+    main{width:100%;max-width:480px;padding:32px 26px;background:#fff;border:1px solid var(--border);border-radius:22px;box-shadow:0 8px 32px #173b5610;text-align:center}
+    .eyebrow{color:var(--muted);font-size:15px;margin:0 0 22px}
+    .avatar{width:88px;height:88px;margin:0 auto 20px;border-radius:50%;background:#edf5fc;display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--blue)}
+    .avatar svg{width:44px;height:44px}
+    .avatar img{width:100%;height:100%;object-fit:cover}
+    h1{font-size:28px;line-height:1.35;margin:0 0 12px;overflow-wrap:anywhere}
+    p{line-height:1.6}
+    #group-description{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font-size:16px;margin:12px 0 20px}
+    #inviter{color:var(--muted);font-size:15px;overflow-wrap:anywhere;margin:12px 0 24px}
+    .button{display:block;width:100%;padding:14px 18px;border:0;border-radius:12px;background:var(--blue);color:#fff;font:700 18px Arial,sans-serif;line-height:1.4;text-decoration:none;cursor:pointer}
+    .button:hover{background:#155787}
+    .button:focus-visible,.brand:focus-visible{outline:3px solid #78bbec;outline-offset:4px}
+    .hint{font-size:14px;color:var(--muted);margin:16px 0 0}
+    #status{font-size:16px;color:var(--muted);margin:16px 0;line-height:1.6}
+    #retry{font-size:16px;margin-top:22px}
+    footer{font-size:13px;color:var(--muted);text-align:center;max-width:420px;line-height:1.6;margin-top:24px}
+    @media(max-width:380px){body{padding:24px 12px}main{padding:28px 20px}h1{font-size:25px}}
+    @media(prefers-reduced-motion:no-preference){.button{transition:background .15s}}
+  </style>
+</head>
+<body>
+  <a class="brand" href="/betshuva-app/" aria-label="בתשובה — לעמוד הראשי">בתשובה</a>
+  <main id="invitation" aria-busy="true">
+    <p class="eyebrow">ממשיכים את הקבוצה בבתשובה</p>
+    <div class="avatar" aria-hidden="true">
+      <svg id="avatar-placeholder" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="19" cy="15" r="7"></circle><path d="M5 39v-4a14 14 0 0 1 28 0v4"></path><path d="M32 9a7 7 0 0 1 0 13m6 5a12 12 0 0 1 5 10v2"></path>
+      </svg>
+      <img id="group-avatar" alt="" hidden>
+    </div>
+    <h1 id="group-name">הזמנה לקבוצה</h1>
+    <p id="status" role="status" aria-live="polite">טוענים את ההזמנה…</p>
+    <div id="group-details" hidden>
+      <p id="group-description" hidden></p>
+      <p id="inviter"></p>
+      <a id="join" class="button">הצטרף לקבוצה</a>
+      <p class="hint">אפשר להתחיל ישר מהדפדפן, בלי להתקין אפליקציה.</p>
+    </div>
+    <button id="retry" class="button" type="button" hidden>נסה שוב</button>
+  </main>
+  <footer>משתמשים חדשים משלימים הרשמה קצרה לפני ההצטרפות. ההזמנה תישמר בדרך לקבוצה.</footer>
+  <noscript><p>כדי לפתוח את ההזמנה, יש לאפשר JavaScript בדפדפן.</p></noscript>
+  <script>
+    'use strict';
+    (() => {
+      const token = new URLSearchParams(location.search).get('groupInvite') || '';
+      const validToken = /^[A-Za-z0-9_-]{43}$/.test(token);
+      const card = document.getElementById('invitation');
+      const status = document.getElementById('status');
+      const details = document.getElementById('group-details');
+      const retry = document.getElementById('retry');
+      const avatar = document.getElementById('group-avatar');
+      const placeholder = document.getElementById('avatar-placeholder');
+      let loading = false;
+
+      function safeAvatar(raw) {
+        if (typeof raw !== 'string' || !raw) return null;
+        try {
+          const url = new URL(raw, location.origin);
+          if (url.origin !== location.origin) return null;
+          let path = url.pathname;
+          if (/^\/(assets|uploads)\//.test(path)) path = '/betshuva-app' + path;
+          if (!/^\/betshuva-app\/(assets|uploads)\//.test(path)) return null;
+          if (!/\.(png|jpe?g|gif|webp)$/i.test(path)) return null;
+          return location.origin + path;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function showError(message, canRetry) {
+        card.setAttribute('aria-busy', 'false');
+        details.hidden = true;
+        status.textContent = message;
+        status.hidden = false;
+        retry.hidden = !canRetry;
+      }
+
+      async function loadInvitation() {
+        if (loading) return;
+        if (!validToken) {
+          showError('קישור ההזמנה אינו תקין. בקשו ממנהל הקבוצה קישור חדש.', false);
+          return;
+        }
+        loading = true;
+        card.setAttribute('aria-busy', 'true');
+        details.hidden = true;
+        retry.hidden = true;
+        status.hidden = false;
+        status.textContent = 'טוענים את ההזמנה…';
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12000);
+        try {
+          const response = await fetch('/betshuva-app/api/group-invites/' + encodeURIComponent(token), {
+            credentials: 'omit', cache: 'no-store', signal: controller.signal,
+            headers: {Accept: 'application/json'}
+          });
+          if (response.status === 404 || response.status === 410) {
+            showError('ההזמנה אינה זמינה או שפג תוקפה. בקשו ממנהל הקבוצה קישור חדש.', false);
+            return;
+          }
+          if (!response.ok) throw new Error('invite_unavailable');
+          const data = await response.json();
+          if (!data.group || typeof data.group.name !== 'string' || !data.group.name.trim()) {
+            throw new Error('invalid_invite_response');
+          }
+          document.getElementById('group-name').textContent = data.group.name;
+          const description = document.getElementById('group-description');
+          description.textContent = typeof data.group.description === 'string' ? data.group.description : '';
+          description.hidden = !description.textContent.trim();
+          const inviterName = typeof data.inviter?.name === 'string' ? data.inviter.name.trim() : '';
+          document.getElementById('inviter').textContent = inviterName ? inviterName + ' מזמין אותך להצטרף' : 'הוזמנת להצטרף לקבוצה';
+          const imageUrl = safeAvatar(data.group.avatar_url);
+          avatar.hidden = true;
+          placeholder.removeAttribute('hidden');
+          if (imageUrl) {
+            avatar.onload = () => { avatar.hidden = false; placeholder.setAttribute('hidden', ''); };
+            avatar.onerror = () => { avatar.hidden = true; placeholder.removeAttribute('hidden'); };
+            avatar.src = imageUrl;
+          }
+          document.getElementById('join').href = '/betshuva-app/?groupInvite=' + encodeURIComponent(token);
+          status.hidden = true;
+          details.hidden = false;
+          card.setAttribute('aria-busy', 'false');
+        } catch (_) {
+          showError('לא הצלחנו לטעון את ההזמנה. בדקו את החיבור ונסו שוב.', true);
+        } finally {
+          clearTimeout(timeout);
+          loading = false;
+        }
+      }
+      retry.addEventListener('click', loadInvitation);
+      loadInvitation();
+    })();
+  </script>
+</body>
+</html>

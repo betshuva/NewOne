@@ -17,5 +17,5 @@ test('the conversations header exposes direct group creation', () => {
   assert.match(conversations, /Icons\.group_add_outlined/);
   assert.match(conversations, /tooltip: 'יצירת קבוצה חדשה'/);
   assert.match(conversations, /onPressed: _createGroup/);
-  assert.match(conversations, /CreateGroupScreen\(token: widget\.token\)/);
+  assert.match(conversations, /CreateGroupScreen\(\s*token: widget\.token,\s*whatsappMigration: whatsappMigration\)/);
 });

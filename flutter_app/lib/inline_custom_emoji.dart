@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -22,7 +21,7 @@ const inlineEmojiScale = 1.1;
 /// The pale greeting illustrations need more contrast at inline sizes.
 /// Keep the saturated icons, portraits, alpha and artwork dimensions intact.
 Widget vividInlineEmojiArtwork(int? id, Widget child) {
-  if (!kIsWeb || id == null || id < 49 || id > 148) return child;
+  if (id == null || id < 49 || id > 148) return child;
   return ColorFiltered(
     colorFilter: const ColorFilter.matrix([
       1.3845664,

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>בחירת אימוג׳ים למחיקה — בתשובה</title>
+  <title>כל האימוג׳ים — בתשובה</title>
   <style>
     @font-face { font-family:BetshuvaHebrew; src:url('../assets/assets/fonts/NotoSansHebrew.ttf') format('truetype'); font-display:swap; }
     :root { color-scheme:light; --blue:#176fa6; --ink:#123b57; --line:#d8e4eb; --bg:#f4f8fa; }
@@ -28,26 +28,19 @@
     article:target { box-shadow:0 0 0 3px #f2b544; }
     .preview { display:flex; align-items:center; justify-content:center; height:150px; padding:10px; background:#fff; }
     .preview img { width:100%; height:100%; object-fit:contain; }
-    .vivid { filter:url(#vivid-emoji); }
     .content { padding:10px; }
     h2 { min-height:40px; margin:0 0 8px; font-size:16px; line-height:1.4; }
     .mark { display:flex; align-items:center; gap:8px; padding:10px 0; cursor:pointer; }
     .mark input { width:20px; height:20px; margin:0; accent-color:#ba3c35; flex-shrink:0; }
     .links { display:flex; flex-wrap:wrap; gap:8px 12px; font-size:13px; }
-    .filter-definitions { position:absolute; width:0; height:0; overflow:hidden; }
     @media(max-width:380px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } .preview { height:130px; } .toolbar { gap:8px; } button { padding:10px; } }
   </style>
 </head>
 <body>
-  <svg class="filter-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-    <filter id="vivid-emoji" color-interpolation-filters="sRGB">
-      <feColorMatrix type="matrix" values="1.3845664 -0.2403072 -0.0242592 0 -0.12 -0.0714336 1.2156928 -0.0242592 0 -0.12 -0.0714336 -0.2403072 1.4317408 0 -0.12 0 0 0 1 0"/>
-    </filter>
-  </svg>
   <main>
     <header>
-      <h1>איזה אימוג׳ים תרצה למחוק?</h1>
-      <p>כל האימוג׳ים של בתשובה בדף אחד. סמן את הרצויים, לחץ על „העתק רשימה” ושלח את הרשימה בצ׳אט.</p>
+      <h1>כל האימוג׳ים של בתשובה</h1>
+      <p>כל האימוג׳ים מהספרייה הנוכחית בדף אחד, עם קישור לכל תמונה. לבקשת מחיקה, סמן את הרצויים, לחץ על „העתק רשימה” ושלח את הרשימה בצ׳אט.</p>
       <p>הסימונים נשמרים בדפדפן הזה. הדף מכין רשימת בקשות למחיקה.</p>
       <a href="/betshuva-app/">חזרה לאתר בתשובה</a>
     </header>
@@ -75,7 +68,7 @@
       const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
       if (Array.isArray(saved)) {
         for (const id of saved) {
-          if (Number.isInteger(id) && id >= 1 && id <= 150) selected.add(id);
+          if (Number.isInteger(id) && id >= 1 && id <= 6400) selected.add(id);
         }
       }
     } catch (_) { /* Selection still works when browser storage is unavailable. */ }
@@ -115,23 +108,22 @@
 
     async function loadCatalog() {
       try {
-        const response = await fetch('catalog.json', {cache:'no-store'});
+        const response = await fetch('emoji-registry.json', {cache:'no-store'});
         if (!response.ok) throw new Error('Catalog unavailable');
-        const catalog = await response.json();
-        const category = catalog.categories.find(item => item.id === 'user-stickers');
-        if (!category || !Array.isArray(category.labels) || category.labels.length !== 150) {
-          throw new Error('Invalid catalog');
-        }
-        const folder = category.coloredPath || category.path;
-        if (!/^[a-z0-9-]+$/.test(folder)) throw new Error('Invalid artwork folder');
-        const removedIds = new Set(category.removedIds || []);
-        entries = category.labels.map((label, index) => {
-          const id = index + 1;
+        const registry = await response.json();
+        if (!Array.isArray(registry.items)) throw new Error('Invalid catalog');
+        entries = registry.items.map(item => {
+          if (!Number.isInteger(item.id) || item.id < 1 || item.id > 6400 ||
+              typeof item.file !== 'string' || /[\\/]/.test(item.file) ||
+              !/\.(png|gif|webp|jpe?g)$/i.test(item.file)) {
+            throw new Error('Invalid emoji');
+          }
+          const id = item.id;
           const number = String(id).padStart(3, '0');
-          return {id, number, label:String(label),
-            image:`${folder}/sticker-${String(id).padStart(2, '0')}.png`,
+          return {id, number, label:String(item.label),
+            image:`emojis/${encodeURIComponent(item.file)}`,
             link:new URL(`#emoji-${number}`, location.href).href};
-        }).filter(entry => !removedIds.has(entry.id));
+        });
         const availableIds = new Set(entries.map(entry => entry.id));
         for (const id of selected) {
           if (!availableIds.has(id)) selected.delete(id);
@@ -152,7 +144,6 @@
           image.alt = entry.label;
           image.loading = 'lazy';
           image.width = image.height = 130;
-          if (entry.id >= 49 && entry.id <= 148) image.className = 'vivid';
           preview.append(image);
           const content = document.createElement('div');
           content.className = 'content';
@@ -187,7 +178,7 @@
         }
         gallery.replaceChildren(fragment);
         updateSelection();
-        if (/^#emoji-\d{3}$/.test(location.hash)) {
+        if (/^#emoji-\d{3,4}$/.test(location.hash)) {
           document.querySelector(location.hash)?.scrollIntoView();
         }
       } catch (_) {
